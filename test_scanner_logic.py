@@ -3,7 +3,15 @@ from unittest.mock import Mock, patch
 
 import pandas as pd
 
-from downloader import TickerInfo, _download_from_sina, _download_from_tencent, _download_single, _fetch_a_share_etfs, _fetch_a_share_stocks
+from downloader import (
+    TickerInfo,
+    _download_from_sina,
+    _download_from_tencent,
+    _download_single,
+    _fetch_a_share_etfs,
+    _fetch_a_share_stocks,
+    _is_excluded_security_name,
+)
 from filters import filter_min_market_cap, filter_min_price, filter_volatility_contraction
 from scanner import ScanResult
 from score import classify_style, score_ticker
@@ -100,6 +108,16 @@ class ScannerLogicTests(TestCase):
         self.assertTrue(filter_min_market_cap(None, required=False).passed)
         volatility = pd.DataFrame({"Close": range(60)})
         self.assertFalse(filter_volatility_contraction(volatility).passed)
+
+    def test_excluded_security_names(self):
+        self.assertTrue(_is_excluded_security_name("城投债ETF"))
+        self.assertTrue(_is_excluded_security_name("货币ETF"))
+        self.assertFalse(_is_excluded_security_name("沪深300ETF"))
+
+    def test_ticker_info_defaults_to_stock_and_etf_is_explicit(self):
+        self.assertEqual(TickerInfo(ticker="600036.SH").asset_type, "stock")
+        etf = TickerInfo(ticker="510300.SH", is_etf=True, asset_type="etf")
+        self.assertEqual(etf.asset_type, "etf")
 
     def test_candidate_output_excludes_failed_filters(self):
         results = [

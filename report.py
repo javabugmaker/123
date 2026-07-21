@@ -68,6 +68,7 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
             "Sector": r.sector,
             "Industry": r.industry,
             "IsETF": r.is_etf,
+            "AssetType": r.asset_type,
             "Style": r.style,
             "Quality": _quality_label(r),
             "Close": r.close,

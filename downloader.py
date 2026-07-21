@@ -35,6 +35,7 @@ from config import (
     LOG_DIR,
     MAX_DOWNLOAD_ERRORS,
     MIN_MARKET_CAP,
+    EXCLUDED_SECURITY_KEYWORDS,
     MIN_PRICE,
     MIN_VOLUME,
 )
@@ -90,7 +91,13 @@ class TickerInfo:
     sector: str = ""
     industry: str = ""
     is_etf: bool = False
+    asset_type: str = "stock"
     market_cap: float | None = None
+
+
+def _is_excluded_security_name(name: str) -> bool:
+    normalized = str(name or "").upper().replace(" ", "")
+    return any(keyword.upper() in normalized for keyword in EXCLUDED_SECURITY_KEYWORDS)
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +240,7 @@ def _fetch_a_share_stocks() -> list[TickerInfo]:
             exchange={"SH": "SSE", "SZ": "SZSE", "BJ": "BSE"}[suffix],
             sector=str(row.get("f100") or ""),
             industry=str(row.get("f102") or ""),
+            asset_type="stock",
             market_cap=float(market_cap) if isinstance(market_cap, (int, float)) and market_cap > 0 else None,
         ))
     if len(tickers) < 4000:
@@ -288,6 +296,7 @@ def _fetch_a_share_etfs() -> list[TickerInfo]:
             name=name,
             exchange={"SH": "SSE", "SZ": "SZSE"}[suffix],
             is_etf=True,
+            asset_type="etf",
             market_cap=float(row["f20"]) if isinstance(row.get("f20"), (int, float)) and row["f20"] > 0 else None,
         ))
     unique = {item.ticker: item for item in etfs}

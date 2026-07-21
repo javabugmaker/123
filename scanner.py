@@ -150,6 +150,7 @@ def scan_single_from_df(
                 sector=ticker_info.sector,
                 industry=ticker_info.industry,
                 is_etf=ticker_info.is_etf,
+                asset_type=ticker_info.asset_type,
                 error="Insufficient data",
             )
 
@@ -217,6 +218,7 @@ def scan_single_from_df(
             sector=ticker_info.sector,
             industry=ticker_info.industry,
             is_etf=ticker_info.is_etf,
+            asset_type=ticker_info.asset_type,
             close=close,
             score=sb,
             obv=obv_val,
