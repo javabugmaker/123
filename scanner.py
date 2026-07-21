@@ -407,6 +407,7 @@ def run_scan(
                     wyckoff_phase=str(row.get("WyckoffPhase", "Unknown")),
                     volume_accum_days=int(row.get("VolAccumDays", 0)),
                     passed_filters=bool(row.get("PassedFilters", False)),
+                    style=str(row.get("Style", "均衡")),
                     filter_details={
                         "obv_divergence": bool(row.get("OBV_Div", False)),
                         "cmf_positive": bool(row.get("CMF_Pos", False)),
@@ -415,6 +416,8 @@ def run_scan(
                         "consolidation": bool(row.get("Consolidation", False)),
                         "volume_accumulation": bool(row.get("VolAccum", False)),
                         "volatility_contraction": bool(row.get("VolContract", False)),
+                        "signal_count": int(row.get("SignalCount", 0) or 0),
+                        "filter_count": int(row.get("FilterCount", 0) or 0),
                     },
                     error=str(row.get("Error", "") or ""),
                 )

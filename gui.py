@@ -13,12 +13,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
 MAIN_FILE = PROJECT_ROOT / "main.py"
 COLUMN_NAMES = {
-    "Ticker": "代码", "Name": "名称", "Sector": "板块", "Industry": "行业", "IsETF": "ETF", "Style": "风格",
+    "Ticker": "代码", "Name": "名称", "Sector": "板块", "Industry": "行业", "IsETF": "ETF", "Style": "风格", "Quality": "质量",
     "Close": "收盘价", "Score": "综合评分", "TrendScore": "趋势分", "VolumeScore": "成交量分",
     "AccumulationScore": "吸筹分", "CompressionScore": "波动分", "StructureScore": "结构分",
     "OBV": "OBV", "CMF": "CMF", "AD": "A/D", "ATR14": "ATR14", "RSI14": "RSI14",
-    "DistToLow52W": "距52周低点", "WyckoffPhase": "威科夫阶段", "VolAccumDays": "放量天数",
-    "PassedFilters": "通过筛选", "OBV_Div": "OBV背离", "CMF_Pos": "CMF为正", "AD_SlopePos": "A/D上升",
+    "DistToLow52W": "距52周低点", "WyckoffPhase": "威科夫阶段", "VolAccumDays": "放量天数", "SignalCount": "信号数", "FilterCount": "通过项数", "PassedFilters": "通过筛选", "Quality": "质量", "OBV_Div": "OBV背离", "CMF_Pos": "CMF为正", "AD_SlopePos": "A/D上升",
     "BearMarket": "熊市条件", "Consolidation": "横盘整理", "VolAccum": "放量吸筹",
     "VolContract": "波动收缩", "Error": "错误",
 }

@@ -489,6 +489,7 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
     volatility = min(volatility, 15.0)
     structure = min(structure, 15.0)
     total = trend + volume + accumulation + volatility + structure
+    total = _clamp(total, 0.0, 100.0)
 
     return ScoreBreakdown(
         total=min(total, 100.0),

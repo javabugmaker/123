@@ -29,11 +29,30 @@ logger = logging.getLogger("institution_scanner.report")
 # Data export helpers
 # ======================================================================
 
+def _quality_label(result: ScanResult) -> str:
+    signal_count = int(result.filter_details.get("signal_count", 0))
+    if result.passed_filters and signal_count >= 6:
+        return "强候选"
+    if result.passed_filters:
+        return "候选"
+    if signal_count >= 3:
+        return "观察"
+    return "普通"
+
+
 def _rankable_results(results: list[ScanResult]) -> list[ScanResult]:
-    passed = [r for r in results if r.passed_filters and not r.error]
-    if passed:
-        return passed
-    return [r for r in results if not r.error]
+    valid = [r for r in results if not r.error]
+    passed = [r for r in valid if r.passed_filters]
+    candidates = passed if passed else valid
+    return sorted(
+        candidates,
+        key=lambda r: (
+            int(r.passed_filters),
+            int(r.filter_details.get("signal_count", 0)),
+            float(r.score.total),
+        ),
+        reverse=True,
+    )
 
 
 def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
@@ -47,6 +66,7 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
             "Industry": r.industry,
             "IsETF": r.is_etf,
             "Style": r.style,
+            "Quality": _quality_label(r),
             "Close": r.close,
             "Score": round(r.score.total, 2),
             "TrendScore": round(r.score.trend, 2),
@@ -62,6 +82,8 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
             "DistToLow52W": round(r.dist_to_low_52w, 2) if not np.isnan(r.dist_to_low_52w) else None,
             "WyckoffPhase": r.wyckoff_phase,
             "VolAccumDays": r.volume_accum_days,
+            "SignalCount": r.filter_details.get("signal_count", 0),
+            "FilterCount": r.filter_details.get("filter_count", 0),
             "PassedFilters": r.passed_filters,
             "OBV_Div": r.filter_details.get("obv_divergence", False),
             "CMF_Pos": r.filter_details.get("cmf_positive", False),
@@ -77,7 +99,11 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df = df.sort_values("Score", ascending=False).reset_index(drop=True)
+    df = df.sort_values(
+        ["PassedFilters", "SignalCount", "Score"],
+        ascending=[False, False, False],
+        kind="mergesort",
+    ).reset_index(drop=True)
     return df
 
 
