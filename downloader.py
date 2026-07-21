@@ -96,7 +96,7 @@ class TickerInfo:
 
 
 def _is_excluded_security_name(name: str) -> bool:
-    normalized = str(name or "").upper().replace(" ", "")
+    normalized = re.sub(r"\s+", "", str(name or "")).upper()
     return any(keyword.upper() in normalized for keyword in EXCLUDED_SECURITY_KEYWORDS)
 
 
@@ -276,8 +276,9 @@ def _fetch_a_share_etfs() -> list[TickerInfo]:
     except Exception:
         logger.exception("获取全量ETF失败")
         return [
-            TickerInfo(ticker=symbol, name=name, exchange="SSE/SZSE", is_etf=True)
+            TickerInfo(ticker=symbol, name=name, exchange="SSE/SZSE", is_etf=True, asset_type="etf")
             for symbol, name in _STATIC_A_ETFS
+            if not _is_excluded_security_name(name)
         ]
 
     etfs: list[TickerInfo] = []
@@ -287,6 +288,8 @@ def _fetch_a_share_etfs() -> list[TickerInfo]:
         market = int(row.get("f13") or 0)
         name = str(row.get("f14") or "")
         if not code.isdigit() or len(code) != 6 or not code.startswith(allowed_prefixes):
+            continue
+        if _is_excluded_security_name(name):
             continue
         if name.endswith(("R", "A")) or "分级" in name or "退市" in name:
             continue

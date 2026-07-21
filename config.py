@@ -33,14 +33,13 @@ MAX_PRICE: float = 800.0      # Maximum close price for A-shares
 MIN_VOLUME: int = 200_000     # Minimum daily volume (shares)
 MIN_MARKET_CAP: float = 1e8    # Minimum market cap (CNY) — ignore micro-caps
 EXCLUDED_SECURITY_KEYWORDS: tuple[str, ...] = (
-    "城投",
     "债",
     "货币",
     "同业存单",
     "短融",
     "中票",
-    "国开",
-    "政金",
+    "REIT",
+    "浙商沪",
 )
 
 # ======================================================================

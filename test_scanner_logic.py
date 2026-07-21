@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 import pandas as pd
 
+import downloader
 from downloader import (
     TickerInfo,
     _download_from_sina,
@@ -65,6 +66,51 @@ class ScannerLogicTests(TestCase):
         self.assertTrue(all(item.is_etf for item in etfs))
 
     @patch("downloader._eastmoney_get")
+    def test_etf_name_filter_keeps_stock_etfs_and_excludes_non_stock_etfs(self, request_get):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"data": {"total": 12, "diff": [
+            {"f12": f"{index:06d}", "f13": 1, "f14": name, "f20": 1e9}
+            for index, name in enumerate([
+                "公司债ETF",
+                "国债ETF",
+                "货币ETF",
+                "信用债ETF",
+                "城投债ETF",
+                "同业存单ETF",
+                "短融ETF",
+                "中票ETF",
+                "国开债ETF",
+                "政金债ETF",
+                "REIT ETF",
+                "沪 杭 甬ETF",
+            ])
+        ] + [
+            {"f12": "510300", "f13": 1, "f14": "沪深300 ETF", "f20": 1e9},
+        ]}}
+        request_get.return_value = response
+
+        etfs = _fetch_a_share_etfs()
+
+        self.assertEqual([item.name for item in etfs], ["沪深300 ETF"])
+        self.assertEqual(etfs[0].asset_type, "etf")
+
+    @patch("downloader._eastmoney_get", side_effect=RuntimeError("接口不可用"))
+    def test_static_etf_fallback_filters_names_and_sets_asset_type(self, request_get):
+        original = downloader._STATIC_A_ETFS
+        downloader._STATIC_A_ETFS = [
+            ("510300.SH", "沪深300ETF"),
+            ("511010.SH", "国债ETF"),
+        ]
+        try:
+            etfs = _fetch_a_share_etfs()
+        finally:
+            downloader._STATIC_A_ETFS = original
+
+        self.assertEqual([item.ticker for item in etfs], ["510300.SH"])
+        self.assertEqual(etfs[0].asset_type, "etf")
+
+    @patch("downloader._eastmoney_get")
     def test_history_response_is_normalized(self, request_get):
         response = Mock()
         response.raise_for_status.return_value = None
@@ -112,6 +158,10 @@ class ScannerLogicTests(TestCase):
     def test_excluded_security_names(self):
         self.assertTrue(_is_excluded_security_name("城投债ETF"))
         self.assertTrue(_is_excluded_security_name("货币ETF"))
+        self.assertTrue(_is_excluded_security_name("浙商沪"))
+        self.assertTrue(_is_excluded_security_name("浙商沪杭甬REIT"))
+        self.assertTrue(_is_excluded_security_name("浙商\u3000沪杭甬\u00a0REIT"))
+        self.assertTrue(_is_excluded_security_name("浙商\u2009沪杭甬\u202f仓储物流REIT"))
         self.assertFalse(_is_excluded_security_name("沪深300ETF"))
 
     def test_ticker_info_defaults_to_stock_and_etf_is_explicit(self):
