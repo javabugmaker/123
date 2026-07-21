@@ -50,7 +50,7 @@ _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 logger.addHandler(_fh)
 
 _HTTP = requests.Session()
-_HTTP.trust_env = False
+_HTTP.trust_env = True
 _EASTMONEY_HOSTS = ("push2delay.eastmoney.com", "push2.eastmoney.com")
 _EASTMONEY_HISTORY_HOSTS = ("push2delay.eastmoney.com", "push2his.eastmoney.com")
 _UNIVERSE_CACHE_PATH = CACHE_DIR / "_a_share_universe.json"
@@ -448,6 +448,8 @@ def get_market_cap(ticker: str) -> float | None:
 
 def _download_from_sina(ticker: str) -> pd.DataFrame | None:
     code, suffix = ticker.upper().split(".", 1)
+    if suffix == "BJ":
+        return None
     symbol = ("sh" if suffix == "SH" else "sz") + code
     response = _HTTP.get(
         "https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_data=/CN_MarketDataService.getKLineData",
@@ -472,7 +474,9 @@ def _download_from_sina(ticker: str) -> pd.DataFrame | None:
 
 def _download_from_tencent(ticker: str) -> pd.DataFrame | None:
     code, suffix = ticker.upper().split(".", 1)
-    prefix = "sh" if suffix == "SH" else "bj" if suffix == "BJ" else "sz"
+    if suffix == "BJ":
+        return None
+    prefix = "sh" if suffix == "SH" else "sz"
     symbol = f"{prefix}{code}"
     end_date = datetime.now()
     start_limit = end_date - timedelta(days=HISTORY_YEARS * 365 + 30)
@@ -536,7 +540,15 @@ def _download_single(ticker: str) -> pd.DataFrame | None:
             )
             klines = ((response.json().get("data") or {}).get("klines") or [])
             if not klines:
-                return _download_from_tencent(ticker)
+                for fallback_loader in (_download_from_sina, _download_from_tencent):
+                    try:
+                        fallback = fallback_loader(ticker)
+                        if fallback is not None and not fallback.empty:
+                            return fallback
+                    except Exception as fallback_exc:
+                        logger.debug("Fallback failed for %s: %s", ticker, fallback_exc)
+                logger.debug("Eastmoney returned no K-line data for %s", ticker)
+                return None
             records = [line.split(",")[:6] for line in klines]
             df = pd.DataFrame(records, columns=["Date", "Open", "Close", "High", "Low", "Volume"])
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce")

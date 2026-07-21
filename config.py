@@ -57,9 +57,9 @@ HISTORY_YEARS: int = 10                  # Years of daily data to pull
 #
 # Strategy: 2 threads, 1s pause = ~2 req/s = ~120 req/min
 # Phase 2 (indicator computation) stays parallel since it's CPU-bound, no network
-DOWNLOAD_THREADS: int = 4
-DOWNLOAD_RATE_LIMIT_PAUSE: float = 0.2
-DOWNLOAD_RETRIES: int = 1                # retries on transient errors (401s, 429s, timeouts) — don't waste time retrying dead URLs
+DOWNLOAD_THREADS: int = 2
+DOWNLOAD_RATE_LIMIT_PAUSE: float = 1.0
+DOWNLOAD_RETRIES: int = 2                # retries on transient errors (401s, 429s, timeouts) — don't waste time retrying dead URLs
 DOWNLOAD_TIMEOUT: int = 10               # seconds per ticker (lower = less accumulated delay on dead URLs)
 MAX_DOWNLOAD_ERRORS: int = 2000          # abort if this many consecutive errors (harmless 404s from delisted tickers are common)
 

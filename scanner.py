@@ -73,6 +73,7 @@ class ScanResult:
     sector: str = ""
     industry: str = ""
     is_etf: bool = False
+    asset_type: str = "stock"
     close: float = 0.0
     score: ScoreBreakdown = field(default_factory=ScoreBreakdown)
     obv: float = np.nan
