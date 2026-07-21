@@ -33,12 +33,18 @@ class ScannerGUI:
         self.scope = tk.StringVar(value="全部股票和ETF")
         self.tickers = tk.StringVar()
         self.search = tk.StringVar()
+        self.sector_filter = tk.StringVar(value="全部板块")
+        self.industry_filter = tk.StringVar(value="全部行业")
+        self.quality_filter = tk.StringVar(value="全部质量")
         self.no_resume = tk.BooleanVar(value=False)
         self.force_download = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value="就绪")
         self._configure_style()
         self._build_ui()
-        self.search.trace_add("write", lambda *_: self.load_csv(self.current_file))
+        self.search.trace_add("write", lambda *_: self.load_csv(getattr(self, "current_file", "Top50.csv")))
+        self.sector_filter.trace_add("write", lambda *_: self.load_csv(getattr(self, "current_file", "Top50.csv")))
+        self.industry_filter.trace_add("write", lambda *_: self.load_csv(getattr(self, "current_file", "Top50.csv")))
+        self.quality_filter.trace_add("write", lambda *_: self.load_csv(getattr(self, "current_file", "Top50.csv")))
         self.load_csv("Top50.csv")
 
     def _configure_style(self) -> None:
@@ -77,8 +83,17 @@ class ScannerGUI:
         ttk.Button(toolbar, text="查看Top50", command=lambda: self.load_csv("Top50.csv")).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(toolbar, text="查看全部结果", command=lambda: self.load_csv("AllResults.csv")).pack(side=tk.LEFT, padx=6)
         ttk.Button(toolbar, text="打开结果目录", command=self.open_output).pack(side=tk.LEFT, padx=6)
-        ttk.Label(toolbar, text="筛选表格", padding=(20, 0, 5, 0)).pack(side=tk.LEFT)
-        ttk.Entry(toolbar, textvariable=self.search, width=24).pack(side=tk.LEFT)
+        ttk.Label(toolbar, text="板块", padding=(16, 0, 4, 0)).pack(side=tk.LEFT)
+        self.sector_box = ttk.Combobox(toolbar, textvariable=self.sector_filter, state="readonly", width=12)
+        self.sector_box.pack(side=tk.LEFT)
+        self.sector_box.bind("<<ComboboxSelected>>", self._sector_changed)
+        ttk.Label(toolbar, text="行业", padding=(8, 0, 4, 0)).pack(side=tk.LEFT)
+        self.industry_box = ttk.Combobox(toolbar, textvariable=self.industry_filter, state="readonly", width=14)
+        self.industry_box.pack(side=tk.LEFT)
+        ttk.Label(toolbar, text="质量", padding=(8, 0, 4, 0)).pack(side=tk.LEFT)
+        ttk.Combobox(toolbar, textvariable=self.quality_filter, values=("全部质量", "强候选", "候选", "观察", "普通"), state="readonly", width=9).pack(side=tk.LEFT)
+        ttk.Label(toolbar, text="搜索", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
+        ttk.Entry(toolbar, textvariable=self.search, width=20).pack(side=tk.LEFT)
         self.progress = ttk.Progressbar(toolbar, mode="indeterminate", length=180)
         self.progress.pack(side=tk.RIGHT, padx=(10, 0))
         ttk.Label(toolbar, textvariable=self.status, style="Status.TLabel").pack(side=tk.RIGHT)
@@ -167,6 +182,45 @@ class ScannerGUI:
         self.log_text.delete("1.0", tk.END)
         self.log_text.configure(state=tk.DISABLED)
 
+    def _sector_changed(self, _event=None) -> None:
+        self.industry_filter.set("全部行业")
+        self.load_csv(self.current_file)
+
+    def _update_filter_values(self, headers: list[str], rows: list[list[str]]) -> None:
+        def values_for(column: str) -> list[str]:
+            if column not in headers:
+                return []
+            index = headers.index(column)
+            return sorted({row[index] for row in rows if len(row) > index and row[index].strip()})
+
+        sectors = values_for("Sector")
+        self.sector_box["values"] = ["全部板块", *sectors]
+        if self.sector_filter.get() not in self.sector_box["values"]:
+            self.sector_filter.set("全部板块")
+
+        industries = values_for("Industry")
+        if self.sector_filter.get() != "全部板块" and "Sector" in headers:
+            sector_index = headers.index("Sector")
+            industry_index = headers.index("Industry") if "Industry" in headers else -1
+            industries = sorted({
+                row[industry_index] for row in rows
+                if industry_index >= 0 and len(row) > max(sector_index, industry_index)
+                and row[sector_index] == self.sector_filter.get() and row[industry_index].strip()
+            })
+        self.industry_box["values"] = ["全部行业", *industries]
+        if self.industry_filter.get() not in self.industry_box["values"]:
+            self.industry_filter.set("全部行业")
+
+    def _row_matches_filters(self, headers: list[str], row: list[str], query: str) -> bool:
+        values = row + [""] * (len(headers) - len(row))
+        data = dict(zip(headers, values))
+        return (
+            (not query or query in ",".join(values).lower())
+            and (self.sector_filter.get() == "全部板块" or data.get("Sector") == self.sector_filter.get())
+            and (self.industry_filter.get() == "全部行业" or data.get("Industry") == self.industry_filter.get())
+            and (self.quality_filter.get() == "全部质量" or data.get("Quality") == self.quality_filter.get())
+        )
+
     def load_csv(self, filename: str) -> None:
         path = OUTPUT_DIR / filename
         self.current_file = filename
@@ -178,8 +232,10 @@ class ScannerGUI:
                 rows = list(csv.reader(file))
             if not rows: return
             headers = rows[0]
+            data_rows = rows[1:]
+            self._update_filter_values(headers, data_rows)
             query = self.search.get().strip().lower()
-            filtered = [row for row in rows[1:] if not query or query in ",".join(row).lower()]
+            filtered = [row for row in data_rows if self._row_matches_filters(headers, row, query)]
             self.table.delete(*self.table.get_children())
             self.table["columns"] = headers
             for header in headers:

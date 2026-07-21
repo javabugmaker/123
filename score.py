@@ -84,70 +84,50 @@ def _normalize_to_range(
 # ======================================================================
 
 def score_trend(df: pd.DataFrame) -> float:
-    """
-    Score the bear market trend.
-
-    Higher score = deeper, more established bear trend
-    (stronger contrarian setup for accumulation).
-
-    Max: 20 points
-    """
-
-    if len(df) < 252:
+    if len(df) < 252 or "Close" not in df.columns or "MA200" not in df.columns:
         return 0.0
 
-    close = df["Close"]
-    price_now = close.iloc[-1]
-    ma200 = df.get("MA200", pd.Series(np.nan, index=df.index))
-    ma200_now = ma200.iloc[-1] if not ma200.empty else price_now
+    close = df["Close"].replace([np.inf, -np.inf], np.nan).dropna()
+    ma200 = df["MA200"].reindex(close.index).replace([np.inf, -np.inf], np.nan)
+    valid = pd.concat({"close": close, "ma200": ma200}, axis=1).dropna()
+    if len(valid) < 60:
+        return 0.0
+
+    price_now = float(valid["close"].iloc[-1])
+    ma200_now = float(valid["ma200"].iloc[-1])
+    if price_now <= 0 or ma200_now <= 0:
+        return 0.0
 
     score = 0.0
+    ma_recent = valid["ma200"].iloc[-60:]
+    slope_pct = (float(ma_recent.iloc[-1]) / float(ma_recent.iloc[0])) - 1.0
+    if slope_pct < 0:
+        score += _clamp(abs(slope_pct) / 0.12) * 5.0
 
-    # 1. MA200 declining? (up to 7 points)
-    if "MA200" in df.columns:
-        ma200_recent = df["MA200"].dropna().iloc[-60:]
-        if len(ma200_recent) >= 30 and ma200_recent.iloc[0] > 0:
-            decline_pct = (ma200_recent.iloc[-1] - ma200_recent.iloc[0]) / ma200_recent.iloc[0]
-            if decline_pct < 0:
-                # Score based on severity of decline: 0% to -15% maps to 0-7
-                score += _clamp(abs(decline_pct) / 0.15, 0, 1) * 7
+    below_pct = (ma200_now - price_now) / ma200_now
+    if below_pct > 0:
+        score += _clamp(below_pct / 0.30) * 6.0
+        score -= _clamp(max(below_pct - 0.45, 0.0) / 0.30) * 3.0
 
-    # 2. Price below MA200? (up to 6 points)
-    if ma200_now > 0:
-        pct_below = (ma200_now - price_now) / ma200_now  # positive = below
-        if pct_below > 0:
-            score += _clamp(pct_below / 0.20, 0, 1) * 6  # 20% below MA200 = max
+    below = valid["close"] < valid["ma200"]
+    last_above = np.flatnonzero((~below).to_numpy())
+    days_below = len(valid) - int(last_above[-1]) - 1 if len(last_above) else len(valid)
+    score += _clamp(days_below / 250.0) * 3.0
 
-    # 3. Bear market duration (up to 4 points)
-    # Days since price was last above MA200
-    if "MA200" in df.columns:
-        above_ma200 = close > df["MA200"]
-        if above_ma200.any():
-            last_above_idx = above_ma200[above_ma200].index[-1]
-            pos = df.index.get_loc(last_above_idx)
-            if isinstance(pos, slice):
-                pos = pos.start if pos.start is not None else 0
-            elif isinstance(pos, np.ndarray):
-                pos = int(pos[0]) if len(pos) > 0 else 0
-            else:
-                pos = int(pos)
-            days_below = len(df) - pos - 1
-            # 0 → 500+ days maps to 0–4 points
-            score += _clamp(float(days_below) / 500.0, 0.0, 1.0) * 4
-        else:
-            score += 4  # always below MA200
+    lookback = valid["close"].iloc[-min(504, len(valid)):]
+    peak = float(lookback.max())
+    drawdown = (price_now - peak) / peak if peak > 0 else 0.0
+    depth = abs(drawdown)
+    if 0.15 <= depth <= 0.50:
+        score += _clamp(1.0 - abs(depth - 0.32) / 0.25) * 3.0
 
-    # 4. Severity of decline from 2-year high (up to 3 points)
-    lookback = min(504, len(df))  # ~2 years
-    peak = close.iloc[-lookback:].max()
-    if peak > 0:
-        drawdown = (price_now - peak) / peak
-        if drawdown < 0:
-            # Drawdowns deeper than 30% get more points; shallow declines get zero
-            if drawdown <= -0.30:
-                score += _clamp((abs(drawdown) - 0.30) / 0.50, 0, 1) * 3
+    recovery = valid["close"].iloc[-20:]
+    if len(recovery) >= 10:
+        recent_slope = float(recovery.iloc[-1] / recovery.iloc[0] - 1.0)
+        if recent_slope > 0:
+            score += _clamp(recent_slope / 0.12) * 3.0
 
-    return min(score, 20.0)
+    return _clamp(score, 0.0, 20.0)
 
 
 # ======================================================================
@@ -168,56 +148,35 @@ def score_volume(df: pd.DataFrame) -> float:
 
     score = 0.0
 
-    # 1. Volume Ratio persistence (up to 10 points)
     if "VolMA20" in df.columns and "VolMA120" in df.columns:
-        vol_ma20 = df["VolMA20"]
-        vol_ma120 = df["VolMA120"]
-        condition = vol_ma20 > vol_ma120 * VOLUME_ACCUM_RATIO
+        vol_ma20 = df["VolMA20"].replace([np.inf, -np.inf], np.nan)
+        vol_ma120 = df["VolMA120"].replace([np.inf, -np.inf], np.nan)
+        ratio_series = (vol_ma20 / vol_ma120.replace(0, np.nan)).dropna()
+        if len(ratio_series) >= VOLUME_ACCUM_MIN_DAYS:
+            consecutive = 0
+            for value in ratio_series.iloc[::-1]:
+                if value >= VOLUME_ACCUM_RATIO:
+                    consecutive += 1
+                else:
+                    break
+            if consecutive >= VOLUME_ACCUM_MIN_DAYS:
+                score += 4.0 + _clamp((consecutive - VOLUME_ACCUM_MIN_DAYS) / 80.0) * 6.0
+            ratio_now = float(ratio_series.iloc[-1])
+            score += _clamp((ratio_now - VOLUME_ACCUM_RATIO) / 0.8) * 3.0
 
-        # Count consecutive days
-        consecutive = 0
-        for i in range(len(condition) - 1, -1, -1):
-            if condition.iloc[i]:
-                consecutive += 1
-            else:
-                break
+            if len(ratio_series) >= 20:
+                ratio_change = float(ratio_series.iloc[-1] - ratio_series.iloc[-20])
+                score += _clamp(ratio_change / 0.5) * 4.0
 
-        # 只有达到最低持续天数才开始计分，未满足时不应获得基础分
-        normalised = 0.0 if consecutive < VOLUME_ACCUM_MIN_DAYS else _normalize_to_range(consecutive, VOLUME_ACCUM_MIN_DAYS, 120)
-        score += normalised * 10
-
-        # Bonus: current ratio magnitude
-        if vol_ma120.iloc[-1] > 0:
-            ratio = vol_ma20.iloc[-1] / vol_ma120.iloc[-1]
-            # 1.0 → 2.5+ ratio maps to 0–3 bonus
-            bonus = _clamp((ratio - 1.0) / 1.5, 0, 1) * 3
-            score += bonus
-
-    # 2. Volume Trend (up to 7 points)
-    if "VolTrend" in df.columns:
-        vol_trend = float(df["VolTrend"].iloc[-1])
-        if not np.isnan(vol_trend):
-            # Positive and strong trend = good
-            # Normalise: 0 to large positive
-            score += _clamp(max(vol_trend, 0.0) / 10000.0, 0.0, 1.0) * 7
-
-    # 3. Volume stability (up to 5 points)
-    # Lower Z-score variance = more consistent buying
     if "VolZScore" in df.columns:
-        z_recent = df["VolZScore"].dropna().iloc[-30:]
-        if len(z_recent) > 10:
-            z_volatility = z_recent.std()
-            # Low volatility (stable buying) scores high
-            # Std 0 → 2 maps to 5 → 0
-            score += _clamp(1 - z_volatility / 2, 0, 1) * 5
+        z_recent = df["VolZScore"].replace([np.inf, -np.inf], np.nan).dropna().iloc[-30:]
+        if len(z_recent) >= 10:
+            z_now = float(z_recent.iloc[-1])
+            positive_days = float((z_recent > 0).mean())
+            score += positive_days * 3.0
+            score += _clamp(z_now / 2.0) * 2.0
 
-    # 4. Volume Z-score currently positive (up to 3 points)
-    if "VolZScore" in df.columns:
-        z_now = df["VolZScore"].iloc[-1]
-        if not np.isnan(z_now) and z_now > 0:
-            score += _clamp(z_now / 2, 0, 1) * 3
-
-    return min(score, 25.0)
+    return _clamp(score, 0.0, 25.0)
 
 
 # ======================================================================
@@ -238,65 +197,50 @@ def score_accumulation(df: pd.DataFrame) -> float:
 
     score = 0.0
 
-    # 1. OBV Divergence (up to 8 points)
     if "OBV" in df.columns and len(df) >= 60:
-        close, obv = df["Close"], df["OBV"]
-        # Find lowest close and corresponding OBV
-        price_low = close.iloc[-60:].min()
-        price_low_idx = close.iloc[-60:].idxmin()
-        obv_at_low = obv.loc[price_low_idx]
-        obv_now = obv.iloc[-1]
+        recent = df[["Close", "OBV"]].iloc[-60:].replace([np.inf, -np.inf], np.nan).dropna()
+        if len(recent) >= 40:
+            split = len(recent) // 2
+            first_half = recent.iloc[:split]
+            second_half = recent.iloc[split:]
+            first_price_low = float(first_half["Close"].min())
+            second_price_low = float(second_half["Close"].min())
+            first_obv_low = float(first_half["OBV"].min())
+            second_obv_low = float(second_half["OBV"].min())
+            price_now = float(recent["Close"].iloc[-1])
+            obv_now = float(recent["OBV"].iloc[-1])
+            near_low = second_price_low > 0 and (price_now - second_price_low) / second_price_low <= 0.05
+            price_retest = second_price_low <= first_price_low * 1.02
+            obv_divergence = second_obv_low > first_obv_low and obv_now >= second_obv_low
+            if near_low and price_retest and obv_divergence:
+                score += 8.0
+            elif obv_divergence:
+                score += 3.0
 
-        if price_low > 0 and obv_at_low != 0:
-            price_near_low = (close.iloc[-1] - price_low) / price_low < 0.05
-            obv_divergence = (obv_now - obv_at_low) / abs(obv_at_low) if obv_at_low != 0 else 0
-
-            if price_near_low and obv_divergence > 0.02:
-                # Strong divergence: price near low, OBV much higher
-                score += _clamp(obv_divergence / 0.10, 0, 1) * 8
-            elif obv_divergence > 0.02:
-                score += _clamp(obv_divergence / 0.10, 0, 1) * 4
-
-    # 2. A/D Line strength (up to 8 points)
-    if "AD_Slope" in df.columns:
+    if "AD" in df.columns and "AD_Slope" in df.columns:
+        ad = df["AD"].replace([np.inf, -np.inf], np.nan).dropna()
         ad_slope = df["AD_Slope"].iloc[-1]
-        if not np.isnan(ad_slope):
-            if not np.isnan(ad_slope) and ad_slope > 0:
-                # Normalize by recent A/D line scale instead of fixed share-count magnitude
-                ad_recent = df["AD"].dropna().iloc[-AD_SLOPE_LOOKBACK:]
-                ad_scale = max(float(ad_recent.abs().mean()), 1.0) if len(ad_recent) else 1.0
-                score += _clamp(float(ad_slope) / (ad_scale * 0.05), 0, 1) * 6
-            # A/D line is making new highs while price is not
-            if "AD" in df.columns:
-                ad_now = df["AD"].iloc[-1]
-                ad_max = df["AD"].max()
-                if ad_max > 0 and ad_now >= ad_max * 0.95:
-                    # Near all-time high A/D while price is weak = strong accumulation
-                    score += 2
+        if len(ad) >= AD_SLOPE_LOOKBACK and pd.notna(ad_slope):
+            ad_scale = max(float(ad.iloc[-AD_SLOPE_LOOKBACK:].abs().median()), 1.0)
+            slope_score = _clamp(float(ad_slope) / (ad_scale * 0.03))
+            score += slope_score * 5.0
+            if float(ad.iloc[-1]) >= float(ad.iloc[-min(120, len(ad)):].max()) * 0.95:
+                score += 1.0
 
-    # 3. CMF (up to 6 points)
     if "CMF" in df.columns:
-        cmf_now = df["CMF"].iloc[-1]
-        if not np.isnan(cmf_now):
-            # CMF > 0 = accumulation
-            score += _clamp(cmf_now / 0.15, 0, 1) * 4
-            # CMF improving trend
-            cmf_20d_ago = df["CMF"].iloc[-20] if len(df) >= 20 else cmf_now
-            if not np.isnan(cmf_20d_ago):
-                cmf_improvement = cmf_now - cmf_20d_ago
-                score += _clamp(cmf_improvement / 0.10, 0, 1) * 2
+        cmf = df["CMF"].replace([np.inf, -np.inf], np.nan).dropna()
+        if len(cmf) >= 20:
+            cmf_now = float(cmf.iloc[-1])
+            cmf_change = cmf_now - float(cmf.iloc[-20])
+            score += _clamp(cmf_now / 0.15) * 4.0
+            score += _clamp(cmf_change / 0.10) * 2.0
 
-    # 4. MFI (up to 3 points)
     if "MFI" in df.columns:
-        mfi_now = df["MFI"].iloc[-1]
-        if not np.isnan(mfi_now):
-            # MFI in 40-70 range during bear market = quiet accumulation
-            if 40 <= mfi_now <= 70:
-                score += 3
-            elif 30 <= mfi_now <= 80:
-                score += 1.5
+        mfi_now = df["MFI"].replace([np.inf, -np.inf], np.nan).iloc[-1]
+        if pd.notna(mfi_now):
+            score += 3.0 if 40 <= mfi_now <= 70 else 1.5 if 30 <= mfi_now <= 80 else 0.0
 
-    return min(score, 25.0)
+    return _clamp(score, 0.0, 25.0)
 
 
 # ======================================================================
@@ -304,49 +248,33 @@ def score_accumulation(df: pd.DataFrame) -> float:
 # ======================================================================
 
 def score_volatility(df: pd.DataFrame) -> float:
-    """
-    Score volatility contraction ("coiled spring").
-
-    Higher score = stronger compression = more likely breakout.
-
-    Max: 15 points
-    """
-
     if len(df) < BB_WIDTH_COMPRESSION_LOOKBACK:
         return 0.0
 
-    score = 0.0
-
-    # 1. ATR Compression (up to 7 points)
+    components: list[float] = []
     if "ATR14" in df.columns and "ATR50" in df.columns:
-        atr14 = df["ATR14"].iloc[-1]
-        atr50 = df["ATR50"].iloc[-1]
-        if atr50 > 0:
-            atr_ratio = atr14 / atr50
-            # Ratio < 0.7 = strong compression
-            if atr_ratio < 1.0:
-                score += _clamp((1.0 - atr_ratio) / 0.4, 0, 1) * 7
+        atr14 = df["ATR14"].replace([np.inf, -np.inf], np.nan).iloc[-1]
+        atr50 = df["ATR50"].replace([np.inf, -np.inf], np.nan).iloc[-1]
+        if pd.notna(atr14) and pd.notna(atr50) and atr50 > 0:
+            components.append(_clamp((1.0 - float(atr14 / atr50)) / 0.35))
 
-    # 2. BB Width compression (up to 5 points)
     if "BB_Width" in df.columns:
-        bb_width = df["BB_Width"].dropna()
-        if len(bb_width) >= BB_WIDTH_COMPRESSION_LOOKBACK:
-            recent = bb_width.iloc[-BB_WIDTH_COMPRESSION_LOOKBACK:]
-            if recent.iloc[0] > 0:
-                decline = (recent.iloc[0] - recent.iloc[-1]) / recent.iloc[0]
-                if decline > 0:
-                    score += _clamp(decline / 0.5, 0, 1) * 5
+        bb = df["BB_Width"].replace([np.inf, -np.inf], np.nan).dropna()
+        if len(bb) >= BB_WIDTH_COMPRESSION_LOOKBACK:
+            current = float(bb.iloc[-1])
+            baseline = float(bb.iloc[-BB_WIDTH_COMPRESSION_LOOKBACK:-10].median())
+            if baseline > 0:
+                components.append(_clamp(1.0 - current / baseline))
 
-    # 3. HV contraction (up to 3 points)
     if "HV20" in df.columns and "HV60" in df.columns:
-        hv20 = df["HV20"].iloc[-1]
-        hv60 = df["HV60"].iloc[-1]
-        if not np.isnan(hv20) and not np.isnan(hv60) and hv60 > 0:
-            hv_ratio = hv20 / hv60
-            if hv_ratio < 1.0:
-                score += _clamp((1.0 - hv_ratio) / 0.5, 0, 1) * 3
+        hv20 = df["HV20"].replace([np.inf, -np.inf], np.nan).iloc[-1]
+        hv60 = df["HV60"].replace([np.inf, -np.inf], np.nan).iloc[-1]
+        if pd.notna(hv20) and pd.notna(hv60) and hv60 > 0:
+            components.append(_clamp((1.0 - float(hv20 / hv60)) / 0.5))
 
-    return min(score, 15.0)
+    if not components:
+        return 0.0
+    return _clamp(float(np.mean(components))) * 15.0
 
 
 # ======================================================================
@@ -476,23 +404,11 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
     volatility = score_volatility(df)
     structure = score_structure(df)
 
-    style = classify_style(df, is_etf=is_etf)
-    factors = _style_adjustment(df, style)
-    trend *= factors[0]
-    volume *= factors[1]
-    accumulation *= factors[2]
-    volatility *= factors[3]
-    structure *= factors[4]
-    trend = min(trend, 20.0)
-    volume = min(volume, 25.0)
-    accumulation = min(accumulation, 25.0)
-    volatility = min(volatility, 15.0)
-    structure = min(structure, 15.0)
     total = trend + volume + accumulation + volatility + structure
     total = _clamp(total, 0.0, 100.0)
 
     return ScoreBreakdown(
-        total=min(total, 100.0),
+        total=total,
         trend=trend,
         volume=volume,
         accumulation=accumulation,

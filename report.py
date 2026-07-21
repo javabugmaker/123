@@ -31,11 +31,14 @@ logger = logging.getLogger("institution_scanner.report")
 
 def _quality_label(result: ScanResult) -> str:
     signal_count = int(result.filter_details.get("signal_count", 0))
-    if result.passed_filters and signal_count >= 6:
+    score = float(result.score.total)
+    if result.passed_filters and (
+        (signal_count >= 5 and score >= 40) or (signal_count >= 4 and score >= 48)
+    ):
         return "强候选"
-    if result.passed_filters:
+    if result.passed_filters and signal_count >= 4:
         return "候选"
-    if signal_count >= 3:
+    if score >= 35 or signal_count >= 3:
         return "观察"
     return "普通"
 
@@ -47,9 +50,9 @@ def _rankable_results(results: list[ScanResult]) -> list[ScanResult]:
     return sorted(
         candidates,
         key=lambda r: (
+            float(r.score.total),
             int(r.passed_filters),
             int(r.filter_details.get("signal_count", 0)),
-            float(r.score.total),
         ),
         reverse=True,
     )
@@ -100,7 +103,7 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
         return df
 
     df = df.sort_values(
-        ["PassedFilters", "SignalCount", "Score"],
+        ["PassedFilters", "Score", "SignalCount"],
         ascending=[False, False, False],
         kind="mergesort",
     ).reset_index(drop=True)

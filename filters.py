@@ -287,45 +287,48 @@ def filter_obv_divergence(df: pd.DataFrame) -> FilterResult:
         return FilterResult(passed=False, reason="Insufficient history for OBV divergence")
 
     lookback = min(OBV_DIVERGENCE_LOOKBACK, len(df))
-    recent = df.iloc[-lookback:]
+    recent = df.iloc[-lookback:].copy()
+    recent = recent[["Close", "OBV"]].replace([np.inf, -np.inf], np.nan).dropna()
+    if len(recent) < max(20, lookback // 2):
+        return FilterResult(passed=False, reason="Insufficient valid data for OBV divergence")
 
     close = recent["Close"]
     obv = recent["OBV"]
+    split = max(len(recent) // 2, 1)
+    first_half = recent.iloc[:split]
+    second_half = recent.iloc[split:]
+    if second_half.empty:
+        return FilterResult(passed=False, reason="Insufficient valid data for OBV divergence")
 
-    # Find the lowest close in the window
-    price_low_idx = close.idxmin()
-    price_low = close.min()
-
-    # OBV at the time of the price low
-    obv_at_price_low = obv.loc[price_low_idx]
-
-    # Current OBV
-    obv_now = obv.iloc[-1]
-
-    # Divergence: current price is near the low, but OBV has risen since
-    price_now = close.iloc[-1]
-    near_price_low = (price_now - price_low) / price_low * 100 < 5 if price_low > 0 else False
-
-    # OBV has risen since the price low — bullish divergence
-    obv_diverging = obv_now > obv_at_price_low * 1.02  # 2% buffer for noise
-
-    passed = near_price_low and obv_diverging
+    price_low_first = float(first_half["Close"].min())
+    price_low_second = float(second_half["Close"].min())
+    obv_low_first = float(first_half["OBV"].min())
+    obv_low_second = float(second_half["OBV"].min())
+    price_now = float(close.iloc[-1])
+    obv_now = float(obv.iloc[-1])
+    near_price_low = price_low_second > 0 and (price_now - price_low_second) / price_low_second < 0.05
+    price_lower_low = price_low_second <= price_low_first * 1.02
+    obv_higher_low = obv_low_second > obv_low_first
+    obv_recovering = obv_now >= obv_low_second
+    passed = near_price_low and price_lower_low and obv_higher_low and obv_recovering
 
     if passed:
         reason = "OBV Bullish Divergence detected"
     elif not near_price_low:
-        reason = f"No OBV divergence — price {price_now:.2f} not near recent low {price_low:.2f}"
+        reason = f"No OBV divergence — price {price_now:.2f} not near recent low {price_low_second:.2f}"
     else:
-        reason = "No OBV divergence — OBV also declining"
+        reason = "No OBV divergence — price/OBV lows do not confirm accumulation"
 
     return FilterResult(
         passed=passed,
         reason=reason,
         details={
             "price_now": round(price_now, 2),
-            "price_low": round(price_low, 2),
+            "price_low": round(price_low_second, 2),
+            "prior_price_low": round(price_low_first, 2),
             "obv_now": round(obv_now, 0),
-            "obv_at_low": round(obv_at_price_low, 0),
+            "obv_low": round(obv_low_second, 0),
+            "prior_obv_low": round(obv_low_first, 0),
         },
     )
 
@@ -344,9 +347,11 @@ def filter_cmf_positive(df: pd.DataFrame) -> FilterResult:
 
     cmf_now = df["CMF"].iloc[-1]
     cmf_20d_ago = df["CMF"].iloc[-20] if len(df) >= 20 else cmf_now
+    if pd.isna(cmf_now) or pd.isna(cmf_20d_ago):
+        return FilterResult(passed=False, reason="CMF data unavailable")
 
-    # Pass if CMF > 0 now, OR CMF has improved by > 0.05 in 20 days
-    passed = cmf_now > CMF_THRESHOLD or (cmf_now - cmf_20d_ago) > 0.05
+    cmf_change = cmf_now - cmf_20d_ago
+    passed = cmf_now > CMF_THRESHOLD or cmf_change > 0.05
 
     return FilterResult(
         passed=passed,
@@ -477,8 +482,22 @@ class AllFilterResults:
             self.obv_divergence, self.cmf_positive, self.ad_slope,
             self.volatility_contraction,
         ]
+        primary_accumulation = [
+            self.volume_accumulation,
+            self.obv_divergence,
+            self.cmf_positive,
+            self.ad_slope,
+        ]
+        structure_signals = [self.consolidation, self.volatility_contraction]
         signal_count = sum(1 for item in signal_filters if item.passed)
-        return all(item.passed for item in base_filters) and signal_count >= 4
+        has_accumulation = any(item.passed for item in primary_accumulation)
+        has_structure = any(item.passed for item in structure_signals)
+        return (
+            all(item.passed for item in base_filters)
+            and signal_count >= 4
+            and has_accumulation
+            and has_structure
+        )
 
     def signal_count(self) -> int:
         return sum(1 for item in (
