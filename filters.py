@@ -216,7 +216,7 @@ def filter_volume_accumulation(df: pd.DataFrame) -> FilterResult:
     vol_ma120 = df["VolMA120"]
 
     # Boolean series: True where volume accumulation condition holds
-    condition = vol_ma20 > vol_ma120 * VOLUME_ACCUM_RATIO
+    condition = vol_ma20 >= vol_ma120 * VOLUME_ACCUM_RATIO
     condition = condition.fillna(False)
 
     # Count consecutive True days
@@ -397,18 +397,19 @@ def filter_volatility_contraction(df: pd.DataFrame) -> FilterResult:
     """
     details: dict[str, Any] = {}
 
-    if len(df) < BB_WIDTH_COMPRESSION_LOOKBACK:
+    if len(df) < max(BB_WIDTH_COMPRESSION_LOOKBACK, ATR_COMPRESSION_LOOKBACK):
         return FilterResult(passed=False, reason="Insufficient history for volatility check")
 
-    # ATR Compression
     atr_compressing = False
-    if "ATR14" in df.columns and "ATR50" in df.columns:
-        atr14 = df["ATR14"].iloc[-1]
-        atr50 = df["ATR50"].iloc[-1]
-        atr_compressing = atr14 < atr50 * 0.9  # slightly tighter than 0.85 for scoring
-        details["atr14"] = round(atr14, 4)
-        details["atr50"] = round(atr50, 4)
-        details["atr_compressing"] = atr_compressing
+    if "ATR14" in df.columns:
+        atr_values = df["ATR14"].replace([np.inf, -np.inf], np.nan).dropna()
+        if len(atr_values) >= ATR_COMPRESSION_LOOKBACK:
+            atr_now = atr_values.iloc[-1]
+            atr_start = atr_values.iloc[-ATR_COMPRESSION_LOOKBACK]
+            atr_compressing = pd.notna(atr_now) and pd.notna(atr_start) and atr_now < atr_start
+            details["atr14"] = round(atr_now, 4)
+            details["atr14_lookback"] = round(atr_start, 4)
+            details["atr_compressing"] = atr_compressing
 
     # BB Width declining
     bb_contracting = False
@@ -418,7 +419,7 @@ def filter_volatility_contraction(df: pd.DataFrame) -> FilterResult:
             recent_bb = bb_width.iloc[-BB_WIDTH_COMPRESSION_LOOKBACK:]
             bb_contracting = recent_bb.iloc[-1] < recent_bb.iloc[0]
             details["bb_width_now"] = round(recent_bb.iloc[-1], 2)
-            details["bb_width_30d_ago"] = round(recent_bb.iloc[0], 2)
+            details["bb_width_lookback"] = round(recent_bb.iloc[0], 2)
             details["bb_contracting"] = bb_contracting
 
     passed = atr_compressing or bb_contracting

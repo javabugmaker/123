@@ -97,13 +97,17 @@ class ScanResult:
 _CHECKPOINT_PATH = OUTPUT_DIR / "_checkpoint.json"
 
 
+def _normalize_ticker(ticker: str) -> str:
+    return str(ticker).strip().upper()
+
+
 def save_checkpoint(processed: set[str]) -> None:
     """Save the set of already-processed tickers."""
     if not ENABLE_CHECKPOINT:
         return
     try:
         data = {
-            "processed": sorted(processed),
+            "processed": sorted(_normalize_ticker(ticker) for ticker in processed),
             "timestamp": datetime.now().isoformat(),
         }
         _CHECKPOINT_PATH.write_text(json.dumps(data))
@@ -117,7 +121,18 @@ def load_checkpoint() -> set[str]:
         return set()
     try:
         data = json.loads(_CHECKPOINT_PATH.read_text())
-        return set(data.get("processed", []))
+        return {_normalize_ticker(ticker) for ticker in data.get("processed", [])}
+    except Exception:
+        return set()
+
+
+def _load_previous_tickers() -> set[str]:
+    prev_parquet = OUTPUT_DIR / "AllResults.parquet"
+    if not prev_parquet.exists():
+        return set()
+    try:
+        prev_df = pd.read_parquet(prev_parquet, columns=["Ticker"])
+        return {_normalize_ticker(ticker) for ticker in prev_df["Ticker"].dropna()}
     except Exception:
         return set()
 
@@ -141,7 +156,8 @@ def scan_single_from_df(
 
     Returns a ScanResult regardless of whether the ticker passes or fails.
     """
-    ticker = ticker_info.ticker
+    ticker = _normalize_ticker(ticker_info.ticker)
+    ticker_info.ticker = ticker
 
     try:
         if df is None or df.empty or len(df) < 20:
@@ -158,7 +174,18 @@ def scan_single_from_df(
         # Pre-filter: skip tickers below the minimum market cap
         market_cap = ticker_info.market_cap
         if market_cap is None and not ticker_info.is_etf:
-            market_cap = get_market_cap(ticker)
+            try:
+                market_cap = get_market_cap(ticker)
+            except Exception as exc:
+                return ScanResult(
+                    ticker=ticker,
+                    name=ticker_info.name,
+                    sector=ticker_info.sector,
+                    industry=ticker_info.industry,
+                    is_etf=ticker_info.is_etf,
+                    asset_type=ticker_info.asset_type,
+                    error=f"市值获取失败: {exc}",
+                )
         if not ticker_info.is_etf and market_cap is not None and market_cap < MIN_MARKET_CAP:
             return ScanResult(
                 ticker=ticker,
@@ -256,7 +283,8 @@ def scan_single(
 
     Prefer scan_single_from_df() when data is already downloaded.
     """
-    ticker = ticker_info.ticker
+    ticker = _normalize_ticker(ticker_info.ticker)
+    ticker_info.ticker = ticker
     try:
         df = download_ticker(ticker, force=force_download, source=data_source)
         return scan_single_from_df(ticker_info, df)
@@ -334,7 +362,8 @@ def run_scan(
     seen: set[str] = set()
     unique: list[TickerInfo] = []
     for ti in all_tickers:
-        tup = ti.ticker.upper()
+        ti.ticker = _normalize_ticker(ti.ticker)
+        tup = ti.ticker
         if tup not in seen:
             seen.add(tup)
             unique.append(ti)
@@ -350,9 +379,10 @@ def run_scan(
     downloaded = download_batch(all_tickers, desc="Downloading", force=force_download, source=data_source)
 
     # ---- Phase 2: Parallel analyse ----
-    # Load checkpoint to skip already-scored tickers
     processed_set = load_checkpoint() if resume else set()
-    processed_set.difference_update(downloaded)
+    previous_tickers = _load_previous_tickers() if resume else set()
+    processed_set.intersection_update(previous_tickers)
+    processed_set.difference_update({_normalize_ticker(ticker) for ticker in downloaded})
 
     # Build the analyse queue — every ticker whose CSV exists on disk
     analyse_queue: list[TickerInfo] = []
@@ -383,13 +413,14 @@ def run_scan(
     # Also include previously-processed results from the last run's parquet
     prev_parquet = OUTPUT_DIR / "AllResults.parquet"
     prev_results: dict[str, ScanResult] = {}
-    universe_symbols = {ti.ticker for ti in all_tickers}
+    universe_symbols = {_normalize_ticker(ti.ticker) for ti in all_tickers}
     if resume and prev_parquet.exists():
         try:
             prev_df = pd.read_parquet(prev_parquet)
             for _, row in prev_df.iterrows():
+                ticker = _normalize_ticker(row.get("Ticker", ""))
                 sr = ScanResult(
-                    ticker=row.get("Ticker", ""),
+                    ticker=ticker,
                     name=row.get("Name", ""),
                     sector=row.get("Sector", ""),
                     industry=row.get("Industry", ""),
@@ -431,7 +462,6 @@ def run_scan(
         except Exception as exc:
             logger.debug("Could not load previous scan results: %s", exc)
 
-    # Analyse in parallel
     with ThreadPoolExecutor(max_workers=SCAN_THREADS) as executor:
         futures = {}
         for ti in analyse_queue:

@@ -71,63 +71,48 @@ def _to_float_array(series: pd.Series) -> np.ndarray:
 
 
 def _rolling_slope(series: pd.Series, window: int) -> pd.Series:
-    """Rolling linear regression slope over *window* periods via convolution."""
+    """Rolling linear regression slope over right-aligned windows."""
     n = window
     x = np.arange(n, dtype=np.float64)
-    x_mean = x.mean()
-    x_diff = x - x_mean
-    denom = np.dot(x_diff, x_diff)
-    if denom == 0:
-        return pd.Series(np.nan, index=series.index)
-
-    y = _to_float_array(series)
-    kernel = np.ones(n, dtype=np.float64)
-    s_x = np.convolve(y, x_diff[::-1], mode="same")
-    s_1 = np.convolve(np.isfinite(y).astype(np.float64), kernel, mode="same")
-
+    result = np.full(len(series), np.nan, dtype=np.float64)
     min_periods = max(2, n // 2)
-    slope = s_x / denom
-    slope[s_1 < min_periods] = np.nan
-    return pd.Series(slope, index=series.index)
+    y = _to_float_array(series)
+    for end in range(n - 1, len(y)):
+        window_y = y[end - n + 1:end + 1]
+        valid = np.isfinite(window_y)
+        if valid.sum() < min_periods:
+            continue
+        x_valid = x[valid]
+        y_valid = window_y[valid]
+        x_centered = x_valid - x_valid.mean()
+        denom = np.dot(x_centered, x_centered)
+        if denom > 0:
+            result[end] = np.dot(x_centered, y_valid - y_valid.mean()) / denom
+    return pd.Series(result, index=series.index)
 
 
 def _rolling_r2(series: pd.Series, window: int) -> pd.Series:
-    """Rolling R² over *window* periods via convolution."""
+    """Rolling R² over right-aligned windows."""
     n = window
     x = np.arange(n, dtype=np.float64)
-    x_mean = x.mean()
-    x_diff = x - x_mean
-    denom_x = np.dot(x_diff, x_diff)
-    if denom_x == 0:
-        return pd.Series(np.nan, index=series.index)
-
+    result = np.full(len(series), np.nan, dtype=np.float64)
+    min_periods = max(2, n // 2)
     y = _to_float_array(series)
-    kernel = np.ones(n, dtype=np.float64)
-
-    s_x = np.convolve(y, x_diff[::-1], mode="same")
-    slope = s_x / denom_x
-
-    s_y = np.convolve(y, kernel, mode="same")
-    s_n = np.convolve(np.isfinite(y).astype(np.float64), kernel, mode="same")
-    mean_y = s_y / s_n
-    intercept = mean_y - slope * x_mean
-
-    ss_res = np.full(y.shape, np.nan, dtype=np.float64)
-    ss_tot = np.full(y.shape, np.nan, dtype=np.float64)
-
-    for i in range(n - 1, len(y)):
-        yi = y[i - n + 1 : i + 1]
-        if np.isfinite(yi).sum() < max(2, n // 2):
+    for end in range(n - 1, len(y)):
+        window_y = y[end - n + 1:end + 1]
+        valid = np.isfinite(window_y)
+        if valid.sum() < min_periods:
             continue
-        yh = slope[i] * x + intercept[i]
-        ss_res[i] = np.nansum((yi - yh) ** 2)
-        ss_tot[i] = np.nansum((yi - np.nanmean(yi)) ** 2)
-
-    # R² = 1 - SS_res / SS_tot.  Only compute where ss_tot > 0.
-    r2 = np.full(y.shape, np.nan, dtype=np.float64)
-    valid = ss_tot > 0
-    r2[valid] = 1.0 - ss_res[valid] / ss_tot[valid]
-    return pd.Series(r2, index=series.index)
+        x_valid = x[valid]
+        y_valid = window_y[valid]
+        x_centered = x_valid - x_valid.mean()
+        y_centered = y_valid - y_valid.mean()
+        denom_x = np.dot(x_centered, x_centered)
+        denom_y = np.dot(y_centered, y_centered)
+        if denom_x > 0 and denom_y > 0:
+            correlation = np.dot(x_centered, y_centered) / np.sqrt(denom_x * denom_y)
+            result[end] = correlation * correlation
+    return pd.Series(result, index=series.index)
 
 
 # ======================================================================
@@ -290,8 +275,15 @@ def compute_mfi(df: pd.DataFrame, period: int = MFI_PERIOD) -> None:
     neg_flow[down] = raw_money_flow[down]
     pos_sum = pos_flow.rolling(window=period, min_periods=period // 2).sum()
     neg_sum = neg_flow.rolling(window=period, min_periods=period // 2).sum()
-    money_ratio = pos_sum / neg_sum.replace(0, np.nan)
-    df["MFI"] = 100 - (100 / (1 + money_ratio))
+    mfi = pd.Series(50.0, index=df.index)
+    positive_only = (neg_sum == 0) & (pos_sum > 0)
+    negative_only = (pos_sum == 0) & (neg_sum > 0)
+    both_nonzero = (pos_sum > 0) & (neg_sum > 0)
+    mfi[positive_only] = 100.0
+    mfi[negative_only] = 0.0
+    money_ratio = pos_sum[both_nonzero] / neg_sum[both_nonzero]
+    mfi[both_nonzero] = 100 - (100 / (1 + money_ratio))
+    df["MFI"] = mfi
 
 
 def compute_vwap(df: pd.DataFrame) -> None:
@@ -330,8 +322,15 @@ def compute_rsi(df: pd.DataFrame) -> None:
         loss = (-delta).clip(lower=0)
         avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
         avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        df[f"RSI{period}"] = 100 - (100 / (1 + rs))
+        rsi = pd.Series(50.0, index=df.index)
+        positive_only = (avg_loss == 0) & (avg_gain > 0)
+        negative_only = (avg_gain == 0) & (avg_loss > 0)
+        both_nonzero = (avg_gain > 0) & (avg_loss > 0)
+        rsi[positive_only] = 100.0
+        rsi[negative_only] = 0.0
+        rs = avg_gain[both_nonzero] / avg_loss[both_nonzero]
+        rsi[both_nonzero] = 100 - (100 / (1 + rs))
+        df[f"RSI{period}"] = rsi
 
 
 # ======================================================================

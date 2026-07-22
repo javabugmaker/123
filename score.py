@@ -274,7 +274,8 @@ def score_volatility(df: pd.DataFrame) -> float:
 
     if not components:
         return 0.0
-    return _clamp(float(np.mean(components))) * 15.0
+    coverage = len(components) / 3.0
+    return _clamp(float(np.mean(components)) * coverage) * 15.0
 
 
 # ======================================================================
@@ -301,10 +302,13 @@ def score_structure(df: pd.DataFrame) -> float:
     if "Low52W" in df.columns and "DistToLow52W" in df.columns:
         dist_low = df["DistToLow52W"].iloc[-1]
         if not np.isnan(dist_low):
-            # Close to 52w low but not at it = ideal
-            # 0% → 20% maps to 5 → 0 (closer = better)
             if 0 <= dist_low <= 20:
-                score += _clamp(1 - dist_low / 20, 0, 1) * 5
+                if dist_low < 8:
+                    score += dist_low / 8 * 5
+                elif dist_low <= 12:
+                    score += 5
+                else:
+                    score += (20 - dist_low) / 8 * 5
 
     # 2. Consolidation duration (up to 5 points)
     # How long has price been range-bound near the bottom?
@@ -398,14 +402,22 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
     Returns:
         ScoreBreakdown with total and sub-scores.
     """
-    trend = score_trend(df)
-    volume = score_volume(df)
-    accumulation = score_accumulation(df)
-    volatility = score_volatility(df)
-    structure = score_structure(df)
-
-    total = trend + volume + accumulation + volatility + structure
-    total = _clamp(total, 0.0, 100.0)
+    raw_scores = (
+        score_trend(df),
+        score_volume(df),
+        score_accumulation(df),
+        score_volatility(df),
+        score_structure(df),
+    )
+    style = classify_style(df, is_etf=is_etf)
+    adjustments = _style_adjustment(df, style)
+    limits = (20.0, 25.0, 25.0, 15.0, 15.0)
+    adjusted_scores = tuple(
+        _clamp(score * adjustment, 0.0, limit)
+        for score, adjustment, limit in zip(raw_scores, adjustments, limits)
+    )
+    trend, volume, accumulation, volatility, structure = adjusted_scores
+    total = sum(adjusted_scores)
 
     return ScoreBreakdown(
         total=total,
