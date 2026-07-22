@@ -126,6 +126,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         etf_universe=etf_universe,
         force_download=args.force_download,
         resume=not args.no_resume,
+        data_source=args.data_source,
     )
 
     if report.successful == 0:
@@ -255,6 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Do not resume from checkpoint — start fresh")
     scan_p.add_argument("--cache-first", action="store_true",
                         help="Prefer cached data and skip re-downloading unchanged tickers")
+    scan_p.add_argument("--data-source", choices=("eastmoney", "sina", "tencent"), default="eastmoney", help="历史行情数据源")
     scan_p.add_argument("--top", type=int, default=TOP_N_REPORT,
                         help=f"Number of tickers in the terminal report (default: {TOP_N_REPORT})")
     scan_p.add_argument("--top-parquet", type=int, default=TOP_N_PARQUET,

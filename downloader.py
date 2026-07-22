@@ -516,7 +516,7 @@ def _download_from_tencent(ticker: str) -> pd.DataFrame | None:
     return df[~df.index.duplicated(keep="last")].sort_index().dropna(subset=["Close"])
 
 
-def _download_single(ticker: str) -> pd.DataFrame | None:
+def _download_from_eastmoney(ticker: str) -> pd.DataFrame | None:
     """
     Download full history for *ticker* from Eastmoney.
     Returns a DataFrame or None on failure.
@@ -589,24 +589,59 @@ def _download_single(ticker: str) -> pd.DataFrame | None:
     return None
 
 
-def download_ticker(ticker: str, force: bool = False) -> pd.DataFrame | None:
+_DATA_SOURCE_LABELS = {
+    "eastmoney": "东方财富",
+    "sina": "新浪",
+    "tencent": "腾讯",
+}
+
+
+def normalize_data_source(source: str) -> str:
+    normalized = source.strip().lower()
+    if normalized not in _DATA_SOURCE_LABELS:
+        raise ValueError(f"不支持的数据源：{source}")
+    return normalized
+
+
+def get_data_source_label(source: str) -> str:
+    return _DATA_SOURCE_LABELS[normalize_data_source(source)]
+
+
+def _download_single(ticker: str, source: str = "eastmoney") -> pd.DataFrame | None:
+    selected = normalize_data_source(source)
+    loaders = {
+        "eastmoney": _download_from_eastmoney,
+        "sina": _download_from_sina,
+        "tencent": _download_from_tencent,
+    }
+    if selected == "eastmoney":
+        return loaders[selected](ticker)
+    try:
+        return loaders[selected](ticker)
+    except Exception as exc:
+        logger.debug("数据源 %s 获取 %s 失败：%s", get_data_source_label(selected), ticker, exc)
+        return None
+
+
+def download_ticker(ticker: str, force: bool = False, source: str = "eastmoney") -> pd.DataFrame | None:
     """
     Get OHLCV data for *ticker*.
     - If cached data exists, load it and download only the missing tail.
     - If *force* is True, re-download everything.
     """
+    selected = normalize_data_source(source)
+    cache_ticker = f"{ticker}__{selected}"
     if force:
-        df = _download_single(ticker)
+        df = _download_single(ticker, selected)
         if df is not None:
-            _save_cache(ticker, df)
+            _save_cache(cache_ticker, df)
         return df
 
-    cached = _load_cache(ticker)
+    cached = _load_cache(cache_ticker)
     if cached is None:
-        # No cache — full download
-        df = _download_single(ticker)
+        df = _download_single(ticker, selected)
         if df is not None:
-            _save_cache(ticker, df)
+            _save_cache(cache_ticker, df)
         return df
 
     # Incremental update: download only from the last cached date
@@ -624,7 +659,7 @@ def download_ticker(ticker: str, force: bool = False) -> pd.DataFrame | None:
         return cached  # already up-to-date
 
     try:
-        full_df = _download_single(ticker)
+        full_df = _download_single(ticker, selected)
         new_df = full_df.loc[full_df.index > pd.Timestamp(last_date)] if full_df is not None else None
         if new_df is not None and not new_df.empty:
             new_df = new_df.rename(columns={
@@ -645,7 +680,7 @@ def download_ticker(ticker: str, force: bool = False) -> pd.DataFrame | None:
                 combined = pd.concat([cached, new_df])
                 combined = combined[~combined.index.duplicated(keep="last")]
                 combined = combined.sort_index()
-                _save_cache(ticker, combined)
+                _save_cache(cache_ticker, combined)
                 return combined
     except Exception as exc:
         logger.debug("Incremental update failed for %s: %s — using cache as-is.", ticker, exc)
@@ -657,6 +692,7 @@ def download_batch(
     tickers: list[TickerInfo],
     desc: str = "Downloading",
     force: bool = False,
+    source: str = "eastmoney",
 ) -> dict[str, pd.DataFrame]:
     """
     Download data for a list of tickers using ThreadPoolExecutor.
@@ -683,7 +719,7 @@ def download_batch(
     if DOWNLOAD_THREADS <= 1:
         for sym in tqdm(symbols, desc=desc, unit="ticker"):
             try:
-                df = download_ticker(sym, force=force)
+                df = download_ticker(sym, force=force, source=source)
                 if df is not None and not df.empty:
                     results[sym] = df
                 else:
@@ -694,7 +730,7 @@ def download_batch(
     else:
         with ThreadPoolExecutor(max_workers=DOWNLOAD_THREADS) as pool:
             futures: dict[Any, str] = {
-                pool.submit(download_ticker, sym, force): sym for sym in symbols
+                pool.submit(download_ticker, sym, force, source): sym for sym in symbols
             }
 
             for future in tqdm(

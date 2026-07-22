@@ -38,6 +38,8 @@ class ScannerGUI:
         self.quality_filter = tk.StringVar(value="全部质量")
         self.no_resume = tk.BooleanVar(value=False)
         self.force_download = tk.BooleanVar(value=False)
+        self.data_source = tk.StringVar(value="eastmoney")
+        self.data_source_label = tk.StringVar(value="当前：东方财富")
         self.status = tk.StringVar(value="就绪")
         self._configure_style()
         self._build_ui()
@@ -73,6 +75,10 @@ class ScannerGUI:
         ttk.Label(controls, text="指定代码").grid(row=0, column=2, padx=(0, 6), sticky=tk.W)
         ttk.Entry(controls, textvariable=self.tickers, width=38).grid(row=0, column=3, padx=(0, 8), sticky=tk.W)
         ttk.Label(controls, text="例：588000.SH,000001.SZ", foreground="#708399").grid(row=0, column=4, sticky=tk.W)
+        self.source_box = ttk.Combobox(controls, textvariable=self.data_source, values=("eastmoney", "sina", "tencent"), state="readonly", width=12)
+        self.source_box.grid(row=0, column=5, padx=(12, 4), sticky=tk.W)
+        self.source_box.bind("<<ComboboxSelected>>", self._data_source_changed)
+        ttk.Label(controls, textvariable=self.data_source_label, foreground="#55708a").grid(row=0, column=6, padx=(4, 0), sticky=tk.W)
         ttk.Checkbutton(controls, text="不使用断点", variable=self.no_resume).grid(row=1, column=0, columnspan=2, pady=(12, 0), sticky=tk.W)
         ttk.Checkbutton(controls, text="强制重新下载", variable=self.force_download).grid(row=1, column=2, columnspan=2, pady=(12, 0), sticky=tk.W)
         self.start_button = ttk.Button(controls, text="▶ 开始扫描", style="Accent.TButton", command=self.start_scan)
@@ -129,6 +135,7 @@ class ScannerGUI:
             command.append("--etfs-only")
         if self.no_resume.get(): command.append("--no-resume")
         if self.force_download.get(): command.append("--force-download")
+        command += ["--data-source", self.data_source.get()]
         return command
 
     def start_scan(self) -> None:
@@ -181,6 +188,11 @@ class ScannerGUI:
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.delete("1.0", tk.END)
         self.log_text.configure(state=tk.DISABLED)
+
+    def _data_source_changed(self, _event=None) -> None:
+        labels = {"eastmoney": "东方财富", "sina": "新浪", "tencent": "腾讯"}
+        self.data_source_label.set(f"当前：{labels[self.data_source.get()]}")
+        self.status.set(f"已切换数据源：{labels[self.data_source.get()]}")
 
     def _sector_changed(self, _event=None) -> None:
         self.industry_filter.set("全部行业")

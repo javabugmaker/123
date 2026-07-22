@@ -248,6 +248,7 @@ def scan_single_from_df(
 def scan_single(
     ticker_info: TickerInfo,
     force_download: bool = False,
+    data_source: str = "eastmoney",
 ) -> ScanResult:
     """
     Full scan pipeline for one ticker:
@@ -257,7 +258,7 @@ def scan_single(
     """
     ticker = ticker_info.ticker
     try:
-        df = download_ticker(ticker, force=force_download)
+        df = download_ticker(ticker, force=force_download, source=data_source)
         return scan_single_from_df(ticker_info, df)
     except Exception as exc:
         logger.debug("Error scanning %s: %s", ticker, exc)
@@ -290,6 +291,7 @@ def run_scan(
     etf_universe: list[TickerInfo] | None = None,
     force_download: bool = False,
     resume: bool = True,
+    data_source: str = "eastmoney",
 ) -> ScanReport:
     """
     Two-phase parallel scan across the entire ticker universe.
@@ -345,7 +347,7 @@ def run_scan(
     # On the first ever run, everything is a full download.
     # On subsequent runs, download_batch() still calls download_ticker()
     # which does incremental fetch for already-cached symbols.
-    downloaded = download_batch(all_tickers, desc="Downloading", force=force_download)
+    downloaded = download_batch(all_tickers, desc="Downloading", force=force_download, source=data_source)
 
     # ---- Phase 2: Parallel analyse ----
     # Load checkpoint to skip already-scored tickers
