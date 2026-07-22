@@ -57,23 +57,28 @@ class FilterResult:
 
 def filter_min_price(df: pd.DataFrame) -> FilterResult:
     """Reject if latest close is outside the configured price range."""
-    close = df["Close"].iloc[-1]
-    passed = MIN_PRICE <= close <= MAX_PRICE
+    close = pd.to_numeric(df["Close"], errors="coerce")
+    if close.empty or pd.isna(close.iloc[-1]) or close.iloc[-1] <= 0:
+        return FilterResult(passed=False, reason="最新收盘价无效")
+    close_value = float(close.iloc[-1])
+    passed = MIN_PRICE <= close_value <= MAX_PRICE
     return FilterResult(
         passed=passed,
-        reason=f"收盘价 {close:.2f} 元，要求范围 {MIN_PRICE:.2f}-{MAX_PRICE:.2f} 元",
-        details={"close": close},
+        reason=f"收盘价 {close_value:.2f} 元，要求范围 {MIN_PRICE:.2f}-{MAX_PRICE:.2f} 元",
+        details={"close": close_value},
     )
 
 
 def filter_min_volume(df: pd.DataFrame) -> FilterResult:
     """Reject if average daily volume (60d) is below MIN_VOLUME."""
-    vol_avg = df["Volume"].rolling(60, min_periods=30).mean().iloc[-1]
-    passed = vol_avg >= MIN_VOLUME
+    vol_avg = pd.to_numeric(df["Volume"], errors="coerce").rolling(60, min_periods=30).mean().iloc[-1]
+    if pd.isna(vol_avg):
+        return FilterResult(passed=False, reason="成交量数据不足或无效")
+    passed = float(vol_avg) >= MIN_VOLUME
     return FilterResult(
         passed=passed,
         reason=f"AvgVol {vol_avg:,.0f} {'>=' if passed else '<'} MIN_VOLUME {MIN_VOLUME:,}",
-        details={"avg_volume_60": vol_avg},
+        details={"avg_volume_60": float(vol_avg)},
     )
 
 
@@ -104,7 +109,8 @@ def filter_bear_market(df: pd.DataFrame) -> FilterResult:
     details: dict[str, Any] = {}
 
     close = df["Close"]
-    if len(df) < 252:
+    required_bars = BEAR_LOOKBACK_YEARS * 252
+    if len(df) < required_bars:
         return FilterResult(passed=False, reason="Insufficient history for bear market check")
 
     # 1. MA200 declining
@@ -135,7 +141,7 @@ def filter_bear_market(df: pd.DataFrame) -> FilterResult:
     details["pct_below_ma200"] = round((price_now - ma200_now) / ma200_now * 100, 2)
 
     # 3. Decline over 2 years
-    lookback_bars = min(BEAR_LOOKBACK_YEARS * 252, len(df))
+    lookback_bars = required_bars
     price_lookback = close.iloc[-lookback_bars]
     decline_pct = (price_now - price_lookback) / price_lookback * 100 if price_lookback > 0 else 0
     bear_decline = decline_pct <= BEAR_DECLINE_PCT

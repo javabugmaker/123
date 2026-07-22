@@ -54,6 +54,7 @@ from report import (
     print_scan_summary,
     print_terminal_report,
 )
+from analytics import apply_backtest_ranking, run_historical_backtest
 
 
 # ======================================================================
@@ -127,19 +128,20 @@ def cmd_scan(args: argparse.Namespace) -> int:
         force_download=args.force_download,
         resume=not args.no_resume,
         data_source=args.data_source,
+        cache_first=args.cache_first,
+    )
+
+    # Export results even when no ticker succeeded so the GUI never keeps stale files.
+    csv_path, parquet_path, full_csv, full_parquet = export_all(
+        report.results,
+        top_n_csv=args.top,
+        top_n_parquet=args.top_parquet,
     )
 
     if report.successful == 0:
         logger.error("没有可用行情数据，扫描失败；请检查网络或数据源后重试。")
         print_scan_summary(report)
         return 2
-
-    # Export results
-    csv_path, parquet_path, full_csv, full_parquet = export_all(
-        report.results,
-        top_n_csv=args.top,
-        top_n_parquet=args.top_parquet,
-    )
 
     # Terminal report
     print_terminal_report(report.results, n=args.top)
@@ -171,7 +173,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     all_tickers = list(stock_universe) + list(etf_universe)
 
     logger.info("Re-scanning %d cached tickers...", len(all_tickers))
-    results = run_parallel_indicator_scan(all_tickers)
+    results = run_parallel_indicator_scan(all_tickers, data_source=args.data_source)
 
     csv_path, parquet_path, full_csv, full_parquet = export_all(results, top_n_csv=args.top, top_n_parquet=args.top_parquet)
     print_terminal_report(results, n=args.top)
@@ -202,9 +204,44 @@ def cmd_download(args: argparse.Namespace) -> int:
         all_tickers = list(stock_universe) + list(etf_universe)
 
     logger.info("Downloading data for %d tickers...", len(all_tickers))
-    results = download_batch(all_tickers, desc="Downloading")
+    results = download_batch(all_tickers, desc="Downloading market data", source=args.data_source)
     logger.info("Successfully downloaded %d tickers.", len(results))
 
+    return 0
+
+
+def cmd_backtest(args: argparse.Namespace) -> int:
+    logger = logging.getLogger("institution_scanner")
+    if args.tickers_file and args.tickers:
+        logger.error("回测标的只能通过 --tickers 或 --tickers-file 指定一种。")
+        return 2
+    if args.tickers_file:
+        try:
+            raw_tickers = args.tickers_file.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError) as exc:
+            logger.error("无法读取回测标的文件 %s：%s", args.tickers_file, exc)
+            return 2
+        tickers = [line.strip().upper() for line in raw_tickers if line.strip()]
+    elif args.tickers:
+        tickers = [ticker.strip().upper() for ticker in args.tickers.split(",") if ticker.strip()]
+    else:
+        logger.error("回测必须通过 --tickers 或 --tickers-file 明确指定 50 个标的。")
+        return 2
+    unique_tickers = list(dict.fromkeys(tickers))
+    if len(tickers) != 50 or len(unique_tickers) != 50:
+        logger.error("回测必须指定 50 个不重复标的，当前共 %d 个、去重后 %d 个。", len(tickers), len(unique_tickers))
+        return 2
+    logger.info("Backtesting 50 explicitly specified tickers...")
+    tickers = unique_tickers
+    summary = run_historical_backtest(tickers, source=args.data_source)
+    apply_backtest_ranking(summary, top_n=TOP_N_REPORT)
+    logger.info(
+        "Backtest complete: %d samples, 20d win rate %.1f%%, average return %.2f%%, 60d average return %.2f%%.",
+        summary.samples,
+        summary.win_rate_20d * 100,
+        summary.average_return_20d,
+        summary.average_return_60d,
+    )
     return 0
 
 
@@ -271,6 +308,7 @@ def build_parser() -> argparse.ArgumentParser:
     report_p.add_argument("--etfs-only", action="store_true")
     report_p.add_argument("--top", type=int, default=TOP_N_REPORT)
     report_p.add_argument("--top-parquet", type=int, default=TOP_N_PARQUET)
+    report_p.add_argument("--data-source", choices=("eastmoney", "sina", "tencent"), default="eastmoney")
     report_p.add_argument("--verbose", "-v", action="store_true")
 
     # ---- download ----
@@ -278,7 +316,15 @@ def build_parser() -> argparse.ArgumentParser:
     dl_p.add_argument("--stocks-only", action="store_true")
     dl_p.add_argument("--etfs-only", action="store_true")
     dl_p.add_argument("--tickers", type=str, default=None)
+    dl_p.add_argument("--data-source", choices=("eastmoney", "sina", "tencent"), default="eastmoney")
     dl_p.add_argument("--verbose", "-v", action="store_true")
+
+    # ---- backtest ----
+    backtest_p = sub.add_parser("backtest", help="Run historical backtest for exactly 50 specified tickers")
+    backtest_p.add_argument("--tickers", type=str, default=None, help="Comma-separated list of exactly 50 unique tickers")
+    backtest_p.add_argument("--tickers-file", type=Path, default=None, help="File containing exactly 50 unique tickers")
+    backtest_p.add_argument("--data-source", choices=("eastmoney", "sina", "tencent"), default="eastmoney")
+    backtest_p.add_argument("--verbose", "-v", action="store_true")
 
     # ---- clean ----
     clean_p = sub.add_parser("clean", help="Clear cached data and outputs")
@@ -307,6 +353,7 @@ def main() -> int:
         "scan": cmd_scan,
         "report": cmd_report,
         "download": cmd_download,
+        "backtest": cmd_backtest,
         "clean": cmd_clean,
     }
 

@@ -11,6 +11,7 @@ Produces:
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -73,6 +74,13 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
             "Quality": _quality_label(r),
             "Close": r.close,
             "Score": round(r.score.total, 2),
+            "BacktestScore": round(r.backtest_score, 2) if np.isfinite(r.backtest_score) else None,
+            "CompositeScore": round(r.composite_score, 2) if np.isfinite(r.composite_score) else None,
+            "BacktestSamples": r.backtest_samples,
+            "BacktestWinRate20D": round(r.backtest_win_rate_20d, 4) if np.isfinite(r.backtest_win_rate_20d) else None,
+            "BacktestWinRate60D": round(r.backtest_win_rate_60d, 4) if np.isfinite(r.backtest_win_rate_60d) else None,
+            "BacktestAverageReturn20D": round(r.backtest_average_return_20d, 4) if np.isfinite(r.backtest_average_return_20d) else None,
+            "BacktestAverageReturn60D": round(r.backtest_average_return_60d, 4) if np.isfinite(r.backtest_average_return_60d) else None,
             "TrendScore": round(r.score.trend, 2),
             "VolumeScore": round(r.score.volume, 2),
             "AccumulationScore": round(r.score.accumulation, 2),
@@ -85,6 +93,13 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
             "RSI14": round(r.rsi14, 2) if not np.isnan(r.rsi14) else None,
             "DistToLow52W": round(r.dist_to_low_52w, 2) if not np.isnan(r.dist_to_low_52w) else None,
             "WyckoffPhase": r.wyckoff_phase,
+            "Stage": r.stage,
+            "MarketRegime": r.market_regime,
+            "IndustryRelativeStrength": round(r.industry_relative_strength, 2) if not np.isnan(r.industry_relative_strength) else None,
+            "DataSource": r.data_source,
+            "DataAsOf": r.data_asof,
+            "DataAgeDays": r.data_age_days,
+            "DataCoverage": round(r.data_coverage, 4),
             "VolAccumDays": r.volume_accum_days,
             "SignalCount": r.filter_details.get("signal_count", 0),
             "FilterCount": r.filter_details.get("filter_count", 0),
@@ -115,6 +130,17 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
 # CSV Export
 # ======================================================================
 
+
+def _atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    try:
+        df.to_csv(temporary_path, index=False, encoding="utf-8-sig")
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
 def export_top_csv(results: list[ScanResult], n: int = TOP_N_REPORT) -> Path:
     """
     Export the top *n* tickers to TopN.csv.
@@ -125,8 +151,8 @@ def export_top_csv(results: list[ScanResult], n: int = TOP_N_REPORT) -> Path:
     top = df.head(n)
 
     path = OUTPUT_DIR / f"Top{n}.csv"
-    top.to_csv(path, index=False, encoding="utf-8-sig")
-    logger.info("Exported Top %d to %s", n, path)
+    _atomic_write_csv(top, path)
+    logger.info("Exported Top %d (%d rows) to %s", n, len(top), path)
     return path
 
 
@@ -134,9 +160,10 @@ def export_full_csv(results: list[ScanResult]) -> Path:
     """Export ALL scored tickers to AllResults.csv."""
     df = _results_to_dataframe(results)
     path = OUTPUT_DIR / "AllResults.csv"
-    df.to_csv(path, index=False, encoding="utf-8-sig")
+    _atomic_write_csv(df, path)
     logger.info("Exported all %d results to %s", len(df), path)
     return path
+
 
 
 # ======================================================================

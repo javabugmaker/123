@@ -72,47 +72,35 @@ def _to_float_array(series: pd.Series) -> np.ndarray:
 
 def _rolling_slope(series: pd.Series, window: int) -> pd.Series:
     """Rolling linear regression slope over right-aligned windows."""
-    n = window
-    x = np.arange(n, dtype=np.float64)
-    result = np.full(len(series), np.nan, dtype=np.float64)
-    min_periods = max(2, n // 2)
-    y = _to_float_array(series)
-    for end in range(n - 1, len(y)):
-        window_y = y[end - n + 1:end + 1]
-        valid = np.isfinite(window_y)
-        if valid.sum() < min_periods:
-            continue
-        x_valid = x[valid]
-        y_valid = window_y[valid]
-        x_centered = x_valid - x_valid.mean()
-        denom = np.dot(x_centered, x_centered)
-        if denom > 0:
-            result[end] = np.dot(x_centered, y_valid - y_valid.mean()) / denom
-    return pd.Series(result, index=series.index)
+    values = pd.to_numeric(series, errors="coerce")
+    positions = pd.Series(np.arange(len(values), dtype=np.float64), index=values.index)
+    valid = values.notna().astype(float)
+    count = valid.rolling(window, min_periods=2).sum()
+    sum_x = positions.where(valid.astype(bool), 0.0).rolling(window, min_periods=2).sum()
+    sum_y = values.fillna(0.0).rolling(window, min_periods=2).sum()
+    sum_xx = (positions * positions).where(valid.astype(bool), 0.0).rolling(window, min_periods=2).sum()
+    sum_xy = (positions * values.fillna(0.0)).where(valid.astype(bool), 0.0).rolling(window, min_periods=2).sum()
+    denominator = sum_xx - sum_x * sum_x / count.replace(0, np.nan)
+    result = (sum_xy - sum_x * sum_y / count.replace(0, np.nan)) / denominator.replace(0, np.nan)
+    return result.where(count >= max(2, window // 2))
 
 
 def _rolling_r2(series: pd.Series, window: int) -> pd.Series:
     """Rolling R² over right-aligned windows."""
-    n = window
-    x = np.arange(n, dtype=np.float64)
-    result = np.full(len(series), np.nan, dtype=np.float64)
-    min_periods = max(2, n // 2)
-    y = _to_float_array(series)
-    for end in range(n - 1, len(y)):
-        window_y = y[end - n + 1:end + 1]
-        valid = np.isfinite(window_y)
-        if valid.sum() < min_periods:
-            continue
-        x_valid = x[valid]
-        y_valid = window_y[valid]
-        x_centered = x_valid - x_valid.mean()
-        y_centered = y_valid - y_valid.mean()
-        denom_x = np.dot(x_centered, x_centered)
-        denom_y = np.dot(y_centered, y_centered)
-        if denom_x > 0 and denom_y > 0:
-            correlation = np.dot(x_centered, y_centered) / np.sqrt(denom_x * denom_y)
-            result[end] = correlation * correlation
-    return pd.Series(result, index=series.index)
+    values = pd.to_numeric(series, errors="coerce")
+    positions = pd.Series(np.arange(len(values), dtype=np.float64), index=values.index)
+    valid = values.notna().astype(float)
+    count = valid.rolling(window, min_periods=2).sum()
+    sum_x = positions.where(valid.astype(bool), 0.0).rolling(window, min_periods=2).sum()
+    sum_y = values.fillna(0.0).rolling(window, min_periods=2).sum()
+    sum_xx = (positions * positions).where(valid.astype(bool), 0.0).rolling(window, min_periods=2).sum()
+    sum_yy = (values * values).fillna(0.0).rolling(window, min_periods=2).sum()
+    sum_xy = (positions * values.fillna(0.0)).where(valid.astype(bool), 0.0).rolling(window, min_periods=2).sum()
+    covariance = count * sum_xy - sum_x * sum_y
+    variance_x = count * sum_xx - sum_x * sum_x
+    variance_y = count * sum_yy - sum_y * sum_y
+    result = covariance.pow(2) / (variance_x * variance_y).replace(0, np.nan)
+    return result.where(count >= max(2, window // 2)).clip(0.0, 1.0)
 
 
 # ======================================================================

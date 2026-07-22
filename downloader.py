@@ -11,9 +11,11 @@ Responsible for:
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import math
 import re
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -148,7 +150,6 @@ _STATIC_A_ETFS: list[tuple[str, str]] = [
     ("159996.SZ", "新能源车ETF"),
     ("512980.SH", "证券ETF"),
     ("510880.SH", "红利ETF"),
-    ("159915.SZ", "创业板ETF"),
     ("159997.SZ", "芯片ETF"),
     ("159996.SZ", "新能源ETF"),
 ]
@@ -349,36 +350,60 @@ def build_ticker_universe(
 # Data cache helpers
 # ---------------------------------------------------------------------------
 
-def _cache_path(ticker: str) -> Path:
+def _safe_cache_stem(ticker: str, source: str | None = None) -> str:
+    value = str(ticker).strip()
+    if source:
+        value = f"{value}__{normalize_data_source(source)}"
+    safe = re.sub(r'[<>:"/\\\\|?*\x00-\x1f]', "_", value).rstrip(" .")
+    if not safe:
+        safe = "ticker"
+    if len(safe) > 100:
+        safe = f"ticker_{hashlib.sha256(value.encode('utf-8')).hexdigest()[:16]}"
+    return safe
+
+
+def _cache_path(ticker: str, source: str | None = None) -> Path:
     """File path for a ticker's cached CSV."""
-    safe = ticker.replace("/", "_").replace("\\", "_")
-    return CACHE_DIR / f"{safe}.csv"
+    return CACHE_DIR / f"{_safe_cache_stem(ticker, source)}.csv"
 
 
-def _load_cache(ticker: str) -> pd.DataFrame | None:
-    """Load cached OHLCV data for a ticker, or None if not found / corrupted."""
-    path = _cache_path(ticker)
+def _validate_ohlcv(df: pd.DataFrame) -> pd.DataFrame | None:
+    required = ["Open", "High", "Low", "Close", "Volume"]
+    if df is None or df.empty or any(column not in df.columns for column in required):
+        return None
+    cleaned = df[required].copy()
+    cleaned.index = pd.to_datetime(cleaned.index, errors="coerce")
+    for column in required:
+        cleaned[column] = pd.to_numeric(cleaned[column], errors="coerce")
+    cleaned = cleaned.replace([float("inf"), float("-inf")], pd.NA).dropna()
+    cleaned = cleaned[cleaned["Close"] > 0]
+    cleaned = cleaned[(cleaned["High"] >= cleaned[["Open", "Close"]].max(axis=1)) & (cleaned["Low"] <= cleaned[["Open", "Close"]].min(axis=1))]
+    cleaned = cleaned[cleaned["Volume"] >= 0]
+    cleaned = cleaned[~cleaned.index.isna()]
+    if cleaned.empty:
+        return None
+    return cleaned[~cleaned.index.duplicated(keep="last")].sort_index()
+
+
+def _load_cache(ticker: str, source: str | None = None) -> pd.DataFrame | None:
+    """Load a validated cached OHLCV frame for a ticker."""
+    path = _cache_path(ticker, source)
     if not path.exists():
         return None
     try:
-        df = pd.read_csv(path, index_col=0, parse_dates=True)
-        if df.empty:
-            return None
-        # Ensure required columns
-        for col in ("Open", "High", "Low", "Close", "Volume"):
-            if col not in df.columns:
-                logger.warning("Cache for %s missing column %s — ignoring.", ticker, col)
-                return None
-        return df
+        return _validate_ohlcv(pd.read_csv(path, index_col=0, parse_dates=True))
     except Exception:
         logger.warning("Corrupted cache for %s — will re-download.", ticker)
         return None
 
 
-def _save_cache(ticker: str, df: pd.DataFrame) -> None:
+def _save_cache(ticker: str, df: pd.DataFrame, source: str | None = None) -> None:
     """Persist OHLCV data to CSV."""
-    path = _cache_path(ticker)
-    df.to_csv(path)
+    path = _cache_path(ticker, source)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    df.to_csv(temporary)
+    temporary.replace(path)
 
 
 # ---------------------------------------------------------------------------
@@ -387,8 +412,7 @@ def _save_cache(ticker: str, df: pd.DataFrame) -> None:
 
 def _meta_path(ticker: str) -> Path:
     """File path for a ticker's cached metadata JSON."""
-    safe = ticker.replace("/", "_").replace("\\", "_")
-    return CACHE_DIR / f"{safe}.json"
+    return CACHE_DIR / f"{_safe_cache_stem(ticker)}.json"
 
 
 def _save_meta(ticker: str, data: dict) -> None:
@@ -623,26 +647,28 @@ def _download_single(ticker: str, source: str = "eastmoney") -> pd.DataFrame | N
         return None
 
 
-def download_ticker(ticker: str, force: bool = False, source: str = "eastmoney") -> pd.DataFrame | None:
+def download_ticker(ticker: str, force: bool = False, source: str = "eastmoney", cache_first: bool = False) -> pd.DataFrame | None:
     """
     Get OHLCV data for *ticker*.
     - If cached data exists, load it and download only the missing tail.
     - If *force* is True, re-download everything.
     """
     selected = normalize_data_source(source)
-    cache_ticker = f"{ticker}__{selected}"
     if force:
         df = _download_single(ticker, selected)
         if df is not None:
-            _save_cache(cache_ticker, df)
+            _save_cache(ticker, df, selected)
         return df
 
-    cached = _load_cache(cache_ticker)
+    cached = _load_cache(ticker, selected)
     if cached is None:
         df = _download_single(ticker, selected)
         if df is not None:
-            _save_cache(cache_ticker, df)
+            _save_cache(ticker, df, selected)
         return df
+
+    if cache_first:
+        return cached
 
     # Incremental update: download only from the last cached date
     last_date = cached.index.max()
@@ -680,7 +706,7 @@ def download_ticker(ticker: str, force: bool = False, source: str = "eastmoney")
                 combined = pd.concat([cached, new_df])
                 combined = combined[~combined.index.duplicated(keep="last")]
                 combined = combined.sort_index()
-                _save_cache(cache_ticker, combined)
+                _save_cache(ticker, combined, selected)
                 return combined
     except Exception as exc:
         logger.debug("Incremental update failed for %s: %s — using cache as-is.", ticker, exc)
@@ -693,6 +719,7 @@ def download_batch(
     desc: str = "Downloading",
     force: bool = False,
     source: str = "eastmoney",
+    cache_first: bool = False,
 ) -> dict[str, pd.DataFrame]:
     """
     Download data for a list of tickers using ThreadPoolExecutor.
@@ -717,9 +744,9 @@ def download_batch(
     # Single-threaded download with inter-request pause (respects Yahoo's
     # ~60 req/min soft limit).  Parallel path kept for DOWNLOAD_THREADS > 1.
     if DOWNLOAD_THREADS <= 1:
-        for sym in tqdm(symbols, desc=desc, unit="ticker"):
+        for sym in tqdm(symbols, desc=desc, unit="ticker", disable=not sys.stderr.isatty()):
             try:
-                df = download_ticker(sym, force=force, source=source)
+                df = download_ticker(sym, force=force, source=source, cache_first=cache_first)
                 if df is not None and not df.empty:
                     results[sym] = df
                 else:
@@ -730,7 +757,7 @@ def download_batch(
     else:
         with ThreadPoolExecutor(max_workers=DOWNLOAD_THREADS) as pool:
             futures: dict[Any, str] = {
-                pool.submit(download_ticker, sym, force, source): sym for sym in symbols
+                pool.submit(download_ticker, sym, force, source, cache_first): sym for sym in symbols
             }
 
             for future in tqdm(
@@ -738,6 +765,7 @@ def download_batch(
                 total=total,
                 desc=desc,
                 unit="ticker",
+                disable=not sys.stderr.isatty(),
             ):
                 sym = futures[future]
                 try:

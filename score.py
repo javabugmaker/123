@@ -29,6 +29,7 @@ from config import (
     VOLUME_ACCUM_MIN_DAYS,
     VOLUME_ACCUM_RATIO,
     VOLUME_PROFILE_LOOKBACK,
+    SCORING_WEIGHTS,
 )
 
 logger = logging.getLogger("institution_scanner.score")
@@ -343,7 +344,7 @@ def score_structure(df: pd.DataFrame) -> float:
     if "Above_HVN" in df.columns and "DistToHVN_Pct" in df.columns:
         above_hvn = df["Above_HVN"].iloc[-1]
         dist_hvn = df["DistToHVN_Pct"].iloc[-1]
-        if above_hvn is True and not np.isnan(dist_hvn):
+        if bool(above_hvn) and pd.notna(dist_hvn):
             # Small positive distance (just above HVN) = ideal
             if 0 < dist_hvn < 10:
                 score += _clamp(1 - dist_hvn / 10, 0, 1) * 2
@@ -411,7 +412,13 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
     )
     style = classify_style(df, is_etf=is_etf)
     adjustments = _style_adjustment(df, style)
-    limits = (20.0, 25.0, 25.0, 15.0, 15.0)
+    limits = tuple(float(value) for value in (
+        SCORING_WEIGHTS.trend,
+        SCORING_WEIGHTS.volume,
+        SCORING_WEIGHTS.accumulation,
+        SCORING_WEIGHTS.volatility,
+        SCORING_WEIGHTS.structure,
+    ))
     adjusted_scores = tuple(
         _clamp(score * adjustment, 0.0, limit)
         for score, adjustment, limit in zip(raw_scores, adjustments, limits)

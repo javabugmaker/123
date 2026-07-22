@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ from config import (
     MIN_MARKET_CAP,
     OUTPUT_DIR,
     SCAN_THREADS,
+    SCORING_VERSION,
     TOP_N_PARQUET,
 )
 from downloader import (
@@ -47,10 +49,12 @@ from downloader import (
     download_ticker,
     get_etf_fund_flows,
     get_market_cap,
+    normalize_data_source,
 )
 from indicators import compute_all_indicators
 from filters import run_all_filters
-from score import score_ticker, ScoreBreakdown, classify_style
+from score import ScoreBreakdown, classify_style, score_ticker
+from analytics import enrich_results
 
 logger = logging.getLogger("institution_scanner.scanner")
 logger.setLevel(logging.DEBUG)
@@ -88,6 +92,21 @@ class ScanResult:
     filter_details: dict[str, bool] = field(default_factory=dict)
     error: str = ""
     style: str = "均衡"
+    market_regime: str = "未知"
+    market_regime_reason: str = ""
+    industry_relative_strength: float = np.nan
+    stage: str = "未知"
+    data_source: str = ""
+    data_asof: str = ""
+    data_age_days: int = -1
+    data_coverage: float = 0.0
+    backtest_score: float = np.nan
+    backtest_samples: int = 0
+    backtest_win_rate_20d: float = np.nan
+    backtest_win_rate_60d: float = np.nan
+    backtest_average_return_20d: float = np.nan
+    backtest_average_return_60d: float = np.nan
+    composite_score: float = np.nan
 
 
 # ======================================================================
@@ -101,7 +120,15 @@ def _normalize_ticker(ticker: str) -> str:
     return str(ticker).strip().upper()
 
 
-def save_checkpoint(processed: set[str]) -> None:
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "是"}
+    return bool(value)
+
+
+def save_checkpoint(processed: set[str], data_source: str = "") -> None:
     """Save the set of already-processed tickers."""
     if not ENABLE_CHECKPOINT:
         return
@@ -109,18 +136,25 @@ def save_checkpoint(processed: set[str]) -> None:
         data = {
             "processed": sorted(_normalize_ticker(ticker) for ticker in processed),
             "timestamp": datetime.now().isoformat(),
+            "data_source": normalize_data_source(data_source) if data_source else "",
+            "scoring_version": SCORING_VERSION,
         }
-        _CHECKPOINT_PATH.write_text(json.dumps(data))
+        _CHECKPOINT_PATH.write_text(json.dumps(data), encoding="utf-8")
     except Exception as exc:
         logger.warning("Failed to save checkpoint: %s", exc)
 
 
-def load_checkpoint() -> set[str]:
-    """Load previously-processed tickers from checkpoint."""
+def load_checkpoint(data_source: str = "") -> set[str]:
+    """Load previously-processed tickers when checkpoint metadata matches."""
     if not _CHECKPOINT_PATH.exists():
         return set()
     try:
-        data = json.loads(_CHECKPOINT_PATH.read_text())
+        data = json.loads(_CHECKPOINT_PATH.read_text(encoding="utf-8"))
+        if data.get("scoring_version") != SCORING_VERSION:
+            return set()
+        expected_source = normalize_data_source(data_source) if data_source else ""
+        if expected_source and data.get("data_source") != expected_source:
+            return set()
         return {_normalize_ticker(ticker) for ticker in data.get("processed", [])}
     except Exception:
         return set()
@@ -196,10 +230,8 @@ def scan_single_from_df(
                 error=f"市值 {market_cap:,.0f} 元低于最低要求 {MIN_MARKET_CAP:,.0f} 元",
             )
 
-        close = df["Close"].iloc[-1]
-
-        # ---- 2. Indicators ----
         df = compute_all_indicators(df)
+        close = float(df["Close"].iloc[-1])
 
         # ---- 3. Filters ----
         filter_results = run_all_filters(
@@ -320,6 +352,7 @@ def run_scan(
     force_download: bool = False,
     resume: bool = True,
     data_source: str = "eastmoney",
+    cache_first: bool = False,
 ) -> ScanReport:
     """
     Two-phase parallel scan across the entire ticker universe.
@@ -344,6 +377,7 @@ def run_scan(
     """
 
     start_time = time.time()
+    data_source = normalize_data_source(data_source)
 
     # ---- Build universe ----
     if stock_universe is None and etf_universe is None:
@@ -376,32 +410,44 @@ def run_scan(
     # On the first ever run, everything is a full download.
     # On subsequent runs, download_batch() still calls download_ticker()
     # which does incremental fetch for already-cached symbols.
-    downloaded = download_batch(all_tickers, desc="Downloading", force=force_download, source=data_source)
+    downloaded = download_batch(
+        all_tickers,
+        desc="Downloading",
+        force=force_download,
+        source=data_source,
+        cache_first=cache_first and not force_download,
+    )
 
     # ---- Phase 2: Parallel analyse ----
-    processed_set = load_checkpoint() if resume else set()
+    universe_symbols = {_normalize_ticker(ti.ticker) for ti in all_tickers}
+    processed_set = load_checkpoint(data_source) if resume else set()
     previous_tickers = _load_previous_tickers() if resume else set()
     processed_set.intersection_update(previous_tickers)
-    processed_set.difference_update({_normalize_ticker(ticker) for ticker in downloaded})
+    processed_set.intersection_update(universe_symbols)
+    previous_report_time = (OUTPUT_DIR / "AllResults.parquet").stat().st_mtime if (OUTPUT_DIR / "AllResults.parquet").exists() else 0.0
 
-    # Build the analyse queue — every ticker whose CSV exists on disk
+    processed_set = {
+        ticker for ticker in processed_set
+        if _cache_path_for(ticker, data_source).exists()
+        and _cache_path_for(ticker, data_source).stat().st_mtime <= previous_report_time
+    }
+
+    downloaded_symbols = {_normalize_ticker(ticker) for ticker in downloaded}
     analyse_queue: list[TickerInfo] = []
     skipped_no_cache = 0
     for ti in all_tickers:
-        if ti.ticker in processed_set:
+        ticker = _normalize_ticker(ti.ticker)
+        if ticker in processed_set:
             continue
-        safe = ti.ticker.replace("/", "_").replace("\\", "_")
-        path = CACHE_DIR / f"{safe}.csv"
-        if path.exists():
+        if ticker in downloaded_symbols and _load_cache(ticker, data_source) is not None:
             analyse_queue.append(ti)
         else:
             skipped_no_cache += 1
 
     logger.info(
-        "Phase 2/2: analysing %d tickers (%d threads) "
-        "— %d already processed, %d no data on disk.",
+        "Phase 2/2: analysing %d tickers (%d threads) — %d already processed, %d without valid cache. Universe=%d, downloaded=%d.",
         len(analyse_queue), SCAN_THREADS,
-        len(processed_set), skipped_no_cache,
+        len(processed_set), skipped_no_cache, len(all_tickers), len(downloaded_symbols),
     )
 
     results: list[ScanResult] = []
@@ -410,11 +456,19 @@ def run_scan(
     failed: int = 0
     passed: int = 0
 
-    # Also include previously-processed results from the last run's parquet
     prev_parquet = OUTPUT_DIR / "AllResults.parquet"
     prev_results: dict[str, ScanResult] = {}
     universe_symbols = {_normalize_ticker(ti.ticker) for ti in all_tickers}
-    if resume and prev_parquet.exists():
+    previous_report_source = ""
+    if prev_parquet.exists():
+        try:
+            metadata = pd.read_parquet(prev_parquet, columns=["DataSource"])
+            if not metadata.empty:
+                previous_report_source = str(metadata["DataSource"].dropna().iloc[0] or "")
+        except Exception:
+            previous_report_source = ""
+
+    if resume and prev_parquet.exists() and previous_report_source in ("", data_source):
         try:
             prev_df = pd.read_parquet(prev_parquet)
             for _, row in prev_df.iterrows():
@@ -424,7 +478,7 @@ def run_scan(
                     name=row.get("Name", ""),
                     sector=row.get("Sector", ""),
                     industry=row.get("Industry", ""),
-                    is_etf=bool(row.get("IsETF", False)),
+                    is_etf=_parse_bool(row.get("IsETF", False)),
                     close=float(row.get("Close", 0)),
                     score=ScoreBreakdown(
                         total=float(row.get("Score", 0)),
@@ -442,20 +496,27 @@ def run_scan(
                     dist_to_low_52w=row.get("DistToLow52W", np.nan),
                     wyckoff_phase=str(row.get("WyckoffPhase", "Unknown")),
                     volume_accum_days=int(row.get("VolAccumDays", 0)),
-                    passed_filters=bool(row.get("PassedFilters", False)),
+                    passed_filters=_parse_bool(row.get("PassedFilters", False)),
                     style=str(row.get("Style", "均衡")),
                     filter_details={
-                        "obv_divergence": bool(row.get("OBV_Div", False)),
-                        "cmf_positive": bool(row.get("CMF_Pos", False)),
-                        "ad_slope": bool(row.get("AD_SlopePos", False)),
-                        "bear_market": bool(row.get("BearMarket", False)),
-                        "consolidation": bool(row.get("Consolidation", False)),
-                        "volume_accumulation": bool(row.get("VolAccum", False)),
-                        "volatility_contraction": bool(row.get("VolContract", False)),
+                        "obv_divergence": _parse_bool(row.get("OBV_Div", False)),
+                        "cmf_positive": _parse_bool(row.get("CMF_Pos", False)),
+                        "ad_slope": _parse_bool(row.get("AD_SlopePos", False)),
+                        "bear_market": _parse_bool(row.get("BearMarket", False)),
+                        "consolidation": _parse_bool(row.get("Consolidation", False)),
+                        "volume_accumulation": _parse_bool(row.get("VolAccum", False)),
+                        "volatility_contraction": _parse_bool(row.get("VolContract", False)),
                         "signal_count": int(row.get("SignalCount", 0) or 0),
                         "filter_count": int(row.get("FilterCount", 0) or 0),
                     },
                     error=str(row.get("Error", "") or ""),
+                    market_regime=str(row.get("MarketRegime", "未知") or "未知"),
+                    industry_relative_strength=float(row.get("IndustryRelativeStrength", np.nan)),
+                    stage=str(row.get("Stage", "未知") or "未知"),
+                    data_source=str(row.get("DataSource", "") or ""),
+                    data_asof=str(row.get("DataAsOf", "") or ""),
+                    data_age_days=int(row.get("DataAgeDays", -1) or -1),
+                    data_coverage=float(row.get("DataCoverage", 0.0) or 0.0),
                 )
                 if sr.ticker in universe_symbols and sr.ticker in processed_set:
                     prev_results[sr.ticker] = sr
@@ -465,15 +526,14 @@ def run_scan(
     with ThreadPoolExecutor(max_workers=SCAN_THREADS) as executor:
         futures = {}
         for ti in analyse_queue:
-            # Load DF in main thread (I/O-bound single file read is fast)
-            # then submit the CPU-heavy part
-            futures[executor.submit(_analyse_one_ticker, ti)] = ti
+            futures[executor.submit(_analyse_one_ticker, ti, data_source)] = ti
 
         for future in tqdm(
             as_completed(futures),
             total=len(futures),
             desc="Analysing",
             unit="ticker",
+            disable=not sys.stderr.isatty(),
         ):
             ti = futures[future]
             try:
@@ -486,6 +546,7 @@ def run_scan(
 
             if result.error:
                 failed += 1
+                logger.warning("Analysis failed for %s: %s", ti.ticker, result.error)
             else:
                 successful += 1
                 if result.passed_filters:
@@ -495,9 +556,14 @@ def run_scan(
                 processed_set.add(ti.ticker)
             analysed_this_run.add(ti.ticker)
 
-            # Checkpoint every N tickers
-            if len(processed_set) % CHECKPOINT_INTERVAL == 0:
-                save_checkpoint(processed_set)
+            if len(analysed_this_run) % 100 == 0 or len(analysed_this_run) == len(analyse_queue):
+                logger.info(
+                    "Analysing complete: %d/%d tickers (%d successful, %d failed).",
+                    len(analysed_this_run), len(analyse_queue), successful, failed,
+                )
+
+            if ENABLE_CHECKPOINT and len(analysed_this_run) % CHECKPOINT_INTERVAL == 0:
+                save_checkpoint(processed_set, data_source)
 
     # Merge previous results for tickers we didn't re-analyse
     for ticker, sr in prev_results.items():
@@ -508,7 +574,14 @@ def run_scan(
                 passed += 1
 
     # Final checkpoint
-    save_checkpoint(processed_set)
+    save_checkpoint(processed_set, data_source)
+
+    logger.info("Enriching %d scan results...", len(results))
+    try:
+        enrich_results(results, data_source)
+    except Exception as exc:
+        logger.exception("Failed to enrich scan results; continuing with base results: %s", exc)
+    logger.info("Enrichment complete: %d scan results.", len(results))
 
     # Sort by score descending
     results.sort(key=lambda r: r.score.total, reverse=True)
@@ -532,11 +605,16 @@ def run_scan(
     return report
 
 
-def _analyse_one_ticker(ticker_info: TickerInfo) -> ScanResult:
+def _cache_path_for(ticker: str, source: str) -> Path:
+    safe = _normalize_ticker(ticker).replace("/", "_").replace("\\", "_")
+    return CACHE_DIR / f"{safe}__{normalize_data_source(source)}.csv"
+
+
+def _analyse_one_ticker(ticker_info: TickerInfo, data_source: str = "eastmoney") -> ScanResult:
     """Load cached CSV and run the analysis pipeline.  Sits inside a ThreadPool."""
     ticker = ticker_info.ticker
     try:
-        df = _load_cache(ticker)
+        df = _load_cache(ticker, data_source)
         if df is None or df.empty or len(df) < 20:
             return ScanResult(
                 ticker=ticker,
@@ -558,6 +636,7 @@ def _analyse_one_ticker(ticker_info: TickerInfo) -> ScanResult:
 def run_parallel_indicator_scan(
     tickers: list[TickerInfo],
     max_workers: int = SCAN_THREADS,
+    data_source: str = "eastmoney",
 ) -> list[ScanResult]:
     """
     Compute indicators and scores in parallel using ThreadPoolExecutor.
@@ -568,13 +647,14 @@ def run_parallel_indicator_scan(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_analyse_one_ticker, ti): ti for ti in tickers
+            executor.submit(_analyse_one_ticker, ti, data_source): ti for ti in tickers
         }
         for future in tqdm(
             as_completed(futures),
             total=len(futures),
             desc="Parallel scan",
             unit="ticker",
+            disable=not sys.stderr.isatty(),
         ):
             try:
                 result = future.result(timeout=60)
