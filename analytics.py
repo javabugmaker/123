@@ -299,10 +299,10 @@ def _backtest_one_ticker(
         return []
     history_lengths = sorted({index + 1 for index in valid_points})
     is_etf = is_etf_ticker(str(ticker))
-    score_cache: dict[int, float] = {}
-    for length in history_lengths:
-        historical = compute_all_indicators(frame.iloc[:length].copy())
-        score_cache[length] = float(score_ticker(historical, is_etf=is_etf).total)
+    score_cache = {
+        length: float(score_ticker(enriched.iloc[:length], is_etf=is_etf).total)
+        for length in history_lengths
+    }
     benchmark_close = None
     if benchmark_frame is not None and not benchmark_frame.empty:
         benchmark_close = benchmark_frame["Close"].astype(float).sort_index()
@@ -462,6 +462,32 @@ def _max_drawdown(values: pd.Series) -> float:
     return float(((curve / curve.cummax()) - 1).min() * 100)
 
 
+def _entry_date_equal_weight_stats(sample_frame: pd.DataFrame) -> dict[str, Any]:
+    if sample_frame.empty:
+        return {"entry_dates": 0, "samples": 0}
+    numeric_columns = [
+        "return20", "return60", "benchmark_return20", "benchmark_return60",
+        "net_return20", "net_return60", "drawdown20", "drawdown60",
+    ]
+    daily = sample_frame.groupby("entry_date", sort=True)[numeric_columns].mean()
+    daily["excess20"] = daily["return20"] - daily["benchmark_return20"]
+    daily["excess60"] = daily["return60"] - daily["benchmark_return60"]
+    return {
+        "entry_dates": int(len(daily)),
+        "samples": int(len(sample_frame)),
+        "average_return_20d": float(daily["return20"].mean()),
+        "average_return_60d": float(daily["return60"].mean()),
+        "average_benchmark_return_20d": float(daily["benchmark_return20"].mean()),
+        "average_benchmark_return_60d": float(daily["benchmark_return60"].mean()),
+        "average_excess_return_20d": float(daily["excess20"].mean()),
+        "average_excess_return_60d": float(daily["excess60"].mean()),
+        "average_net_return_20d": float(daily["net_return20"].mean()),
+        "average_net_return_60d": float(daily["net_return60"].mean()),
+        "maximum_drawdown_20d": float(daily["drawdown20"].min()),
+        "maximum_drawdown_60d": float(daily["drawdown60"].min()),
+    }
+
+
 def _bucket_rows(sample_frame: pd.DataFrame) -> list[dict[str, Any]]:
     if sample_frame["score"].nunique() < 2:
         return []
@@ -502,22 +528,19 @@ def run_historical_backtest(
     test_ratio = float(np.clip(test_ratio, 0.0, 0.9))
     validation_ratio = float(np.clip(validation_ratio, 0.0, 0.9 - test_ratio))
     benchmark_frame = _load_benchmark_frames(source).get(benchmark)
-    available_dates: list[pd.Timestamp] = []
-    for ticker in dict.fromkeys(tickers):
-        frame = _load_cache(ticker, source)
-        if frame is not None and not frame.empty:
-            dates = pd.DatetimeIndex(frame.index).dropna().sort_values()
-            if len(dates):
-                available_dates.extend([pd.Timestamp(dates[0]), pd.Timestamp(dates[-1])])
-    global_start = min(available_dates) if available_dates else None
-    global_end = max(available_dates) if available_dates else None
+    benchmark_dates = pd.DatetimeIndex([])
+    if benchmark_frame is not None and not benchmark_frame.empty:
+        benchmark_dates = pd.DatetimeIndex(benchmark_frame.index).dropna().sort_values().unique()
+    global_start = pd.Timestamp(benchmark_dates[0]) if len(benchmark_dates) else None
+    global_end = pd.Timestamp(benchmark_dates[-1]) if len(benchmark_dates) else None
     if BACKTEST_VALIDATION_END or BACKTEST_TEST_START:
         validation_end = pd.Timestamp(BACKTEST_VALIDATION_END) if BACKTEST_VALIDATION_END else None
         test_start = pd.Timestamp(BACKTEST_TEST_START) if BACKTEST_TEST_START else None
-    elif global_start is not None and global_end is not None:
-        span = global_end - global_start
-        validation_end = global_start + span * (1.0 - test_ratio - validation_ratio) if validation_ratio else None
-        test_start = global_start + span * (1.0 - test_ratio) if test_ratio else None
+    elif len(benchmark_dates):
+        validation_index = int(len(benchmark_dates) * (1.0 - test_ratio - validation_ratio))
+        test_index = int(len(benchmark_dates) * (1.0 - test_ratio))
+        validation_end = pd.Timestamp(benchmark_dates[validation_index]) if validation_ratio else None
+        test_start = pd.Timestamp(benchmark_dates[test_index]) if test_ratio else None
     else:
         validation_end = test_start = None
     samples: list[dict[str, Any]] = []
@@ -611,5 +634,9 @@ def run_historical_backtest(
             split: {"samples": int(len(all_frame[all_frame["split"] == split]))}
             for split in ("train", "validation", "test")
         }
+        for split in ("validation", "test"):
+            summary.rolling_oos_stats[split]["entry_date_equal_weight"] = _entry_date_equal_weight_stats(
+                all_frame[all_frame["split"] == split].replace([np.inf, -np.inf], np.nan)
+            )
     (OUTPUT_DIR / "BacktestSummary.json").write_text(json.dumps(summary.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
     return summary

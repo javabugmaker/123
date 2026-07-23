@@ -44,6 +44,7 @@ from config import (
 )
 from downloader import (
     TickerInfo,
+    _legacy_cache_path,
     _load_cache,
     build_ticker_universe,
     download_batch,
@@ -201,6 +202,7 @@ def clear_checkpoint() -> None:
 def scan_single_from_df(
     ticker_info: TickerInfo,
     df: pd.DataFrame | None,
+    indicators_computed: bool = False,
 ) -> ScanResult:
     """
     Run indicators → filters → score on an already-downloaded DataFrame.
@@ -247,7 +249,8 @@ def scan_single_from_df(
                 error=f"市值 {market_cap:,.0f} 元低于最低要求 {MIN_MARKET_CAP:,.0f} 元",
             )
 
-        df = compute_all_indicators(df)
+        if not indicators_computed:
+            df = compute_all_indicators(df.copy())
         close = float(df["Close"].iloc[-1])
 
         # ---- 3. Filters ----
@@ -448,8 +451,10 @@ def run_scan(
 
     processed_set = {
         ticker for ticker in processed_set
-        if _cache_path_for(ticker, data_source).exists()
-        and _cache_path_for(ticker, data_source).stat().st_mtime <= previous_report_time
+        if any(
+            path.exists() and path.stat().st_mtime <= previous_report_time
+            for path in (_cache_path_for(ticker, data_source), _legacy_cache_path(ticker, data_source))
+        )
     }
 
     downloaded_frames = {
@@ -661,15 +666,18 @@ def run_scan(
 
 def _cache_path_for(ticker: str, source: str) -> Path:
     safe = _normalize_ticker(ticker).replace("/", "_").replace("\\", "_")
-    return CACHE_DIR / f"{safe}__{normalize_data_source(source)}.csv"
+    return CACHE_DIR / f"{safe}__{normalize_data_source(source)}.parquet"
 
 
 def _analyse_one_ticker_from_df(
     ticker_info: TickerInfo,
     df: pd.DataFrame | None,
 ) -> tuple[ScanResult, pd.DataFrame | None]:
-    result = scan_single_from_df(ticker_info, df)
-    return result, df if not result.error else None
+    if df is None:
+        return scan_single_from_df(ticker_info, df), None
+    enriched = compute_all_indicators(df.copy())
+    result = scan_single_from_df(ticker_info, enriched, indicators_computed=True)
+    return result, enriched if not result.error else None
 
 
 def _analyse_one_ticker(ticker_info: TickerInfo, data_source: str = "eastmoney") -> ScanResult:

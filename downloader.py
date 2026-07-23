@@ -53,6 +53,19 @@ _fh.setLevel(logging.DEBUG)
 _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 logger.addHandler(_fh)
 
+
+def _log_download_progress(completed: int, total: int, successful: int, skipped: int) -> None:
+    interval = max(1, total // 100)
+    if completed == 1 or completed == total or completed % interval == 0:
+        logger.info(
+            "DOWNLOAD progress: %d/%d (%d succeeded, %d no-data/failed).",
+            completed,
+            total,
+            successful,
+            skipped,
+        )
+
+
 _HTTP = requests.Session()
 _HTTP.trust_env = True
 _EASTMONEY_HOSTS = ("push2delay.eastmoney.com", "push2.eastmoney.com")
@@ -379,7 +392,11 @@ def _safe_cache_stem(ticker: str, source: str | None = None) -> str:
 
 
 def _cache_path(ticker: str, source: str | None = None) -> Path:
-    """File path for a ticker's cached CSV."""
+    """File path for a ticker's cached Parquet data."""
+    return CACHE_DIR / f"{_safe_cache_stem(ticker, source)}.parquet"
+
+
+def _legacy_cache_path(ticker: str, source: str | None = None) -> Path:
     return CACHE_DIR / f"{_safe_cache_stem(ticker, source)}.csv"
 
 
@@ -422,26 +439,30 @@ def _validate_ohlcv(df: pd.DataFrame) -> pd.DataFrame | None:
 
 def _load_cache(ticker: str, source: str | None = None) -> pd.DataFrame | None:
     """Load a validated cached OHLCV frame for a ticker."""
-    path = _cache_path(ticker, source)
-    if not path.exists():
-        return None
-    try:
-        return _validate_ohlcv(pd.read_csv(path, index_col=0, parse_dates=True))
-    except Exception:
-        logger.warning("Corrupted cache for %s — will re-download.", ticker)
-        return None
+    parquet_path = _cache_path(ticker, source)
+    csv_path = _legacy_cache_path(ticker, source)
+    readers = (
+        (parquet_path, pd.read_parquet),
+        (csv_path, lambda path: pd.read_csv(path, index_col=0, parse_dates=True)),
+    )
+    for path, reader in readers:
+        if not path.exists():
+            continue
+        try:
+            return _validate_ohlcv(reader(path))
+        except Exception:
+            logger.warning("Corrupted cache for %s at %s — trying next format.", ticker, path.name)
+    return None
 
 
 def _save_cache(ticker: str, df: pd.DataFrame, source: str | None = None) -> None:
-    """Persist OHLCV data to CSV."""
+    """Persist OHLCV data to Parquet."""
     path = _cache_path(ticker, source)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", newline="", suffix=path.suffix, dir=path.parent, delete=False
-    ) as file:
+    with tempfile.NamedTemporaryFile(suffix=path.suffix, dir=path.parent, delete=False) as file:
         temporary = Path(file.name)
     try:
-        df.to_csv(temporary)
+        df.to_parquet(temporary)
         temporary.replace(path)
     finally:
         if temporary.exists():
@@ -516,7 +537,7 @@ def get_market_cap(ticker: str) -> float | None:
     return None
 
 
-def _download_from_sina(ticker: str) -> pd.DataFrame | None:
+def _download_from_sina(ticker: str, start_date: datetime | None = None) -> pd.DataFrame | None:
     code, suffix = ticker.upper().split(".", 1)
     if suffix == "BJ":
         return None
@@ -539,17 +560,18 @@ def _download_from_sina(ticker: str) -> pd.DataFrame | None:
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     for column in ("Open", "High", "Low", "Close", "Volume"):
         df[column] = pd.to_numeric(df[column], errors="coerce")
-    return df.set_index("Date")[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"]).sort_index()
+    df = df.set_index("Date")[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"]).sort_index()
+    return df.loc[df.index >= pd.Timestamp(start_date)] if start_date is not None else df
 
 
-def _download_from_tencent(ticker: str) -> pd.DataFrame | None:
+def _download_from_tencent(ticker: str, start_date: datetime | None = None) -> pd.DataFrame | None:
     code, suffix = ticker.upper().split(".", 1)
     if suffix == "BJ":
         return None
     prefix = "sh" if suffix == "SH" else "sz"
     symbol = f"{prefix}{code}"
     end_date = datetime.now()
-    start_limit = end_date - timedelta(days=HISTORY_YEARS * 365 + 30)
+    start_limit = start_date or end_date - timedelta(days=HISTORY_YEARS * 365 + 30)
     rows: list[list[str]] = []
     while end_date > start_limit:
         response = _HTTP.get(
@@ -598,7 +620,7 @@ def _fetch_eastmoney_realtime_price(ticker: str) -> float | None:
     return None
 
 
-def _download_from_eastmoney(ticker: str) -> pd.DataFrame | None:
+def _download_from_eastmoney(ticker: str, start_date: datetime | None = None) -> pd.DataFrame | None:
     """
     Download full history for *ticker* from Eastmoney.
     Returns a DataFrame or None on failure.
@@ -607,7 +629,7 @@ def _download_from_eastmoney(ticker: str) -> pd.DataFrame | None:
     for attempt in range(1, attempts + 1):
         try:
             end_date = datetime.now()
-            start_date = end_date - timedelta(days=HISTORY_YEARS * 365 + 30)
+            request_start = start_date or end_date - timedelta(days=HISTORY_YEARS * 365 + 30)
             code, suffix = ticker.upper().split(".", 1)
             market = "1" if suffix == "SH" else "0"
             response = _eastmoney_get(
@@ -616,7 +638,7 @@ def _download_from_eastmoney(ticker: str) -> pd.DataFrame | None:
                     "secid": f"{market}.{code}",
                     "klt": 101,
                     "fqt": 1,
-                    "beg": start_date.strftime("%Y%m%d"),
+                    "beg": request_start.strftime("%Y%m%d"),
                     "end": end_date.strftime("%Y%m%d"),
                     "fields1": "f1,f2,f3,f4,f5,f6",
                     "fields2": "f51,f52,f53,f54,f55,f56",
@@ -627,7 +649,7 @@ def _download_from_eastmoney(ticker: str) -> pd.DataFrame | None:
             if not klines:
                 for fallback_loader in (_download_from_sina, _download_from_tencent):
                     try:
-                        fallback = fallback_loader(ticker)
+                        fallback = fallback_loader(ticker, start_date=start_date)
                         if fallback is not None and not fallback.empty:
                             return fallback
                     except Exception as fallback_exc:
@@ -643,18 +665,11 @@ def _download_from_eastmoney(ticker: str) -> pd.DataFrame | None:
             df = df.dropna(subset=["Close"])
             if df.empty:
                 return None
-            try:
-                realtime_price = _fetch_eastmoney_realtime_price(ticker)
-                if realtime_price is not None:
-                    df["Close"] = df["Close"].astype(float)
-                    df.loc[df.index[-1], "Close"] = realtime_price
-            except Exception as exc:
-                logger.debug("Realtime price fetch failed for %s: %s", ticker, exc)
             return df
         except Exception as exc:
             for fallback_loader in (_download_from_sina, _download_from_tencent):
                 try:
-                    fallback = fallback_loader(ticker)
+                    fallback = fallback_loader(ticker, start_date=start_date)
                     if fallback is not None and not fallback.empty:
                         return fallback
                 except Exception as fallback_exc:
@@ -696,18 +711,21 @@ def get_data_source_label(source: str) -> str:
     return _DATA_SOURCE_LABELS[normalize_data_source(source)]
 
 
-def _download_single(ticker: str, source: str = "eastmoney") -> pd.DataFrame | None:
+def _download_single(
+    ticker: str,
+    source: str = "eastmoney",
+    start_date: datetime | None = None,
+) -> pd.DataFrame | None:
     ticker = normalize_ticker(ticker)
     selected = normalize_data_source(source)
+    if selected == "eastmoney":
+        return _download_from_eastmoney(ticker, start_date=start_date)
     loaders = {
-        "eastmoney": _download_from_eastmoney,
         "sina": _download_from_sina,
         "tencent": _download_from_tencent,
     }
-    if selected == "eastmoney":
-        return loaders[selected](ticker)
     try:
-        return loaders[selected](ticker)
+        return loaders[selected](ticker, start_date=start_date)
     except Exception as exc:
         logger.debug("数据源 %s 获取 %s 失败：%s", get_data_source_label(selected), ticker, exc)
         return None
@@ -743,7 +761,8 @@ def download_ticker(ticker: str, force: bool = False, source: str = "eastmoney",
         last_date = last_date.replace(tzinfo=None)
 
     try:
-        full_df = _download_single(ticker, selected)
+        request_start = last_date - timedelta(days=7)
+        full_df = _download_single(ticker, selected, start_date=request_start)
         new_df = full_df.loc[full_df.index >= pd.Timestamp(last_date)] if full_df is not None else None
         if new_df is not None and not new_df.empty:
             new_df = new_df.rename(columns={
@@ -801,8 +820,13 @@ def download_batch(
 
     # Single-threaded download with inter-request pause (respects Yahoo's
     # ~60 req/min soft limit).  Parallel path kept for DOWNLOAD_THREADS > 1.
-    if DOWNLOAD_THREADS <= 1:
-        for sym in tqdm(symbols, desc=desc, unit="ticker", disable=not sys.stderr.isatty()):
+    if not total:
+        _log_download_progress(0, 0, 0, 0)
+    elif DOWNLOAD_THREADS <= 1:
+        for completed, sym in enumerate(
+            tqdm(symbols, desc=desc, unit="ticker", disable=not sys.stderr.isatty()),
+            start=1,
+        ):
             try:
                 df = download_ticker(sym, force=force, source=source, cache_first=cache_first)
                 if df is not None and not df.empty:
@@ -811,6 +835,7 @@ def download_batch(
                     skipped_delisted += 1
             except Exception:
                 skipped_delisted += 1
+            _log_download_progress(completed, total, len(results), skipped_delisted)
             time.sleep(DOWNLOAD_RATE_LIMIT_PAUSE)
     else:
         with ThreadPoolExecutor(max_workers=DOWNLOAD_THREADS) as pool:
@@ -818,12 +843,15 @@ def download_batch(
                 pool.submit(download_ticker, sym, force, source, cache_first): sym for sym in symbols
             }
 
-            for future in tqdm(
-                as_completed(futures),
-                total=total,
-                desc=desc,
-                unit="ticker",
-                disable=not sys.stderr.isatty(),
+            for completed, future in enumerate(
+                tqdm(
+                    as_completed(futures),
+                    total=total,
+                    desc=desc,
+                    unit="ticker",
+                    disable=not sys.stderr.isatty(),
+                ),
+                start=1,
             ):
                 sym = futures[future]
                 try:
@@ -835,6 +863,7 @@ def download_batch(
                 except Exception as exc:
                     logger.debug("Download exception for %s: %s", sym, exc)
                     skipped_delisted += 1
+                _log_download_progress(completed, total, len(results), skipped_delisted)
 
     logger.info(
         "Download batch complete: %d/%d tickers succeeded, %d delisted/no-data skipped.",

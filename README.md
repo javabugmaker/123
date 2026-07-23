@@ -2,7 +2,7 @@
 
 ## 机构吸筹扫描器（Institutional Accumulation Scanner）
 
-一个基于 Python 的量化选股工具，用于扫描股票和 ETF 行情数据，通过多维度指标分析市场资金行为，寻找可能处于机构布局阶段的标的。
+一个基于 Python 的选股工具，用于扫描股票和 ETF 行情数据，通过多维度指标分析市场资金行为，寻找可能处于机构布局阶段的标的。
 
 项目目标：
 
@@ -23,7 +23,7 @@
 运行：
 
 ```bash
-python main.py scan
+python gui.py
 ```
 
 ---
@@ -36,13 +36,6 @@ python main.py scan
 - Sina
 - Tencent
 
-示例：
-
-```bash
-python main.py scan --data-source eastmoney
-```
-
----
 
 ## 3. 缓存与断点机制
 
@@ -54,8 +47,6 @@ python main.py scan --data-source eastmoney
 
 强制重新下载：
 
-```bash
-python main.py scan --force-download
 ```
 
 ---
@@ -83,9 +74,6 @@ python main.py scan --force-download
 
 重新生成报告：
 
-```bash
-python main.py report
-```
 
 ---
 
@@ -98,10 +86,6 @@ python main.py report
 - 超额收益分析
 - 最大回撤分析
 
-示例：
-
-```bash
-python main.py backtest --tickers 股票列表
 ```
 
 ---
@@ -136,35 +120,7 @@ Python >= 3.10
 pip install -r requirements.txt
 ```
 
----
 
-# 使用方法
-
-## 全量扫描
-
-```bash
-python main.py scan
-```
-
-## 指定股票
-
-```bash
-python main.py scan --tickers 600519,000001
-```
-
-## 只下载数据
-
-```bash
-python main.py download
-```
-
-## 清理缓存
-
-```bash
-python main.py clean
-```
-
----
 
 # 🧠 设计理念
 
@@ -219,14 +175,6 @@ python main.py clean
 请结合自身判断。
 
 ---
-
-# Roadmap
-
-- [ ] 实时行情扫描
-- [ ] AI评分模型
-- [ ] Web Dashboard
-- [ ] TradingView 联动
-- [ ] 自动化交易接口
 
 ---
 

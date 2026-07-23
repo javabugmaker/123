@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -40,6 +41,9 @@ COLUMN_WIDTHS = {
 NUMBER_COLUMNS = {"Score", "BacktestScore", "CompositeScore", "BacktestObjectiveValue", "ScoreConfidence", "ScoreMissingIndicators", "BacktestSamples", "Close", "DistToLow52W", "VolAccumDays", "SignalCount"}
 TEXT_COLUMNS = {"Name", "Sector", "Industry", "WyckoffPhase", "Stage"}
 MAX_RENDERED_ROWS = 500
+DOWNLOAD_PROGRESS_RE = re.compile(
+    r"DOWNLOAD progress: (\d+)/(\d+) \((\d+) succeeded, (\d+) no-data/failed\)\."
+)
 
 
 class ScannerGUI:
@@ -323,7 +327,9 @@ class ScannerGUI:
         self.scan_running = True
         self.scan_output_mtime = self._results_mtime()
         self.start_button.configure(state=tk.DISABLED)
-        self.progress.start(12)
+        self.progress.stop()
+        self.progress.configure(mode="determinate", maximum=100, value=0)
+        self.status.set("准备扫描")
         command = self.build_command()
         self.append_log("执行：" + " ".join(command) + "\n")
         threading.Thread(target=self.run_process, args=(command,), daemon=True).start()
@@ -410,9 +416,19 @@ class ScannerGUI:
         self.log_text.insert(tk.END, text)
         self.log_text.see(tk.END)
         self.log_text.configure(state=tk.DISABLED)
-        if "扫描" in text and "完成" in text:
+        progress = DOWNLOAD_PROGRESS_RE.search(text)
+        if progress:
+            completed, total, successful, skipped = (int(value) for value in progress.groups())
+            self.progress.stop()
+            self.progress.configure(mode="determinate", maximum=max(total, 1), value=completed)
+            self.status.set(f"DOWNLOAD {completed}/{total} · 成功 {successful} · 无数据/失败 {skipped}")
+        elif "Phase 2/2:" in text:
+            self.progress.configure(mode="indeterminate")
+            self.progress.start(12)
+            self.status.set("分析数据中")
+        elif "扫描" in text and "完成" in text:
             self.status.set("扫描完成")
-        elif text.strip():
+        elif text.strip() and not self.backtest_running:
             self.status.set("扫描运行中")
 
     def show_selected_detail(self, _event=None) -> None:

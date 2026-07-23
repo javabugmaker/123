@@ -33,11 +33,12 @@ if importlib.util.find_spec("pyarrow") is None:
 import gui
 import main
 import analytics
+import scanner
 from analytics import BacktestSummary, apply_backtest_ranking
 from config import OUTPUT_DIR
 from report import _results_to_dataframe
 from scanner import ScanResult
-from downloader import _cache_path, _load_cache
+from downloader import TickerInfo, _cache_path, _load_cache, _log_download_progress
 from filters import filter_bear_market, filter_min_price, filter_min_volume
 from score import score_ticker
 from scanner import ScanReport
@@ -69,7 +70,7 @@ class RegressionTests(TestCase):
         eastmoney = _cache_path("600000.SH", "eastmoney")
         sina = _cache_path("600000.SH", "sina")
         self.assertNotEqual(eastmoney, sina)
-        self.assertTrue(str(eastmoney).endswith("600000.SH__eastmoney.csv"))
+        self.assertTrue(str(eastmoney).endswith("600000.SH__eastmoney.parquet"))
 
     def test_invalid_latest_values_fail_basic_filters(self):
         frame = pd.DataFrame({"Close": [10, np.nan], "Volume": [1000, np.nan]})
@@ -240,7 +241,44 @@ class RegressionTests(TestCase):
         self.assertAlmostEqual(samples[0]["drawdown20"], -20.0)
         self.assertAlmostEqual(samples[0]["drawdown60"], -20.0)
 
-    def test_backtest_recomputes_indicators_for_full_history_and_each_historical_prefix(self):
+    def test_backtest_uses_benchmark_trading_calendar_for_split_dates(self):
+        benchmark_frame = pd.DataFrame({"Close": np.arange(10, dtype=float) + 100}, index=pd.bdate_range("2020-01-01", periods=10))
+        captured_splits = []
+
+        def backtest_one(*args):
+            captured_splits.append(args[-1])
+            return []
+
+        with TemporaryDirectory() as temp_dir, patch.object(analytics, "OUTPUT_DIR", Path(temp_dir)), patch.object(analytics, "_load_benchmark_frames", return_value={"沪深300": benchmark_frame}), patch.object(analytics, "_backtest_one_ticker", side_effect=backtest_one):
+            summary = analytics.run_historical_backtest(["000001.SZ"], test_ratio=0.2, validation_ratio=0.2)
+
+        self.assertEqual(summary.split_dates["global_start"], "2020-01-01")
+        self.assertEqual(summary.split_dates["validation_end"], "2020-01-09")
+        self.assertEqual(summary.split_dates["test_start"], "2020-01-13")
+        self.assertEqual(captured_splits, [(pd.Timestamp("2020-01-09"), pd.Timestamp("2020-01-13"))])
+
+    def test_entry_date_equal_weight_stats_weights_each_entry_day_equally(self):
+        samples = pd.DataFrame({
+            "entry_date": ["2020-01-02", "2020-01-02", "2020-01-03"],
+            "return20": [10.0, 30.0, 0.0],
+            "return60": [20.0, 40.0, 10.0],
+            "benchmark_return20": [2.0, 6.0, 0.0],
+            "benchmark_return60": [4.0, 8.0, 2.0],
+            "net_return20": [9.0, 29.0, -1.0],
+            "net_return60": [19.0, 39.0, 9.0],
+            "drawdown20": [-3.0, -5.0, -1.0],
+            "drawdown60": [-6.0, -8.0, -2.0],
+        })
+
+        stats = analytics._entry_date_equal_weight_stats(samples)
+
+        self.assertEqual(stats["entry_dates"], 2)
+        self.assertEqual(stats["samples"], 3)
+        self.assertAlmostEqual(stats["average_return_20d"], 10.0)
+        self.assertAlmostEqual(stats["average_excess_return_20d"], 8.0)
+        self.assertAlmostEqual(stats["maximum_drawdown_60d"], -7.0)
+
+    def test_backtest_reuses_full_history_indicators_for_historical_scores(self):
         frame = pd.DataFrame({
             "Open": np.full(320, 10.0),
             "High": np.full(320, 11.0),
@@ -248,6 +286,7 @@ class RegressionTests(TestCase):
             "Close": np.full(320, 10.0),
             "Volume": np.full(320, 1000.0),
         }, index=pd.date_range("2020-01-01", periods=320))
+
         def add_indicators(data):
             enriched = data.copy()
             enriched["VolMA20"] = 2.0
@@ -258,8 +297,28 @@ class RegressionTests(TestCase):
 
         with patch.object(analytics, "_load_cache", return_value=frame), patch.object(analytics, "compute_all_indicators", side_effect=add_indicators) as compute, patch.object(analytics, "_signal_points", return_value=[200, 220]), patch.object(analytics, "score_ticker", return_value=Mock(total=1.0)) as score:
             analytics._backtest_one_ticker("000001.SZ", "eastmoney")
-        self.assertEqual([item.args[0].shape[0] for item in compute.call_args_list], [320, 201, 221])
+
+        self.assertEqual([item.args[0].shape[0] for item in compute.call_args_list], [320])
         self.assertEqual([item.args[0].shape[0] for item in score.call_args_list], [201, 221])
+
+    def test_analysis_reuses_indicators_for_scan_and_enrichment(self):
+        frame = pd.DataFrame({
+            "Open": np.full(252, 10.0),
+            "High": np.full(252, 11.0),
+            "Low": np.full(252, 9.0),
+            "Close": np.full(252, 10.0),
+            "Volume": np.full(252, 1000.0),
+        }, index=pd.date_range("2020-01-01", periods=252))
+        enriched = frame.copy()
+        enriched["MA200"] = 10.0
+        ticker = TickerInfo(ticker="510300.SH", is_etf=True, asset_type="etf")
+
+        with patch.object(scanner, "compute_all_indicators", return_value=enriched) as compute:
+            result, returned_frame = scanner._analyse_one_ticker_from_df(ticker, frame)
+
+        self.assertFalse(result.error)
+        self.assertIs(returned_frame, enriched)
+        compute.assert_called_once()
 
     def test_backtest_requires_explicit_tickers(self):
         args = argparse.Namespace(tickers=None, tickers_file=None, data_source="eastmoney")
@@ -375,6 +434,29 @@ class RegressionTests(TestCase):
         scanner.status.set.assert_called_once_with(
             f"AllResults.csv · 命中 600 / 600 条 · 实际渲染 {gui.MAX_RENDERED_ROWS} 条 · 双击查看详情"
         )
+
+    def test_download_progress_logs_first_interval_and_final_updates(self):
+        with patch("downloader.logger.info") as info:
+            _log_download_progress(1, 250, 1, 0)
+            _log_download_progress(3, 250, 3, 0)
+            _log_download_progress(250, 250, 245, 5)
+
+        self.assertEqual(info.call_count, 2)
+        self.assertEqual(info.call_args_list[0].args[1:], (1, 250, 1, 0))
+        self.assertEqual(info.call_args_list[1].args[1:], (250, 250, 245, 5))
+
+    def test_gui_download_progress_updates_determinate_bar(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner.log_text = MagicMock()
+        scanner.progress = MagicMock()
+        scanner.status = Mock()
+        scanner.backtest_running = False
+
+        scanner.append_log("[INFO] DOWNLOAD progress: 64/100 (60 succeeded, 4 no-data/failed).\n")
+
+        scanner.progress.stop.assert_called_once_with()
+        scanner.progress.configure.assert_called_once_with(mode="determinate", maximum=100, value=64)
+        scanner.status.set.assert_called_once_with("DOWNLOAD 64/100 · 成功 60 · 无数据/失败 4")
 
     def test_all_tqdm_calls_disable_non_tty_stderr(self):
         for filename, expected_calls in (("downloader.py", 2), ("scanner.py", 2)):

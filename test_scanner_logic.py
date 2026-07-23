@@ -135,18 +135,17 @@ class ScannerLogicTests(TestCase):
         self.assertEqual(frame.iloc[-1]["Close"], 12)
 
     @patch("downloader._eastmoney_get")
-    def test_eastmoney_history_uses_realtime_price(self, request_get):
+    def test_eastmoney_history_does_not_use_realtime_price(self, request_get):
         history = Mock()
         history.json.return_value = {
             "data": {"klines": ["2026-07-21,10,11,12,9,1000"]}
         }
-        realtime = Mock()
-        realtime.json.return_value = {"data": {"f43": 1234, "f60": 1200}}
-        request_get.side_effect = [history, realtime]
+        request_get.return_value = history
 
         frame = downloader._download_from_eastmoney("000001.SZ")
 
-        self.assertEqual(frame.iloc[-1]["Close"], 12.34)
+        self.assertEqual(frame.iloc[-1]["Close"], 11.0)
+        self.assertEqual(request_get.call_count, 1)
 
     @patch("downloader._HTTP.get")
     def test_sina_history_fallback_is_normalized(self, request_get):
@@ -173,27 +172,40 @@ class ScannerLogicTests(TestCase):
     @patch("downloader._download_single")
     @patch("downloader._load_cache")
     @patch("downloader._save_cache")
-    def test_cached_latest_daily_bar_is_refreshed(self, save_cache, load_cache, download_single):
+    def test_cached_latest_daily_bar_is_refreshed_incrementally(self, save_cache, load_cache, download_single):
         cached = pd.DataFrame({
             "Open": [10.0], "High": [10.5], "Low": [9.5], "Close": [10.0], "Volume": [1000.0],
         }, index=pd.to_datetime(["2026-07-21"]))
         refreshed = pd.DataFrame({
-            "Open": [10.0], "High": [11.5], "Low": [9.5], "Close": [11.0], "Volume": [2000.0],
-        }, index=pd.to_datetime(["2026-07-21"]))
+            "Open": [10.0, 11.0], "High": [11.5, 12.5], "Low": [9.5, 10.5], "Close": [11.0, 12.0], "Volume": [2000.0, 3000.0],
+        }, index=pd.to_datetime(["2026-07-21", "2026-07-22"]))
         load_cache.return_value = cached
         download_single.return_value = refreshed
 
         frame = downloader.download_ticker("000001.SZ")
 
-        self.assertEqual(frame.iloc[-1]["Close"], 11.0)
+        self.assertEqual(frame.iloc[-1]["Close"], 12.0)
+        self.assertEqual(len(frame), 2)
+        self.assertEqual(download_single.call_args.kwargs["start_date"].date().isoformat(), "2026-07-14")
         save_cache.assert_called_once()
 
-    def test_save_cache_writes_csv(self):
+    def test_save_cache_writes_parquet(self):
         frame = pd.DataFrame({
             "Open": [10.0], "High": [10.5], "Low": [9.5], "Close": [10.0], "Volume": [1000.0],
         }, index=pd.to_datetime(["2026-07-21"]))
         with TemporaryDirectory() as temp_dir, patch("downloader.CACHE_DIR", Path(temp_dir)):
             downloader._save_cache("000001.SZ", frame, "eastmoney")
+            cached = downloader._load_cache("000001.SZ", "eastmoney")
+            self.assertTrue(downloader._cache_path("000001.SZ", "eastmoney").exists())
+
+        self.assertEqual(cached.iloc[-1]["Close"], 10.0)
+
+    def test_load_cache_reads_legacy_csv(self):
+        frame = pd.DataFrame({
+            "Open": [10.0], "High": [10.5], "Low": [9.5], "Close": [10.0], "Volume": [1000.0],
+        }, index=pd.to_datetime(["2026-07-21"]))
+        with TemporaryDirectory() as temp_dir, patch("downloader.CACHE_DIR", Path(temp_dir)):
+            frame.to_csv(downloader._legacy_cache_path("000001.SZ", "eastmoney"))
             cached = downloader._load_cache("000001.SZ", "eastmoney")
 
         self.assertEqual(cached.iloc[-1]["Close"], 10.0)
