@@ -32,11 +32,15 @@ if importlib.util.find_spec("pyarrow") is None:
 
 import gui
 import main
+import analytics
 from analytics import BacktestSummary, apply_backtest_ranking
 from config import OUTPUT_DIR
+from report import _results_to_dataframe
+from scanner import ScanResult
 from downloader import _cache_path, _load_cache
 from filters import filter_bear_market, filter_min_price, filter_min_volume
 from score import score_ticker
+from scanner import ScanReport
 
 
 class RegressionTests(TestCase):
@@ -79,6 +83,15 @@ class RegressionTests(TestCase):
         })
         self.assertFalse(filter_bear_market(frame).passed)
 
+    def test_export_dataframe_supports_backtest_fields(self):
+        result = ScanResult(ticker="000001.SZ")
+        frame = _results_to_dataframe([result])
+
+        self.assertEqual(frame.loc[0, "Ticker"], "000001.SZ")
+        self.assertTrue(pd.isna(frame.loc[0, "BacktestObjectiveValue"]))
+        self.assertEqual(frame.loc[0, "UniverseType"], "current_survivor_pool")
+        self.assertTrue(frame.loc[0, "SurvivorshipBiasWarning"])
+
     def test_apply_backtest_ranking_cleans_legacy_columns_on_repeated_calls(self):
         with patch("analytics.OUTPUT_DIR") as output_dir:
             from tempfile import TemporaryDirectory
@@ -104,6 +117,28 @@ class RegressionTests(TestCase):
                 self.assertNotIn("backtest_score", result.columns)
                 self.assertNotIn("samples", result.columns)
                 self.assertEqual(int(result.loc[result["Ticker"] == "000001.SZ", "BacktestSamples"].iloc[0]), 4)
+    def test_max_drawdown_ranking_prefers_shallower_losses(self):
+        with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
+            pd.DataFrame({
+                "Ticker": ["000001.SZ", "600000.SH"],
+                "Score": [50.0, 50.0],
+                "PassedFilters": [True, True],
+                "SignalCount": [4, 4],
+            }).to_csv(Path(temp_dir) / "AllResults.csv", index=False, encoding="utf-8-sig")
+            summary = BacktestSummary(
+                objective="max_drawdown",
+                by_ticker=[
+                    {"ticker": "000001.SZ", "samples": 10, "backtest_score": 50.0, "objective_value": -5.0},
+                    {"ticker": "600000.SH", "samples": 10, "backtest_score": 50.0, "objective_value": -20.0},
+                ],
+            )
+
+            apply_backtest_ranking(summary)
+            result = pd.read_csv(Path(temp_dir) / "AllResults.csv", encoding="utf-8-sig")
+
+        self.assertEqual(result.iloc[0]["Ticker"], "000001.SZ")
+        self.assertGreater(result.iloc[0]["CompositeScore"], result.iloc[1]["CompositeScore"])
+
     def test_volume_profile_accepts_numpy_bool(self):
         frame = pd.DataFrame({
             "Close": np.full(252, 10.0),
@@ -117,6 +152,114 @@ class RegressionTests(TestCase):
         })
         from score import score_structure
         self.assertGreaterEqual(score_structure(frame), 2.0)
+
+    def test_score_ticker_returns_finite_scores_for_invalid_indicators(self):
+        frame = pd.DataFrame({
+            "Close": [10.0] * 252,
+            "High": [11.0] * 252,
+            "Low": [9.0] * 252,
+            "Volume": [1000.0] * 252,
+            "MA200": [np.nan] * 252,
+            "VolMA20": [np.inf] * 252,
+            "VolMA120": [-np.inf] * 252,
+            "OBV": [np.nan] * 252,
+            "AD": [np.inf] * 252,
+            "AD_Slope": [np.nan] * 252,
+            "CMF": [-np.inf] * 252,
+            "MFI": [np.nan] * 252,
+            "ATR14": [np.inf] * 252,
+            "ATR50": [np.nan] * 252,
+            "BB_Width": [np.inf] * 252,
+            "HV20": [np.nan] * 252,
+            "HV60": [-np.inf] * 252,
+            "Low52W": [np.nan] * 252,
+            "DistToLow52W": [np.nan] * 252,
+            "RegSlope": [np.inf] * 252,
+            "RegR2": [-np.inf] * 252,
+            "Above_HVN": [True] * 252,
+            "DistToHVN_Pct": [np.nan] * 252,
+        })
+        score = score_ticker(frame)
+        self.assertTrue(all(np.isfinite(value) for value in score.__dict__.values()))
+        self.assertTrue(all(np.isfinite(value) for value in score.to_dict().values()))
+
+    def test_score_ticker_shrinks_incomplete_indicator_scores_toward_neutral(self):
+        frame = pd.DataFrame({
+            "Close": [10.0] * 252,
+            "High": [11.0] * 252,
+            "Low": [9.0] * 252,
+            "Volume": [1000.0] * 252,
+            "MA200": [np.nan] * 252,
+            "VolMA20": [np.nan] * 252,
+            "OBV": [np.nan] * 252,
+            "ATR14": [np.nan] * 252,
+        })
+
+        score = score_ticker(frame)
+        raw_total = score.trend + score.volume + score.accumulation + score.volatility + score.structure
+
+        self.assertLess(score.indicator_coverage, 1.0)
+        self.assertAlmostEqual(score.total, 50.0 + (raw_total - 50.0) * score.indicator_coverage)
+
+    def test_cmd_scan_classifies_specified_etfs(self):
+        args = argparse.Namespace(
+            tickers="600036.SH,510300.SH,159915",
+            etfs_only=False,
+            stocks_only=False,
+            force_download=False,
+            no_resume=False,
+            data_source="eastmoney",
+            cache_first=False,
+            top=50,
+            top_parquet=200,
+        )
+        report = ScanReport(successful=1)
+        with patch("main.run_scan", return_value=report) as run_scan, patch("main.export_all", return_value=(Path("top.csv"), Path("top.parquet"), Path("all.csv"), Path("all.parquet"))), patch("main.print_terminal_report"), patch("main.print_scan_summary"):
+            self.assertEqual(main.cmd_scan(args), 0)
+
+        stock_universe = run_scan.call_args.kwargs["stock_universe"]
+        etf_universe = run_scan.call_args.kwargs["etf_universe"]
+        self.assertEqual([ticker.ticker for ticker in stock_universe], ["600036.SH"])
+        self.assertEqual([ticker.ticker for ticker in etf_universe], ["510300.SH", "159915"])
+        self.assertTrue(all(ticker.is_etf and ticker.asset_type == "etf" for ticker in etf_universe))
+
+    def test_backtest_drawdown_includes_entry_open_price(self):
+        frame = pd.DataFrame({
+            "Open": np.full(320, 100.0),
+            "High": np.full(320, 100.0),
+            "Low": np.full(320, 100.0),
+            "Close": np.full(320, 100.0),
+            "Volume": np.full(320, 1000.0),
+        }, index=pd.date_range("2020-01-01", periods=320))
+        frame.loc[frame.index[251], "Close"] = 90.0
+        frame.loc[frame.index[251], "Low"] = 80.0
+        with patch.object(analytics, "_load_cache", return_value=frame), patch.object(analytics, "compute_all_indicators", side_effect=lambda data: data), patch.object(analytics, "_signal_points", return_value=[250]), patch.object(analytics, "score_ticker", return_value=Mock(total=50.0)):
+            samples = analytics._backtest_one_ticker("600036.SH", "eastmoney")
+
+        self.assertEqual(len(samples), 1)
+        self.assertAlmostEqual(samples[0]["drawdown20"], -20.0)
+        self.assertAlmostEqual(samples[0]["drawdown60"], -20.0)
+
+    def test_backtest_recomputes_indicators_for_full_history_and_each_historical_prefix(self):
+        frame = pd.DataFrame({
+            "Open": np.full(320, 10.0),
+            "High": np.full(320, 11.0),
+            "Low": np.full(320, 9.0),
+            "Close": np.full(320, 10.0),
+            "Volume": np.full(320, 1000.0),
+        }, index=pd.date_range("2020-01-01", periods=320))
+        def add_indicators(data):
+            enriched = data.copy()
+            enriched["VolMA20"] = 2.0
+            enriched["VolMA120"] = 1.0
+            enriched["CMF"] = 1.0
+            enriched["MA50"] = 10.0
+            return enriched
+
+        with patch.object(analytics, "_load_cache", return_value=frame), patch.object(analytics, "compute_all_indicators", side_effect=add_indicators) as compute, patch.object(analytics, "_signal_points", return_value=[200, 220]), patch.object(analytics, "score_ticker", return_value=Mock(total=1.0)) as score:
+            analytics._backtest_one_ticker("000001.SZ", "eastmoney")
+        self.assertEqual([item.args[0].shape[0] for item in compute.call_args_list], [320, 201, 221])
+        self.assertEqual([item.args[0].shape[0] for item in score.call_args_list], [201, 221])
 
     def test_backtest_requires_explicit_tickers(self):
         args = argparse.Namespace(tickers=None, tickers_file=None, data_source="eastmoney")

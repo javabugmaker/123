@@ -42,6 +42,7 @@ from downloader import (
     build_ticker_universe,
     download_batch,
     download_ticker,
+    is_etf_ticker,
 )
 from scanner import (
     ScanReport,
@@ -106,8 +107,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
     # Build universe or use specific tickers
     if args.tickers:
         symbols = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-        stock_universe = [TickerInfo(ticker=s) for s in symbols]
-        etf_universe: list[TickerInfo] = []
+        stock_universe = [TickerInfo(ticker=s) for s in symbols if not is_etf_ticker(s)]
+        etf_universe = [TickerInfo(ticker=s, is_etf=True, asset_type="etf") for s in symbols if is_etf_ticker(s)]
         logger.info("Scanning %d specified tickers: %s", len(symbols), ", ".join(symbols))
     else:
         logger.info("Building ticker universe (stocks=%s, ETFs=%s)...", include_stocks, include_etfs)
@@ -233,14 +234,49 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         return 2
     logger.info("Backtesting 50 explicitly specified tickers...")
     tickers = unique_tickers
-    summary = run_historical_backtest(tickers, source=args.data_source)
+    options = {
+        "objective": getattr(args, "objective", "return_20d"),
+        "benchmark": getattr(args, "benchmark", "沪深300"),
+        "commission": getattr(args, "commission", 0.0003),
+        "stamp_duty": getattr(args, "stamp_duty", 0.0005),
+        "slippage": getattr(args, "slippage", 0.001),
+        "test_ratio": getattr(args, "test_ratio", 0.2),
+        "validation_ratio": getattr(args, "validation_ratio", 0.2),
+    }
+    for name in ("commission", "stamp_duty", "slippage"):
+        if options[name] < 0:
+            logger.error("回测成本参数 --%s 不能为负数。", name.replace("_", "-"))
+            return 2
+    if not 0 < options["test_ratio"] < 1:
+        logger.error("--test-ratio 必须大于 0 且小于 1。")
+        return 2
+    if not 0 <= options["validation_ratio"] < 1:
+        logger.error("--validation-ratio 必须在 0 和 1 之间。")
+        return 2
+    if options["test_ratio"] + options["validation_ratio"] >= 1:
+        logger.error("--test-ratio 与 --validation-ratio 之和必须小于 1。")
+        return 2
+    if all(not hasattr(args, key) for key in options):
+        summary = run_historical_backtest(tickers, source=args.data_source)
+    else:
+        summary = run_historical_backtest(tickers, source=args.data_source, **options)
+    if getattr(summary, "insufficient_test_data", False) is True:
+        logger.error("回测测试集有效样本不足：%s", getattr(summary, "error", "未知错误"))
+        return 2
     apply_backtest_ranking(summary, top_n=TOP_N_REPORT)
     logger.info(
-        "Backtest complete: %d samples, 20d win rate %.1f%%, average return %.2f%%, 60d average return %.2f%%.",
+        "Backtest complete: %d test samples, %d all samples, 20d win rate %.1f%%, average return %.2f%%, 60d average return %.2f%%.",
         summary.samples,
+        getattr(summary, "all_samples", summary.samples),
         summary.win_rate_20d * 100,
         summary.average_return_20d,
         summary.average_return_60d,
+    )
+    logger.info(
+        "Backtest dates: %s; benchmark valid count %d, coverage %.1f%%.",
+        getattr(summary, "split_dates", {}),
+        int(getattr(summary, "benchmark_valid_count", 0)) if isinstance(getattr(summary, "benchmark_valid_count", 0), (int, float)) else 0,
+        float(getattr(summary, "benchmark_coverage", 0.0)) * 100 if isinstance(getattr(summary, "benchmark_coverage", 0.0), (int, float)) else 0.0,
     )
     return 0
 
@@ -285,8 +321,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ---- scan ----
     scan_p = sub.add_parser("scan", help="Run the full accumulation scan")
-    scan_p.add_argument("--stocks-only", action="store_true", help="Scan only stocks")
-    scan_p.add_argument("--etfs-only", action="store_true", help="Scan only ETFs")
+    scan_scope = scan_p.add_mutually_exclusive_group()
+    scan_scope.add_argument("--stocks-only", action="store_true", help="Scan only stocks")
+    scan_scope.add_argument("--etfs-only", action="store_true", help="Scan only ETFs")
     scan_p.add_argument("--force-download", action="store_true",
                         help="Re-download all data (ignore cache)")
     scan_p.add_argument("--no-resume", action="store_true",
@@ -324,6 +361,13 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_p.add_argument("--tickers", type=str, default=None, help="Comma-separated list of exactly 50 unique tickers")
     backtest_p.add_argument("--tickers-file", type=Path, default=None, help="File containing exactly 50 unique tickers")
     backtest_p.add_argument("--data-source", choices=("eastmoney", "sina", "tencent"), default="eastmoney")
+    backtest_p.add_argument("--objective", choices=("return_20d", "return_60d", "excess_return_20d", "excess_return_60d", "max_drawdown", "risk_adjusted"), default="return_20d")
+    backtest_p.add_argument("--benchmark", choices=("沪深300", "中证500", "创业板指"), default="沪深300")
+    backtest_p.add_argument("--commission", type=float, default=0.0003)
+    backtest_p.add_argument("--stamp-duty", dest="stamp_duty", type=float, default=0.0005)
+    backtest_p.add_argument("--slippage", type=float, default=0.001)
+    backtest_p.add_argument("--test-ratio", dest="test_ratio", type=float, default=0.2)
+    backtest_p.add_argument("--validation-ratio", dest="validation_ratio", type=float, default=0.2)
     backtest_p.add_argument("--verbose", "-v", action="store_true")
 
     # ---- clean ----

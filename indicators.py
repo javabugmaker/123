@@ -381,19 +381,30 @@ def compute_volume_profile(df: pd.DataFrame, bins: int = VOLUME_PROFILE_BINS, lo
         return
     bin_edges = np.linspace(price_min, price_max, bins + 1)
     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-    profile = np.zeros(bins)
-    for i in range(len(subset)):
-        row_low, row_high = low.iloc[i], high.iloc[i]
-        if row_low >= row_high:
-            continue
-        row_vol = vol.iloc[i]
-        bin_indices = np.digitize([row_low, row_high], bin_edges) - 1
-        lo_idx = max(0, min(bin_indices[0], bins - 1))
-        hi_idx = max(0, min(bin_indices[1], bins - 1))
-        if hi_idx <= lo_idx:
-            hi_idx = min(lo_idx + 1, bins - 1)
-        for b in range(lo_idx, hi_idx + 1):
-            profile[b] += row_vol / (hi_idx - lo_idx + 1)
+    low_values = low.to_numpy(dtype=float)
+    high_values = high.to_numpy(dtype=float)
+    volume_values = vol.to_numpy(dtype=float)
+    valid = low_values < high_values
+    lo_indices = np.clip(np.digitize(low_values, bin_edges) - 1, 0, bins - 1)
+    hi_indices = np.clip(np.digitize(high_values, bin_edges) - 1, 0, bins - 1)
+    hi_indices = np.where(
+        hi_indices <= lo_indices,
+        np.minimum(lo_indices + 1, bins - 1),
+        hi_indices,
+    )
+    bin_numbers = np.arange(bins)
+    included = (
+        valid[:, np.newaxis]
+        & (bin_numbers >= lo_indices[:, np.newaxis])
+        & (bin_numbers <= hi_indices[:, np.newaxis])
+    )
+    weights = np.divide(
+        volume_values,
+        hi_indices - lo_indices + 1,
+        out=np.zeros_like(volume_values),
+        where=valid,
+    )
+    profile = (included * weights[:, np.newaxis]).sum(axis=0)
     if profile.sum() == 0:
         return
     threshold_hvn = np.percentile(profile[profile > 0], 67) if (profile > 0).any() else 0

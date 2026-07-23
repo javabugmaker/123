@@ -39,6 +39,11 @@ logger = logging.getLogger("institution_scanner.score")
 # Score Result
 # ======================================================================
 
+class ScoreContributions(dict[str, float]):
+    def __array__(self, dtype: Any = None) -> np.ndarray:
+        return np.asarray(float(sum(self.values())), dtype=dtype)
+
+
 @dataclass
 class ScoreBreakdown:
     """Full scoring output for one ticker."""
@@ -48,6 +53,10 @@ class ScoreBreakdown:
     accumulation: float = 0.0
     volatility: float = 0.0
     structure: float = 0.0
+    missing_indicators: int = 0
+    indicator_coverage: float = 1.0
+    confidence: float = 1.0
+    contributions: dict[str, float] = field(default_factory=ScoreContributions)
 
     def to_dict(self) -> dict[str, float]:
         return {
@@ -57,6 +66,14 @@ class ScoreBreakdown:
             "AccumulationScore": round(self.accumulation, 2),
             "CompressionScore": round(self.volatility, 2),
             "StructureScore": round(self.structure, 2),
+            "ScoreMissingIndicators": self.missing_indicators,
+            "ScoreCoverage": round(self.indicator_coverage, 4),
+            "ScoreConfidence": round(self.confidence, 4),
+            "ScoreContributionTrend": round(self.contributions.get("trend", self.trend), 2),
+            "ScoreContributionVolume": round(self.contributions.get("volume", self.volume), 2),
+            "ScoreContributionAccumulation": round(self.contributions.get("accumulation", self.accumulation), 2),
+            "ScoreContributionCompression": round(self.contributions.get("compression", self.volatility), 2),
+            "ScoreContributionStructure": round(self.contributions.get("structure", self.structure), 2),
         }
 
 
@@ -66,6 +83,8 @@ class ScoreBreakdown:
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     """Clamp a value to [low, high]."""
+    if not np.isfinite(value):
+        return low
     return max(low, min(high, value))
 
 
@@ -295,7 +314,7 @@ def score_structure(df: pd.DataFrame) -> float:
     if len(df) < 252:
         return 0.0
 
-    close = df["Close"]
+    close = df["Close"].replace([np.inf, -np.inf], np.nan)
     price_now = close.iloc[-1]
     score = 0.0
 
@@ -336,7 +355,7 @@ def score_structure(df: pd.DataFrame) -> float:
             # R² bonus
             if "RegR2" in df.columns:
                 r2 = df["RegR2"].iloc[-1]
-                if not np.isnan(r2):
+                if pd.notna(r2) and np.isfinite(float(r2)):
                     score += _clamp(r2, 0, 1) * 1
 
     # 4. Volume Profile — price above HVN (up to 2 points)
@@ -393,6 +412,25 @@ def _style_adjustment(df: pd.DataFrame, style: str) -> tuple[float, float, float
     return (1.00, 1.00, 1.00, 1.00, 1.00)
 
 
+def _score_dimensions_available(df: pd.DataFrame) -> tuple[bool, bool, bool, bool, bool]:
+    trend_available = len(df) >= 252 and "Close" in df.columns and "MA200" in df.columns and df[["Close", "MA200"]].replace([np.inf, -np.inf], np.nan).dropna().shape[0] >= 60
+    volume_available = len(df) >= 120 and any(
+        column in df.columns and df[column].replace([np.inf, -np.inf], np.nan).notna().any()
+        for column in ("VolMA20", "VolMA120", "VolZScore")
+    )
+    accumulation_available = len(df) >= 60 and any(
+        column in df.columns and df[column].replace([np.inf, -np.inf], np.nan).notna().any()
+        for column in ("OBV", "AD", "CMF", "MFI")
+    )
+    volatility_available = len(df) >= BB_WIDTH_COMPRESSION_LOOKBACK and any(
+        all(column in df.columns for column in columns)
+        and df[list(columns)].replace([np.inf, -np.inf], np.nan).notna().all(axis=1).any()
+        for columns in (("ATR14", "ATR50"), ("BB_Width",), ("HV20", "HV60"))
+    )
+    structure_available = len(df) >= 252 and "Close" in df.columns and df["Close"].replace([np.inf, -np.inf], np.nan).notna().any()
+    return trend_available, volume_available, accumulation_available, volatility_available, structure_available
+
+
 def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
     """
     Compute the full accumulation score for one ticker.
@@ -424,7 +462,17 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
         for score, adjustment, limit in zip(raw_scores, adjustments, limits)
     )
     trend, volume, accumulation, volatility, structure = adjusted_scores
-    total = sum(adjusted_scores)
+    available = _score_dimensions_available(df)
+    missing_indicators = available.count(False)
+    indicator_coverage = sum(available) / len(available)
+    total = 50.0 + (sum(adjusted_scores) - 50.0) * indicator_coverage
+    contributions = ScoreContributions({
+        "trend": trend,
+        "volume": volume,
+        "accumulation": accumulation,
+        "compression": volatility,
+        "structure": structure,
+    })
 
     return ScoreBreakdown(
         total=total,
@@ -433,4 +481,8 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
         accumulation=accumulation,
         volatility=volatility,
         structure=structure,
+        missing_indicators=missing_indicators,
+        indicator_coverage=indicator_coverage,
+        confidence=indicator_coverage,
+        contributions=contributions,
     )

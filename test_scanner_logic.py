@@ -1,3 +1,5 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase, main
 from unittest.mock import Mock, patch
 
@@ -12,6 +14,8 @@ from downloader import (
     _fetch_a_share_etfs,
     _fetch_a_share_stocks,
     _is_excluded_security_name,
+    is_etf_ticker,
+    normalize_ticker,
 )
 from filters import filter_min_market_cap, filter_min_price, filter_volatility_contraction
 from scanner import ScanResult
@@ -19,6 +23,12 @@ from score import classify_style, score_ticker
 
 
 class ScannerLogicTests(TestCase):
+    def test_normalize_ticker_adds_a_share_exchange_suffix(self):
+        self.assertEqual(normalize_ticker("002438"), "002438.SZ")
+        self.assertEqual(normalize_ticker("600036"), "600036.SH")
+        self.assertEqual(normalize_ticker("688981"), "688981.SH")
+        self.assertEqual(normalize_ticker("002438.SZ"), "002438.SZ")
+
     @patch("downloader._eastmoney_get")
     def test_full_universe_uses_all_pages(self, request_get):
         first = Mock()
@@ -124,6 +134,20 @@ class ScannerLogicTests(TestCase):
         self.assertEqual(list(frame.columns), ["Open", "High", "Low", "Close", "Volume"])
         self.assertEqual(frame.iloc[-1]["Close"], 12)
 
+    @patch("downloader._eastmoney_get")
+    def test_eastmoney_history_uses_realtime_price(self, request_get):
+        history = Mock()
+        history.json.return_value = {
+            "data": {"klines": ["2026-07-21,10,11,12,9,1000"]}
+        }
+        realtime = Mock()
+        realtime.json.return_value = {"data": {"f43": 1234, "f60": 1200}}
+        request_get.side_effect = [history, realtime]
+
+        frame = downloader._download_from_eastmoney("000001.SZ")
+
+        self.assertEqual(frame.iloc[-1]["Close"], 12.34)
+
     @patch("downloader._HTTP.get")
     def test_sina_history_fallback_is_normalized(self, request_get):
         response = Mock()
@@ -145,6 +169,34 @@ class ScannerLogicTests(TestCase):
         frame = _download_from_tencent("000001.SZ")
 
         self.assertEqual(frame.iloc[-1]["Close"], 12)
+
+    @patch("downloader._download_single")
+    @patch("downloader._load_cache")
+    @patch("downloader._save_cache")
+    def test_cached_latest_daily_bar_is_refreshed(self, save_cache, load_cache, download_single):
+        cached = pd.DataFrame({
+            "Open": [10.0], "High": [10.5], "Low": [9.5], "Close": [10.0], "Volume": [1000.0],
+        }, index=pd.to_datetime(["2026-07-21"]))
+        refreshed = pd.DataFrame({
+            "Open": [10.0], "High": [11.5], "Low": [9.5], "Close": [11.0], "Volume": [2000.0],
+        }, index=pd.to_datetime(["2026-07-21"]))
+        load_cache.return_value = cached
+        download_single.return_value = refreshed
+
+        frame = downloader.download_ticker("000001.SZ")
+
+        self.assertEqual(frame.iloc[-1]["Close"], 11.0)
+        save_cache.assert_called_once()
+
+    def test_save_cache_writes_csv(self):
+        frame = pd.DataFrame({
+            "Open": [10.0], "High": [10.5], "Low": [9.5], "Close": [10.0], "Volume": [1000.0],
+        }, index=pd.to_datetime(["2026-07-21"]))
+        with TemporaryDirectory() as temp_dir, patch("downloader.CACHE_DIR", Path(temp_dir)):
+            downloader._save_cache("000001.SZ", frame, "eastmoney")
+            cached = downloader._load_cache("000001.SZ", "eastmoney")
+
+        self.assertEqual(cached.iloc[-1]["Close"], 10.0)
 
     def test_a_share_filters_handle_price_market_cap_and_missing_indicators(self):
         frame = pd.DataFrame({"Close": [4.0]})

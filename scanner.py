@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -80,6 +81,9 @@ class ScanResult:
     asset_type: str = "stock"
     close: float = 0.0
     score: ScoreBreakdown = field(default_factory=ScoreBreakdown)
+    score_missing_indicators: int = 0
+    score_coverage: float = 1.0
+    score_confidence: float = 1.0
     obv: float = np.nan
     cmf: float = np.nan
     ad: float = np.nan
@@ -106,7 +110,10 @@ class ScanResult:
     backtest_win_rate_60d: float = np.nan
     backtest_average_return_20d: float = np.nan
     backtest_average_return_60d: float = np.nan
+    backtest_objective_value: float = np.nan
     composite_score: float = np.nan
+    universe_type: str = "current_survivor_pool"
+    survivorship_bias_warning: bool = True
 
 
 # ======================================================================
@@ -126,6 +133,16 @@ def _parse_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "是"}
     return bool(value)
+
+
+def _parse_int(value: Any, default: int = 0) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return int(parsed) if np.isfinite(parsed) else default
 
 
 def save_checkpoint(processed: set[str], data_source: str = "") -> None:
@@ -281,6 +298,9 @@ def scan_single_from_df(
             asset_type=ticker_info.asset_type,
             close=close,
             score=sb,
+            score_missing_indicators=sb.missing_indicators,
+            score_coverage=sb.indicator_coverage,
+            score_confidence=sb.confidence,
             obv=obv_val,
             cmf=cmf_val,
             ad=ad_val,
@@ -432,14 +452,17 @@ def run_scan(
         and _cache_path_for(ticker, data_source).stat().st_mtime <= previous_report_time
     }
 
-    downloaded_symbols = {_normalize_ticker(ticker) for ticker in downloaded}
+    downloaded_frames = {
+        _normalize_ticker(ticker): frame for ticker, frame in downloaded.items()
+    }
+    downloaded_symbols = set(downloaded_frames)
     analyse_queue: list[TickerInfo] = []
     skipped_no_cache = 0
     for ti in all_tickers:
         ticker = _normalize_ticker(ti.ticker)
         if ticker in processed_set:
             continue
-        if ticker in downloaded_symbols and _load_cache(ticker, data_source) is not None:
+        if ticker in downloaded_symbols and downloaded_frames.get(ticker) is not None:
             analyse_queue.append(ti)
         else:
             skipped_no_cache += 1
@@ -451,6 +474,7 @@ def run_scan(
     )
 
     results: list[ScanResult] = []
+    analysed_frames: dict[str, pd.DataFrame] = {}
     analysed_this_run: set[str] = set()
     successful: int = 0
     failed: int = 0
@@ -487,7 +511,30 @@ def run_scan(
                         accumulation=float(row.get("AccumulationScore", 0)),
                         volatility=float(row.get("CompressionScore", 0)),
                         structure=float(row.get("StructureScore", 0)),
+                        missing_indicators=_parse_int(row.get("ScoreMissingIndicators", 0), 0),
+                        indicator_coverage=float(row.get("ScoreCoverage", 1.0) or 1.0),
+                        confidence=float(row.get("ScoreConfidence", row.get("ScoreCoverage", 1.0)) or 1.0),
+                        contributions={
+                            "trend": float(row.get("ScoreContributionTrend", row.get("TrendScore", 0)) or 0),
+                            "volume": float(row.get("ScoreContributionVolume", row.get("VolumeScore", 0)) or 0),
+                            "accumulation": float(row.get("ScoreContributionAccumulation", row.get("AccumulationScore", 0)) or 0),
+                            "compression": float(row.get("ScoreContributionCompression", row.get("CompressionScore", 0)) or 0),
+                            "structure": float(row.get("ScoreContributionStructure", row.get("StructureScore", 0)) or 0),
+                        },
                     ),
+                    score_missing_indicators=_parse_int(row.get("ScoreMissingIndicators", 0), 0),
+                    score_coverage=float(row.get("ScoreCoverage", 1.0) or 1.0),
+                    score_confidence=float(row.get("ScoreConfidence", row.get("ScoreCoverage", 1.0)) or 1.0),
+                    backtest_score=float(row.get("BacktestScore", np.nan)),
+                    backtest_samples=_parse_int(row.get("BacktestSamples", 0), 0),
+                    backtest_win_rate_20d=float(row.get("BacktestWinRate20D", np.nan)),
+                    backtest_win_rate_60d=float(row.get("BacktestWinRate60D", np.nan)),
+                    backtest_average_return_20d=float(row.get("BacktestAverageReturn20D", np.nan)),
+                    backtest_average_return_60d=float(row.get("BacktestAverageReturn60D", np.nan)),
+                    backtest_objective_value=float(row.get("BacktestObjectiveValue", np.nan)),
+                    composite_score=float(row.get("CompositeScore", np.nan)),
+                    universe_type=str(row.get("UniverseType", "current_survivor_pool") or "current_survivor_pool"),
+                    survivorship_bias_warning=_parse_bool(row.get("SurvivorshipBiasWarning", True), True),
                     obv=row.get("OBV", np.nan),
                     cmf=row.get("CMF", np.nan),
                     ad=row.get("AD", np.nan),
@@ -526,7 +573,12 @@ def run_scan(
     with ThreadPoolExecutor(max_workers=SCAN_THREADS) as executor:
         futures = {}
         for ti in analyse_queue:
-            futures[executor.submit(_analyse_one_ticker, ti, data_source)] = ti
+            ticker = _normalize_ticker(ti.ticker)
+            futures[executor.submit(
+                _analyse_one_ticker_from_df,
+                ti,
+                downloaded_frames[ticker],
+            )] = ti
 
         for future in tqdm(
             as_completed(futures),
@@ -537,12 +589,14 @@ def run_scan(
         ):
             ti = futures[future]
             try:
-                result = future.result(timeout=120)
+                result, frame = future.result(timeout=120)
             except Exception as exc:
                 logger.warning("Analysis error for %s: %s", ti.ticker, exc)
-                result = ScanResult(ticker=ti.ticker, error=str(exc))
+                result, frame = ScanResult(ticker=ti.ticker, error=str(exc)), None
 
             results.append(result)
+            if frame is not None:
+                analysed_frames[result.ticker] = frame
 
             if result.error:
                 failed += 1
@@ -578,7 +632,7 @@ def run_scan(
 
     logger.info("Enriching %d scan results...", len(results))
     try:
-        enrich_results(results, data_source)
+        enrich_results(results, data_source, frames=analysed_frames)
     except Exception as exc:
         logger.exception("Failed to enrich scan results; continuing with base results: %s", exc)
     logger.info("Enrichment complete: %d scan results.", len(results))
@@ -610,6 +664,14 @@ def _cache_path_for(ticker: str, source: str) -> Path:
     return CACHE_DIR / f"{safe}__{normalize_data_source(source)}.csv"
 
 
+def _analyse_one_ticker_from_df(
+    ticker_info: TickerInfo,
+    df: pd.DataFrame | None,
+) -> tuple[ScanResult, pd.DataFrame | None]:
+    result = scan_single_from_df(ticker_info, df)
+    return result, df if not result.error else None
+
+
 def _analyse_one_ticker(ticker_info: TickerInfo, data_source: str = "eastmoney") -> ScanResult:
     """Load cached CSV and run the analysis pipeline.  Sits inside a ThreadPool."""
     ticker = ticker_info.ticker
@@ -624,7 +686,7 @@ def _analyse_one_ticker(ticker_info: TickerInfo, data_source: str = "eastmoney")
                 is_etf=ticker_info.is_etf,
                 error="No cached data",
             )
-        return scan_single_from_df(ticker_info, df)
+        return _analyse_one_ticker_from_df(ticker_info, df)[0]
     except Exception as exc:
         return ScanResult(ticker=ticker, name=ticker_info.name, error=str(exc))
 

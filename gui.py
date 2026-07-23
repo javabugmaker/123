@@ -17,7 +17,7 @@ MAIN_FILE = PROJECT_ROOT / "main.py"
 COLUMN_NAMES = {
     "Ticker": "代码", "Name": "名称", "Sector": "板块", "Industry": "行业", "IsETF": "类型", "AssetType": "类型", "Style": "风格", "Quality": "质量",
     "Close": "收盘价", "Score": "综合评分", "BacktestScore": "回测评分", "CompositeScore": "综合回测评分", "BacktestSamples": "回测样本数",
-    "BacktestWinRate20D": "20日胜率", "BacktestWinRate60D": "60日胜率", "BacktestAverageReturn20D": "20日平均收益", "BacktestAverageReturn60D": "60日平均收益", "TrendScore": "趋势分", "VolumeScore": "成交量分",
+    "BacktestWinRate20D": "20日胜率", "BacktestWinRate60D": "60日胜率", "BacktestAverageReturn20D": "20日平均收益", "BacktestAverageReturn60D": "60日平均收益", "BacktestObjectiveValue": "回测目标值", "UniverseType": "股票池类型", "SurvivorshipBiasWarning": "幸存者偏差警告", "TrendScore": "趋势分", "VolumeScore": "成交量分",
     "AccumulationScore": "吸筹分", "CompressionScore": "波动分", "StructureScore": "结构分",
     "OBV": "OBV", "CMF": "CMF", "AD": "A/D", "ATR14": "ATR14", "RSI14": "RSI14",
     "DistToLow52W": "距52周低点", "WyckoffPhase": "威科夫阶段", "Stage": "阶段", "MarketRegime": "市场环境",
@@ -28,16 +28,16 @@ COLUMN_NAMES = {
 }
 DISPLAY_COLUMNS = (
     "Ticker", "Name", "AssetType", "Sector", "Industry", "Quality", "Score",
-    "BacktestScore", "CompositeScore", "BacktestSamples", "Close", "DistToLow52W", "WyckoffPhase", "Stage", "VolAccumDays",
-    "SignalCount", "PassedFilters",
+    "BacktestScore", "CompositeScore", "BacktestObjectiveValue", "ScoreConfidence", "ScoreMissingIndicators", "BacktestSamples", "Close", "DistToLow52W", "WyckoffPhase", "Stage", "VolAccumDays",
+    "UniverseType", "SurvivorshipBiasWarning", "SignalCount", "PassedFilters",
 )
 COLUMN_WIDTHS = {
     "Ticker": 105, "Name": 150, "AssetType": 68, "Sector": 100, "Industry": 115,
-    "Quality": 78, "Score": 88, "BacktestScore": 96, "CompositeScore": 112, "BacktestSamples": 100, "Close": 92, "DistToLow52W": 110,
-    "WyckoffPhase": 112, "Stage": 88, "VolAccumDays": 88, "SignalCount": 78,
+    "Quality": 78, "Score": 88, "BacktestScore": 96, "CompositeScore": 112, "BacktestObjectiveValue": 104, "ScoreConfidence": 96, "ScoreMissingIndicators": 96, "BacktestSamples": 100, "Close": 92, "DistToLow52W": 110,
+    "WyckoffPhase": 112, "Stage": 88, "VolAccumDays": 88, "UniverseType": 150, "SurvivorshipBiasWarning": 120, "SignalCount": 78,
     "PassedFilters": 88,
 }
-NUMBER_COLUMNS = {"Score", "BacktestScore", "CompositeScore", "BacktestSamples", "Close", "DistToLow52W", "VolAccumDays", "SignalCount"}
+NUMBER_COLUMNS = {"Score", "BacktestScore", "CompositeScore", "BacktestObjectiveValue", "ScoreConfidence", "ScoreMissingIndicators", "BacktestSamples", "Close", "DistToLow52W", "VolAccumDays", "SignalCount"}
 TEXT_COLUMNS = {"Name", "Sector", "Industry", "WyckoffPhase", "Stage"}
 MAX_RENDERED_ROWS = 500
 
@@ -230,6 +230,7 @@ class ScannerGUI:
             if temporary_path.exists():
                 temporary_path.unlink()
         self._csv_path = None
+        self._csv_mtime = None
         return path
 
     def _load_top50(self) -> None:
@@ -302,6 +303,9 @@ class ScannerGUI:
                 f"60日胜率：{float(data.get('win_rate_60d', 0)) * 100:.2f}%",
                 f"60日平均收益：{float(data.get('average_return_60d', 0)):.2f}%",
                 f"60日中位数收益：{float(data.get('median_return_60d', 0)):.2f}%",
+                f"回测目标值：{float(data.get('objective_value', 0)):.4f}",
+                f"股票池类型：{data.get('universe_type', 'current_survivor_pool')}",
+                f"幸存者偏差警告：{data.get('survivorship_bias_warning', True)}",
                 "",
                 "说明：胜率为未来收益大于 0 的样本占比，收益率单位为百分比。",
             ]
@@ -334,6 +338,7 @@ class ScannerGUI:
             for line in self.process.stdout:
                 self._log_queue.put(line)
             code = self.process.wait()
+            self.process = None
             self.root.after(0, self.scan_finished, code)
         except Exception as exc:
             self.root.after(0, self.scan_failed, str(exc))
@@ -434,7 +439,7 @@ class ScannerGUI:
         text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         detail_keys = [
-            "Quality", "Score", "BacktestScore", "CompositeScore", "BacktestSamples", "BacktestWinRate20D", "BacktestWinRate60D", "BacktestAverageReturn20D", "BacktestAverageReturn60D", "TrendScore", "VolumeScore", "AccumulationScore", "CompressionScore", "StructureScore",
+            "Quality", "Score", "ScoreConfidence", "ScoreMissingIndicators", "BacktestScore", "CompositeScore", "BacktestObjectiveValue", "BacktestSamples", "BacktestWinRate20D", "BacktestWinRate60D", "BacktestAverageReturn20D", "BacktestAverageReturn60D", "UniverseType", "SurvivorshipBiasWarning", "TrendScore", "VolumeScore", "AccumulationScore", "CompressionScore", "StructureScore",
             "WyckoffPhase", "IndustryRelativeStrength", "DataSource", "DataAsOf", "DataAgeDays", "DataCoverage",
             "SignalCount", "FilterCount", "PassedFilters", "OBV_Div", "CMF_Pos", "AD_SlopePos", "BearMarket", "Consolidation", "VolAccum", "VolContract", "Error",
         ]

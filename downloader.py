@@ -16,6 +16,7 @@ import logging
 import math
 import re
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import requests
 from tqdm import tqdm
@@ -97,6 +99,21 @@ class TickerInfo:
     market_cap: float | None = None
 
 
+def normalize_ticker(ticker: str) -> str:
+    normalized = str(ticker).strip().upper()
+    if "." in normalized:
+        return normalized
+    if len(normalized) != 6 or not normalized.isdigit():
+        return normalized
+    suffix = "SH" if normalized.startswith(("5", "6", "688")) else "SZ"
+    return f"{normalized}.{suffix}"
+
+
+def is_etf_ticker(ticker: str) -> bool:
+    code = normalize_ticker(ticker).split(".", 1)[0]
+    return code.startswith(("15", "16", "51", "56", "58"))
+
+
 def _is_excluded_security_name(name: str) -> bool:
     normalized = re.sub(r"\s+", "", str(name or "")).upper()
     return any(keyword.upper() in normalized for keyword in EXCLUDED_SECURITY_KEYWORDS)
@@ -151,7 +168,6 @@ _STATIC_A_ETFS: list[tuple[str, str]] = [
     ("512980.SH", "证券ETF"),
     ("510880.SH", "红利ETF"),
     ("159997.SZ", "芯片ETF"),
-    ("159996.SZ", "新能源ETF"),
 ]
 
 # ---- Ticker validation (no regex — simple rules) ----
@@ -375,14 +391,33 @@ def _validate_ohlcv(df: pd.DataFrame) -> pd.DataFrame | None:
     cleaned.index = pd.to_datetime(cleaned.index, errors="coerce")
     for column in required:
         cleaned[column] = pd.to_numeric(cleaned[column], errors="coerce")
-    cleaned = cleaned.replace([float("inf"), float("-inf")], pd.NA).dropna()
-    cleaned = cleaned[cleaned["Close"] > 0]
-    cleaned = cleaned[(cleaned["High"] >= cleaned[["Open", "Close"]].max(axis=1)) & (cleaned["Low"] <= cleaned[["Open", "Close"]].min(axis=1))]
-    cleaned = cleaned[cleaned["Volume"] >= 0]
-    cleaned = cleaned[~cleaned.index.isna()]
+    if cleaned.index.dropna().empty or cleaned.index.dropna().max().date() > datetime.now().date():
+        return None
+    cleaned = cleaned[~cleaned.index.isna()].sort_index()
+    cleaned = cleaned[~cleaned.index.duplicated(keep="last")]
     if cleaned.empty:
         return None
-    return cleaned[~cleaned.index.duplicated(keep="last")].sort_index()
+    valid_ohlc = (
+        cleaned[["Open", "High", "Low", "Close"]].notna().all(axis=1)
+        & (cleaned["Open"] > 0)
+        & (cleaned["High"] > 0)
+        & (cleaned["Low"] > 0)
+        & (cleaned["Close"] > 0)
+        & (cleaned["High"] >= cleaned[["Open", "Close"]].max(axis=1))
+        & (cleaned["Low"] <= cleaned[["Open", "Close"]].min(axis=1))
+    )
+    valid_close_volume = (
+        cleaned["Close"].notna()
+        & np.isfinite(cleaned["Close"])
+        & (cleaned["Close"] > 0)
+        & cleaned["Volume"].notna()
+        & np.isfinite(cleaned["Volume"])
+        & (cleaned["Volume"] >= 0)
+    )
+    if valid_ohlc.mean() < 0.95 or valid_close_volume.mean() < 0.95:
+        return None
+    cleaned = cleaned[valid_ohlc & valid_close_volume]
+    return cleaned if not cleaned.empty else None
 
 
 def _load_cache(ticker: str, source: str | None = None) -> pd.DataFrame | None:
@@ -401,9 +436,16 @@ def _save_cache(ticker: str, df: pd.DataFrame, source: str | None = None) -> Non
     """Persist OHLCV data to CSV."""
     path = _cache_path(ticker, source)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    df.to_csv(temporary)
-    temporary.replace(path)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="", suffix=path.suffix, dir=path.parent, delete=False
+    ) as file:
+        temporary = Path(file.name)
+    try:
+        df.to_csv(temporary)
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +479,7 @@ def _fetch_market_cap_from_yf(ticker: str) -> float | None:
 
     Returns a float in USD or None on failure.
     """
+    ticker = normalize_ticker(ticker)
     try:
         code, suffix = ticker.upper().split(".", 1)
         market = "1" if suffix == "SH" else "0"
@@ -540,6 +583,21 @@ def _download_from_tencent(ticker: str) -> pd.DataFrame | None:
     return df[~df.index.duplicated(keep="last")].sort_index().dropna(subset=["Close"])
 
 
+def _fetch_eastmoney_realtime_price(ticker: str) -> float | None:
+    code, suffix = ticker.upper().split(".", 1)
+    market = "1" if suffix == "SH" else "0"
+    response = _eastmoney_get(
+        "/api/qt/stock/get",
+        {"secid": f"{market}.{code}", "fields": "f43,f60"},
+    )
+    data = response.json().get("data") or {}
+    for field in ("f43", "f60"):
+        value = pd.to_numeric(data.get(field), errors="coerce")
+        if pd.notna(value) and value > 0:
+            return float(value) / 100
+    return None
+
+
 def _download_from_eastmoney(ticker: str) -> pd.DataFrame | None:
     """
     Download full history for *ticker* from Eastmoney.
@@ -585,6 +643,13 @@ def _download_from_eastmoney(ticker: str) -> pd.DataFrame | None:
             df = df.dropna(subset=["Close"])
             if df.empty:
                 return None
+            try:
+                realtime_price = _fetch_eastmoney_realtime_price(ticker)
+                if realtime_price is not None:
+                    df["Close"] = df["Close"].astype(float)
+                    df.loc[df.index[-1], "Close"] = realtime_price
+            except Exception as exc:
+                logger.debug("Realtime price fetch failed for %s: %s", ticker, exc)
             return df
         except Exception as exc:
             for fallback_loader in (_download_from_sina, _download_from_tencent):
@@ -632,6 +697,7 @@ def get_data_source_label(source: str) -> str:
 
 
 def _download_single(ticker: str, source: str = "eastmoney") -> pd.DataFrame | None:
+    ticker = normalize_ticker(ticker)
     selected = normalize_data_source(source)
     loaders = {
         "eastmoney": _download_from_eastmoney,
@@ -650,7 +716,7 @@ def _download_single(ticker: str, source: str = "eastmoney") -> pd.DataFrame | N
 def download_ticker(ticker: str, force: bool = False, source: str = "eastmoney", cache_first: bool = False) -> pd.DataFrame | None:
     """
     Get OHLCV data for *ticker*.
-    - If cached data exists, load it and download only the missing tail.
+    - If cached data exists, refresh its latest daily bar and append new rows.
     - If *force* is True, re-download everything.
     """
     selected = normalize_data_source(source)
@@ -670,23 +736,15 @@ def download_ticker(ticker: str, force: bool = False, source: str = "eastmoney",
     if cache_first:
         return cached
 
-    # Incremental update: download only from the last cached date
     last_date = cached.index.max()
-    today = datetime.now()
-
-    # Normalise to naive datetime for comparison
     if isinstance(last_date, pd.Timestamp):
         last_date = last_date.to_pydatetime()
     if last_date.tzinfo is not None:
         last_date = last_date.replace(tzinfo=None)
 
-    # Guard: if last_date is somehow in the future, skip update
-    if (today - last_date).days <= 1:
-        return cached  # already up-to-date
-
     try:
         full_df = _download_single(ticker, selected)
-        new_df = full_df.loc[full_df.index > pd.Timestamp(last_date)] if full_df is not None else None
+        new_df = full_df.loc[full_df.index >= pd.Timestamp(last_date)] if full_df is not None else None
         if new_df is not None and not new_df.empty:
             new_df = new_df.rename(columns={
                 "Open": "Open", "High": "High", "Low": "Low",
@@ -736,7 +794,7 @@ def download_batch(
         {ticker: DataFrame} mapping (only successful downloads).
     """
     results: dict[str, pd.DataFrame] = {}
-    symbols = [t.ticker for t in tickers]
+    symbols = list(dict.fromkeys(normalize_ticker(t.ticker) for t in tickers if t.ticker and t.ticker.strip()))
 
     total = len(symbols)
     skipped_delisted = 0
