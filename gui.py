@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import io
 import json
 import os
 import queue
@@ -16,29 +18,121 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
 MAIN_FILE = PROJECT_ROOT / "main.py"
 COLUMN_NAMES = {
-    "Ticker": "代码", "Name": "名称", "Sector": "板块", "Industry": "行业", "IsETF": "类型", "AssetType": "类型", "Style": "风格", "Quality": "质量",
-    "Close": "收盘价", "Score": "综合评分", "BacktestScore": "回测评分", "CompositeScore": "综合回测评分", "BacktestSamples": "回测样本数",
-    "BacktestWinRate20D": "20日胜率", "BacktestWinRate60D": "60日胜率", "BacktestAverageReturn20D": "20日平均收益", "BacktestAverageReturn60D": "60日平均收益", "BacktestObjectiveValue": "回测目标值", "UniverseType": "股票池类型", "SurvivorshipBiasWarning": "幸存者偏差警告", "TrendScore": "趋势分", "VolumeScore": "成交量分",
-    "AccumulationScore": "吸筹分", "CompressionScore": "波动分", "StructureScore": "结构分",
-    "OBV": "OBV", "CMF": "CMF", "AD": "A/D", "ATR14": "ATR14", "RSI14": "RSI14",
-    "DistToLow52W": "距52周低点", "WyckoffPhase": "威科夫阶段", "Stage": "阶段", "MarketRegime": "市场环境",
-    "IndustryRelativeStrength": "行业强度", "DataSource": "数据源", "DataAsOf": "数据日期", "DataAgeDays": "数据延迟天数", "DataCoverage": "数据覆盖率",
-    "VolAccumDays": "放量天数", "SignalCount": "信号数", "FilterCount": "通过项数", "PassedFilters": "通过筛选", "OBV_Div": "OBV背离", "CMF_Pos": "CMF为正", "AD_SlopePos": "A/D上升",
-    "BearMarket": "熊市条件", "Consolidation": "横盘整理", "VolAccum": "放量吸筹",
-    "VolContract": "波动收缩", "Error": "错误",
+    "Ticker": "代码",
+    "Name": "名称",
+    "Sector": "板块",
+    "Industry": "行业",
+    "IsETF": "类型",
+    "AssetType": "类型",
+    "Style": "风格",
+    "Quality": "质量",
+    "Close": "收盘价",
+    "Score": "综合评分",
+    "BacktestScore": "回测评分",
+    "CompositeScore": "综合回测评分",
+    "BacktestSamples": "回测样本数",
+    "BacktestWinRate20D": "20日胜率",
+    "BacktestWinRate60D": "60日胜率",
+    "BacktestAverageReturn20D": "20日平均收益",
+    "BacktestAverageReturn60D": "60日平均收益",
+    "BacktestObjectiveValue": "回测目标值",
+    "UniverseType": "股票池类型",
+    "SurvivorshipBiasWarning": "幸存者偏差警告",
+    "TrendScore": "趋势分",
+    "VolumeScore": "成交量分",
+    "AccumulationScore": "吸筹分",
+    "CompressionScore": "波动分",
+    "StructureScore": "结构分",
+    "OBV": "OBV",
+    "CMF": "CMF",
+    "AD": "A/D",
+    "ATR14": "ATR14",
+    "RSI14": "RSI14",
+    "DistToLow52W": "距52周低点",
+    "WyckoffPhase": "威科夫阶段",
+    "Stage": "阶段",
+    "MarketRegime": "市场环境",
+    "IndustryRelativeStrength": "行业强度",
+    "DataSource": "数据源",
+    "DataAsOf": "数据日期",
+    "DataAgeDays": "自然日延迟",
+    "DataTradingAgeDays": "交易日延迟",
+    "DataCoverage": "数据覆盖率",
+    "VolAccumDays": "放量天数",
+    "SignalCount": "信号数",
+    "FilterCount": "通过项数",
+    "PassedFilters": "通过筛选",
+    "OBV_Div": "OBV背离",
+    "CMF_Pos": "CMF为正或改善",
+    "CMF_Improving": "CMF改善",
+    "AD_SlopePos": "A/D上升",
+    "BearMarket": "熊市条件",
+    "Consolidation": "横盘整理",
+    "VolAccum": "放量吸筹",
+    "VolContract": "波动收缩",
+    "Error": "错误",
 }
 DISPLAY_COLUMNS = (
-    "Ticker", "Name", "AssetType", "Sector", "Industry", "Quality", "Score",
-    "BacktestScore", "CompositeScore", "BacktestObjectiveValue", "ScoreConfidence", "ScoreMissingIndicators", "BacktestSamples", "Close", "DistToLow52W", "WyckoffPhase", "Stage", "VolAccumDays",
-    "UniverseType", "SurvivorshipBiasWarning", "SignalCount", "PassedFilters",
+    "Ticker",
+    "Name",
+    "AssetType",
+    "Sector",
+    "Industry",
+    "Quality",
+    "Score",
+    "BacktestScore",
+    "CompositeScore",
+    "BacktestObjectiveValue",
+    "ScoreConfidence",
+    "ScoreMissingIndicators",
+    "BacktestSamples",
+    "Close",
+    "DistToLow52W",
+    "WyckoffPhase",
+    "Stage",
+    "VolAccumDays",
+    "UniverseType",
+    "SurvivorshipBiasWarning",
+    "SignalCount",
+    "PassedFilters",
 )
 COLUMN_WIDTHS = {
-    "Ticker": 105, "Name": 150, "AssetType": 68, "Sector": 100, "Industry": 115,
-    "Quality": 78, "Score": 88, "BacktestScore": 96, "CompositeScore": 112, "BacktestObjectiveValue": 104, "ScoreConfidence": 96, "ScoreMissingIndicators": 96, "BacktestSamples": 100, "Close": 92, "DistToLow52W": 110,
-    "WyckoffPhase": 112, "Stage": 88, "VolAccumDays": 88, "UniverseType": 150, "SurvivorshipBiasWarning": 120, "SignalCount": 78,
+    "Ticker": 105,
+    "Name": 150,
+    "AssetType": 68,
+    "Sector": 100,
+    "Industry": 115,
+    "Quality": 78,
+    "Score": 88,
+    "BacktestScore": 96,
+    "CompositeScore": 112,
+    "BacktestObjectiveValue": 104,
+    "ScoreConfidence": 96,
+    "ScoreMissingIndicators": 96,
+    "BacktestSamples": 100,
+    "Close": 92,
+    "DistToLow52W": 110,
+    "WyckoffPhase": 112,
+    "Stage": 88,
+    "VolAccumDays": 88,
+    "UniverseType": 150,
+    "SurvivorshipBiasWarning": 120,
+    "SignalCount": 78,
     "PassedFilters": 88,
 }
-NUMBER_COLUMNS = {"Score", "BacktestScore", "CompositeScore", "BacktestObjectiveValue", "ScoreConfidence", "ScoreMissingIndicators", "BacktestSamples", "Close", "DistToLow52W", "VolAccumDays", "SignalCount"}
+NUMBER_COLUMNS = {
+    "Score",
+    "BacktestScore",
+    "CompositeScore",
+    "BacktestObjectiveValue",
+    "ScoreConfidence",
+    "ScoreMissingIndicators",
+    "BacktestSamples",
+    "Close",
+    "DistToLow52W",
+    "VolAccumDays",
+    "SignalCount",
+}
 TEXT_COLUMNS = {"Name", "Sector", "Industry", "WyckoffPhase", "Stage"}
 MAX_RENDERED_ROWS = 500
 DOWNLOAD_PROGRESS_RE = re.compile(
@@ -71,6 +165,7 @@ class ScannerGUI:
         self._csv_headers: list[str] = []
         self._csv_rows: list[list[str]] = []
         self._csv_path: Path | None = None
+        self._csv_mtime: tuple[int, int, str] | None = None
         self._filter_job: str | None = None
         self._log_queue: queue.Queue[str] = queue.Queue()
         self._log_job = self.root.after(150, self._flush_log_queue)
@@ -90,72 +185,179 @@ class ScannerGUI:
         style.configure("TFrame", background="#f4f7fb")
         style.configure("TLabel", background="#f4f7fb", foreground="#243b53")
         style.configure("TLabelframe", background="#f4f7fb", bordercolor="#d7e2ee")
-        style.configure("TLabelframe.Label", background="#f4f7fb", foreground="#17324d", font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure(
+            "TLabelframe.Label",
+            background="#f4f7fb",
+            foreground="#17324d",
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
         style.configure("Header.TFrame", background="#17324d")
-        style.configure("Title.TLabel", background="#17324d", foreground="white", font=("Microsoft YaHei UI", 18, "bold"))
-        style.configure("Sub.TLabel", background="#17324d", foreground="#cbd9e8", font=("Microsoft YaHei UI", 9))
-        style.configure("Accent.TButton", foreground="white", background="#1677ff", padding=(16, 8), font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure(
+            "Title.TLabel",
+            background="#17324d",
+            foreground="white",
+            font=("Microsoft YaHei UI", 18, "bold"),
+        )
+        style.configure(
+            "Sub.TLabel",
+            background="#17324d",
+            foreground="#cbd9e8",
+            font=("Microsoft YaHei UI", 9),
+        )
+        style.configure(
+            "Accent.TButton",
+            foreground="white",
+            background="#1677ff",
+            padding=(16, 8),
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
         style.map("Accent.TButton", background=[("active", "#4096ff")])
-        style.configure("Treeview", rowheight=30, font=("Microsoft YaHei UI", 9), background="white", fieldbackground="white", foreground="#243b53")
-        style.map("Treeview", background=[("selected", "#dbeafe")], foreground=[("selected", "#17324d")])
-        style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 9, "bold"), background="#eaf2fb", foreground="#17324d", padding=(8, 6))
+        style.configure(
+            "Treeview",
+            rowheight=30,
+            font=("Microsoft YaHei UI", 9),
+            background="white",
+            fieldbackground="white",
+            foreground="#243b53",
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", "#dbeafe")],
+            foreground=[("selected", "#17324d")],
+        )
+        style.configure(
+            "Treeview.Heading",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            background="#eaf2fb",
+            foreground="#17324d",
+            padding=(8, 6),
+        )
         style.configure("TCombobox", padding=4)
         style.configure("TEntry", padding=4)
-        style.configure("Accent.TButton", foreground="white", background="#1677ff", padding=(18, 9), font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure(
+            "Accent.TButton",
+            foreground="white",
+            background="#1677ff",
+            padding=(18, 9),
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
         style.map("Accent.TButton", background=[("active", "#4096ff")])
-        style.configure("Status.TLabel", background="#f4f7fb", foreground="#55708a", font=("Microsoft YaHei UI", 9))
+        style.configure(
+            "Status.TLabel",
+            background="#f4f7fb",
+            foreground="#55708a",
+            font=("Microsoft YaHei UI", 9),
+        )
 
     def _build_ui(self) -> None:
         header = ttk.Frame(self.root, style="Header.TFrame", padding=(24, 18))
         header.pack(fill=tk.X)
-        ttk.Label(header, text="A股机构吸筹扫描器", style="Title.TLabel").pack(anchor=tk.W)
-        ttk.Label(header, text="全市场股票与ETF · 技术指标 · 评分筛选", style="Sub.TLabel").pack(anchor=tk.W, pady=(4, 0))
+        ttk.Label(header, text="A股机构吸筹扫描器", style="Title.TLabel").pack(
+            anchor=tk.W
+        )
+        ttk.Label(
+            header, text="全市场股票与ETF · 技术指标 · 评分筛选", style="Sub.TLabel"
+        ).pack(anchor=tk.W, pady=(4, 0))
 
         controls = ttk.LabelFrame(self.root, text="扫描设置", padding=12)
         controls.pack(fill=tk.X, padx=18, pady=(14, 8))
-        ttk.Label(controls, text="扫描范围").grid(row=0, column=0, padx=(0, 6), sticky=tk.W)
-        box = ttk.Combobox(controls, textvariable=self.scope, values=("全部股票和ETF", "仅股票", "仅ETF"), state="readonly", width=18)
+        ttk.Label(controls, text="扫描范围").grid(
+            row=0, column=0, padx=(0, 6), sticky=tk.W
+        )
+        box = ttk.Combobox(
+            controls,
+            textvariable=self.scope,
+            values=("全部股票和ETF", "仅股票", "仅ETF"),
+            state="readonly",
+            width=18,
+        )
         box.grid(row=0, column=1, padx=(0, 20), sticky=tk.W)
-        ttk.Label(controls, text="指定代码").grid(row=0, column=2, padx=(0, 6), sticky=tk.W)
-        ttk.Entry(controls, textvariable=self.tickers, width=38).grid(row=0, column=3, padx=(0, 8), sticky=tk.W)
-        ttk.Label(controls, text="例：588000.SH,000001.SZ", foreground="#708399").grid(row=0, column=4, sticky=tk.W)
-        self.source_box = ttk.Combobox(controls, textvariable=self.data_source, values=("eastmoney", "sina", "tencent"), state="readonly", width=12)
+        ttk.Label(controls, text="指定代码").grid(
+            row=0, column=2, padx=(0, 6), sticky=tk.W
+        )
+        ttk.Entry(controls, textvariable=self.tickers, width=38).grid(
+            row=0, column=3, padx=(0, 8), sticky=tk.W
+        )
+        ttk.Label(controls, text="例：588000.SH,000001.SZ", foreground="#708399").grid(
+            row=0, column=4, sticky=tk.W
+        )
+        self.source_box = ttk.Combobox(
+            controls,
+            textvariable=self.data_source,
+            values=("eastmoney", "sina", "tencent"),
+            state="readonly",
+            width=12,
+        )
         self.source_box.grid(row=0, column=5, padx=(12, 4), sticky=tk.W)
         self.source_box.bind("<<ComboboxSelected>>", self._data_source_changed)
-        ttk.Label(controls, textvariable=self.data_source_label, foreground="#55708a").grid(row=0, column=6, padx=(4, 0), sticky=tk.W)
-        ttk.Checkbutton(controls, text="不使用断点", variable=self.no_resume).grid(row=1, column=0, columnspan=2, pady=(12, 0), sticky=tk.W)
-        ttk.Checkbutton(controls, text="强制重新下载", variable=self.force_download).grid(row=1, column=2, columnspan=2, pady=(12, 0), sticky=tk.W)
-        self.start_button = ttk.Button(controls, text="▶ 开始扫描", style="Accent.TButton", command=self.start_scan)
+        ttk.Label(
+            controls, textvariable=self.data_source_label, foreground="#55708a"
+        ).grid(row=0, column=6, padx=(4, 0), sticky=tk.W)
+        ttk.Checkbutton(controls, text="不使用断点", variable=self.no_resume).grid(
+            row=1, column=0, columnspan=2, pady=(12, 0), sticky=tk.W
+        )
+        ttk.Checkbutton(
+            controls, text="强制重新下载", variable=self.force_download
+        ).grid(row=1, column=2, columnspan=2, pady=(12, 0), sticky=tk.W)
+        self.start_button = ttk.Button(
+            controls, text="▶ 开始扫描", style="Accent.TButton", command=self.start_scan
+        )
         self.start_button.grid(row=1, column=4, pady=(10, 0), sticky=tk.E)
 
         toolbar = ttk.Frame(self.root, padding=(18, 2))
         toolbar.pack(fill=tk.X)
-        ttk.Button(toolbar, text="查看Top50", command=self._load_top50).pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(toolbar, text="查看全部结果", command=lambda: self.load_csv("AllResults.csv")).pack(side=tk.LEFT, padx=6)
-        ttk.Button(toolbar, text="打开结果目录", command=self.open_output).pack(side=tk.LEFT, padx=6)
-        ttk.Button(toolbar, text="运行回测", command=self.start_backtest).pack(side=tk.LEFT, padx=6)
-        ttk.Button(toolbar, text="查看回测", command=self.show_backtest).pack(side=tk.LEFT, padx=6)
+        ttk.Button(toolbar, text="查看Top50", command=self._load_top50).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        ttk.Button(
+            toolbar,
+            text="查看全部结果",
+            command=lambda: self.load_csv("AllResults.csv"),
+        ).pack(side=tk.LEFT, padx=6)
+        ttk.Button(toolbar, text="打开结果目录", command=self.open_output).pack(
+            side=tk.LEFT, padx=6
+        )
+        ttk.Button(toolbar, text="运行回测", command=self.start_backtest).pack(
+            side=tk.LEFT, padx=6
+        )
+        ttk.Button(toolbar, text="查看回测", command=self.show_backtest).pack(
+            side=tk.LEFT, padx=6
+        )
         ttk.Label(toolbar, text="板块", padding=(16, 0, 4, 0)).pack(side=tk.LEFT)
-        self.sector_box = ttk.Combobox(toolbar, textvariable=self.sector_filter, state="readonly", width=12)
+        self.sector_box = ttk.Combobox(
+            toolbar, textvariable=self.sector_filter, state="readonly", width=12
+        )
         self.sector_box.pack(side=tk.LEFT)
         self.sector_box.bind("<<ComboboxSelected>>", self._sector_changed)
         ttk.Label(toolbar, text="行业", padding=(8, 0, 4, 0)).pack(side=tk.LEFT)
-        self.industry_box = ttk.Combobox(toolbar, textvariable=self.industry_filter, state="readonly", width=14)
+        self.industry_box = ttk.Combobox(
+            toolbar, textvariable=self.industry_filter, state="readonly", width=14
+        )
         self.industry_box.pack(side=tk.LEFT)
         ttk.Label(toolbar, text="质量", padding=(8, 0, 4, 0)).pack(side=tk.LEFT)
-        ttk.Combobox(toolbar, textvariable=self.quality_filter, values=("全部质量", "强候选", "候选", "观察", "普通"), state="readonly", width=9).pack(side=tk.LEFT)
+        ttk.Combobox(
+            toolbar,
+            textvariable=self.quality_filter,
+            values=("全部质量", "强候选", "候选", "观察", "普通"),
+            state="readonly",
+            width=9,
+        ).pack(side=tk.LEFT)
         ttk.Label(toolbar, text="搜索", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
         ttk.Entry(toolbar, textvariable=self.search, width=20).pack(side=tk.LEFT)
         self.progress = ttk.Progressbar(toolbar, mode="indeterminate", length=180)
         self.progress.pack(side=tk.RIGHT, padx=(10, 0))
-        ttk.Label(toolbar, textvariable=self.status, style="Status.TLabel").pack(side=tk.RIGHT)
+        ttk.Label(toolbar, textvariable=self.status, style="Status.TLabel").pack(
+            side=tk.RIGHT
+        )
 
         body = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
         body.pack(fill=tk.BOTH, expand=True, padx=18, pady=(6, 16))
         table_frame = ttk.Frame(body)
         self.table = ttk.Treeview(table_frame, show="headings", selectmode="browse")
         ybar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.table.yview)
-        xbar = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self.table.xview)
+        xbar = ttk.Scrollbar(
+            table_frame, orient=tk.HORIZONTAL, command=self.table.xview
+        )
         self.table.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
         self.table.bind("<Double-1>", self.show_selected_detail)
         self.table.grid(row=0, column=0, sticky="nsew")
@@ -165,8 +367,19 @@ class ScannerGUI:
         table_frame.columnconfigure(0, weight=1)
         body.add(table_frame, weight=5)
         log_frame = ttk.LabelFrame(body, text="运行日志", padding=6)
-        self.log_text = tk.Text(log_frame, height=8, wrap=tk.NONE, state=tk.DISABLED, bg="#17212b", fg="#d5e4f2", insertbackground="white", font=("Consolas", 9))
-        logbar = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=self.log_text.yview)
+        self.log_text = tk.Text(
+            log_frame,
+            height=8,
+            wrap=tk.NONE,
+            state=tk.DISABLED,
+            bg="#17212b",
+            fg="#d5e4f2",
+            insertbackground="white",
+            font=("Consolas", 9),
+        )
+        logbar = ttk.Scrollbar(
+            log_frame, orient=tk.VERTICAL, command=self.log_text.yview
+        )
         self.log_text.configure(yscrollcommand=logbar.set)
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         logbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -180,8 +393,10 @@ class ScannerGUI:
             command.append("--stocks-only")
         elif self.scope.get() == "仅ETF":
             command.append("--etfs-only")
-        if self.no_resume.get(): command.append("--no-resume")
-        if self.force_download.get(): command.append("--force-download")
+        if self.no_resume.get() or self.force_download.get():
+            command.append("--no-resume")
+        if self.force_download.get():
+            command.append("--force-download")
         command += ["--data-source", self.data_source.get()]
         return command
 
@@ -200,7 +415,9 @@ class ScannerGUI:
         except (OSError, UnicodeError, csv.Error):
             return []
 
-    def _atomic_write_text(self, path: Path, content: str, encoding: str = "utf-8") -> None:
+    def _atomic_write_text(
+        self, path: Path, content: str, encoding: str = "utf-8"
+    ) -> None:
         temporary_path = path.with_name(f".{path.name}.tmp")
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -214,14 +431,22 @@ class ScannerGUI:
         path = OUTPUT_DIR / "Top50.csv"
         if "Ticker" not in self._csv_headers:
             raise ValueError("当前结果缺少 Ticker 列，无法生成 Top50.csv")
-        ordered_tickers = list(dict.fromkeys(ticker.strip().upper() for ticker in tickers if ticker.strip()))[:50]
+        ordered_tickers = list(
+            dict.fromkeys(
+                ticker.strip().upper() for ticker in tickers if ticker.strip()
+            )
+        )[:50]
         ticker_index = self._csv_headers.index("Ticker")
         rows_by_ticker = {
             row[ticker_index].strip().upper(): row
             for row in self._csv_rows
             if len(row) > ticker_index and row[ticker_index].strip()
         }
-        selected = [rows_by_ticker[ticker] for ticker in ordered_tickers if ticker in rows_by_ticker]
+        selected = [
+            rows_by_ticker[ticker]
+            for ticker in ordered_tickers
+            if ticker in rows_by_ticker
+        ]
         if len(selected) != len(ordered_tickers):
             raise ValueError("当前筛选结果与表格数据不一致，无法生成 Top50.csv")
         temporary_path = path.with_name(f".{path.name}.tmp")
@@ -239,7 +464,9 @@ class ScannerGUI:
 
     def _load_top50(self) -> None:
         if not self._csv_headers or not self.filtered_tickers:
-            messagebox.showinfo("提示", "当前筛选结果为空，请先完成扫描或调整筛选条件。")
+            messagebox.showinfo(
+                "提示", "当前筛选结果为空，请先完成扫描或调整筛选条件。"
+            )
             return
         tickers = list(dict.fromkeys(self.filtered_tickers))[:50]
         try:
@@ -257,7 +484,10 @@ class ScannerGUI:
             return
         backtest_tickers = list(dict.fromkeys(self.filtered_tickers))
         if len(backtest_tickers) < 50:
-            messagebox.showerror("无法运行回测", f"回测至少需要 50 个标的，当前筛选结果为 {len(backtest_tickers)} 个。")
+            messagebox.showerror(
+                "无法运行回测",
+                f"回测至少需要 50 个标的，当前筛选结果为 {len(backtest_tickers)} 个。",
+            )
             return
         backtest_tickers = backtest_tickers[:50]
         ticker_file = OUTPUT_DIR / "BacktestTop50.txt"
@@ -271,9 +501,19 @@ class ScannerGUI:
         self.backtest_running = True
         self.start_button.configure(state=tk.DISABLED)
         self.progress.start(12)
-        command = [sys.executable, str(MAIN_FILE), "backtest", "--data-source", self.data_source.get(), "--tickers-file", str(ticker_file)]
+        command = [
+            sys.executable,
+            str(MAIN_FILE),
+            "backtest",
+            "--data-source",
+            self.data_source.get(),
+            "--tickers-file",
+            str(ticker_file),
+        ]
         self.append_log("回测当前筛选结果：严格 50 个标的\n")
-        self.append_log(f"执行回测命令：{MAIN_FILE.name} backtest --data-source {self.data_source.get()} --tickers-file BacktestTop50.txt\n")
+        self.append_log(
+            f"执行回测命令：{MAIN_FILE.name} backtest --data-source {self.data_source.get()} --tickers-file BacktestTop50.txt\n"
+        )
         threading.Thread(target=self.run_process, args=(command,), daemon=True).start()
 
     def show_backtest(self) -> None:
@@ -288,11 +528,27 @@ class ScannerGUI:
             dialog.geometry("760x680")
             dialog.minsize(620, 480)
             dialog.configure(background="#f4f7fb")
-            ttk.Label(dialog, text="历史回测结果", font=("Microsoft YaHei UI", 16, "bold")).pack(anchor=tk.W, padx=22, pady=(20, 4))
-            ttk.Label(dialog, text="仅统计本次回测传入的股票集合，不代表全市场表现", foreground="#55708a").pack(anchor=tk.W, padx=22, pady=(0, 12))
+            ttk.Label(
+                dialog, text="历史回测结果", font=("Microsoft YaHei UI", 16, "bold")
+            ).pack(anchor=tk.W, padx=22, pady=(20, 4))
+            ttk.Label(
+                dialog,
+                text="仅统计本次回测传入的股票集合，不代表全市场表现",
+                foreground="#55708a",
+            ).pack(anchor=tk.W, padx=22, pady=(0, 12))
             frame = ttk.Frame(dialog, padding=(20, 4))
             frame.pack(fill=tk.BOTH, expand=True)
-            text = tk.Text(frame, wrap=tk.WORD, state=tk.DISABLED, bg="white", fg="#243b53", relief=tk.FLAT, padx=14, pady=14, font=("Microsoft YaHei UI", 10))
+            text = tk.Text(
+                frame,
+                wrap=tk.WORD,
+                state=tk.DISABLED,
+                bg="white",
+                fg="#243b53",
+                relief=tk.FLAT,
+                padx=14,
+                pady=14,
+                font=("Microsoft YaHei UI", 10),
+            )
             scroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
             text.configure(yscrollcommand=scroll.set)
             text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -325,6 +581,8 @@ class ScannerGUI:
             return
         self.clear_log()
         self.scan_running = True
+        self._csv_path = None
+        self._csv_mtime = None
         self.scan_output_mtime = self._results_mtime()
         self.start_button.configure(state=tk.DISABLED)
         self.progress.stop()
@@ -339,7 +597,17 @@ class ScannerGUI:
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONUTF8"] = "1"
-            self.process = subprocess.Popen(command, cwd=PROJECT_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1, env=env)
+            self.process = subprocess.Popen(
+                command,
+                cwd=PROJECT_ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                env=env,
+            )
             assert self.process.stdout is not None
             for line in self.process.stdout:
                 self._log_queue.put(line)
@@ -367,14 +635,20 @@ class ScannerGUI:
         self.start_button.configure(state=tk.NORMAL)
         self.backtest_running = False
         self.status.set("扫描完成" if code == 0 else f"任务结束，退出码：{code}")
-        if code == 0 and was_backtest and (OUTPUT_DIR / "BacktestSummary.json").exists():
+        if (
+            code == 0
+            and was_backtest
+            and (OUTPUT_DIR / "BacktestSummary.json").exists()
+        ):
             self.show_backtest()
             self._load_best_available_results()
         elif code == 0:
             if not self._load_best_available_results():
                 if self._results_mtime() == getattr(self, "scan_output_mtime", ()):
                     self.status.set("扫描完成，但结果文件未更新")
-                    self.append_log("扫描进程已完成，但没有找到有效结果文件，请检查运行日志。\n")
+                    self.append_log(
+                        "扫描进程已完成，但没有找到有效结果文件，请检查运行日志。\n"
+                    )
                 else:
                     self.status.set("扫描完成，但结果文件为空")
                     self.append_log("扫描完成，但结果文件没有有效数据。\n")
@@ -392,7 +666,10 @@ class ScannerGUI:
                 if "Ticker" not in headers:
                     return False
                 ticker_index = headers.index("Ticker")
-                return any(len(row) > ticker_index and row[ticker_index].strip() for row in reader)
+                return any(
+                    len(row) > ticker_index and row[ticker_index].strip()
+                    for row in reader
+                )
         except (OSError, UnicodeError, csv.Error):
             return False
 
@@ -401,7 +678,6 @@ class ScannerGUI:
             if self._csv_has_results(filename):
                 return self.load_csv(filename)
         return False
-
 
     def scan_failed(self, error: str) -> None:
         self.progress.stop()
@@ -418,10 +694,16 @@ class ScannerGUI:
         self.log_text.configure(state=tk.DISABLED)
         progress = DOWNLOAD_PROGRESS_RE.search(text)
         if progress:
-            completed, total, successful, skipped = (int(value) for value in progress.groups())
+            completed, total, successful, skipped = (
+                int(value) for value in progress.groups()
+            )
             self.progress.stop()
-            self.progress.configure(mode="determinate", maximum=max(total, 1), value=completed)
-            self.status.set(f"DOWNLOAD {completed}/{total} · 成功 {successful} · 无数据/失败 {skipped}")
+            self.progress.configure(
+                mode="determinate", maximum=max(total, 1), value=completed
+            )
+            self.status.set(
+                f"DOWNLOAD {completed}/{total} · 成功 {successful} · 无数据/失败 {skipped}"
+            )
         elif "Phase 2/2:" in text:
             self.progress.configure(mode="indeterminate")
             self.progress.start(12)
@@ -445,21 +727,78 @@ class ScannerGUI:
         dialog.geometry("620x620")
         dialog.minsize(520, 420)
         dialog.configure(background="#f4f7fb")
-        ttk.Label(dialog, text=f"{data.get('Ticker', '')}  {data.get('Name', '')}", font=("Microsoft YaHei UI", 16, "bold")).pack(anchor=tk.W, padx=22, pady=(20, 4))
-        ttk.Label(dialog, text=f"阶段：{data.get('Stage', '未知')}  ·  市场环境：{data.get('MarketRegime', '未知')}", foreground="#55708a").pack(anchor=tk.W, padx=22, pady=(0, 12))
+        ttk.Label(
+            dialog,
+            text=f"{data.get('Ticker', '')}  {data.get('Name', '')}",
+            font=("Microsoft YaHei UI", 16, "bold"),
+        ).pack(anchor=tk.W, padx=22, pady=(20, 4))
+        ttk.Label(
+            dialog,
+            text=f"阶段：{data.get('Stage', '未知')}  ·  市场环境：{data.get('MarketRegime', '未知')}",
+            foreground="#55708a",
+        ).pack(anchor=tk.W, padx=22, pady=(0, 12))
         frame = ttk.Frame(dialog, padding=(20, 4))
         frame.pack(fill=tk.BOTH, expand=True)
-        text = tk.Text(frame, wrap=tk.WORD, state=tk.DISABLED, bg="white", fg="#243b53", relief=tk.FLAT, padx=14, pady=14, font=("Microsoft YaHei UI", 10))
+        text = tk.Text(
+            frame,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            bg="white",
+            fg="#243b53",
+            relief=tk.FLAT,
+            padx=14,
+            pady=14,
+            font=("Microsoft YaHei UI", 10),
+        )
         scroll = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
         text.configure(yscrollcommand=scroll.set)
         text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         detail_keys = [
-            "Quality", "Score", "ScoreConfidence", "ScoreMissingIndicators", "BacktestScore", "CompositeScore", "BacktestObjectiveValue", "BacktestSamples", "BacktestWinRate20D", "BacktestWinRate60D", "BacktestAverageReturn20D", "BacktestAverageReturn60D", "UniverseType", "SurvivorshipBiasWarning", "TrendScore", "VolumeScore", "AccumulationScore", "CompressionScore", "StructureScore",
-            "WyckoffPhase", "IndustryRelativeStrength", "DataSource", "DataAsOf", "DataAgeDays", "DataCoverage",
-            "SignalCount", "FilterCount", "PassedFilters", "OBV_Div", "CMF_Pos", "AD_SlopePos", "BearMarket", "Consolidation", "VolAccum", "VolContract", "Error",
+            "Quality",
+            "Score",
+            "ScoreConfidence",
+            "ScoreMissingIndicators",
+            "BacktestScore",
+            "CompositeScore",
+            "BacktestObjectiveValue",
+            "BacktestSamples",
+            "BacktestWinRate20D",
+            "BacktestWinRate60D",
+            "BacktestAverageReturn20D",
+            "BacktestAverageReturn60D",
+            "UniverseType",
+            "SurvivorshipBiasWarning",
+            "TrendScore",
+            "VolumeScore",
+            "AccumulationScore",
+            "CompressionScore",
+            "StructureScore",
+            "WyckoffPhase",
+            "IndustryRelativeStrength",
+            "DataSource",
+            "DataAsOf",
+            "DataAgeDays",
+            "DataTradingAgeDays",
+            "DataCoverage",
+            "SignalCount",
+            "FilterCount",
+            "PassedFilters",
+            "OBV_Div",
+            "CMF_Pos",
+            "CMF_Improving",
+            "AD_SlopePos",
+            "BearMarket",
+            "Consolidation",
+            "VolAccum",
+            "VolContract",
+            "Error",
         ]
-        lines = [f"{COLUMN_NAMES.get(key, key)}：{data.get(key, '')}" for key in detail_keys if data.get(key, '') not in ("", None)]
+        lines = [
+            f"{COLUMN_NAMES.get(key, key)}：{data.get(key, '')}"
+            for key in detail_keys
+            if data.get(key, "") not in ("", None)
+        ]
         text.configure(state=tk.NORMAL)
         text.insert("1.0", "\n".join(lines))
         text.configure(state=tk.DISABLED)
@@ -491,7 +830,9 @@ class ScannerGUI:
             if column not in headers:
                 return []
             index = headers.index(column)
-            return sorted({row[index] for row in rows if len(row) > index and row[index].strip()})
+            return sorted(
+                {row[index] for row in rows if len(row) > index and row[index].strip()}
+            )
 
         sectors = values_for("Sector")
         self.sector_box["values"] = ["全部板块", *sectors]
@@ -502,11 +843,16 @@ class ScannerGUI:
         if self.sector_filter.get() != "全部板块" and "Sector" in headers:
             sector_index = headers.index("Sector")
             industry_index = headers.index("Industry") if "Industry" in headers else -1
-            industries = sorted({
-                row[industry_index] for row in rows
-                if industry_index >= 0 and len(row) > max(sector_index, industry_index)
-                and row[sector_index] == self.sector_filter.get() and row[industry_index].strip()
-            })
+            industries = sorted(
+                {
+                    row[industry_index]
+                    for row in rows
+                    if industry_index >= 0
+                    and len(row) > max(sector_index, industry_index)
+                    and row[sector_index] == self.sector_filter.get()
+                    and row[industry_index].strip()
+                }
+            )
         self.industry_box["values"] = ["全部行业", *industries]
         if self.industry_filter.get() not in self.industry_box["values"]:
             self.industry_filter.set("全部行业")
@@ -516,16 +862,29 @@ class ScannerGUI:
             self.root.after_cancel(self._filter_job)
         self._filter_job = self.root.after(180, self._render_cached_rows)
 
-    def _row_matches_filters(self, indexes: dict[str, int], row: list[str], query: str) -> bool:
+    def _row_matches_filters(
+        self, indexes: dict[str, int], row: list[str], query: str
+    ) -> bool:
         values = row + [""] * max(0, len(self._csv_headers) - len(row))
+
         def value_for(column: str) -> str:
             index = indexes.get(column)
             return values[index] if index is not None and index < len(values) else ""
+
         return (
             (not query or query in " ".join(values).casefold())
-            and (self.sector_filter.get() == "全部板块" or value_for("Sector") == self.sector_filter.get())
-            and (self.industry_filter.get() == "全部行业" or value_for("Industry") == self.industry_filter.get())
-            and (self.quality_filter.get() == "全部质量" or value_for("Quality") == self.quality_filter.get())
+            and (
+                self.sector_filter.get() == "全部板块"
+                or value_for("Sector") == self.sector_filter.get()
+            )
+            and (
+                self.industry_filter.get() == "全部行业"
+                or value_for("Industry") == self.industry_filter.get()
+            )
+            and (
+                self.quality_filter.get() == "全部质量"
+                or value_for("Quality") == self.quality_filter.get()
+            )
         )
 
     def _render_cached_rows(self) -> bool:
@@ -536,17 +895,36 @@ class ScannerGUI:
             return False
         indexes = {header: index for index, header in enumerate(headers)}
         query = self.search.get().strip().casefold()
-        filtered = [row for row in data_rows if self._row_matches_filters(indexes, row, query)]
+        filtered = [
+            row for row in data_rows if self._row_matches_filters(indexes, row, query)
+        ]
         ticker_index = indexes.get("Ticker", -1)
-        self.filtered_tickers = [row[ticker_index].strip().upper() for row in filtered if ticker_index >= 0 and len(row) > ticker_index and row[ticker_index].strip()]
+        self.filtered_tickers = [
+            row[ticker_index].strip().upper()
+            for row in filtered
+            if ticker_index >= 0
+            and len(row) > ticker_index
+            and row[ticker_index].strip()
+        ]
         display_headers = [column for column in DISPLAY_COLUMNS if column in headers]
         self.table.delete(*self.table.get_children())
         self._row_details.clear()
         self.table["columns"] = display_headers
         for header in display_headers:
-            anchor = tk.E if header in NUMBER_COLUMNS else tk.W if header in TEXT_COLUMNS else tk.CENTER
+            anchor = (
+                tk.E
+                if header in NUMBER_COLUMNS
+                else tk.W
+                if header in TEXT_COLUMNS
+                else tk.CENTER
+            )
             self.table.heading(header, text=COLUMN_NAMES.get(header, header))
-            self.table.column(header, width=COLUMN_WIDTHS.get(header, 90), anchor=anchor, stretch=False)
+            self.table.column(
+                header,
+                width=COLUMN_WIDTHS.get(header, 90),
+                anchor=anchor,
+                stretch=False,
+            )
         header_indexes = [indexes[column] for column in display_headers]
         rendered_count = min(len(filtered), MAX_RENDERED_ROWS)
         for row in filtered[:rendered_count]:
@@ -554,13 +932,24 @@ class ScannerGUI:
             display_values = [values[index] for index in header_indexes]
             if "AssetType" in display_headers:
                 type_index = display_headers.index("AssetType")
-                display_values[type_index] = "ETF" if str(display_values[type_index]).strip().lower() == "etf" else "股票"
+                display_values[type_index] = (
+                    "ETF"
+                    if str(display_values[type_index]).strip().lower() == "etf"
+                    else "股票"
+                )
             if "PassedFilters" in display_headers:
                 passed_index = display_headers.index("PassedFilters")
-                display_values[passed_index] = "通过" if str(display_values[passed_index]).strip().lower() in {"true", "1", "yes", "是"} else "未通过"
+                display_values[passed_index] = (
+                    "通过"
+                    if str(display_values[passed_index]).strip().lower()
+                    in {"true", "1", "yes", "是"}
+                    else "未通过"
+                )
             item_id = self.table.insert("", tk.END, values=display_values)
             self._row_details[item_id] = dict(zip(headers, values))
-        self.status.set(f"{self.current_file} · 命中 {len(filtered)} / {len(data_rows)} 条 · 实际渲染 {rendered_count} 条 · 双击查看详情")
+        self.status.set(
+            f"{self.current_file} · 命中 {len(filtered)} / {len(data_rows)} 条 · 实际渲染 {rendered_count} 条 · 双击查看详情"
+        )
         return True
 
     def load_csv(self, filename: str) -> bool:
@@ -570,15 +959,22 @@ class ScannerGUI:
             self.status.set(f"未找到 {filename}")
             return False
         try:
-            if self._csv_path != path:
-                with path.open("r", encoding="utf-8-sig", newline="") as file:
-                    rows = list(csv.reader(file))
+            stat = path.stat()
+            contents = path.read_bytes()
+            modified_at = (
+                stat.st_mtime_ns,
+                stat.st_size,
+                hashlib.sha256(contents).hexdigest(),
+            )
+            if self._csv_path != path or self._csv_mtime != modified_at:
+                rows = list(csv.reader(io.StringIO(contents.decode("utf-8-sig"))))
                 if not rows:
                     self.status.set(f"{filename} 没有结果")
                     return False
                 self._csv_headers = rows[0]
                 self._csv_rows = rows[1:]
                 self._csv_path = path
+                self._csv_mtime = modified_at
                 self._update_filter_values(self._csv_headers, self._csv_rows)
             return self._render_cached_rows()
         except Exception as exc:
@@ -586,7 +982,8 @@ class ScannerGUI:
             return False
 
     def open_output(self) -> None:
-        if OUTPUT_DIR.exists(): subprocess.Popen(["explorer", str(OUTPUT_DIR)])
+        if OUTPUT_DIR.exists():
+            subprocess.Popen(["explorer", str(OUTPUT_DIR)])
 
 
 def main() -> None:

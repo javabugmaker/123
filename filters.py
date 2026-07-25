@@ -27,9 +27,9 @@ from config import (
     CMF_THRESHOLD,
     CONSOLIDATION_DAYS,
     CONSOLIDATION_MAX_RANGE_PCT,
+    MAX_PRICE,
     MIN_MARKET_CAP,
     MIN_PRICE,
-    MAX_PRICE,
     MIN_VOLUME,
     OBV_DIVERGENCE_LOOKBACK,
     VOLUME_ACCUM_MIN_DAYS,
@@ -43,9 +43,11 @@ logger = logging.getLogger("institution_scanner.filters")
 # Result dataclasses
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class FilterResult:
     """Container returned by each filter function."""
+
     passed: bool
     reason: str = ""
     details: dict[str, Any] = field(default_factory=dict)
@@ -54,6 +56,7 @@ class FilterResult:
 # ======================================================================
 # Basic sanity filters
 # ======================================================================
+
 
 def filter_min_price(df: pd.DataFrame) -> FilterResult:
     """Reject if latest close is outside the configured price range."""
@@ -71,7 +74,12 @@ def filter_min_price(df: pd.DataFrame) -> FilterResult:
 
 def filter_min_volume(df: pd.DataFrame) -> FilterResult:
     """Reject if average daily volume (60d) is below MIN_VOLUME."""
-    vol_avg = pd.to_numeric(df["Volume"], errors="coerce").rolling(60, min_periods=30).mean().iloc[-1]
+    vol_avg = (
+        pd.to_numeric(df["Volume"], errors="coerce")
+        .rolling(60, min_periods=30)
+        .mean()
+        .iloc[-1]
+    )
     if pd.isna(vol_avg):
         return FilterResult(passed=False, reason="成交量数据不足或无效")
     passed = float(vol_avg) >= MIN_VOLUME
@@ -96,12 +104,13 @@ def filter_sufficient_history(df: pd.DataFrame) -> FilterResult:
 # Bear Market Detection
 # ======================================================================
 
+
 def filter_bear_market(df: pd.DataFrame) -> FilterResult:
     """
     Detect long-term bear market:
     1. MA200 must be declining (last 60 days slope < 0).
     2. Price must be below MA200.
-    3. Price must have declined > 30% over past 2 years.
+    3. Price must have declined at least 20% over past 2 years.
 
     Returns:
         FilterResult with details about the bear market.
@@ -111,7 +120,9 @@ def filter_bear_market(df: pd.DataFrame) -> FilterResult:
     close = df["Close"]
     required_bars = BEAR_LOOKBACK_YEARS * 252
     if len(df) < required_bars:
-        return FilterResult(passed=False, reason="Insufficient history for bear market check")
+        return FilterResult(
+            passed=False, reason="Insufficient history for bear market check"
+        )
 
     # 1. MA200 declining
     if "MA200" not in df.columns:
@@ -143,7 +154,9 @@ def filter_bear_market(df: pd.DataFrame) -> FilterResult:
     # 3. Decline over 2 years
     lookback_bars = required_bars
     price_lookback = close.iloc[-lookback_bars]
-    decline_pct = (price_now - price_lookback) / price_lookback * 100 if price_lookback > 0 else 0
+    decline_pct = (
+        (price_now - price_lookback) / price_lookback * 100 if price_lookback > 0 else 0
+    )
     bear_decline = decline_pct <= BEAR_DECLINE_PCT
     details["decline_pct"] = round(decline_pct, 2)
     details["price_lookback"] = round(price_lookback, 2)
@@ -166,6 +179,7 @@ def filter_bear_market(df: pd.DataFrame) -> FilterResult:
 # Bottom Consolidation (Range-bound, Low Volatility)
 # ======================================================================
 
+
 def filter_consolidation(df: pd.DataFrame) -> FilterResult:
     """
     Detect bottom consolidation:
@@ -173,7 +187,9 @@ def filter_consolidation(df: pd.DataFrame) -> FilterResult:
       less than CONSOLIDATION_MAX_RANGE_PCT percent.
     """
     if len(df) < CONSOLIDATION_DAYS:
-        return FilterResult(passed=False, reason="Insufficient history for consolidation check")
+        return FilterResult(
+            passed=False, reason="Insufficient history for consolidation check"
+        )
 
     recent = df.iloc[-CONSOLIDATION_DAYS:]
     high = recent["High"].max()
@@ -205,6 +221,7 @@ def filter_consolidation(df: pd.DataFrame) -> FilterResult:
 # Volume Accumulation Detection
 # ======================================================================
 
+
 def filter_volume_accumulation(df: pd.DataFrame) -> FilterResult:
     """
     Detect sustained volume accumulation:
@@ -216,7 +233,9 @@ def filter_volume_accumulation(df: pd.DataFrame) -> FilterResult:
         return FilterResult(passed=False, reason="Volume MAs not computed")
 
     if len(df) < VOLUME_ACCUM_MIN_DAYS + 120:
-        return FilterResult(passed=False, reason="Insufficient history for volume check")
+        return FilterResult(
+            passed=False, reason="Insufficient history for volume check"
+        )
 
     vol_ma20 = df["VolMA20"]
     vol_ma120 = df["VolMA120"]
@@ -230,11 +249,13 @@ def filter_volume_accumulation(df: pd.DataFrame) -> FilterResult:
         return FilterResult(
             passed=False,
             reason=f"Volume accumulation not active today (VolMA20={vol_ma20.iloc[-1]:,.0f}, "
-                   f"VolMA120={vol_ma120.iloc[-1]:,.0f})",
+            f"VolMA120={vol_ma120.iloc[-1]:,.0f})",
             details={
                 "vol_ma20": vol_ma20.iloc[-1],
                 "vol_ma120": vol_ma120.iloc[-1],
-                "ratio": round(vol_ma20.iloc[-1] / vol_ma120.iloc[-1], 2) if vol_ma120.iloc[-1] > 0 else 0,
+                "ratio": round(vol_ma20.iloc[-1] / vol_ma120.iloc[-1], 2)
+                if vol_ma120.iloc[-1] > 0
+                else 0,
             },
         )
 
@@ -248,7 +269,6 @@ def filter_volume_accumulation(df: pd.DataFrame) -> FilterResult:
 
     passed = consecutive >= VOLUME_ACCUM_MIN_DAYS
 
-    volumes = condition.reset_index(drop=True)
     consecutive_series = pd.Series(0, index=condition.index, dtype=int)
     cnt = 0
     for i in range(len(condition)):
@@ -258,8 +278,6 @@ def filter_volume_accumulation(df: pd.DataFrame) -> FilterResult:
             cnt = 0
         consecutive_series.iloc[i] = cnt
     max_consecutive = int(consecutive_series.max())
-    df["_VolAccumDays"] = consecutive_series  # temporary column for scoring
-
     return FilterResult(
         passed=passed,
         reason=(
@@ -270,7 +288,9 @@ def filter_volume_accumulation(df: pd.DataFrame) -> FilterResult:
         details={
             "consecutive_days": consecutive,
             "max_consecutive": max_consecutive,
-            "current_ratio": round(vol_ma20.iloc[-1] / vol_ma120.iloc[-1], 2) if vol_ma120.iloc[-1] > 0 else 0,
+            "current_ratio": round(vol_ma20.iloc[-1] / vol_ma120.iloc[-1], 2)
+            if vol_ma120.iloc[-1] > 0
+            else 0,
         },
     )
 
@@ -278,6 +298,7 @@ def filter_volume_accumulation(df: pd.DataFrame) -> FilterResult:
 # ======================================================================
 # OBV Bullish Divergence
 # ======================================================================
+
 
 def filter_obv_divergence(df: pd.DataFrame) -> FilterResult:
     """
@@ -290,13 +311,17 @@ def filter_obv_divergence(df: pd.DataFrame) -> FilterResult:
         return FilterResult(passed=False, reason="OBV not computed")
 
     if len(df) < OBV_DIVERGENCE_LOOKBACK:
-        return FilterResult(passed=False, reason="Insufficient history for OBV divergence")
+        return FilterResult(
+            passed=False, reason="Insufficient history for OBV divergence"
+        )
 
     lookback = min(OBV_DIVERGENCE_LOOKBACK, len(df))
     recent = df.iloc[-lookback:].copy()
     recent = recent[["Close", "OBV"]].replace([np.inf, -np.inf], np.nan).dropna()
     if len(recent) < max(20, lookback // 2):
-        return FilterResult(passed=False, reason="Insufficient valid data for OBV divergence")
+        return FilterResult(
+            passed=False, reason="Insufficient valid data for OBV divergence"
+        )
 
     close = recent["Close"]
     obv = recent["OBV"]
@@ -304,7 +329,9 @@ def filter_obv_divergence(df: pd.DataFrame) -> FilterResult:
     first_half = recent.iloc[:split]
     second_half = recent.iloc[split:]
     if second_half.empty:
-        return FilterResult(passed=False, reason="Insufficient valid data for OBV divergence")
+        return FilterResult(
+            passed=False, reason="Insufficient valid data for OBV divergence"
+        )
 
     price_low_first = float(first_half["Close"].min())
     price_low_second = float(second_half["Close"].min())
@@ -312,7 +339,10 @@ def filter_obv_divergence(df: pd.DataFrame) -> FilterResult:
     obv_low_second = float(second_half["OBV"].min())
     price_now = float(close.iloc[-1])
     obv_now = float(obv.iloc[-1])
-    near_price_low = price_low_second > 0 and (price_now - price_low_second) / price_low_second < 0.05
+    near_price_low = (
+        price_low_second > 0
+        and (price_now - price_low_second) / price_low_second < 0.05
+    )
     price_lower_low = price_low_second <= price_low_first * 1.02
     obv_higher_low = obv_low_second > obv_low_first
     obv_recovering = obv_now >= obv_low_second
@@ -343,6 +373,7 @@ def filter_obv_divergence(df: pd.DataFrame) -> FilterResult:
 # CMF (Chaikin Money Flow) — Positive / Improving
 # ======================================================================
 
+
 def filter_cmf_positive(df: pd.DataFrame) -> FilterResult:
     """Check that CMF > threshold or improving over the last 20 days."""
     if "CMF" not in df.columns:
@@ -357,21 +388,29 @@ def filter_cmf_positive(df: pd.DataFrame) -> FilterResult:
         return FilterResult(passed=False, reason="CMF data unavailable")
 
     cmf_change = cmf_now - cmf_20d_ago
-    passed = cmf_now > CMF_THRESHOLD or cmf_change > 0.05
+    cmf_positive = cmf_now > CMF_THRESHOLD
+    cmf_improving = cmf_change > 0.05
+    passed = cmf_positive or cmf_improving
 
     return FilterResult(
         passed=passed,
         reason=(
-            f"CMF={cmf_now:.3f} {'>' if cmf_now > CMF_THRESHOLD else '<='} threshold, "
-            f"20d change={cmf_now - cmf_20d_ago:+.3f}"
+            f"CMF={cmf_now:.3f} {'positive' if cmf_positive else 'not positive'}, "
+            f"20d change={cmf_change:+.3f}"
         ),
-        details={"cmf": round(cmf_now, 4), "cmf_20d_change": round(cmf_now - cmf_20d_ago, 4)},
+        details={
+            "cmf": round(cmf_now, 4),
+            "cmf_20d_change": round(cmf_change, 4),
+            "cmf_positive": cmf_positive,
+            "cmf_improving": cmf_improving,
+        },
     )
 
 
 # ======================================================================
 # A/D Line — Positive Slope
 # ======================================================================
+
 
 def filter_ad_slope_positive(df: pd.DataFrame) -> FilterResult:
     """Check that A/D line slope is positive over the lookback period."""
@@ -395,26 +434,29 @@ def filter_ad_slope_positive(df: pd.DataFrame) -> FilterResult:
 # Volatility Contraction
 # ======================================================================
 
+
 def filter_volatility_contraction(df: pd.DataFrame) -> FilterResult:
     """
     Detect volatility contraction — suggests "coiled spring" / accumulation:
     - ATR14 < ATR50 * 0.85 (ATR compressing)
-    - Bollinger Band Width declining over last 60 days
+    - Bollinger Band Width declining over the configured lookback
     """
     details: dict[str, Any] = {}
 
     if len(df) < max(BB_WIDTH_COMPRESSION_LOOKBACK, ATR_COMPRESSION_LOOKBACK):
-        return FilterResult(passed=False, reason="Insufficient history for volatility check")
+        return FilterResult(
+            passed=False, reason="Insufficient history for volatility check"
+        )
 
     atr_compressing = False
-    if "ATR14" in df.columns:
-        atr_values = df["ATR14"].replace([np.inf, -np.inf], np.nan).dropna()
-        if len(atr_values) >= ATR_COMPRESSION_LOOKBACK:
-            atr_now = atr_values.iloc[-1]
-            atr_start = atr_values.iloc[-ATR_COMPRESSION_LOOKBACK]
-            atr_compressing = pd.notna(atr_now) and pd.notna(atr_start) and atr_now < atr_start
+    if "ATR14" in df.columns and "ATR50" in df.columns:
+        atr_frame = df[["ATR14", "ATR50"]].replace([np.inf, -np.inf], np.nan).dropna()
+        if not atr_frame.empty:
+            atr_now = atr_frame.iloc[-1]["ATR14"]
+            atr50_now = atr_frame.iloc[-1]["ATR50"]
+            atr_compressing = atr50_now > 0 and atr_now < atr50_now * 0.85
             details["atr14"] = round(atr_now, 4)
-            details["atr14_lookback"] = round(atr_start, 4)
+            details["atr50"] = round(atr50_now, 4)
             details["atr_compressing"] = atr_compressing
 
     # BB Width declining
@@ -443,7 +485,10 @@ def filter_volatility_contraction(df: pd.DataFrame) -> FilterResult:
 # Market Cap Filter
 # ======================================================================
 
-def filter_min_market_cap(market_cap: float | None, required: bool = True) -> FilterResult:
+
+def filter_min_market_cap(
+    market_cap: float | None, required: bool = True
+) -> FilterResult:
     """Reject if market cap is below MIN_MARKET_CAP."""
     if market_cap is None:
         return FilterResult(
@@ -466,58 +511,82 @@ def filter_min_market_cap(market_cap: float | None, required: bool = True) -> Fi
 # Master filter runner
 # ======================================================================
 
+
 @dataclass
 class AllFilterResults:
     """Aggregated results from all filters."""
+
     min_price: FilterResult = field(default_factory=lambda: FilterResult(False, ""))
     min_volume: FilterResult = field(default_factory=lambda: FilterResult(False, ""))
-    min_market_cap: FilterResult = field(default_factory=lambda: FilterResult(False, ""))
-    sufficient_history: FilterResult = field(default_factory=lambda: FilterResult(False, ""))
+    min_market_cap: FilterResult = field(
+        default_factory=lambda: FilterResult(False, "")
+    )
+    sufficient_history: FilterResult = field(
+        default_factory=lambda: FilterResult(False, "")
+    )
     bear_market: FilterResult = field(default_factory=lambda: FilterResult(False, ""))
     consolidation: FilterResult = field(default_factory=lambda: FilterResult(False, ""))
-    volume_accumulation: FilterResult = field(default_factory=lambda: FilterResult(False, ""))
-    obv_divergence: FilterResult = field(default_factory=lambda: FilterResult(False, ""))
+    volume_accumulation: FilterResult = field(
+        default_factory=lambda: FilterResult(False, "")
+    )
+    obv_divergence: FilterResult = field(
+        default_factory=lambda: FilterResult(False, "")
+    )
     cmf_positive: FilterResult = field(default_factory=lambda: FilterResult(False, ""))
     ad_slope: FilterResult = field(default_factory=lambda: FilterResult(False, ""))
-    volatility_contraction: FilterResult = field(default_factory=lambda: FilterResult(False, ""))
+    volatility_contraction: FilterResult = field(
+        default_factory=lambda: FilterResult(False, "")
+    )
 
     def all_passed(self) -> bool:
-        """Return True when basic data checks pass and enough signals agree."""
-        base_filters = [self.min_price, self.min_volume, self.min_market_cap, self.sufficient_history]
-        signal_filters = [
-            self.bear_market, self.consolidation, self.volume_accumulation,
-            self.obv_divergence, self.cmf_positive, self.ad_slope,
-            self.volatility_contraction,
+        """Return True when basic checks and enough accumulation evidence pass."""
+        base_filters = [
+            self.min_price,
+            self.min_volume,
+            self.min_market_cap,
+            self.sufficient_history,
         ]
-        primary_accumulation = [
+        accumulation_signals = [
             self.volume_accumulation,
             self.obv_divergence,
             self.cmf_positive,
             self.ad_slope,
         ]
         structure_signals = [self.consolidation, self.volatility_contraction]
-        signal_count = sum(1 for item in signal_filters if item.passed)
-        has_accumulation = any(item.passed for item in primary_accumulation)
-        has_structure = any(item.passed for item in structure_signals)
+        accumulation_count = sum(1 for item in accumulation_signals if item.passed)
+        structure_count = sum(1 for item in structure_signals if item.passed)
         return (
             all(item.passed for item in base_filters)
-            and signal_count >= 4
-            and has_accumulation
-            and has_structure
+            and accumulation_count >= 2
+            and structure_count >= 1
         )
 
     def signal_count(self) -> int:
-        return sum(1 for item in (
-            self.bear_market, self.consolidation, self.volume_accumulation,
-            self.obv_divergence, self.cmf_positive, self.ad_slope,
-            self.volatility_contraction,
-        ) if item.passed)
+        return sum(
+            1
+            for item in (
+                self.consolidation,
+                self.volume_accumulation,
+                self.obv_divergence,
+                self.cmf_positive,
+                self.ad_slope,
+                self.volatility_contraction,
+            )
+            if item.passed
+        )
 
     def passed_count(self) -> int:
         filters = [
-            self.min_price, self.min_volume, self.min_market_cap, self.sufficient_history,
-            self.bear_market, self.consolidation, self.volume_accumulation,
-            self.obv_divergence, self.cmf_positive, self.ad_slope,
+            self.min_price,
+            self.min_volume,
+            self.min_market_cap,
+            self.sufficient_history,
+            self.bear_market,
+            self.consolidation,
+            self.volume_accumulation,
+            self.obv_divergence,
+            self.cmf_positive,
+            self.ad_slope,
             self.volatility_contraction,
         ]
         return sum(1 for item in filters if item.passed)

@@ -5,7 +5,6 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -143,9 +142,21 @@ def _stage_label(df: pd.DataFrame, phase: str) -> str:
     if len(df) < 60:
         return "数据不足"
     close = float(df["Close"].iloc[-1])
-    ma20 = float(df["MA20"].iloc[-1]) if "MA20" in df and pd.notna(df["MA20"].iloc[-1]) else np.nan
-    ma50 = float(df["MA50"].iloc[-1]) if "MA50" in df and pd.notna(df["MA50"].iloc[-1]) else np.nan
-    rsi = float(df["RSI14"].iloc[-1]) if "RSI14" in df and pd.notna(df["RSI14"].iloc[-1]) else np.nan
+    ma20 = (
+        float(df["MA20"].iloc[-1])
+        if "MA20" in df and pd.notna(df["MA20"].iloc[-1])
+        else np.nan
+    )
+    ma50 = (
+        float(df["MA50"].iloc[-1])
+        if "MA50" in df and pd.notna(df["MA50"].iloc[-1])
+        else np.nan
+    )
+    rsi = (
+        float(df["RSI14"].iloc[-1])
+        if "RSI14" in df and pd.notna(df["RSI14"].iloc[-1])
+        else np.nan
+    )
     return20 = _safe_return(df["Close"], 20)
     if not all(np.isfinite(value) for value in (close, ma20, ma50, rsi, return20)):
         return "数据不足"
@@ -173,12 +184,17 @@ def _enrich_one_result(
         enriched = compute_all_indicators(frame.copy())
     if enriched.empty:
         return result, None, 0.0
-    data_age = max(0, (datetime.now().date() - enriched.index[-1].date()).days)
+    latest_date = enriched.index[-1].date()
+    today = datetime.now().date()
+    data_age = max(0, (today - latest_date).days)
+    trading_age = max(0, len(pd.bdate_range(latest_date, today)) - 1)
+    result.close = float(enriched["Close"].iloc[-1])
     result.market_regime = regime
     result.market_regime_reason = regime_reason
     result.data_source = source
     result.data_asof = enriched.index[-1].strftime("%Y-%m-%d")
     result.data_age_days = data_age
+    result.data_trading_age_days = trading_age
     result.data_coverage = round(float(enriched["Close"].notna().mean()), 4)
     result.stage = _stage_label(enriched, result.wyckoff_phase)
     relative = _safe_return(enriched["Close"], 60)
@@ -218,7 +234,9 @@ def enrich_results(
                 result, enriched, relative = future.result()
             except Exception as exc:
                 completed += 1
-                logger.warning("Enrichment failed for %s: %s", source_result.ticker, exc)
+                logger.warning(
+                    "Enrichment failed for %s: %s", source_result.ticker, exc
+                )
                 if completed == total or completed % 100 == 0:
                     logger.info("Enrichment progress: %d/%d results.", completed, total)
                 continue
@@ -230,7 +248,11 @@ def enrich_results(
                     industry_returns.setdefault(industry, []).append(relative)
             if completed == total or completed % 100 == 0:
                 logger.info("Enrichment progress: %d/%d results.", completed, total)
-    peer_average = {key: float(np.mean(values)) for key, values in industry_returns.items() if values}
+    peer_average = {
+        key: float(np.mean(values))
+        for key, values in industry_returns.items()
+        if values
+    }
     for result in results:
         frame = cached_frames.get(result.ticker)
         if frame is None:
@@ -238,7 +260,9 @@ def enrich_results(
         value = _safe_return(frame["Close"], 60)
         industry = result.industry or result.sector or "未分类"
         peer = peer_average.get(industry, 0.0)
-        result.industry_relative_strength = round(value - peer, 2) if np.isfinite(value) else np.nan
+        result.industry_relative_strength = (
+            round(value - peer, 2) if np.isfinite(value) else np.nan
+        )
 
 
 def _signal_points(enriched: pd.DataFrame, cooldown: int = 60) -> list[int]:
@@ -277,10 +301,20 @@ def _backtest_one_ticker(
     signal_points = _signal_points(enriched)
     if not signal_points:
         return []
-    opens = enriched["Open"].to_numpy(dtype=float) if "Open" in enriched else np.full(len(enriched), np.nan)
-    lows = enriched["Low"].to_numpy(dtype=float) if "Low" in enriched else np.full(len(enriched), np.nan)
+    opens = (
+        enriched["Open"].to_numpy(dtype=float)
+        if "Open" in enriched
+        else np.full(len(enriched), np.nan)
+    )
+    lows = (
+        enriched["Low"].to_numpy(dtype=float)
+        if "Low" in enriched
+        else np.full(len(enriched), np.nan)
+    )
     closes = enriched["Close"].to_numpy(dtype=float)
-    highs = enriched["High"].to_numpy(dtype=float) if "High" in enriched else closes.copy()
+    highs = (
+        enriched["High"].to_numpy(dtype=float) if "High" in enriched else closes.copy()
+    )
     valid_points = []
     for index in signal_points:
         entry_index = index + 1
@@ -288,11 +322,19 @@ def _backtest_one_ticker(
             continue
         if not np.isfinite(opens[entry_index]) or opens[entry_index] <= 0:
             continue
-        if entry_index + 60 >= len(enriched) or not np.isfinite(closes[entry_index + 20]) or not np.isfinite(closes[entry_index + 60]):
+        if (
+            entry_index + 60 >= len(enriched)
+            or not np.isfinite(closes[entry_index + 20])
+            or not np.isfinite(closes[entry_index + 60])
+        ):
             continue
-        if np.any(~np.isfinite(highs[entry_index:entry_index + 61])) or np.any(highs[entry_index:entry_index + 61] <= 0):
+        if np.any(~np.isfinite(highs[entry_index : entry_index + 61])) or np.any(
+            highs[entry_index : entry_index + 61] <= 0
+        ):
             continue
-        if np.any(~np.isfinite(lows[entry_index:entry_index + 61])) or np.any(lows[entry_index:entry_index + 61] <= 0):
+        if np.any(~np.isfinite(lows[entry_index : entry_index + 61])) or np.any(
+            lows[entry_index : entry_index + 61] <= 0
+        ):
             continue
         valid_points.append(index)
     if not valid_points:
@@ -300,7 +342,12 @@ def _backtest_one_ticker(
     history_lengths = sorted({index + 1 for index in valid_points})
     is_etf = is_etf_ticker(str(ticker))
     score_cache = {
-        length: float(score_ticker(enriched.iloc[:length], is_etf=is_etf).total)
+        length: float(
+            score_ticker(
+                compute_all_indicators(frame.iloc[:length].copy()),
+                is_etf=is_etf,
+            ).total
+        )
         for length in history_lengths
     }
     benchmark_close = None
@@ -321,13 +368,26 @@ def _backtest_one_ticker(
             for period in (20, 60):
                 future_date = pd.Timestamp(enriched.index[entry_index + period])
                 end_date = benchmark_close.index.asof(future_date)
-                if pd.notna(start_date) and pd.notna(end_date) and benchmark_close.loc[start_date] > 0:
-                    benchmark_returns[period] = (benchmark_close.loc[end_date] / benchmark_close.loc[start_date] - 1) * 100
-        cost_percent = (commission * 2 + slippage * 2 + (0.0 if is_etf else stamp_duty)) * 100
-        prices20 = np.concatenate(([entry_price], closes[entry_index:entry_index + 21]))
-        prices60 = np.concatenate(([entry_price], closes[entry_index:entry_index + 61]))
-        lows20 = np.concatenate(([entry_price], lows[entry_index:entry_index + 21]))
-        lows60 = np.concatenate(([entry_price], lows[entry_index:entry_index + 61]))
+                if (
+                    pd.notna(start_date)
+                    and pd.notna(end_date)
+                    and benchmark_close.loc[start_date] > 0
+                ):
+                    benchmark_returns[period] = (
+                        benchmark_close.loc[end_date] / benchmark_close.loc[start_date]
+                        - 1
+                    ) * 100
+        cost_percent = (
+            commission * 2 + slippage * 2 + (0.0 if is_etf else stamp_duty)
+        ) * 100
+        prices20 = np.concatenate(
+            ([entry_price], closes[entry_index : entry_index + 21])
+        )
+        prices60 = np.concatenate(
+            ([entry_price], closes[entry_index : entry_index + 61])
+        )
+        lows20 = np.concatenate(([entry_price], lows[entry_index : entry_index + 21]))
+        lows60 = np.concatenate(([entry_price], lows[entry_index : entry_index + 61]))
         drawdown20 = float(((lows20 / np.maximum.accumulate(prices20) - 1).min()) * 100)
         drawdown60 = float(((lows60 / np.maximum.accumulate(prices60) - 1).min()) * 100)
         if test_start is not None and entry_date >= test_start:
@@ -336,26 +396,30 @@ def _backtest_one_ticker(
             split = "validation"
         else:
             split = "train"
-        samples.append({
-            "ticker": ticker,
-            "signal_date": signal_date.strftime("%Y-%m-%d"),
-            "entry_date": entry_date.strftime("%Y-%m-%d"),
-            "entry_price": float(entry_price),
-            "return20": (future20 / entry_price - 1) * 100,
-            "return60": (future60 / entry_price - 1) * 100,
-            "benchmark_return20": benchmark_returns[20],
-            "benchmark_return60": benchmark_returns[60],
-            "net_return20": (future20 / entry_price - 1) * 100 - cost_percent,
-            "net_return60": (future60 / entry_price - 1) * 100 - cost_percent,
-            "drawdown20": drawdown20,
-            "drawdown60": drawdown60,
-            "score": score_cache[index + 1],
-            "split": split,
-        })
+        samples.append(
+            {
+                "ticker": ticker,
+                "signal_date": signal_date.strftime("%Y-%m-%d"),
+                "entry_date": entry_date.strftime("%Y-%m-%d"),
+                "entry_price": float(entry_price),
+                "return20": (future20 / entry_price - 1) * 100,
+                "return60": (future60 / entry_price - 1) * 100,
+                "benchmark_return20": benchmark_returns[20],
+                "benchmark_return60": benchmark_returns[60],
+                "net_return20": (future20 / entry_price - 1) * 100 - cost_percent,
+                "net_return60": (future60 / entry_price - 1) * 100 - cost_percent,
+                "drawdown20": drawdown20,
+                "drawdown60": drawdown60,
+                "score": score_cache[index + 1],
+                "split": split,
+            }
+        )
     return samples
 
 
-def _ticker_backtest_rows(sample_frame: pd.DataFrame, objective: str = "return_20d") -> list[dict[str, Any]]:
+def _ticker_backtest_rows(
+    sample_frame: pd.DataFrame, objective: str = "return_20d"
+) -> list[dict[str, Any]]:
     target_map = {
         "return_20d": "return20",
         "return_60d": "return60",
@@ -366,32 +430,54 @@ def _ticker_backtest_rows(sample_frame: pd.DataFrame, objective: str = "return_2
     }
     if objective not in target_map:
         raise ValueError(f"unsupported objective: {objective}")
+    sample_frame = sample_frame.copy()
+    for column in ("benchmark_return20", "benchmark_return60"):
+        if column not in sample_frame:
+            sample_frame[column] = np.nan
+    sample_frame["excess20"] = sample_frame["return20"] - sample_frame["benchmark_return20"]
+    sample_frame["excess60"] = sample_frame["return60"] - sample_frame["benchmark_return60"]
+    sample_frame["risk_adjusted"] = sample_frame["net_return20"] / sample_frame["drawdown20"].abs().replace(0, np.nan)
     rows: list[dict[str, Any]] = []
     for ticker, group in sample_frame.groupby("ticker", sort=False):
         win20 = float((group["return20"] > 0).mean())
         win60 = float((group["return60"] > 0).mean())
         avg20 = float(group["return20"].mean())
         avg60 = float(group["return60"].mean())
-        downside60 = float(group.loc[group["return60"] < 0, "return60"].mean()) if (group["return60"] < 0).any() else 0.0
+        downside60 = (
+            float(group.loc[group["return60"] < 0, "return60"].mean())
+            if (group["return60"] < 0).any()
+            else 0.0
+        )
         win_score = win20 * 0.20 + win60 * 0.20
-        return_score = (_bounded_score(avg20, -15.0, 15.0) * 0.15 + _bounded_score(avg60, -25.0, 35.0) * 0.25)
+        return_score = (
+            _bounded_score(avg20, -15.0, 15.0) * 0.15
+            + _bounded_score(avg60, -25.0, 35.0) * 0.25
+        )
         downside_score = _bounded_score(downside60, -25.0, 0.0) * 0.20
         raw_score = (win_score + return_score + downside_score) * 100.0
         sample_confidence = min(1.0, len(group) / 10.0)
         backtest_score = 50.0 + (raw_score - 50.0) * sample_confidence
-        objective_series = pd.to_numeric(group[target_map[objective]], errors="coerce").dropna()
-        objective_value = float(objective_series.mean()) if not objective_series.empty else 0.0
-        rows.append({
-            "ticker": str(ticker),
-            "samples": int(len(group)),
-            "win_rate_20d": round(win20, 4),
-            "win_rate_60d": round(win60, 4),
-            "average_return_20d": round(avg20, 4),
-            "average_return_60d": round(avg60, 4),
-            "objective_value": round(objective_value, 4),
-            "backtest_score": round(float(backtest_score), 4),
-        })
-    return sorted(rows, key=lambda row: (row["objective_value"], row["samples"]), reverse=True)
+        objective_series = pd.to_numeric(
+            group[target_map[objective]], errors="coerce"
+        ).dropna()
+        objective_value = (
+            float(objective_series.mean()) if not objective_series.empty else 0.0
+        )
+        rows.append(
+            {
+                "ticker": str(ticker),
+                "samples": int(len(group)),
+                "win_rate_20d": round(win20, 4),
+                "win_rate_60d": round(win60, 4),
+                "average_return_20d": round(avg20, 4),
+                "average_return_60d": round(avg60, 4),
+                "objective_value": round(objective_value, 4),
+                "backtest_score": round(float(backtest_score), 4),
+            }
+        )
+    return sorted(
+        rows, key=lambda row: (row["objective_value"], row["samples"]), reverse=True
+    )
 
 
 def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
@@ -409,35 +495,62 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "backtest_score": "BacktestScore",
     }
     legacy_columns = {
-        "backtest_score", "composite_score", "samples", "win_rate_20d", "win_rate_60d",
-        "average_return_20d", "average_return_60d", "BacktestScore", "CompositeScore",
-        "BacktestSamples", "BacktestWinRate20D", "BacktestWinRate60D",
-        "BacktestAverageReturn20D", "BacktestAverageReturn60D", "BacktestObjectiveValue",
+        "backtest_score",
+        "composite_score",
+        "samples",
+        "win_rate_20d",
+        "win_rate_60d",
+        "average_return_20d",
+        "average_return_60d",
+        "BacktestScore",
+        "CompositeScore",
+        "BacktestSamples",
+        "BacktestWinRate20D",
+        "BacktestWinRate60D",
+        "BacktestAverageReturn20D",
+        "BacktestAverageReturn60D",
+        "BacktestObjectiveValue",
     }
-    frame = frame.drop(columns=[column for column in frame.columns if column in legacy_columns], errors="ignore")
-    metrics = pd.DataFrame(summary.by_ticker).rename(columns={"ticker": "Ticker", **metric_columns})
+    frame = frame.drop(
+        columns=[column for column in frame.columns if column in legacy_columns],
+        errors="ignore",
+    )
+    metrics = pd.DataFrame(summary.by_ticker).rename(
+        columns={"ticker": "Ticker", **metric_columns}
+    )
     frame = frame.merge(metrics, on="Ticker", how="left", validate="one_to_one")
     for column in ("BacktestSamples", "BacktestScore", "BacktestObjectiveValue"):
         if column not in frame:
             frame[column] = np.nan
     observed = frame["BacktestSamples"].fillna(0).astype(float)
     frame["BacktestScore"] = frame["BacktestScore"].fillna(50.0)
-    frame["BacktestObjectiveValue"] = pd.to_numeric(frame["BacktestObjectiveValue"], errors="coerce")
-    objective_values = frame["BacktestObjectiveValue"].where(np.isfinite(frame["BacktestObjectiveValue"]))
+    frame["BacktestObjectiveValue"] = pd.to_numeric(
+        frame["BacktestObjectiveValue"], errors="coerce"
+    )
+    objective_values = frame["BacktestObjectiveValue"].where(
+        np.isfinite(frame["BacktestObjectiveValue"])
+    )
     if summary.objective == "max_drawdown":
-        objective_rank = objective_values.rank(pct=True, ascending=True).fillna(0.5) * 100.0
+        objective_rank = (
+            objective_values.rank(pct=True, ascending=True).fillna(0.5) * 100.0
+        )
     else:
         objective_rank = objective_values.rank(pct=True).fillna(0.5) * 100.0
     sample_factor = np.clip(observed / 10.0, 0.0, 1.0)
     backtest_component = frame["BacktestScore"] * 0.5 + objective_rank * 0.5
-    frame["CompositeScore"] = frame["Score"] * 0.75 + (backtest_component * 0.25 * sample_factor + 50.0 * 0.25 * (1.0 - sample_factor))
+    blended_backtest = (
+        backtest_component * sample_factor + 50.0 * (1.0 - sample_factor)
+    )
+    frame["CompositeScore"] = frame["Score"] * 0.75 + blended_backtest * 0.25
     frame = frame.sort_values(
         ["PassedFilters", "CompositeScore", "Score", "SignalCount"],
         ascending=[False, False, False, False],
         kind="mergesort",
     ).reset_index(drop=True)
     frame.to_csv(path, index=False, encoding="utf-8-sig")
-    frame.head(top_n).to_csv(OUTPUT_DIR / f"Top{top_n}.csv", index=False, encoding="utf-8-sig")
+    frame.head(top_n).to_csv(
+        OUTPUT_DIR / f"Top{top_n}.csv", index=False, encoding="utf-8-sig"
+    )
     frame.head(200).to_parquet(OUTPUT_DIR / "Top200.parquet", index=False)
     frame.to_parquet(OUTPUT_DIR / "AllResults.parquet", index=False)
 
@@ -448,6 +561,7 @@ def _spearman(frame: pd.DataFrame, target: str) -> float:
         return 0.0
     try:
         from scipy.stats import spearmanr
+
         value = spearmanr(data["score"], data[target]).statistic
     except (ImportError, AttributeError):
         value = data["score"].rank().corr(data[target].rank())
@@ -466,8 +580,14 @@ def _entry_date_equal_weight_stats(sample_frame: pd.DataFrame) -> dict[str, Any]
     if sample_frame.empty:
         return {"entry_dates": 0, "samples": 0}
     numeric_columns = [
-        "return20", "return60", "benchmark_return20", "benchmark_return60",
-        "net_return20", "net_return60", "drawdown20", "drawdown60",
+        "return20",
+        "return60",
+        "benchmark_return20",
+        "benchmark_return60",
+        "net_return20",
+        "net_return60",
+        "drawdown20",
+        "drawdown60",
     ]
     daily = sample_frame.groupby("entry_date", sort=True)[numeric_columns].mean()
     daily["excess20"] = daily["return20"] - daily["benchmark_return20"]
@@ -495,18 +615,28 @@ def _bucket_rows(sample_frame: pd.DataFrame) -> list[dict[str, Any]]:
     frame["bucket"] = pd.qcut(frame["score"], q=5, labels=False, duplicates="drop")
     rows = []
     for bucket, group in frame.groupby("bucket", dropna=True):
-        rows.append({
-            "bucket": int(bucket) + 1,
-            "samples": int(len(group)),
-            "average_return20": round(float(group["return20"].mean()), 4),
-            "average_return60": round(float(group["return60"].mean()), 4),
-            "average_benchmark_return20": round(float(group["benchmark_return20"].mean()), 4),
-            "average_benchmark_return60": round(float(group["benchmark_return60"].mean()), 4),
-            "average_excess_return20": round(float((group["return20"] - group["benchmark_return20"]).mean()), 4),
-            "average_excess_return60": round(float((group["return60"] - group["benchmark_return60"]).mean()), 4),
-            "average_net_return20": round(float(group["net_return20"].mean()), 4),
-            "average_net_return60": round(float(group["net_return60"].mean()), 4),
-        })
+        rows.append(
+            {
+                "bucket": int(bucket) + 1,
+                "samples": int(len(group)),
+                "average_return20": round(float(group["return20"].mean()), 4),
+                "average_return60": round(float(group["return60"].mean()), 4),
+                "average_benchmark_return20": round(
+                    float(group["benchmark_return20"].mean()), 4
+                ),
+                "average_benchmark_return60": round(
+                    float(group["benchmark_return60"].mean()), 4
+                ),
+                "average_excess_return20": round(
+                    float((group["return20"] - group["benchmark_return20"]).mean()), 4
+                ),
+                "average_excess_return60": round(
+                    float((group["return60"] - group["benchmark_return60"]).mean()), 4
+                ),
+                "average_net_return20": round(float(group["net_return20"].mean()), 4),
+                "average_net_return60": round(float(group["net_return60"].mean()), 4),
+            }
+        )
     return rows
 
 
@@ -521,7 +651,14 @@ def run_historical_backtest(
     test_ratio: float = 0.2,
     validation_ratio: float = 0.2,
 ) -> BacktestSummary:
-    if objective not in {"return_20d", "return_60d", "excess_return_20d", "excess_return_60d", "max_drawdown", "risk_adjusted"}:
+    if objective not in {
+        "return_20d",
+        "return_60d",
+        "excess_return_20d",
+        "excess_return_60d",
+        "max_drawdown",
+        "risk_adjusted",
+    }:
         raise ValueError(f"unsupported objective: {objective}")
     if benchmark not in BENCHMARKS:
         raise ValueError(f"unsupported benchmark: {benchmark}")
@@ -530,25 +667,66 @@ def run_historical_backtest(
     benchmark_frame = _load_benchmark_frames(source).get(benchmark)
     benchmark_dates = pd.DatetimeIndex([])
     if benchmark_frame is not None and not benchmark_frame.empty:
-        benchmark_dates = pd.DatetimeIndex(benchmark_frame.index).dropna().sort_values().unique()
+        benchmark_dates = (
+            pd.DatetimeIndex(benchmark_frame.index).dropna().sort_values().unique()
+        )
     global_start = pd.Timestamp(benchmark_dates[0]) if len(benchmark_dates) else None
     global_end = pd.Timestamp(benchmark_dates[-1]) if len(benchmark_dates) else None
     if BACKTEST_VALIDATION_END or BACKTEST_TEST_START:
-        validation_end = pd.Timestamp(BACKTEST_VALIDATION_END) if BACKTEST_VALIDATION_END else None
+        validation_end = (
+            pd.Timestamp(BACKTEST_VALIDATION_END) if BACKTEST_VALIDATION_END else None
+        )
         test_start = pd.Timestamp(BACKTEST_TEST_START) if BACKTEST_TEST_START else None
     elif len(benchmark_dates):
-        validation_index = int(len(benchmark_dates) * (1.0 - test_ratio - validation_ratio))
+        validation_index = int(
+            len(benchmark_dates) * (1.0 - test_ratio - validation_ratio)
+        )
         test_index = int(len(benchmark_dates) * (1.0 - test_ratio))
-        validation_end = pd.Timestamp(benchmark_dates[validation_index]) if validation_ratio else None
+        validation_end = (
+            pd.Timestamp(benchmark_dates[validation_index])
+            if validation_ratio
+            else None
+        )
         test_start = pd.Timestamp(benchmark_dates[test_index]) if test_ratio else None
     else:
         validation_end = test_start = None
+        if benchmark_frame is None or benchmark_frame.empty:
+            summary = BacktestSummary(
+                ticker_count=len(dict.fromkeys(tickers)),
+                objective=objective,
+                benchmark=benchmark,
+                commission=commission,
+                stamp_duty=stamp_duty,
+                slippage=slippage,
+                cost_parameters={
+                    "commission": commission,
+                    "stamp_duty": stamp_duty,
+                    "slippage": slippage,
+                },
+                test_ratio=test_ratio,
+                validation_ratio=validation_ratio,
+                error=f"无法加载基准数据：{benchmark}，无法建立回测时间切分",
+            )
+            summary.insufficient_test_data = True
+            return summary
     samples: list[dict[str, Any]] = []
     total = len(tickers)
     completed = 0
     workers = min(12, max(1, total))
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(_backtest_one_ticker, ticker, source, benchmark_frame, commission, stamp_duty, slippage, (validation_end, test_start)): ticker for ticker in tickers}
+        futures = {
+            executor.submit(
+                _backtest_one_ticker,
+                ticker,
+                source,
+                benchmark_frame,
+                commission,
+                stamp_duty,
+                slippage,
+                (validation_end, test_start),
+            ): ticker
+            for ticker in tickers
+        }
         for future in as_completed(futures):
             ticker = futures[future]
             try:
@@ -557,18 +735,41 @@ def run_historical_backtest(
                 logger.warning("Backtest failed for %s: %s", ticker, exc)
             completed += 1
             if completed == total or completed % 250 == 0:
-                logger.info("Backtesting progress: %d/%d tickers, %d samples.", completed, total, len(samples))
+                logger.info(
+                    "Backtesting progress: %d/%d tickers, %d samples.",
+                    completed,
+                    total,
+                    len(samples),
+                )
     split_dates = {
-        "global_start": global_start.strftime("%Y-%m-%d") if global_start is not None else None,
-        "validation_end": validation_end.strftime("%Y-%m-%d") if validation_end is not None else None,
-        "test_start": test_start.strftime("%Y-%m-%d") if test_start is not None else None,
-        "global_end": global_end.strftime("%Y-%m-%d") if global_end is not None else None,
+        "global_start": global_start.strftime("%Y-%m-%d")
+        if global_start is not None
+        else None,
+        "validation_end": validation_end.strftime("%Y-%m-%d")
+        if validation_end is not None
+        else None,
+        "test_start": test_start.strftime("%Y-%m-%d")
+        if test_start is not None
+        else None,
+        "global_end": global_end.strftime("%Y-%m-%d")
+        if global_end is not None
+        else None,
     }
     summary = BacktestSummary(
-        ticker_count=len(dict.fromkeys(tickers)), objective=objective, benchmark=benchmark,
-        commission=commission, stamp_duty=stamp_duty, slippage=slippage,
-        cost_parameters={"commission": commission, "stamp_duty": stamp_duty, "slippage": slippage},
-        test_ratio=test_ratio, validation_ratio=validation_ratio, split_dates=split_dates,
+        ticker_count=len(dict.fromkeys(tickers)),
+        objective=objective,
+        benchmark=benchmark,
+        commission=commission,
+        stamp_duty=stamp_duty,
+        slippage=slippage,
+        cost_parameters={
+            "commission": commission,
+            "stamp_duty": stamp_duty,
+            "slippage": slippage,
+        },
+        test_ratio=test_ratio,
+        validation_ratio=validation_ratio,
+        split_dates=split_dates,
     )
     if samples:
         all_frame = pd.DataFrame(samples)
@@ -586,22 +787,38 @@ def run_historical_backtest(
         summary.average_return_60d = float(sample_frame["return60"].mean())
         summary.median_return_20d = float(sample_frame["return20"].median())
         summary.median_return_60d = float(sample_frame["return60"].median())
-        summary.average_benchmark_return_20d = float(sample_frame["benchmark_return20"].mean())
-        summary.average_benchmark_return_60d = float(sample_frame["benchmark_return60"].mean())
+        summary.average_benchmark_return_20d = float(
+            sample_frame["benchmark_return20"].mean()
+        )
+        summary.average_benchmark_return_60d = float(
+            sample_frame["benchmark_return60"].mean()
+        )
         summary.average_net_return_20d = float(sample_frame["net_return20"].mean())
         summary.average_net_return_60d = float(sample_frame["net_return60"].mean())
         summary.maximum_drawdown_20d = float(sample_frame["drawdown20"].min())
         summary.maximum_drawdown_60d = float(sample_frame["drawdown60"].min())
-        sample_frame["excess20"] = sample_frame["return20"] - sample_frame["benchmark_return20"]
-        sample_frame["excess60"] = sample_frame["return60"] - sample_frame["benchmark_return60"]
-        sample_frame["risk_adjusted"] = sample_frame["net_return20"] / sample_frame["drawdown20"].abs().replace(0, np.nan)
+        sample_frame["excess20"] = (
+            sample_frame["return20"] - sample_frame["benchmark_return20"]
+        )
+        sample_frame["excess60"] = (
+            sample_frame["return60"] - sample_frame["benchmark_return60"]
+        )
+        sample_frame["risk_adjusted"] = sample_frame["net_return20"] / sample_frame[
+            "drawdown20"
+        ].abs().replace(0, np.nan)
         summary.rank_ic_20d = _spearman(sample_frame, "return20")
         summary.rank_ic_60d = _spearman(sample_frame, "return60")
         summary.by_ticker = _ticker_backtest_rows(sample_frame, objective)
         summary.by_score_bucket = _bucket_rows(sample_frame)
         if summary.by_score_bucket:
-            summary.monotonicity_high_low_20d = summary.by_score_bucket[-1]["average_return20"] - summary.by_score_bucket[0]["average_return20"]
-            summary.monotonicity_high_low_60d = summary.by_score_bucket[-1]["average_return60"] - summary.by_score_bucket[0]["average_return60"]
+            summary.monotonicity_high_low_20d = (
+                summary.by_score_bucket[-1]["average_return20"]
+                - summary.by_score_bucket[0]["average_return20"]
+            )
+            summary.monotonicity_high_low_60d = (
+                summary.by_score_bucket[-1]["average_return60"]
+                - summary.by_score_bucket[0]["average_return60"]
+            )
         target_definitions = {
             "return_20d": "入场日开盘价至第20个交易日后收盘价的平均收益率，越高越好",
             "return_60d": "入场日开盘价至第60个交易日后收盘价的平均收益率，越高越好",
@@ -620,23 +837,49 @@ def run_historical_backtest(
             "risk_adjusted": sample_frame["risk_adjusted"],
         }[objective]
         objective_values = pd.to_numeric(objective_series, errors="coerce").dropna()
-        summary.objective_value = float(objective_values.mean()) if not objective_values.empty else 0.0
-        summary.benchmark_valid_count_20d = int(sample_frame["benchmark_return20"].notna().sum())
-        summary.benchmark_valid_count_60d = int(sample_frame["benchmark_return60"].notna().sum())
-        summary.benchmark_coverage_20d = float(summary.benchmark_valid_count_20d / len(sample_frame)) if len(sample_frame) else 0.0
-        summary.benchmark_coverage_60d = float(summary.benchmark_valid_count_60d / len(sample_frame)) if len(sample_frame) else 0.0
+        summary.objective_value = (
+            float(objective_values.mean()) if not objective_values.empty else 0.0
+        )
+        summary.benchmark_valid_count_20d = int(
+            sample_frame["benchmark_return20"].notna().sum()
+        )
+        summary.benchmark_valid_count_60d = int(
+            sample_frame["benchmark_return60"].notna().sum()
+        )
+        summary.benchmark_coverage_20d = (
+            float(summary.benchmark_valid_count_20d / len(sample_frame))
+            if len(sample_frame)
+            else 0.0
+        )
+        summary.benchmark_coverage_60d = (
+            float(summary.benchmark_valid_count_60d / len(sample_frame))
+            if len(sample_frame)
+            else 0.0
+        )
         summary.benchmark_valid_count = summary.benchmark_valid_count_20d
         summary.benchmark_coverage = summary.benchmark_coverage_20d
         summary.rank_ic = {"20d": summary.rank_ic_20d, "60d": summary.rank_ic_60d}
-        summary.monotonicity_high_low = {"20d": summary.monotonicity_high_low_20d, "60d": summary.monotonicity_high_low_60d}
-        summary.rolling_oos = {split: int((all_frame["split"] == split).sum()) for split in ("train", "validation", "test")}
+        summary.monotonicity_high_low = {
+            "20d": summary.monotonicity_high_low_20d,
+            "60d": summary.monotonicity_high_low_60d,
+        }
+        summary.rolling_oos = {
+            split: int((all_frame["split"] == split).sum())
+            for split in ("train", "validation", "test")
+        }
         summary.rolling_oos_stats = {
             split: {"samples": int(len(all_frame[all_frame["split"] == split]))}
             for split in ("train", "validation", "test")
         }
         for split in ("validation", "test"):
-            summary.rolling_oos_stats[split]["entry_date_equal_weight"] = _entry_date_equal_weight_stats(
-                all_frame[all_frame["split"] == split].replace([np.inf, -np.inf], np.nan)
+            summary.rolling_oos_stats[split]["entry_date_equal_weight"] = (
+                _entry_date_equal_weight_stats(
+                    all_frame[all_frame["split"] == split].replace(
+                        [np.inf, -np.inf], np.nan
+                    )
+                )
             )
-    (OUTPUT_DIR / "BacktestSummary.json").write_text(json.dumps(summary.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    (OUTPUT_DIR / "BacktestSummary.json").write_text(
+        json.dumps(summary.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     return summary

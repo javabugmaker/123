@@ -23,13 +23,11 @@ import pandas as pd
 
 from config import (
     AD_SLOPE_LOOKBACK,
-    ATR_COMPRESSION_LOOKBACK,
     BB_WIDTH_COMPRESSION_LOOKBACK,
     CONSOLIDATION_DAYS,
+    SCORING_WEIGHTS,
     VOLUME_ACCUM_MIN_DAYS,
     VOLUME_ACCUM_RATIO,
-    VOLUME_PROFILE_LOOKBACK,
-    SCORING_WEIGHTS,
 )
 
 logger = logging.getLogger("institution_scanner.score")
@@ -39,6 +37,7 @@ logger = logging.getLogger("institution_scanner.score")
 # Score Result
 # ======================================================================
 
+
 class ScoreContributions(dict[str, float]):
     def __array__(self, dtype: Any = None) -> np.ndarray:
         return np.asarray(float(sum(self.values())), dtype=dtype)
@@ -47,6 +46,7 @@ class ScoreContributions(dict[str, float]):
 @dataclass
 class ScoreBreakdown:
     """Full scoring output for one ticker."""
+
     total: float = 0.0
     trend: float = 0.0
     volume: float = 0.0
@@ -69,11 +69,21 @@ class ScoreBreakdown:
             "ScoreMissingIndicators": self.missing_indicators,
             "ScoreCoverage": round(self.indicator_coverage, 4),
             "ScoreConfidence": round(self.confidence, 4),
-            "ScoreContributionTrend": round(self.contributions.get("trend", self.trend), 2),
-            "ScoreContributionVolume": round(self.contributions.get("volume", self.volume), 2),
-            "ScoreContributionAccumulation": round(self.contributions.get("accumulation", self.accumulation), 2),
-            "ScoreContributionCompression": round(self.contributions.get("compression", self.volatility), 2),
-            "ScoreContributionStructure": round(self.contributions.get("structure", self.structure), 2),
+            "ScoreContributionTrend": round(
+                self.contributions.get("trend", self.trend), 2
+            ),
+            "ScoreContributionVolume": round(
+                self.contributions.get("volume", self.volume), 2
+            ),
+            "ScoreContributionAccumulation": round(
+                self.contributions.get("accumulation", self.accumulation), 2
+            ),
+            "ScoreContributionCompression": round(
+                self.contributions.get("compression", self.volatility), 2
+            ),
+            "ScoreContributionStructure": round(
+                self.contributions.get("structure", self.structure), 2
+            ),
         }
 
 
@@ -81,11 +91,19 @@ class ScoreBreakdown:
 # Sub-score helpers
 # ======================================================================
 
+
+def _is_finite(value: Any) -> bool:
+    try:
+        return bool(pd.notna(value) and np.isfinite(float(value)))
+    except (TypeError, ValueError):
+        return False
+
+
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     """Clamp a value to [low, high]."""
-    if not np.isfinite(value):
+    if not _is_finite(value):
         return low
-    return max(low, min(high, value))
+    return max(low, min(high, float(value)))
 
 
 def _normalize_to_range(
@@ -102,6 +120,7 @@ def _normalize_to_range(
 # ======================================================================
 # Trend Score (20 points)
 # ======================================================================
+
 
 def score_trend(df: pd.DataFrame) -> float:
     if len(df) < 252 or "Close" not in df.columns or "MA200" not in df.columns:
@@ -134,7 +153,7 @@ def score_trend(df: pd.DataFrame) -> float:
     days_below = len(valid) - int(last_above[-1]) - 1 if len(last_above) else len(valid)
     score += _clamp(days_below / 250.0) * 3.0
 
-    lookback = valid["close"].iloc[-min(504, len(valid)):]
+    lookback = valid["close"].iloc[-min(504, len(valid)) :]
     peak = float(lookback.max())
     drawdown = (price_now - peak) / peak if peak > 0 else 0.0
     depth = abs(drawdown)
@@ -153,6 +172,7 @@ def score_trend(df: pd.DataFrame) -> float:
 # ======================================================================
 # Volume Score (25 points)
 # ======================================================================
+
 
 def score_volume(df: pd.DataFrame) -> float:
     """
@@ -180,7 +200,9 @@ def score_volume(df: pd.DataFrame) -> float:
                 else:
                     break
             if consecutive >= VOLUME_ACCUM_MIN_DAYS:
-                score += 4.0 + _clamp((consecutive - VOLUME_ACCUM_MIN_DAYS) / 80.0) * 6.0
+                score += (
+                    4.0 + _clamp((consecutive - VOLUME_ACCUM_MIN_DAYS) / 80.0) * 6.0
+                )
             ratio_now = float(ratio_series.iloc[-1])
             score += _clamp((ratio_now - VOLUME_ACCUM_RATIO) / 0.8) * 3.0
 
@@ -189,7 +211,9 @@ def score_volume(df: pd.DataFrame) -> float:
                 score += _clamp(ratio_change / 0.5) * 4.0
 
     if "VolZScore" in df.columns:
-        z_recent = df["VolZScore"].replace([np.inf, -np.inf], np.nan).dropna().iloc[-30:]
+        z_recent = (
+            df["VolZScore"].replace([np.inf, -np.inf], np.nan).dropna().iloc[-30:]
+        )
         if len(z_recent) >= 10:
             z_now = float(z_recent.iloc[-1])
             positive_days = float((z_recent > 0).mean())
@@ -202,6 +226,7 @@ def score_volume(df: pd.DataFrame) -> float:
 # ======================================================================
 # Accumulation Score (25 points)
 # ======================================================================
+
 
 def score_accumulation(df: pd.DataFrame) -> float:
     """
@@ -218,7 +243,9 @@ def score_accumulation(df: pd.DataFrame) -> float:
     score = 0.0
 
     if "OBV" in df.columns and len(df) >= 60:
-        recent = df[["Close", "OBV"]].iloc[-60:].replace([np.inf, -np.inf], np.nan).dropna()
+        recent = (
+            df[["Close", "OBV"]].iloc[-60:].replace([np.inf, -np.inf], np.nan).dropna()
+        )
         if len(recent) >= 40:
             split = len(recent) // 2
             first_half = recent.iloc[:split]
@@ -229,9 +256,14 @@ def score_accumulation(df: pd.DataFrame) -> float:
             second_obv_low = float(second_half["OBV"].min())
             price_now = float(recent["Close"].iloc[-1])
             obv_now = float(recent["OBV"].iloc[-1])
-            near_low = second_price_low > 0 and (price_now - second_price_low) / second_price_low <= 0.05
+            near_low = (
+                second_price_low > 0
+                and (price_now - second_price_low) / second_price_low <= 0.05
+            )
             price_retest = second_price_low <= first_price_low * 1.02
-            obv_divergence = second_obv_low > first_obv_low and obv_now >= second_obv_low
+            obv_divergence = (
+                second_obv_low > first_obv_low and obv_now >= second_obv_low
+            )
             if near_low and price_retest and obv_divergence:
                 score += 8.0
             elif obv_divergence:
@@ -244,7 +276,7 @@ def score_accumulation(df: pd.DataFrame) -> float:
             ad_scale = max(float(ad.iloc[-AD_SLOPE_LOOKBACK:].abs().median()), 1.0)
             slope_score = _clamp(float(ad_slope) / (ad_scale * 0.03))
             score += slope_score * 5.0
-            if float(ad.iloc[-1]) >= float(ad.iloc[-min(120, len(ad)):].max()) * 0.95:
+            if float(ad.iloc[-1]) >= float(ad.iloc[-min(120, len(ad)) :].max()) * 0.95:
                 score += 1.0
 
     if "CMF" in df.columns:
@@ -266,6 +298,7 @@ def score_accumulation(df: pd.DataFrame) -> float:
 # ======================================================================
 # Volatility Score (15 points)
 # ======================================================================
+
 
 def score_volatility(df: pd.DataFrame) -> float:
     if len(df) < BB_WIDTH_COMPRESSION_LOOKBACK:
@@ -302,6 +335,7 @@ def score_volatility(df: pd.DataFrame) -> float:
 # Structure Score (15 points)
 # ======================================================================
 
+
 def score_structure(df: pd.DataFrame) -> float:
     """
     Score the structural bottom formation.
@@ -311,11 +345,11 @@ def score_structure(df: pd.DataFrame) -> float:
     Max: 15 points
     """
 
-    if len(df) < 252:
+    if len(df) < 252 or not all(
+        column in df.columns for column in ("Close", "High", "Low")
+    ):
         return 0.0
 
-    close = df["Close"].replace([np.inf, -np.inf], np.nan)
-    price_now = close.iloc[-1]
     score = 0.0
 
     # 1. Distance from 52-week low (up to 5 points)
@@ -375,30 +409,41 @@ def score_structure(df: pd.DataFrame) -> float:
 # Master scoring function
 # ======================================================================
 
+
 def classify_style(df: pd.DataFrame, is_etf: bool = False) -> str:
     if is_etf:
         return "ETF趋势/资金"
-    if len(df) < 60:
+    if len(df) < 60 or "Close" not in df.columns:
         return "数据不足"
-    close = df["Close"]
-    atr = float(df["ATR14"].iloc[-1]) if "ATR14" in df.columns else np.nan
-    atr_pct = atr / float(close.iloc[-1]) if close.iloc[-1] > 0 and not np.isnan(atr) else np.nan
-    roc = float(df["ROC21"].iloc[-1]) if "ROC21" in df.columns and not np.isnan(df["ROC21"].iloc[-1]) else 0.0
+    close_now = df["Close"].iloc[-1]
+    atr_now = df["ATR14"].iloc[-1] if "ATR14" in df.columns else np.nan
+    atr_pct = (
+        float(atr_now) / float(close_now)
+        if _is_finite(close_now) and float(close_now) > 0 and _is_finite(atr_now)
+        else np.nan
+    )
+    roc_now = df["ROC"].iloc[-1] if "ROC" in df.columns else np.nan
+    roc = float(roc_now) if _is_finite(roc_now) else 0.0
     volume_ratio = 1.0
-    if "VolMA20" in df.columns and "VolMA120" in df.columns and df["VolMA120"].iloc[-1] > 0:
-        volume_ratio = float(df["VolMA20"].iloc[-1] / df["VolMA120"].iloc[-1])
-    if not np.isnan(atr_pct) and atr_pct >= 0.045:
+    if "VolMA20" in df.columns and "VolMA120" in df.columns:
+        vol_ma20 = df["VolMA20"].iloc[-1]
+        vol_ma120 = df["VolMA120"].iloc[-1]
+        if _is_finite(vol_ma20) and _is_finite(vol_ma120) and float(vol_ma120) > 0:
+            volume_ratio = float(vol_ma20) / float(vol_ma120)
+    if _is_finite(atr_pct) and atr_pct >= 0.045:
         return "高波动成长"
     if roc >= 12:
         return "趋势成长"
     if volume_ratio >= 1.25:
         return "资金吸筹"
-    if not np.isnan(atr_pct) and atr_pct <= 0.025:
+    if _is_finite(atr_pct) and atr_pct <= 0.025:
         return "低波动防守"
     return "均衡"
 
 
-def _style_adjustment(df: pd.DataFrame, style: str) -> tuple[float, float, float, float, float]:
+def _style_adjustment(
+    df: pd.DataFrame, style: str
+) -> tuple[float, float, float, float, float]:
     if style == "高波动成长":
         return (1.15, 1.05, 0.90, 0.85, 0.95)
     if style == "趋势成长":
@@ -412,23 +457,42 @@ def _style_adjustment(df: pd.DataFrame, style: str) -> tuple[float, float, float
     return (1.00, 1.00, 1.00, 1.00, 1.00)
 
 
-def _score_dimensions_available(df: pd.DataFrame) -> tuple[bool, bool, bool, bool, bool]:
-    trend_available = len(df) >= 252 and "Close" in df.columns and "MA200" in df.columns and df[["Close", "MA200"]].replace([np.inf, -np.inf], np.nan).dropna().shape[0] >= 60
+def _has_finite_values(
+    df: pd.DataFrame, columns: tuple[str, ...], minimum: int = 1
+) -> bool:
+    if not all(column in df.columns for column in columns):
+        return False
+    values = df[list(columns)].apply(pd.to_numeric, errors="coerce")
+    values = values.replace([np.inf, -np.inf], np.nan)
+    return len(values.dropna()) >= minimum and not values.iloc[-1].isna().any()
+
+
+def _score_dimensions_available(
+    df: pd.DataFrame,
+) -> tuple[bool, bool, bool, bool, bool]:
+    trend_available = len(df) >= 252 and _has_finite_values(
+        df, ("Close", "MA200"), minimum=60
+    )
     volume_available = len(df) >= 120 and any(
-        column in df.columns and df[column].replace([np.inf, -np.inf], np.nan).notna().any()
-        for column in ("VolMA20", "VolMA120", "VolZScore")
+        _has_finite_values(df, (column,)) for column in ("VolMA20", "VolMA120", "VolZScore")
     )
     accumulation_available = len(df) >= 60 and any(
-        column in df.columns and df[column].replace([np.inf, -np.inf], np.nan).notna().any()
-        for column in ("OBV", "AD", "CMF", "MFI")
+        _has_finite_values(df, (column,)) for column in ("OBV", "AD", "CMF", "MFI")
     )
     volatility_available = len(df) >= BB_WIDTH_COMPRESSION_LOOKBACK and any(
-        all(column in df.columns for column in columns)
-        and df[list(columns)].replace([np.inf, -np.inf], np.nan).notna().all(axis=1).any()
+        _has_finite_values(df, columns)
         for columns in (("ATR14", "ATR50"), ("BB_Width",), ("HV20", "HV60"))
     )
-    structure_available = len(df) >= 252 and "Close" in df.columns and df["Close"].replace([np.inf, -np.inf], np.nan).notna().any()
-    return trend_available, volume_available, accumulation_available, volatility_available, structure_available
+    structure_available = len(df) >= 252 and _has_finite_values(
+        df, ("Close", "High", "Low")
+    )
+    return (
+        trend_available,
+        volume_available,
+        accumulation_available,
+        volatility_available,
+        structure_available,
+    )
 
 
 def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
@@ -450,13 +514,16 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
     )
     style = classify_style(df, is_etf=is_etf)
     adjustments = _style_adjustment(df, style)
-    limits = tuple(float(value) for value in (
-        SCORING_WEIGHTS.trend,
-        SCORING_WEIGHTS.volume,
-        SCORING_WEIGHTS.accumulation,
-        SCORING_WEIGHTS.volatility,
-        SCORING_WEIGHTS.structure,
-    ))
+    limits = tuple(
+        float(value)
+        for value in (
+            SCORING_WEIGHTS.trend,
+            SCORING_WEIGHTS.volume,
+            SCORING_WEIGHTS.accumulation,
+            SCORING_WEIGHTS.volatility,
+            SCORING_WEIGHTS.structure,
+        )
+    )
     adjusted_scores = tuple(
         _clamp(score * adjustment, 0.0, limit)
         for score, adjustment, limit in zip(raw_scores, adjustments, limits)
@@ -465,14 +532,29 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
     available = _score_dimensions_available(df)
     missing_indicators = available.count(False)
     indicator_coverage = sum(available) / len(available)
-    total = 50.0 + (sum(adjusted_scores) - 50.0) * indicator_coverage
-    contributions = ScoreContributions({
-        "trend": trend,
-        "volume": volume,
-        "accumulation": accumulation,
-        "compression": volatility,
-        "structure": structure,
-    })
+    available_weight = sum(
+        limit for is_available, limit in zip(available, limits) if is_available
+    )
+    total = (
+        sum(
+            score
+            for is_available, score in zip(available, adjusted_scores)
+            if is_available
+        )
+        / available_weight
+        * 100.0
+        if available_weight
+        else 0.0
+    )
+    contributions = ScoreContributions(
+        {
+            "trend": trend,
+            "volume": volume,
+            "accumulation": accumulation,
+            "compression": volatility,
+            "structure": structure,
+        }
+    )
 
     return ScoreBreakdown(
         total=total,

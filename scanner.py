@@ -17,12 +17,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +29,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+from analytics import enrich_results
 from config import (
     CACHE_DIR,
     CHECKPOINT_INTERVAL,
@@ -40,7 +40,6 @@ from config import (
     OUTPUT_DIR,
     SCAN_THREADS,
     SCORING_VERSION,
-    TOP_N_PARQUET,
 )
 from downloader import (
     TickerInfo,
@@ -49,14 +48,12 @@ from downloader import (
     build_ticker_universe,
     download_batch,
     download_ticker,
-    get_etf_fund_flows,
     get_market_cap,
     normalize_data_source,
 )
-from indicators import compute_all_indicators
 from filters import run_all_filters
+from indicators import compute_all_indicators
 from score import ScoreBreakdown, classify_style, score_ticker
-from analytics import enrich_results
 
 logger = logging.getLogger("institution_scanner.scanner")
 logger.setLevel(logging.DEBUG)
@@ -71,9 +68,11 @@ logger.addHandler(_fh)
 # Scan result container
 # ======================================================================
 
+
 @dataclass
 class ScanResult:
     """Full result for one scanned ticker."""
+
     ticker: str
     name: str = ""
     sector: str = ""
@@ -94,7 +93,7 @@ class ScanResult:
     wyckoff_phase: str = "Unknown"
     volume_accum_days: int = 0
     passed_filters: bool = False
-    filter_details: dict[str, bool] = field(default_factory=dict)
+    filter_details: dict[str, bool | int] = field(default_factory=dict)
     error: str = ""
     style: str = "均衡"
     market_regime: str = "未知"
@@ -104,6 +103,7 @@ class ScanResult:
     data_source: str = ""
     data_asof: str = ""
     data_age_days: int = -1
+    data_trading_age_days: int = -1
     data_coverage: float = 0.0
     backtest_score: float = np.nan
     backtest_samples: int = 0
@@ -144,6 +144,14 @@ def _parse_int(value: Any, default: int = 0) -> int:
     except (TypeError, ValueError):
         return default
     return int(parsed) if np.isfinite(parsed) else default
+
+
+def _parse_float(value: Any, default: float = np.nan) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if np.isfinite(parsed) else default
 
 
 def save_checkpoint(processed: set[str], data_source: str = "") -> None:
@@ -199,6 +207,7 @@ def clear_checkpoint() -> None:
 # Single-ticker scan
 # ======================================================================
 
+
 def scan_single_from_df(
     ticker_info: TickerInfo,
     df: pd.DataFrame | None,
@@ -239,7 +248,11 @@ def scan_single_from_df(
                     asset_type=ticker_info.asset_type,
                     error=f"市值获取失败: {exc}",
                 )
-        if not ticker_info.is_etf and market_cap is not None and market_cap < MIN_MARKET_CAP:
+        if (
+            not ticker_info.is_etf
+            and market_cap is not None
+            and market_cap < MIN_MARKET_CAP
+        ):
             return ScanResult(
                 ticker=ticker,
                 name=ticker_info.name,
@@ -272,6 +285,9 @@ def scan_single_from_df(
             "volume_accumulation": filter_results.volume_accumulation.passed,
             "obv_divergence": filter_results.obv_divergence.passed,
             "cmf_positive": filter_results.cmf_positive.passed,
+            "cmf_improving": bool(
+                filter_results.cmf_positive.details.get("cmf_improving", False)
+            ),
             "ad_slope": filter_results.ad_slope.passed,
             "volatility_contraction": filter_results.volatility_contraction.passed,
         }
@@ -286,10 +302,14 @@ def scan_single_from_df(
         ad_val = df["AD"].iloc[-1] if "AD" in df.columns else np.nan
         atr14_val = df["ATR14"].iloc[-1] if "ATR14" in df.columns else np.nan
         rsi14_val = df["RSI14"].iloc[-1] if "RSI14" in df.columns else np.nan
-        dist_low = df["DistToLow52W"].iloc[-1] if "DistToLow52W" in df.columns else np.nan
-        phase = df["WyckoffPhase"].iloc[-1] if "WyckoffPhase" in df.columns else "Unknown"
-        vol_accum_days = (
-            int(df["_VolAccumDays"].iloc[-1]) if "_VolAccumDays" in df.columns else 0
+        dist_low = (
+            df["DistToLow52W"].iloc[-1] if "DistToLow52W" in df.columns else np.nan
+        )
+        phase = (
+            df["WyckoffPhase"].iloc[-1] if "WyckoffPhase" in df.columns else "Unknown"
+        )
+        vol_accum_days = int(
+            filter_results.volume_accumulation.details.get("consecutive_days", 0)
         )
 
         return ScanResult(
@@ -357,9 +377,11 @@ def scan_single(
 # Full scan orchestration
 # ======================================================================
 
+
 @dataclass
 class ScanReport:
     """Aggregated results from a full scan run."""
+
     results: list[ScanResult] = field(default_factory=list)
     total_tickers: int = 0
     successful: int = 0
@@ -401,6 +423,8 @@ def run_scan(
 
     start_time = time.time()
     data_source = normalize_data_source(data_source)
+    if force_download:
+        resume = False
 
     # ---- Build universe ----
     if stock_universe is None and etf_universe is None:
@@ -427,35 +451,32 @@ def run_scan(
     all_tickers = unique
 
     # ---- Phase 1: Parallel download ----
-    logger.info("Phase 1/2: downloading data for %d tickers (%d threads)...",
-                len(all_tickers), DOWNLOAD_THREADS)
+    logger.info(
+        "Phase 1/2: downloading data for %d tickers (%d threads)...",
+        len(all_tickers),
+        DOWNLOAD_THREADS,
+    )
 
     # On the first ever run, everything is a full download.
     # On subsequent runs, download_batch() still calls download_ticker()
     # which does incremental fetch for already-cached symbols.
+    universe_symbols = {_normalize_ticker(ti.ticker) for ti in all_tickers}
+    processed_set = load_checkpoint(data_source) if resume else set()
+    processed_set.intersection_update(universe_symbols)
     downloaded = download_batch(
         all_tickers,
         desc="Downloading",
         force=force_download,
         source=data_source,
         cache_first=cache_first and not force_download,
+        skip_tickers=processed_set if resume else None,
     )
 
     # ---- Phase 2: Parallel analyse ----
-    universe_symbols = {_normalize_ticker(ti.ticker) for ti in all_tickers}
     processed_set = load_checkpoint(data_source) if resume else set()
     previous_tickers = _load_previous_tickers() if resume else set()
     processed_set.intersection_update(previous_tickers)
     processed_set.intersection_update(universe_symbols)
-    previous_report_time = (OUTPUT_DIR / "AllResults.parquet").stat().st_mtime if (OUTPUT_DIR / "AllResults.parquet").exists() else 0.0
-
-    processed_set = {
-        ticker for ticker in processed_set
-        if any(
-            path.exists() and path.stat().st_mtime <= previous_report_time
-            for path in (_cache_path_for(ticker, data_source), _legacy_cache_path(ticker, data_source))
-        )
-    }
 
     downloaded_frames = {
         _normalize_ticker(ticker): frame for ticker, frame in downloaded.items()
@@ -474,8 +495,12 @@ def run_scan(
 
     logger.info(
         "Phase 2/2: analysing %d tickers (%d threads) — %d already processed, %d without valid cache. Universe=%d, downloaded=%d.",
-        len(analyse_queue), SCAN_THREADS,
-        len(processed_set), skipped_no_cache, len(all_tickers), len(downloaded_symbols),
+        len(analyse_queue),
+        SCAN_THREADS,
+        len(processed_set),
+        skipped_no_cache,
+        len(all_tickers),
+        len(downloaded_symbols),
     )
 
     results: list[ScanResult] = []
@@ -493,7 +518,9 @@ def run_scan(
         try:
             metadata = pd.read_parquet(prev_parquet, columns=["DataSource"])
             if not metadata.empty:
-                previous_report_source = str(metadata["DataSource"].dropna().iloc[0] or "")
+                previous_report_source = str(
+                    metadata["DataSource"].dropna().iloc[0] or ""
+                )
         except Exception:
             previous_report_source = ""
 
@@ -501,74 +528,136 @@ def run_scan(
         try:
             prev_df = pd.read_parquet(prev_parquet)
             for _, row in prev_df.iterrows():
-                ticker = _normalize_ticker(row.get("Ticker", ""))
+                ticker = _normalize_ticker(str(row.get("Ticker", "") or ""))
                 sr = ScanResult(
                     ticker=ticker,
-                    name=row.get("Name", ""),
-                    sector=row.get("Sector", ""),
-                    industry=row.get("Industry", ""),
+                    name=str(row.get("Name", "") or ""),
+                    sector=str(row.get("Sector", "") or ""),
+                    industry=str(row.get("Industry", "") or ""),
                     is_etf=_parse_bool(row.get("IsETF", False)),
-                    close=float(row.get("Close", 0)),
+                    close=_parse_float(row.get("Close", 0), 0.0),
                     score=ScoreBreakdown(
-                        total=float(row.get("Score", 0)),
-                        trend=float(row.get("TrendScore", 0)),
-                        volume=float(row.get("VolumeScore", 0)),
-                        accumulation=float(row.get("AccumulationScore", 0)),
-                        volatility=float(row.get("CompressionScore", 0)),
-                        structure=float(row.get("StructureScore", 0)),
-                        missing_indicators=_parse_int(row.get("ScoreMissingIndicators", 0), 0),
-                        indicator_coverage=float(row.get("ScoreCoverage", 1.0) or 1.0),
-                        confidence=float(row.get("ScoreConfidence", row.get("ScoreCoverage", 1.0)) or 1.0),
+                        total=_parse_float(row.get("Score", 0), 0.0),
+                        trend=_parse_float(row.get("TrendScore", 0), 0.0),
+                        volume=_parse_float(row.get("VolumeScore", 0), 0.0),
+                        accumulation=_parse_float(row.get("AccumulationScore", 0), 0.0),
+                        volatility=_parse_float(row.get("CompressionScore", 0), 0.0),
+                        structure=_parse_float(row.get("StructureScore", 0), 0.0),
+                        missing_indicators=_parse_int(
+                            row.get("ScoreMissingIndicators", 0), 0
+                        ),
+                        indicator_coverage=_parse_float(
+                            row.get("ScoreCoverage", 1.0), 1.0
+                        ),
+                        confidence=_parse_float(
+                            row.get("ScoreConfidence", row.get("ScoreCoverage", 1.0)),
+                            1.0,
+                        ),
                         contributions={
-                            "trend": float(row.get("ScoreContributionTrend", row.get("TrendScore", 0)) or 0),
-                            "volume": float(row.get("ScoreContributionVolume", row.get("VolumeScore", 0)) or 0),
-                            "accumulation": float(row.get("ScoreContributionAccumulation", row.get("AccumulationScore", 0)) or 0),
-                            "compression": float(row.get("ScoreContributionCompression", row.get("CompressionScore", 0)) or 0),
-                            "structure": float(row.get("ScoreContributionStructure", row.get("StructureScore", 0)) or 0),
+                            "trend": _parse_float(
+                                row.get(
+                                    "ScoreContributionTrend", row.get("TrendScore", 0)
+                                ),
+                                0.0,
+                            ),
+                            "volume": _parse_float(
+                                row.get(
+                                    "ScoreContributionVolume", row.get("VolumeScore", 0)
+                                ),
+                                0.0,
+                            ),
+                            "accumulation": _parse_float(
+                                row.get(
+                                    "ScoreContributionAccumulation",
+                                    row.get("AccumulationScore", 0),
+                                ),
+                                0.0,
+                            ),
+                            "compression": _parse_float(
+                                row.get(
+                                    "ScoreContributionCompression",
+                                    row.get("CompressionScore", 0),
+                                ),
+                                0.0,
+                            ),
+                            "structure": _parse_float(
+                                row.get(
+                                    "ScoreContributionStructure",
+                                    row.get("StructureScore", 0),
+                                ),
+                                0.0,
+                            ),
                         },
                     ),
-                    score_missing_indicators=_parse_int(row.get("ScoreMissingIndicators", 0), 0),
-                    score_coverage=float(row.get("ScoreCoverage", 1.0) or 1.0),
-                    score_confidence=float(row.get("ScoreConfidence", row.get("ScoreCoverage", 1.0)) or 1.0),
-                    backtest_score=float(row.get("BacktestScore", np.nan)),
+                    score_missing_indicators=_parse_int(
+                        row.get("ScoreMissingIndicators", 0), 0
+                    ),
+                    score_coverage=_parse_float(row.get("ScoreCoverage", 1.0), 1.0),
+                    score_confidence=_parse_float(
+                        row.get("ScoreConfidence", row.get("ScoreCoverage", 1.0)), 1.0
+                    ),
+                    backtest_score=_parse_float(row.get("BacktestScore", np.nan)),
                     backtest_samples=_parse_int(row.get("BacktestSamples", 0), 0),
-                    backtest_win_rate_20d=float(row.get("BacktestWinRate20D", np.nan)),
-                    backtest_win_rate_60d=float(row.get("BacktestWinRate60D", np.nan)),
-                    backtest_average_return_20d=float(row.get("BacktestAverageReturn20D", np.nan)),
-                    backtest_average_return_60d=float(row.get("BacktestAverageReturn60D", np.nan)),
-                    backtest_objective_value=float(row.get("BacktestObjectiveValue", np.nan)),
-                    composite_score=float(row.get("CompositeScore", np.nan)),
-                    universe_type=str(row.get("UniverseType", "current_survivor_pool") or "current_survivor_pool"),
-                    survivorship_bias_warning=_parse_bool(row.get("SurvivorshipBiasWarning", True), True),
-                    obv=row.get("OBV", np.nan),
-                    cmf=row.get("CMF", np.nan),
-                    ad=row.get("AD", np.nan),
-                    atr14=row.get("ATR14", np.nan),
-                    rsi14=row.get("RSI14", np.nan),
-                    dist_to_low_52w=row.get("DistToLow52W", np.nan),
-                    wyckoff_phase=str(row.get("WyckoffPhase", "Unknown")),
-                    volume_accum_days=int(row.get("VolAccumDays", 0)),
+                    backtest_win_rate_20d=_parse_float(
+                        row.get("BacktestWinRate20D", np.nan)
+                    ),
+                    backtest_win_rate_60d=_parse_float(
+                        row.get("BacktestWinRate60D", np.nan)
+                    ),
+                    backtest_average_return_20d=_parse_float(
+                        row.get("BacktestAverageReturn20D", np.nan)
+                    ),
+                    backtest_average_return_60d=_parse_float(
+                        row.get("BacktestAverageReturn60D", np.nan)
+                    ),
+                    backtest_objective_value=_parse_float(
+                        row.get("BacktestObjectiveValue", np.nan)
+                    ),
+                    composite_score=_parse_float(row.get("CompositeScore", np.nan)),
+                    universe_type=str(
+                        row.get("UniverseType", "current_survivor_pool")
+                        or "current_survivor_pool"
+                    ),
+                    survivorship_bias_warning=_parse_bool(
+                        row.get("SurvivorshipBiasWarning", True), True
+                    ),
+                    obv=_parse_float(row.get("OBV", np.nan)),
+                    cmf=_parse_float(row.get("CMF", np.nan)),
+                    ad=_parse_float(row.get("AD", np.nan)),
+                    atr14=_parse_float(row.get("ATR14", np.nan)),
+                    rsi14=_parse_float(row.get("RSI14", np.nan)),
+                    dist_to_low_52w=_parse_float(row.get("DistToLow52W", np.nan)),
+                    wyckoff_phase=str(row.get("WyckoffPhase", "Unknown") or "Unknown"),
+                    volume_accum_days=_parse_int(row.get("VolAccumDays", 0), 0),
                     passed_filters=_parse_bool(row.get("PassedFilters", False)),
                     style=str(row.get("Style", "均衡")),
                     filter_details={
                         "obv_divergence": _parse_bool(row.get("OBV_Div", False)),
                         "cmf_positive": _parse_bool(row.get("CMF_Pos", False)),
+                        "cmf_improving": _parse_bool(row.get("CMF_Improving", False)),
                         "ad_slope": _parse_bool(row.get("AD_SlopePos", False)),
                         "bear_market": _parse_bool(row.get("BearMarket", False)),
                         "consolidation": _parse_bool(row.get("Consolidation", False)),
                         "volume_accumulation": _parse_bool(row.get("VolAccum", False)),
-                        "volatility_contraction": _parse_bool(row.get("VolContract", False)),
-                        "signal_count": int(row.get("SignalCount", 0) or 0),
-                        "filter_count": int(row.get("FilterCount", 0) or 0),
+                        "volatility_contraction": _parse_bool(
+                            row.get("VolContract", False)
+                        ),
+                        "signal_count": _parse_int(row.get("SignalCount", 0), 0),
+                        "filter_count": _parse_int(row.get("FilterCount", 0), 0),
                     },
                     error=str(row.get("Error", "") or ""),
                     market_regime=str(row.get("MarketRegime", "未知") or "未知"),
-                    industry_relative_strength=float(row.get("IndustryRelativeStrength", np.nan)),
+                    industry_relative_strength=_parse_float(
+                        row.get("IndustryRelativeStrength", np.nan)
+                    ),
                     stage=str(row.get("Stage", "未知") or "未知"),
                     data_source=str(row.get("DataSource", "") or ""),
                     data_asof=str(row.get("DataAsOf", "") or ""),
-                    data_age_days=int(row.get("DataAgeDays", -1) or -1),
-                    data_coverage=float(row.get("DataCoverage", 0.0) or 0.0),
+                    data_age_days=_parse_int(row.get("DataAgeDays", -1), -1),
+                    data_trading_age_days=_parse_int(
+                        row.get("DataTradingAgeDays", -1), -1
+                    ),
+                    data_coverage=_parse_float(row.get("DataCoverage", 0.0), 0.0),
                 )
                 if sr.ticker in universe_symbols and sr.ticker in processed_set:
                     prev_results[sr.ticker] = sr
@@ -579,11 +668,13 @@ def run_scan(
         futures = {}
         for ti in analyse_queue:
             ticker = _normalize_ticker(ti.ticker)
-            futures[executor.submit(
-                _analyse_one_ticker_from_df,
-                ti,
-                downloaded_frames[ticker],
-            )] = ti
+            futures[
+                executor.submit(
+                    _analyse_one_ticker_from_df,
+                    ti,
+                    downloaded_frames[ticker],
+                )
+            ] = ti
 
         for future in tqdm(
             as_completed(futures),
@@ -615,10 +706,15 @@ def run_scan(
                 processed_set.add(ti.ticker)
             analysed_this_run.add(ti.ticker)
 
-            if len(analysed_this_run) % 100 == 0 or len(analysed_this_run) == len(analyse_queue):
+            if len(analysed_this_run) % 100 == 0 or len(analysed_this_run) == len(
+                analyse_queue
+            ):
                 logger.info(
                     "Analysing complete: %d/%d tickers (%d successful, %d failed).",
-                    len(analysed_this_run), len(analyse_queue), successful, failed,
+                    len(analysed_this_run),
+                    len(analyse_queue),
+                    successful,
+                    failed,
                 )
 
             if ENABLE_CHECKPOINT and len(analysed_this_run) % CHECKPOINT_INTERVAL == 0:
@@ -638,8 +734,8 @@ def run_scan(
     logger.info("Enriching %d scan results...", len(results))
     try:
         enrich_results(results, data_source, frames=analysed_frames)
-    except Exception as exc:
-        logger.exception("Failed to enrich scan results; continuing with base results: %s", exc)
+    except Exception:
+        logger.exception("Failed to enrich scan results; continuing with base results")
     logger.info("Enrichment complete: %d scan results.", len(results))
 
     # Sort by score descending
@@ -658,7 +754,10 @@ def run_scan(
 
     logger.info(
         "Scan complete: %d successful, %d failed, %d passed filters, %.1f seconds.",
-        successful, failed, passed, elapsed,
+        successful,
+        failed,
+        passed,
+        elapsed,
     )
 
     return report
@@ -680,7 +779,9 @@ def _analyse_one_ticker_from_df(
     return result, enriched if not result.error else None
 
 
-def _analyse_one_ticker(ticker_info: TickerInfo, data_source: str = "eastmoney") -> ScanResult:
+def _analyse_one_ticker(
+    ticker_info: TickerInfo, data_source: str = "eastmoney"
+) -> ScanResult:
     """Load cached CSV and run the analysis pipeline.  Sits inside a ThreadPool."""
     ticker = ticker_info.ticker
     try:
@@ -702,6 +803,7 @@ def _analyse_one_ticker(ticker_info: TickerInfo, data_source: str = "eastmoney")
 # ======================================================================
 # Parallel indicator computation (alternative fast path)
 # ======================================================================
+
 
 def run_parallel_indicator_scan(
     tickers: list[TickerInfo],
@@ -732,10 +834,12 @@ def run_parallel_indicator_scan(
             except Exception as exc:
                 ti = futures[future]
                 logger.warning("Scan timeout/error for %s: %s", ti.ticker, exc)
-                results.append(ScanResult(
-                    ticker=ti.ticker,
-                    error=str(exc),
-                ))
+                results.append(
+                    ScanResult(
+                        ticker=ti.ticker,
+                        error=str(exc),
+                    )
+                )
 
     results.sort(key=lambda r: r.score.total, reverse=True)
     return results

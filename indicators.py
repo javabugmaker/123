@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import warnings
-from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -33,11 +32,12 @@ from config import (
     CMF_PERIOD,
     DONCHIAN_PERIOD,
     EMA_PERIODS,
+    ENABLE_VOLUME_PROFILE,
     HV_PERIODS,
+    MA_PERIODS,
     MACD_FAST,
     MACD_SIGNAL,
     MACD_SLOW,
-    MA_PERIODS,
     MFI_PERIOD,
     OBV_SLOPE_PERIOD,
     REGRESSION_PERIOD,
@@ -49,7 +49,6 @@ from config import (
     VOLUME_RATIO_PERIODS,
     VOLUME_TREND_PERIOD,
     VOLUME_ZSCORE_PERIOD,
-    VWAP_PERIOD,
 )
 
 logger = logging.getLogger("institution_scanner.indicators")
@@ -58,6 +57,7 @@ logger = logging.getLogger("institution_scanner.indicators")
 # ======================================================================
 # Helpers
 # ======================================================================
+
 
 def _safe_divide(a: pd.Series, b: pd.Series, fill: float = 0.0) -> pd.Series:
     """Divide two series, returning *fill* where denominator is 0 or NaN."""
@@ -76,12 +76,26 @@ def _rolling_slope(series: pd.Series, window: int) -> pd.Series:
     positions = pd.Series(np.arange(len(values), dtype=np.float64), index=values.index)
     valid = values.notna().astype(float)
     count = valid.rolling(window, min_periods=2).sum()
-    sum_x = positions.where(valid.astype(bool), 0.0).rolling(window, min_periods=2).sum()
+    sum_x = (
+        positions.where(valid.astype(bool), 0.0).rolling(window, min_periods=2).sum()
+    )
     sum_y = values.fillna(0.0).rolling(window, min_periods=2).sum()
-    sum_xx = (positions * positions).where(valid.astype(bool), 0.0).rolling(window, min_periods=2).sum()
-    sum_xy = (positions * values.fillna(0.0)).where(valid.astype(bool), 0.0).rolling(window, min_periods=2).sum()
+    sum_xx = (
+        (positions * positions)
+        .where(valid.astype(bool), 0.0)
+        .rolling(window, min_periods=2)
+        .sum()
+    )
+    sum_xy = (
+        (positions * values.fillna(0.0))
+        .where(valid.astype(bool), 0.0)
+        .rolling(window, min_periods=2)
+        .sum()
+    )
     denominator = sum_xx - sum_x * sum_x / count.replace(0, np.nan)
-    result = (sum_xy - sum_x * sum_y / count.replace(0, np.nan)) / denominator.replace(0, np.nan)
+    result = (sum_xy - sum_x * sum_y / count.replace(0, np.nan)) / denominator.replace(
+        0, np.nan
+    )
     return result.where(count >= max(2, window // 2))
 
 
@@ -91,11 +105,23 @@ def _rolling_r2(series: pd.Series, window: int) -> pd.Series:
     positions = pd.Series(np.arange(len(values), dtype=np.float64), index=values.index)
     valid = values.notna().astype(float)
     count = valid.rolling(window, min_periods=2).sum()
-    sum_x = positions.where(valid.astype(bool), 0.0).rolling(window, min_periods=2).sum()
+    sum_x = (
+        positions.where(valid.astype(bool), 0.0).rolling(window, min_periods=2).sum()
+    )
     sum_y = values.fillna(0.0).rolling(window, min_periods=2).sum()
-    sum_xx = (positions * positions).where(valid.astype(bool), 0.0).rolling(window, min_periods=2).sum()
+    sum_xx = (
+        (positions * positions)
+        .where(valid.astype(bool), 0.0)
+        .rolling(window, min_periods=2)
+        .sum()
+    )
     sum_yy = (values * values).fillna(0.0).rolling(window, min_periods=2).sum()
-    sum_xy = (positions * values.fillna(0.0)).where(valid.astype(bool), 0.0).rolling(window, min_periods=2).sum()
+    sum_xy = (
+        (positions * values.fillna(0.0))
+        .where(valid.astype(bool), 0.0)
+        .rolling(window, min_periods=2)
+        .sum()
+    )
     covariance = count * sum_xy - sum_x * sum_y
     variance_x = count * sum_xx - sum_x * sum_x
     variance_y = count * sum_yy - sum_y * sum_y
@@ -106,6 +132,7 @@ def _rolling_r2(series: pd.Series, window: int) -> pd.Series:
 # ======================================================================
 # Price Indicators
 # ======================================================================
+
 
 def compute_moving_averages(df: pd.DataFrame) -> None:
     close = df["Close"]
@@ -127,24 +154,32 @@ def compute_atr(df: pd.DataFrame) -> None:
     tr3 = (low - prev_close).abs()
     true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     for period in ATR_PERIODS:
-        df[f"ATR{period}"] = true_range.rolling(window=period, min_periods=period // 2).mean()
+        df[f"ATR{period}"] = true_range.rolling(
+            window=period, min_periods=period
+        ).mean()
 
 
 def compute_adx(df: pd.DataFrame, period: int = ADX_PERIOD) -> None:
     high, low, close = df["High"], df["Low"], df["Close"]
     prev_close = close.shift(1)
     up_move = high.diff()
-    down_move = (-low.diff())
+    down_move = -low.diff()
     plus_dm = pd.Series(0.0, index=df.index)
     minus_dm = pd.Series(0.0, index=df.index)
     cond_plus = (up_move > down_move) & (up_move > 0)
     cond_minus = (down_move > up_move) & (down_move > 0)
     plus_dm[cond_plus] = up_move[cond_plus]
     minus_dm[cond_minus] = down_move[cond_minus]
-    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
     atr_val = tr.rolling(window=period, min_periods=period // 2).mean()
-    plus_di = 100 * (plus_dm.rolling(window=period, min_periods=period // 2).mean() / atr_val)
-    minus_di = 100 * (minus_dm.rolling(window=period, min_periods=period // 2).mean() / atr_val)
+    plus_di = 100 * (
+        plus_dm.rolling(window=period, min_periods=period // 2).mean() / atr_val
+    )
+    minus_di = 100 * (
+        minus_dm.rolling(window=period, min_periods=period // 2).mean() / atr_val
+    )
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
     df["ADX"] = dx.rolling(window=period, min_periods=period // 2).mean()
     df["PLUS_DI"] = plus_di
@@ -154,20 +189,24 @@ def compute_adx(df: pd.DataFrame, period: int = ADX_PERIOD) -> None:
 def compute_cci(df: pd.DataFrame, period: int = CCI_PERIOD) -> None:
     tp = (df["High"] + df["Low"] + df["Close"]) / 3
     sma_tp = tp.rolling(window=period, min_periods=period // 2).mean()
-    mad = tp.rolling(window=period, min_periods=period // 2).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
+    mad = tp.rolling(window=period, min_periods=period // 2).apply(
+        lambda x: np.mean(np.abs(x - np.mean(x))), raw=True
+    )
     df["CCI"] = (tp - sma_tp) / (0.015 * mad)
 
 
 def compute_roc(df: pd.DataFrame, period: int = ROC_PERIOD) -> None:
     close = df["Close"]
-    df["ROC"] = ((close - close.shift(period)) / close.shift(period).replace(0, np.nan)) * 100
+    df["ROC"] = (
+        (close - close.shift(period)) / close.shift(period).replace(0, np.nan)
+    ) * 100
 
 
 def compute_52week_levels(df: pd.DataFrame) -> None:
     close = df["Close"]
     window = 252
-    high_52w = close.rolling(window=window, min_periods=window // 2).max()
-    low_52w = close.rolling(window=window, min_periods=window // 2).min()
+    high_52w = close.rolling(window=window, min_periods=window).max()
+    low_52w = close.rolling(window=window, min_periods=window).min()
     df["High52W"] = high_52w
     df["Low52W"] = low_52w
     df["DistToHigh52W"] = ((close - high_52w) / high_52w.replace(0, np.nan)) * 100
@@ -178,10 +217,13 @@ def compute_52week_levels(df: pd.DataFrame) -> None:
 # Volume Indicators
 # ======================================================================
 
+
 def compute_volume_mas(df: pd.DataFrame) -> None:
     vol = df["Volume"]
     for period in VOLUME_MA_PERIODS:
-        df[f"VolMA{period}"] = vol.rolling(window=period, min_periods=period // 2).mean()
+        df[f"VolMA{period}"] = vol.rolling(
+            window=period, min_periods=period // 2
+        ).mean()
 
 
 def compute_volume_ratios(df: pd.DataFrame) -> None:
@@ -212,9 +254,12 @@ def compute_volume_trend(df: pd.DataFrame, period: int = VOLUME_TREND_PERIOD) ->
 # Money Flow Indicators
 # ======================================================================
 
+
 def compute_obv(df: pd.DataFrame) -> None:
     close, vol = df["Close"], df["Volume"]
-    direction = np.where(close > close.shift(1), 1, np.where(close < close.shift(1), -1, 0))
+    direction = np.where(
+        close > close.shift(1), 1, np.where(close < close.shift(1), -1, 0)
+    )
     direction[0] = 0
     df["OBV"] = (vol * direction).cumsum()
 
@@ -230,7 +275,9 @@ def compute_ad_line(df: pd.DataFrame) -> None:
     hl_range = high - low
     clv = pd.Series(0.0, index=df.index)
     mask = hl_range > 0
-    clv[mask] = ((close[mask] - low[mask]) - (high[mask] - close[mask])) / hl_range[mask]
+    clv[mask] = ((close[mask] - low[mask]) - (high[mask] - close[mask])) / hl_range[
+        mask
+    ]
     df["AD"] = (clv * vol).cumsum()
 
 
@@ -245,10 +292,14 @@ def compute_cmf(df: pd.DataFrame, period: int = CMF_PERIOD) -> None:
     hl_range = high - low
     mf_multiplier = pd.Series(0.0, index=df.index)
     mask = hl_range > 0
-    mf_multiplier[mask] = ((close[mask] - low[mask]) - (high[mask] - close[mask])) / hl_range[mask]
+    mf_multiplier[mask] = (
+        (close[mask] - low[mask]) - (high[mask] - close[mask])
+    ) / hl_range[mask]
     money_flow_volume = mf_multiplier * vol
-    df["CMF"] = money_flow_volume.rolling(window=period, min_periods=period // 2).sum() / \
-                vol.rolling(window=period, min_periods=period // 2).sum()
+    df["CMF"] = (
+        money_flow_volume.rolling(window=period, min_periods=period // 2).sum()
+        / vol.rolling(window=period, min_periods=period // 2).sum()
+    )
 
 
 def compute_mfi(df: pd.DataFrame, period: int = MFI_PERIOD) -> None:
@@ -287,13 +338,19 @@ def compute_vwap(df: pd.DataFrame) -> None:
 # Trend Indicators
 # ======================================================================
 
+
 def compute_regression(df: pd.DataFrame, period: int = REGRESSION_PERIOD) -> None:
     close = df["Close"]
     df["RegSlope"] = _rolling_slope(close, period)
     df["RegR2"] = _rolling_r2(close, period)
 
 
-def compute_macd(df: pd.DataFrame, fast: int = MACD_FAST, slow: int = MACD_SLOW, signal: int = MACD_SIGNAL) -> None:
+def compute_macd(
+    df: pd.DataFrame,
+    fast: int = MACD_FAST,
+    slow: int = MACD_SLOW,
+    signal: int = MACD_SIGNAL,
+) -> None:
     close = df["Close"]
     ema_fast = close.ewm(span=fast, adjust=False).mean()
     ema_slow = close.ewm(span=slow, adjust=False).mean()
@@ -325,9 +382,12 @@ def compute_rsi(df: pd.DataFrame) -> None:
 # Volatility Indicators
 # ======================================================================
 
+
 def compute_historical_volatility(df: pd.DataFrame) -> None:
     close = df["Close"].astype(np.float64)
-    log_ret = pd.Series(np.log(close / close.shift(1)), index=df.index, dtype=np.float64)
+    log_ret = pd.Series(
+        np.log(close / close.shift(1)), index=df.index, dtype=np.float64
+    )
     for period in HV_PERIODS:
         roll_std = log_ret.rolling(window=period, min_periods=period // 2).std()
         df[f"HV{period}"] = roll_std * np.sqrt(252) * 100
@@ -344,7 +404,9 @@ def compute_atr_compression(df: pd.DataFrame, period: int | None = None) -> None
         df["ATR_Compression"] = _safe_divide(short, long, fill=1.0)
 
 
-def compute_bollinger_bands(df: pd.DataFrame, period: int = BB_PERIOD, std: float = BB_STD) -> None:
+def compute_bollinger_bands(
+    df: pd.DataFrame, period: int = BB_PERIOD, std: float = BB_STD
+) -> None:
     close = df["Close"]
     middle = close.rolling(window=period, min_periods=period // 2).mean()
     roll_std = close.rolling(window=period, min_periods=period // 2).std()
@@ -352,7 +414,9 @@ def compute_bollinger_bands(df: pd.DataFrame, period: int = BB_PERIOD, std: floa
     df["BB_Upper"] = middle + std * roll_std
     df["BB_Lower"] = middle - std * roll_std
     df["BB_Width"] = _safe_divide(df["BB_Upper"] - df["BB_Lower"], middle) * 100
-    df["BB_Position"] = _safe_divide(close - df["BB_Lower"], df["BB_Upper"] - df["BB_Lower"])
+    df["BB_Position"] = _safe_divide(
+        close - df["BB_Lower"], df["BB_Upper"] - df["BB_Lower"]
+    )
 
 
 def compute_donchian(df: pd.DataFrame, period: int = DONCHIAN_PERIOD) -> None:
@@ -369,11 +433,21 @@ def compute_donchian(df: pd.DataFrame, period: int = DONCHIAN_PERIOD) -> None:
 # Volume Profile (HVN / LVN)
 # ======================================================================
 
-def compute_volume_profile(df: pd.DataFrame, bins: int = VOLUME_PROFILE_BINS, lookback: int = VOLUME_PROFILE_LOOKBACK) -> None:
+
+def compute_volume_profile(
+    df: pd.DataFrame,
+    bins: int = VOLUME_PROFILE_BINS,
+    lookback: int = VOLUME_PROFILE_LOOKBACK,
+) -> None:
     if len(df) < lookback:
         lookback = len(df)
     subset = df.iloc[-lookback:]
-    close, high, low, vol = subset["Close"], subset["High"], subset["Low"], subset["Volume"]
+    close, high, low, vol = (
+        subset["Close"],
+        subset["High"],
+        subset["Low"],
+        subset["Volume"],
+    )
     price_min, price_max = low.min(), high.max()
     if price_min == price_max:
         df["VP_HVN_Center"] = price_min
@@ -407,8 +481,12 @@ def compute_volume_profile(df: pd.DataFrame, bins: int = VOLUME_PROFILE_BINS, lo
     profile = (included * weights[:, np.newaxis]).sum(axis=0)
     if profile.sum() == 0:
         return
-    threshold_hvn = np.percentile(profile[profile > 0], 67) if (profile > 0).any() else 0
-    threshold_lvn = np.percentile(profile[profile > 0], 33) if (profile > 0).any() else 0
+    threshold_hvn = (
+        np.percentile(profile[profile > 0], 67) if (profile > 0).any() else 0
+    )
+    threshold_lvn = (
+        np.percentile(profile[profile > 0], 33) if (profile > 0).any() else 0
+    )
     hvn_mask = profile >= threshold_hvn
     lvn_mask = (profile > 0) & (profile <= threshold_lvn)
     current_price = close.iloc[-1]
@@ -433,6 +511,7 @@ def compute_volume_profile(df: pd.DataFrame, bins: int = VOLUME_PROFILE_BINS, lo
 # ======================================================================
 # Wyckoff Phase Detection
 # ======================================================================
+
 
 def detect_wyckoff_phase(df: pd.DataFrame) -> None:
     close, vol = df["Close"], df["Volume"]
@@ -462,12 +541,24 @@ def detect_wyckoff_phase(df: pd.DataFrame) -> None:
     l52 = low_52w.iloc[-1] if len(low_52w) > 0 else low_60d
     near_52w_low = (price_now - l52) / l52 * 100 < 5 if l52 > 0 else False
     near_52w_high = (h52 - price_now) / h52 * 100 < 5 if h52 > 0 else False
-    hv20 = df.get("HV20", pd.Series(np.nan, index=df.index)).iloc[-1] if "HV20" in df.columns else np.nan
-    hv60 = df.get("HV60", pd.Series(np.nan, index=df.index)).iloc[-1] if "HV60" in df.columns else np.nan
-    vol_contracting = (not np.isnan(hv20) and not np.isnan(hv60) and hv20 < hv60 * 0.85)
+    hv20 = (
+        df.get("HV20", pd.Series(np.nan, index=df.index)).iloc[-1]
+        if "HV20" in df.columns
+        else np.nan
+    )
+    hv60 = (
+        df.get("HV60", pd.Series(np.nan, index=df.index)).iloc[-1]
+        if "HV60" in df.columns
+        else np.nan
+    )
+    vol_contracting = not np.isnan(hv20) and not np.isnan(hv60) and hv20 < hv60 * 0.85
     phase = "Unknown"
     if near_52w_low and vol_spike:
-        recent_decline = (close.iloc[-20] - low_60d) / close.iloc[-20] * 100 > 15 if close.iloc[-20] > 0 else False
+        recent_decline = (
+            (close.iloc[-20] - low_60d) / close.iloc[-20] * 100 > 15
+            if close.iloc[-20] > 0
+            else False
+        )
         if recent_decline:
             phase = "Selling Climax"
     if phase == "Unknown" and dist_from_low > 5 and dist_from_high > 15:
@@ -484,22 +575,41 @@ def detect_wyckoff_phase(df: pd.DataFrame) -> None:
             if 5 <= bars_from_low <= 30:
                 phase = "Automatic Rally"
     if phase == "Unknown" and dist_from_low < 10 and not vol_spike and atr_contracting:
-        recent_high = close.iloc[-60:-10].max() if len(df) >= 70 else close.iloc[-60:].max()
+        recent_high = (
+            close.iloc[-60:-10].max() if len(df) >= 70 else close.iloc[-60:].max()
+        )
         rallied = (recent_high - low_60d) / low_60d * 100 > 10 if low_60d > 0 else False
         if rallied:
             phase = "Secondary Test"
     if phase == "Unknown":
-        if (price_now < ma200 and ma200_slope <= 0 and vol_ma20 > vol_ma60
-                and atr_contracting and vol_contracting and dist_from_low < 20 and not near_52w_high):
+        if (
+            price_now < ma200
+            and ma200_slope <= 0
+            and vol_ma20 > vol_ma60
+            and atr_contracting
+            and vol_contracting
+            and dist_from_low < 20
+            and not near_52w_high
+        ):
             phase = "Accumulation"
     if phase == "Unknown":
         if price_now > ma200 and ma200_slope > 0 and dist_from_high < 20:
             phase = "Markup"
     if phase == "Unknown":
-        if near_52w_high and vol_ma20 > vol_ma60 and not atr_contracting and ma200_slope < 0.5:
+        if (
+            near_52w_high
+            and vol_ma20 > vol_ma60
+            and not atr_contracting
+            and ma200_slope < 0.5
+        ):
             phase = "Distribution"
     if phase == "Unknown":
-        if price_now < ma200 and ma200_slope < 0 and dist_from_low > 30 and not atr_contracting:
+        if (
+            price_now < ma200
+            and ma200_slope < 0
+            and dist_from_low > 30
+            and not atr_contracting
+        ):
             phase = "Markdown"
     df["WyckoffPhase"] = phase
 
@@ -508,41 +618,46 @@ def detect_wyckoff_phase(df: pd.DataFrame) -> None:
 # Master function
 # ======================================================================
 
-def compute_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
+
+def compute_all_indicators(
+    df: pd.DataFrame, include_optional: bool = False
+) -> pd.DataFrame:
     if df.empty or len(df) < 20:
         return df
     compute_moving_averages(df)
-    compute_ema(df)
     compute_atr(df)
-    compute_adx(df)
-    compute_cci(df)
     compute_roc(df)
     compute_52week_levels(df)
     compute_volume_mas(df)
-    compute_volume_ratios(df)
-    compute_relative_volume(df)
     compute_volume_zscore(df)
-    compute_volume_trend(df)
     compute_obv(df)
-    compute_obv_slope(df)
     compute_ad_line(df)
     compute_ad_slope(df)
     compute_cmf(df)
     compute_mfi(df)
-    compute_vwap(df)
     compute_regression(df)
-    compute_macd(df)
     compute_rsi(df)
     compute_historical_volatility(df)
-    compute_atr_compression(df)
     compute_bollinger_bands(df)
-    compute_donchian(df)
-    try:
-        compute_volume_profile(df)
-    except Exception:
-        logger.debug("Volume Profile failed — skipping.", exc_info=True)
+    if ENABLE_VOLUME_PROFILE:
+        try:
+            compute_volume_profile(df)
+        except (ArithmeticError, TypeError, ValueError):
+            logger.debug("Volume Profile failed — skipping.", exc_info=True)
     try:
         detect_wyckoff_phase(df)
-    except Exception:
+    except (ArithmeticError, IndexError, KeyError, TypeError, ValueError):
         logger.debug("Wyckoff detection failed — skipping.", exc_info=True)
+    if include_optional:
+        compute_ema(df)
+        compute_adx(df)
+        compute_cci(df)
+        compute_volume_ratios(df)
+        compute_relative_volume(df)
+        compute_volume_trend(df)
+        compute_obv_slope(df)
+        compute_vwap(df)
+        compute_macd(df)
+        compute_atr_compression(df)
+        compute_donchian(df)
     return df

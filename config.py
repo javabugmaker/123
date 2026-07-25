@@ -7,8 +7,7 @@ All tunable parameters live here so no magic numbers appear in application code.
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
@@ -28,10 +27,10 @@ for _d in (CACHE_DIR, OUTPUT_DIR, LOG_DIR):
 # ======================================================================
 # Ticker & Market Filters
 # ======================================================================
-MIN_PRICE: float = 5.0        # Minimum close price (CNY) — ignore penny stocks
-MAX_PRICE: float = 800.0      # Maximum close price for A-shares
-MIN_VOLUME: int = 200_000     # Minimum daily volume (shares)
-MIN_MARKET_CAP: float = 1e8    # Minimum market cap (CNY) — ignore micro-caps
+MIN_PRICE: float = 5.0  # Minimum close price (CNY) — ignore penny stocks
+MAX_PRICE: float = 800.0  # Maximum close price for A-shares
+MIN_VOLUME: int = 200_000  # Minimum daily volume (shares)
+MIN_MARKET_CAP: float = 1e8  # Minimum market cap (CNY) — ignore micro-caps
 EXCLUDED_SECURITY_KEYWORDS: tuple[str, ...] = (
     "债",
     "货币",
@@ -45,7 +44,7 @@ EXCLUDED_SECURITY_KEYWORDS: tuple[str, ...] = (
 # ======================================================================
 # Data Download
 # ======================================================================
-HISTORY_YEARS: int = 10                  # Years of daily data to pull
+HISTORY_YEARS: int = 10  # Years of daily data to pull
 
 # Yahoo Finance rate limits (empirically observed, not officially documented):
 #   ~1-2 req/s  per IP without TLS fingerprint evasion
@@ -58,21 +57,23 @@ HISTORY_YEARS: int = 10                  # Years of daily data to pull
 # Phase 2 (indicator computation) stays parallel since it's CPU-bound, no network
 DOWNLOAD_THREADS: int = 2
 DOWNLOAD_RATE_LIMIT_PAUSE: float = 1.0
-DOWNLOAD_RETRIES: int = 2                # retries on transient errors (401s, 429s, timeouts) — don't waste time retrying dead URLs
-DOWNLOAD_TIMEOUT: int = 10               # seconds per ticker (lower = less accumulated delay on dead URLs)
-MAX_DOWNLOAD_ERRORS: int = 2000          # abort if this many consecutive errors (harmless 404s from delisted tickers are common)
+DOWNLOAD_RETRIES: int = 2  # retries on transient errors (401s, 429s, timeouts) — don't waste time retrying dead URLs
+DOWNLOAD_TIMEOUT: int = (
+    10  # seconds per ticker (lower = less accumulated delay on dead URLs)
+)
+MAX_DOWNLOAD_ERRORS: int = 2000  # abort if this many consecutive errors (harmless 404s from delisted tickers are common)
 
 # Ticker list sources (free, no API key required)
-TICKER_SOURCES: list[str] = field(default_factory=lambda: [
+TICKER_SOURCES: list[str] = [
     # NASDAQ official FTP lists
     "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqtraded.txt",
     # Alternative free sources (used as fallback)
-])
+]
 
 # ETF list sources
-ETF_SOURCES: list[str] = field(default_factory=lambda: [
+ETF_SOURCES: list[str] = [
     # Common free ETF lists
-])
+]
 
 # ======================================================================
 # Indicator Parameters
@@ -116,30 +117,31 @@ VOLUME_PROFILE_LOOKBACK: int = 252
 # ======================================================================
 
 # Long-term bear market
-BEAR_DECLINE_PCT: float = -20.0       # Min decline over lookback period for A-shares
-BEAR_LOOKBACK_YEARS: int = 2           # Years for decline calculation
-BEAR_MA200_DECLINING_DAYS: int = 40    # MA200 must be declining for at least N days
+BEAR_DECLINE_PCT: float = -20.0  # Minimum decline over the lookback period for A-shares
+BEAR_LOOKBACK_YEARS: int = 2  # Years for decline calculation
+BEAR_MA200_DECLINING_DAYS: int = 40  # MA200 must be declining for at least N days
 
 # Bottom consolidation
-CONSOLIDATION_DAYS: int = 45           # Lookback for consolidation check
+CONSOLIDATION_DAYS: int = 45  # Lookback for consolidation check
 CONSOLIDATION_MAX_RANGE_PCT: float = 20.0  # Max % range during consolidation
 
 # Volume accumulation
-VOLUME_ACCUM_RATIO: float = 1.2        # Vol MA20 > Vol MA120 * ratio
-VOLUME_ACCUM_MIN_DAYS: int = 20        # Must persist for this many consecutive days
+VOLUME_ACCUM_RATIO: float = 1.2  # Vol MA20 > Vol MA120 * ratio
+VOLUME_ACCUM_MIN_DAYS: int = 20  # Must persist for this many consecutive days
 
 # OBV Bullish Divergence
-OBV_DIVERGENCE_LOOKBACK: int = 60      # Days to check for price low vs OBV low
+OBV_DIVERGENCE_LOOKBACK: int = 60  # Days to check for price low vs OBV low
 
 # CMF
-CMF_THRESHOLD: float = 0.0             # CMF must exceed this
+CMF_THRESHOLD: float = 0.0  # CMF must exceed this
 
 # AD Line
-AD_SLOPE_LOOKBACK: int = 30            # AD slope must be positive over N days
+AD_SLOPE_LOOKBACK: int = 30  # AD slope must be positive over N days
 
 # Volatility Contraction
-ATR_COMPRESSION_LOOKBACK: int = 60     # ATR must decline over this many days
+ATR_COMPRESSION_LOOKBACK: int = 60  # ATR must decline over this many days
 BB_WIDTH_COMPRESSION_LOOKBACK: int = 60
+
 
 # ======================================================================
 # Scoring Weights (total = 100)
@@ -151,6 +153,7 @@ class ScoringWeights:
     accumulation: float = 25.0
     volatility: float = 15.0
     structure: float = 15.0
+
 
 SCORING_WEIGHTS: Final[ScoringWeights] = ScoringWeights()
 
@@ -165,7 +168,9 @@ SCORING_VERSION: str = "2026-07-22-v2"
 # ======================================================================
 # Runtime
 # ======================================================================
-SCAN_THREADS: int = 12          # Threads for parallel indicator calculation (numpy releases GIL)
+SCAN_THREADS: int = (
+    12  # Threads for parallel indicator calculation (numpy releases GIL)
+)
 CHECKPOINT_INTERVAL: int = 100  # Save checkpoint every N tickers
 ENABLE_CHECKPOINT: bool = True
 

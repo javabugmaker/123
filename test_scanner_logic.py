@@ -29,6 +29,11 @@ class ScannerLogicTests(TestCase):
         self.assertEqual(normalize_ticker("688981"), "688981.SH")
         self.assertEqual(normalize_ticker("002438.SZ"), "002438.SZ")
 
+    def test_is_etf_ticker_recognizes_shanghai_50_prefix(self):
+        self.assertTrue(is_etf_ticker("510300.SH"))
+        self.assertTrue(is_etf_ticker("588000.SH"))
+        self.assertFalse(is_etf_ticker("600036.SH"))
+
     @patch("downloader._eastmoney_get")
     def test_full_universe_uses_all_pages(self, request_get):
         first = Mock()
@@ -193,11 +198,15 @@ class ScannerLogicTests(TestCase):
         frame = pd.DataFrame({
             "Open": [10.0], "High": [10.5], "Low": [9.5], "Close": [10.0], "Volume": [1000.0],
         }, index=pd.to_datetime(["2026-07-21"]))
-        with TemporaryDirectory() as temp_dir, patch("downloader.CACHE_DIR", Path(temp_dir)):
+        with TemporaryDirectory() as temp_dir, patch("downloader.CACHE_DIR", Path(temp_dir)), \
+                patch("pandas.DataFrame.to_parquet") as to_parquet, \
+                patch("pandas.read_parquet", return_value=frame) as read_parquet:
             downloader._save_cache("000001.SZ", frame, "eastmoney")
             cached = downloader._load_cache("000001.SZ", "eastmoney")
             self.assertTrue(downloader._cache_path("000001.SZ", "eastmoney").exists())
 
+        to_parquet.assert_called_once()
+        read_parquet.assert_called_once()
         self.assertEqual(cached.iloc[-1]["Close"], 10.0)
 
     def test_load_cache_reads_legacy_csv(self):
@@ -241,6 +250,20 @@ class ScannerLogicTests(TestCase):
         candidates = [result for result in results if result.passed_filters and not result.error]
 
         self.assertEqual([result.ticker for result in candidates], ["600000.SH"])
+
+    def test_score_structure_returns_zero_when_ohlc_columns_are_missing(self):
+        frame = pd.DataFrame({"Close": [10.0] * 252})
+        self.assertEqual(score_ticker(frame).structure, 0.0)
+
+    def test_volatility_filter_uses_atr14_to_atr50_ratio(self):
+        frame = pd.DataFrame({
+            "ATR14": [8.0] * 60,
+            "ATR50": [10.0] * 60,
+            "BB_Width": [1.0] * 60,
+        })
+        result = filter_volatility_contraction(frame)
+        self.assertTrue(result.passed)
+        self.assertTrue(result.details["atr_compressing"])
 
 
 if __name__ == "__main__":

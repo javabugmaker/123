@@ -21,7 +21,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from config import OUTPUT_DIR, TOP_N_PARQUET, TOP_N_REPORT
-from scanner import ScanResult, ScanReport
+from scanner import ScanReport, ScanResult
 
 logger = logging.getLogger("institution_scanner.report")
 
@@ -29,6 +29,7 @@ logger = logging.getLogger("institution_scanner.report")
 # ======================================================================
 # Data export helpers
 # ======================================================================
+
 
 def _quality_label(result: ScanResult) -> str:
     signal_count = int(result.filter_details.get("signal_count", 0))
@@ -63,67 +64,99 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
     """Convert ScanResult list to a sorted, clean DataFrame."""
     rows = []
     for r in results:
-        rows.append({
-            "Ticker": r.ticker,
-            "Name": r.name,
-            "Sector": r.sector,
-            "Industry": r.industry,
-            "IsETF": r.is_etf,
-            "AssetType": r.asset_type,
-            "Style": r.style,
-            "Quality": _quality_label(r),
-            "Close": r.close,
-            "Score": round(r.score.total, 2),
-            "BacktestScore": round(r.backtest_score, 2) if np.isfinite(r.backtest_score) else None,
-            "CompositeScore": round(r.composite_score, 2) if np.isfinite(r.composite_score) else None,
-            "BacktestSamples": r.backtest_samples,
-            "BacktestWinRate20D": round(r.backtest_win_rate_20d, 4) if np.isfinite(r.backtest_win_rate_20d) else None,
-            "BacktestWinRate60D": round(r.backtest_win_rate_60d, 4) if np.isfinite(r.backtest_win_rate_60d) else None,
-            "BacktestAverageReturn20D": round(r.backtest_average_return_20d, 4) if np.isfinite(r.backtest_average_return_20d) else None,
-            "BacktestAverageReturn60D": round(r.backtest_average_return_60d, 4) if np.isfinite(r.backtest_average_return_60d) else None,
-            "BacktestObjectiveValue": round(r.backtest_objective_value, 4) if np.isfinite(r.backtest_objective_value) else None,
-            "UniverseType": r.universe_type,
-            "SurvivorshipBiasWarning": r.survivorship_bias_warning,
-            "TrendScore": round(r.score.trend, 2),
-            "VolumeScore": round(r.score.volume, 2),
-            "AccumulationScore": round(r.score.accumulation, 2),
-            "CompressionScore": round(r.score.volatility, 2),
-            "StructureScore": round(r.score.structure, 2),
-            "ScoreMissingIndicators": r.score_missing_indicators,
-            "ScoreCoverage": round(r.score_coverage, 4),
-            "ScoreConfidence": round(r.score_confidence, 4),
-            "ScoreContributionTrend": round(r.score.contributions.get("trend", r.score.trend), 2),
-            "ScoreContributionVolume": round(r.score.contributions.get("volume", r.score.volume), 2),
-            "ScoreContributionAccumulation": round(r.score.contributions.get("accumulation", r.score.accumulation), 2),
-            "ScoreContributionCompression": round(r.score.contributions.get("compression", r.score.volatility), 2),
-            "ScoreContributionStructure": round(r.score.contributions.get("structure", r.score.structure), 2),
-            "OBV": r.obv if not np.isnan(r.obv) else None,
-            "CMF": round(r.cmf, 4) if not np.isnan(r.cmf) else None,
-            "AD": r.ad if not np.isnan(r.ad) else None,
-            "ATR14": round(r.atr14, 4) if not np.isnan(r.atr14) else None,
-            "RSI14": round(r.rsi14, 2) if not np.isnan(r.rsi14) else None,
-            "DistToLow52W": round(r.dist_to_low_52w, 2) if not np.isnan(r.dist_to_low_52w) else None,
-            "WyckoffPhase": r.wyckoff_phase,
-            "Stage": r.stage,
-            "MarketRegime": r.market_regime,
-            "IndustryRelativeStrength": round(r.industry_relative_strength, 2) if not np.isnan(r.industry_relative_strength) else None,
-            "DataSource": r.data_source,
-            "DataAsOf": r.data_asof,
-            "DataAgeDays": r.data_age_days,
-            "DataCoverage": round(r.data_coverage, 4),
-            "VolAccumDays": r.volume_accum_days,
-            "SignalCount": r.filter_details.get("signal_count", 0),
-            "FilterCount": r.filter_details.get("filter_count", 0),
-            "PassedFilters": r.passed_filters,
-            "OBV_Div": r.filter_details.get("obv_divergence", False),
-            "CMF_Pos": r.filter_details.get("cmf_positive", False),
-            "AD_SlopePos": r.filter_details.get("ad_slope", False),
-            "BearMarket": r.filter_details.get("bear_market", False),
-            "Consolidation": r.filter_details.get("consolidation", False),
-            "VolAccum": r.filter_details.get("volume_accumulation", False),
-            "VolContract": r.filter_details.get("volatility_contraction", False),
-            "Error": r.error if r.error else "",
-        })
+        rows.append(
+            {
+                "Ticker": r.ticker,
+                "Name": r.name,
+                "Sector": r.sector,
+                "Industry": r.industry,
+                "IsETF": r.is_etf,
+                "AssetType": r.asset_type,
+                "Style": r.style,
+                "Quality": _quality_label(r),
+                "Close": r.close,
+                "Score": round(r.score.total, 2),
+                "BacktestScore": round(r.backtest_score, 2)
+                if np.isfinite(r.backtest_score)
+                else None,
+                "CompositeScore": round(r.composite_score, 2)
+                if np.isfinite(r.composite_score)
+                else None,
+                "BacktestSamples": r.backtest_samples,
+                "BacktestWinRate20D": round(r.backtest_win_rate_20d, 4)
+                if np.isfinite(r.backtest_win_rate_20d)
+                else None,
+                "BacktestWinRate60D": round(r.backtest_win_rate_60d, 4)
+                if np.isfinite(r.backtest_win_rate_60d)
+                else None,
+                "BacktestAverageReturn20D": round(r.backtest_average_return_20d, 4)
+                if np.isfinite(r.backtest_average_return_20d)
+                else None,
+                "BacktestAverageReturn60D": round(r.backtest_average_return_60d, 4)
+                if np.isfinite(r.backtest_average_return_60d)
+                else None,
+                "BacktestObjectiveValue": round(r.backtest_objective_value, 4)
+                if np.isfinite(r.backtest_objective_value)
+                else None,
+                "UniverseType": r.universe_type,
+                "SurvivorshipBiasWarning": r.survivorship_bias_warning,
+                "TrendScore": round(r.score.trend, 2),
+                "VolumeScore": round(r.score.volume, 2),
+                "AccumulationScore": round(r.score.accumulation, 2),
+                "CompressionScore": round(r.score.volatility, 2),
+                "StructureScore": round(r.score.structure, 2),
+                "ScoreMissingIndicators": r.score_missing_indicators,
+                "ScoreCoverage": round(r.score_coverage, 4),
+                "ScoreConfidence": round(r.score_confidence, 4),
+                "ScoreContributionTrend": round(
+                    r.score.contributions.get("trend", r.score.trend), 2
+                ),
+                "ScoreContributionVolume": round(
+                    r.score.contributions.get("volume", r.score.volume), 2
+                ),
+                "ScoreContributionAccumulation": round(
+                    r.score.contributions.get("accumulation", r.score.accumulation), 2
+                ),
+                "ScoreContributionCompression": round(
+                    r.score.contributions.get("compression", r.score.volatility), 2
+                ),
+                "ScoreContributionStructure": round(
+                    r.score.contributions.get("structure", r.score.structure), 2
+                ),
+                "OBV": r.obv if not np.isnan(r.obv) else None,
+                "CMF": round(r.cmf, 4) if not np.isnan(r.cmf) else None,
+                "AD": r.ad if not np.isnan(r.ad) else None,
+                "ATR14": round(r.atr14, 4) if not np.isnan(r.atr14) else None,
+                "RSI14": round(r.rsi14, 2) if not np.isnan(r.rsi14) else None,
+                "DistToLow52W": round(r.dist_to_low_52w, 2)
+                if not np.isnan(r.dist_to_low_52w)
+                else None,
+                "WyckoffPhase": r.wyckoff_phase,
+                "Stage": r.stage,
+                "MarketRegime": r.market_regime,
+                "IndustryRelativeStrength": round(r.industry_relative_strength, 2)
+                if not np.isnan(r.industry_relative_strength)
+                else None,
+                "DataSource": r.data_source,
+                "DataAsOf": r.data_asof,
+                "DataAgeDays": r.data_age_days,
+                "DataTradingAgeDays": r.data_trading_age_days,
+                "DataCoverage": round(r.data_coverage, 4),
+                "VolAccumDays": r.volume_accum_days,
+                "SignalCount": r.filter_details.get("signal_count", 0),
+                "FilterCount": r.filter_details.get("filter_count", 0),
+                "PassedFilters": r.passed_filters,
+                "OBV_Div": r.filter_details.get("obv_divergence", False),
+                "CMF_Pos": r.filter_details.get("cmf_positive", False),
+                "CMF_Improving": r.filter_details.get("cmf_improving", False),
+                "AD_SlopePos": r.filter_details.get("ad_slope", False),
+                "BearMarket": r.filter_details.get("bear_market", False),
+                "Consolidation": r.filter_details.get("consolidation", False),
+                "VolAccum": r.filter_details.get("volume_accumulation", False),
+                "VolContract": r.filter_details.get("volatility_contraction", False),
+                "Error": r.error if r.error else "",
+            }
+        )
 
     df = pd.DataFrame(rows)
     if df.empty:
@@ -176,10 +209,10 @@ def export_full_csv(results: list[ScanResult]) -> Path:
     return path
 
 
-
 # ======================================================================
 # Parquet Export
 # ======================================================================
+
 
 def export_top_parquet(results: list[ScanResult], n: int = TOP_N_PARQUET) -> Path:
     """
@@ -200,6 +233,7 @@ def export_top_parquet(results: list[ScanResult], n: int = TOP_N_PARQUET) -> Pat
 # ======================================================================
 # Full export
 # ======================================================================
+
 
 def export_all(
     results: list[ScanResult],
@@ -228,6 +262,7 @@ def export_full_parquet(results: list[ScanResult]) -> Path:
 # Terminal Report
 # ======================================================================
 
+
 def _build_reasons(result: ScanResult) -> list[str]:
     """Build a list of human-readable reasons why this ticker scored well."""
     reasons: list[str] = []
@@ -236,7 +271,9 @@ def _build_reasons(result: ScanResult) -> list[str]:
         reasons.append("✓ MA200 declining, long-term bear market")
 
     if result.filter_details.get("volume_accumulation"):
-        reasons.append(f"✓ Sustained volume accumulation ({result.volume_accum_days} days)")
+        reasons.append(
+            f"✓ Sustained volume accumulation ({result.volume_accum_days} days)"
+        )
 
     if result.filter_details.get("obv_divergence"):
         reasons.append("✓ OBV Bullish Divergence detected")
@@ -283,14 +320,17 @@ def print_terminal_report(results: list[ScanResult], n: int = TOP_N_REPORT) -> N
         etf_tag = " [ETF]" if result.is_etf else ""
         sector_str = f" | {result.sector}" if result.sector else ""
 
-        print(f"  {i:3d}. {result.ticker:<8s} "
-              f"Score: {result.score.total:5.1f}{etf_tag}")
+        print(
+            f"  {i:3d}. {result.ticker:<8s} Score: {result.score.total:5.1f}{etf_tag}"
+        )
         if name_str.strip():
             print(f"      {name_str.strip()}{sector_str}")
-        print(f"      Close: ¥{result.close:.2f} | "
-              f"RSI14: {result.rsi14:.1f} | "
-              f"ATR14: {result.atr14:.2f} | "
-              f"Phase: {result.wyckoff_phase}")
+        print(
+            f"      Close: ¥{result.close:.2f} | "
+            f"RSI14: {result.rsi14:.1f} | "
+            f"ATR14: {result.atr14:.2f} | "
+            f"Phase: {result.wyckoff_phase}"
+        )
 
         reasons = _build_reasons(result)
         for reason in reasons:

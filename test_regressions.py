@@ -54,6 +54,27 @@ class RegressionTests(TestCase):
 
         load_results.assert_called_once_with()
 
+    def test_gui_load_csv_reloads_when_same_file_is_updated(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner._csv_path = None
+        scanner._csv_mtime = None
+        scanner._update_filter_values = Mock()
+        scanner._render_cached_rows = Mock(return_value=True)
+        scanner.status = Mock()
+
+        with TemporaryDirectory() as temp_dir, patch("gui.OUTPUT_DIR", Path(temp_dir)):
+            path = Path(temp_dir) / "AllResults.csv"
+            path.write_text("Ticker,Close\n605499.SH,124.00\n", encoding="utf-8-sig")
+            self.assertTrue(scanner.load_csv("AllResults.csv"))
+            first_mtime = scanner._csv_mtime
+
+            path.write_text("Ticker,Close\n605499.SH,125.82\n", encoding="utf-8-sig")
+            self.assertTrue(scanner.load_csv("AllResults.csv"))
+
+        self.assertNotEqual(scanner._csv_mtime, first_mtime)
+        self.assertEqual(scanner._csv_rows, [["605499.SH", "125.82"]])
+        self.assertEqual(scanner._update_filter_values.call_count, 2)
+
     def test_gui_best_available_results_skips_empty_top50_and_loads_all_results(self):
         scanner = object.__new__(gui.ScannerGUI)
         scanner.load_csv = Mock(return_value=True)
@@ -118,6 +139,52 @@ class RegressionTests(TestCase):
                 self.assertNotIn("backtest_score", result.columns)
                 self.assertNotIn("samples", result.columns)
                 self.assertEqual(int(result.loc[result["Ticker"] == "000001.SZ", "BacktestSamples"].iloc[0]), 4)
+    def test_resume_scan_restores_previous_results_with_missing_metrics(self):
+        ticker = TickerInfo(ticker="000001.SZ")
+        frame = pd.DataFrame({
+            "Open": [10.0], "High": [11.0], "Low": [9.0], "Close": [10.0], "Volume": [1000.0],
+        }, index=pd.to_datetime(["2026-07-21"]))
+        previous = pd.DataFrame({
+            "Ticker": ["000001.SZ"],
+            "Name": ["平安银行"],
+            "IsETF": [False],
+            "Close": [10.0],
+            "Score": [50.0],
+            "TrendScore": [10.0],
+            "VolumeScore": [10.0],
+            "AccumulationScore": [10.0],
+            "CompressionScore": [10.0],
+            "StructureScore": [10.0],
+            "BacktestScore": [None],
+            "BacktestWinRate20D": [None],
+            "BacktestWinRate60D": [None],
+            "BacktestAverageReturn20D": [None],
+            "BacktestAverageReturn60D": [None],
+            "BacktestObjectiveValue": [None],
+            "CompositeScore": [None],
+            "OBV": [None],
+            "CMF": [None],
+            "AD": [None],
+            "ATR14": [None],
+            "RSI14": [None],
+            "DistToLow52W": [None],
+            "IndustryRelativeStrength": [None],
+            "DataSource": ["eastmoney"],
+        })
+        metadata = pd.DataFrame({"DataSource": ["eastmoney"]})
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            report_path = output_dir / "AllResults.parquet"
+            cache_path = output_dir / "000001.SZ__eastmoney.parquet"
+            cache_path.touch()
+            report_path.touch()
+            with patch.object(scanner, "OUTPUT_DIR", output_dir), patch.object(scanner, "_CHECKPOINT_PATH", output_dir / "_checkpoint.json"), patch.object(scanner, "load_checkpoint", return_value={"000001.SZ"}), patch.object(scanner, "_load_previous_tickers", return_value={"000001.SZ"}), patch.object(scanner, "_cache_path_for", return_value=cache_path), patch.object(scanner, "_legacy_cache_path", return_value=output_dir / "missing.csv"), patch.object(scanner, "download_batch", return_value={"000001.SZ": frame}), patch.object(scanner, "enrich_results"), patch.object(scanner, "save_checkpoint"), patch.object(scanner.pd, "read_parquet", side_effect=[metadata, previous]):
+                report = scanner.run_scan(stock_universe=[ticker], etf_universe=[], data_source="eastmoney")
+
+        self.assertEqual(report.successful, 1)
+        self.assertEqual([result.ticker for result in report.results], ["000001.SZ"])
+        self.assertTrue(pd.isna(report.results[0].backtest_score))
+
     def test_max_drawdown_ranking_prefers_shallower_losses(self):
         with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
             pd.DataFrame({
@@ -184,7 +251,7 @@ class RegressionTests(TestCase):
         self.assertTrue(all(np.isfinite(value) for value in score.__dict__.values()))
         self.assertTrue(all(np.isfinite(value) for value in score.to_dict().values()))
 
-    def test_score_ticker_shrinks_incomplete_indicator_scores_toward_neutral(self):
+    def test_score_ticker_normalizes_using_available_indicator_weights(self):
         frame = pd.DataFrame({
             "Close": [10.0] * 252,
             "High": [11.0] * 252,
@@ -197,10 +264,49 @@ class RegressionTests(TestCase):
         })
 
         score = score_ticker(frame)
-        raw_total = score.trend + score.volume + score.accumulation + score.volatility + score.structure
 
-        self.assertLess(score.indicator_coverage, 1.0)
-        self.assertAlmostEqual(score.total, 50.0 + (raw_total - 50.0) * score.indicator_coverage)
+        self.assertEqual(score.indicator_coverage, 0.2)
+        self.assertEqual(score.total, score.structure / 15.0 * 100.0)
+
+    def test_score_ticker_returns_zero_when_no_dimensions_are_available(self):
+        frame = pd.DataFrame({"Close": [10.0] * 60})
+
+        score = score_ticker(frame)
+
+        self.assertEqual(score.indicator_coverage, 0.0)
+        self.assertEqual(score.total, 0.0)
+
+    def test_score_ticker_marks_stale_latest_indicators_unavailable(self):
+        frame = pd.DataFrame({
+            "Close": [10.0] * 252,
+            "High": [11.0] * 252,
+            "Low": [9.0] * 252,
+            "MA200": [9.0] * 251 + [pd.NA],
+            "VolMA20": [120.0] * 252,
+            "VolMA120": [100.0] * 252,
+            "OBV": [100.0] * 252,
+            "ATR14": [pd.NA] * 252,
+            "BB_Width": [pd.NA] * 252,
+        })
+
+        score = score_ticker(frame)
+
+        self.assertEqual(score.trend, 0.0)
+        self.assertEqual(score.indicator_coverage, 0.6)
+        self.assertTrue(np.isfinite(score.total))
+
+    def test_classify_style_uses_computed_roc_column(self):
+        from score import classify_style
+
+        frame = pd.DataFrame({
+            "Close": [10.0] * 60,
+            "ATR14": [0.3] * 60,
+            "ROC": [12.0] * 60,
+            "VolMA20": [100.0] * 60,
+            "VolMA120": [100.0] * 60,
+        })
+
+        self.assertEqual(classify_style(frame), "趋势成长")
 
     def test_cmd_scan_classifies_specified_etfs(self):
         args = argparse.Namespace(
@@ -221,8 +327,92 @@ class RegressionTests(TestCase):
         stock_universe = run_scan.call_args.kwargs["stock_universe"]
         etf_universe = run_scan.call_args.kwargs["etf_universe"]
         self.assertEqual([ticker.ticker for ticker in stock_universe], ["600036.SH"])
-        self.assertEqual([ticker.ticker for ticker in etf_universe], ["510300.SH", "159915"])
+        self.assertEqual([ticker.ticker for ticker in etf_universe], ["510300.SH", "159915.SZ"])
         self.assertTrue(all(ticker.is_etf and ticker.asset_type == "etf" for ticker in etf_universe))
+
+    def test_cmd_scan_normalizes_and_deduplicates_specified_tickers(self):
+        args = argparse.Namespace(
+            tickers="600036,600036.SH,510300,510300.SH",
+            etfs_only=False,
+            stocks_only=False,
+            force_download=False,
+            no_resume=False,
+            data_source="eastmoney",
+            cache_first=False,
+            top=50,
+            top_parquet=200,
+        )
+        report = ScanReport(successful=1)
+        with patch("main.run_scan", return_value=report) as run_scan, patch("main.export_all", return_value=(Path("top.csv"), Path("top.parquet"), Path("all.csv"), Path("all.parquet"))), patch("main.print_terminal_report"), patch("main.print_scan_summary"):
+            self.assertEqual(main.cmd_scan(args), 0)
+
+        self.assertEqual([ticker.ticker for ticker in run_scan.call_args.kwargs["stock_universe"]], ["600036.SH"])
+        self.assertEqual([ticker.ticker for ticker in run_scan.call_args.kwargs["etf_universe"]], ["510300.SH"])
+
+    def test_report_enriches_results_with_selected_data_source(self):
+        args = argparse.Namespace(
+            stocks_only=False,
+            etfs_only=False,
+            data_source="sina",
+            top=50,
+            top_parquet=200,
+        )
+        result = ScanResult(ticker="000001.SZ")
+        with patch("main.build_ticker_universe", return_value=([TickerInfo(ticker="000001.SZ")], [])), patch("main.run_parallel_indicator_scan", return_value=[result]), patch("main.enrich_results") as enrich, patch("main.export_all", return_value=(Path("top.csv"), Path("top.parquet"), Path("all.csv"), Path("all.parquet"))), patch("main.print_terminal_report"):
+            self.assertEqual(main.cmd_report(args), 0)
+
+        enrich.assert_called_once_with([result], "sina")
+
+    def test_parser_rejects_non_positive_report_limits(self):
+        parser = main.build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["scan", "--top", "0"])
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["report", "--top-parquet", "-1"])
+
+    def test_backtest_objective_rows_build_derived_targets(self):
+        frame = pd.DataFrame({
+            "ticker": ["000001.SZ"],
+            "return20": [5.0],
+            "return60": [8.0],
+            "benchmark_return20": [2.0],
+            "benchmark_return60": [3.0],
+            "net_return20": [4.0],
+            "drawdown20": [-2.0],
+            "drawdown60": [-6.0],
+        })
+
+        excess = analytics._ticker_backtest_rows(frame, "excess_return_20d")
+        risk = analytics._ticker_backtest_rows(frame, "risk_adjusted")
+
+        self.assertEqual(excess[0]["objective_value"], 3.0)
+        self.assertEqual(risk[0]["objective_value"], 2.0)
+
+    def test_filter_signal_count_excludes_bear_market_context(self):
+        result = __import__("filters").AllFilterResults()
+        result.min_price.passed = True
+        result.min_volume.passed = True
+        result.min_market_cap.passed = True
+        result.sufficient_history.passed = True
+        result.bear_market.passed = True
+        result.consolidation.passed = True
+        result.volume_accumulation.passed = True
+        result.obv_divergence.passed = True
+
+        self.assertTrue(result.all_passed())
+        self.assertEqual(result.signal_count(), 3)
+
+    def test_volume_filter_does_not_mutate_input_frame(self):
+        from filters import filter_volume_accumulation
+        frame = pd.DataFrame({
+            "VolMA20": [120.0] * 140,
+            "VolMA120": [100.0] * 140,
+        })
+        columns_before = list(frame.columns)
+
+        filter_volume_accumulation(frame)
+
+        self.assertEqual(list(frame.columns), columns_before)
 
     def test_backtest_drawdown_includes_entry_open_price(self):
         frame = pd.DataFrame({
@@ -240,6 +430,14 @@ class RegressionTests(TestCase):
         self.assertEqual(len(samples), 1)
         self.assertAlmostEqual(samples[0]["drawdown20"], -20.0)
         self.assertAlmostEqual(samples[0]["drawdown60"], -20.0)
+
+    def test_backtest_fails_explicitly_when_benchmark_is_unavailable(self):
+        with patch.object(analytics, "_load_benchmark_frames", return_value={}):
+            summary = analytics.run_historical_backtest(["000001.SZ"])
+
+        self.assertTrue(summary.insufficient_test_data)
+        self.assertIn("无法加载基准数据", summary.error or "")
+        self.assertIsNone(summary.split_dates.get("test_start"))
 
     def test_backtest_uses_benchmark_trading_calendar_for_split_dates(self):
         benchmark_frame = pd.DataFrame({"Close": np.arange(10, dtype=float) + 100}, index=pd.bdate_range("2020-01-01", periods=10))
@@ -278,7 +476,7 @@ class RegressionTests(TestCase):
         self.assertAlmostEqual(stats["average_excess_return_20d"], 8.0)
         self.assertAlmostEqual(stats["maximum_drawdown_60d"], -7.0)
 
-    def test_backtest_reuses_full_history_indicators_for_historical_scores(self):
+    def test_backtest_recomputes_indicators_for_historical_scores(self):
         frame = pd.DataFrame({
             "Open": np.full(320, 10.0),
             "High": np.full(320, 11.0),
@@ -298,8 +496,47 @@ class RegressionTests(TestCase):
         with patch.object(analytics, "_load_cache", return_value=frame), patch.object(analytics, "compute_all_indicators", side_effect=add_indicators) as compute, patch.object(analytics, "_signal_points", return_value=[200, 220]), patch.object(analytics, "score_ticker", return_value=Mock(total=1.0)) as score:
             analytics._backtest_one_ticker("000001.SZ", "eastmoney")
 
-        self.assertEqual([item.args[0].shape[0] for item in compute.call_args_list], [320])
+        self.assertEqual(
+            [item.args[0].shape[0] for item in compute.call_args_list],
+            [320, 201, 221],
+        )
         self.assertEqual([item.args[0].shape[0] for item in score.call_args_list], [201, 221])
+
+    def test_composite_score_preserves_75_25_weighting(self):
+        with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
+            pd.DataFrame({
+                "Ticker": ["000001.SZ"],
+                "Score": [80.0],
+                "PassedFilters": [True],
+                "SignalCount": [4],
+            }).to_csv(Path(temp_dir) / "AllResults.csv", index=False, encoding="utf-8-sig")
+            summary = BacktestSummary(by_ticker=[{
+                "ticker": "000001.SZ",
+                "samples": 10,
+                "backtest_score": 100.0,
+                "objective_value": 10.0,
+            }])
+
+            apply_backtest_ranking(summary)
+            result = pd.read_csv(Path(temp_dir) / "AllResults.csv", encoding="utf-8-sig")
+
+        self.assertEqual(result.loc[0, "CompositeScore"], 85.0)
+
+    def test_enrichment_refreshes_close_from_latest_cached_bar(self):
+        result = ScanResult(ticker="605499.SH", close=128.17)
+        frame = pd.DataFrame({
+            "Open": [128.0, 126.77],
+            "High": [130.4, 128.77],
+            "Low": [126.0, 125.45],
+            "Close": [128.17, 125.82],
+            "Volume": [5360695.0, 3839317.0],
+        }, index=pd.to_datetime(["2026-07-23", "2026-07-24"]))
+
+        with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")):
+            analytics.enrich_results([result], "eastmoney", frames={"605499.SH": frame})
+
+        self.assertEqual(result.close, 125.82)
+        self.assertEqual(result.data_asof, "2026-07-24")
 
     def test_analysis_reuses_indicators_for_scan_and_enrichment(self):
         frame = pd.DataFrame({
