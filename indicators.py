@@ -439,8 +439,7 @@ def compute_volume_profile(
     bins: int = VOLUME_PROFILE_BINS,
     lookback: int = VOLUME_PROFILE_LOOKBACK,
 ) -> None:
-    if len(df) < lookback:
-        lookback = len(df)
+    lookback = min(lookback, len(df))
     subset = df.iloc[-lookback:]
     close, high, low, vol = (
         subset["Close"],
@@ -581,36 +580,35 @@ def detect_wyckoff_phase(df: pd.DataFrame) -> None:
         rallied = (recent_high - low_60d) / low_60d * 100 > 10 if low_60d > 0 else False
         if rallied:
             phase = "Secondary Test"
-    if phase == "Unknown":
-        if (
-            price_now < ma200
-            and ma200_slope <= 0
-            and vol_ma20 > vol_ma60
-            and atr_contracting
-            and vol_contracting
-            and dist_from_low < 20
-            and not near_52w_high
-        ):
-            phase = "Accumulation"
-    if phase == "Unknown":
-        if price_now > ma200 and ma200_slope > 0 and dist_from_high < 20:
-            phase = "Markup"
-    if phase == "Unknown":
-        if (
-            near_52w_high
-            and vol_ma20 > vol_ma60
-            and not atr_contracting
-            and ma200_slope < 0.5
-        ):
-            phase = "Distribution"
-    if phase == "Unknown":
-        if (
-            price_now < ma200
-            and ma200_slope < 0
-            and dist_from_low > 30
-            and not atr_contracting
-        ):
-            phase = "Markdown"
+    if (
+        phase == "Unknown"
+        and price_now < ma200
+        and ma200_slope <= 0
+        and vol_ma20 > vol_ma60
+        and atr_contracting
+        and vol_contracting
+        and dist_from_low < 20
+        and not near_52w_high
+    ):
+        phase = "Accumulation"
+    if phase == "Unknown" and price_now > ma200 and ma200_slope > 0 and dist_from_high < 20:
+        phase = "Markup"
+    if (
+        phase == "Unknown"
+        and near_52w_high
+        and vol_ma20 > vol_ma60
+        and not atr_contracting
+        and ma200_slope < 0.5
+    ):
+        phase = "Distribution"
+    if (
+        phase == "Unknown"
+        and price_now < ma200
+        and ma200_slope < 0
+        and dist_from_low > 30
+        and not atr_contracting
+    ):
+        phase = "Markdown"
     df["WyckoffPhase"] = phase
 
 

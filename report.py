@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +22,7 @@ import pyarrow.parquet as pq
 
 from config import OUTPUT_DIR, TOP_N_PARQUET, TOP_N_REPORT
 from scanner import ScanReport, ScanResult
+from signal_lifecycle import enrich_signal_lifecycle
 
 logger = logging.getLogger("institution_scanner.report")
 
@@ -241,10 +242,49 @@ def export_all(
     top_n_parquet: int = TOP_N_PARQUET,
 ) -> tuple[Path, Path, Path, Path]:
     """Export CSV, Parquet, and full results. Returns (csv_path, parquet_path, full_csv, full_parquet)."""
-    csv_path = export_top_csv(results, n=top_n_csv)
-    parquet_path = export_top_parquet(results, n=top_n_parquet)
-    full_csv = export_full_csv(results)
-    full_parquet_path = export_full_parquet(results)
+    df = enrich_signal_lifecycle(_results_to_dataframe(results))
+    if df.empty:
+        csv_path = export_top_csv(results, n=top_n_csv)
+        parquet_path = export_top_parquet(results, n=top_n_parquet)
+        full_csv = export_full_csv(results)
+        full_parquet_path = export_full_parquet(results)
+        for name in (f"Top{top_n_csv}Opportunity.csv", f"Top{top_n_csv}SustainedSignals.csv"):
+            _atomic_write_csv(df, OUTPUT_DIR / name)
+        return csv_path, parquet_path, full_csv, full_parquet_path
+
+    rankable_tickers = _results_to_dataframe(_rankable_results(results)).get(
+        "Ticker", pd.Series(dtype=str)
+    )
+    rankable = df.set_index("Ticker").reindex(rankable_tickers).reset_index()
+
+    csv_path = OUTPUT_DIR / f"Top{top_n_csv}.csv"
+    _atomic_write_csv(rankable.head(top_n_csv), csv_path)
+    logger.info("Exported Top %d (%d rows) to %s", top_n_csv, len(rankable.head(top_n_csv)), csv_path)
+
+    parquet_path = OUTPUT_DIR / f"Top{top_n_parquet}.parquet"
+    pq.write_table(pa.Table.from_pandas(rankable.head(top_n_parquet)), parquet_path)
+    logger.info("Exported Top %d to %s", top_n_parquet, parquet_path)
+
+    full_csv = OUTPUT_DIR / "AllResults.csv"
+    _atomic_write_csv(df, full_csv)
+    logger.info("Exported all %d results to %s", len(df), full_csv)
+
+    full_parquet_path = OUTPUT_DIR / "AllResults.parquet"
+    pq.write_table(pa.Table.from_pandas(df), full_parquet_path)
+    logger.info("Exported all %d results to %s", len(df), full_parquet_path)
+
+    opportunity_path = OUTPUT_DIR / f"Top{top_n_csv}Opportunity.csv"
+    opportunity = df.sort_values(["OpportunityScore", "Score"], ascending=False, kind="mergesort")
+    _atomic_write_csv(opportunity.head(top_n_csv), opportunity_path)
+    logger.info("Exported Top %d opportunities to %s", top_n_csv, opportunity_path)
+
+    sustained_path = OUTPUT_DIR / f"Top{top_n_csv}SustainedSignals.csv"
+    sustained = df.loc[df["SignalDays"] > 0].sort_values(
+        ["SignalDays", "OpportunityScore"], ascending=False, kind="mergesort"
+    )
+    _atomic_write_csv(sustained.head(top_n_csv), sustained_path)
+    logger.info("Exported Top %d sustained signals to %s", top_n_csv, sustained_path)
+
     return csv_path, parquet_path, full_csv, full_parquet_path
 
 
@@ -311,7 +351,7 @@ def print_terminal_report(results: list[ScanResult], n: int = TOP_N_REPORT) -> N
     print()
     print("=" * 70)
     print(f"  INSTITUTIONAL ACCUMULATION SCANNER — TOP {min(n, len(top))}")
-    print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     print("=" * 70)
     print()
 

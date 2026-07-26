@@ -3,6 +3,7 @@ import ast
 import csv
 import importlib.util
 import sys
+import warnings
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -34,6 +35,7 @@ import analytics
 import gui
 import main
 import scanner
+import signal_lifecycle
 from analytics import BacktestSummary, apply_backtest_ranking
 from downloader import TickerInfo, _cache_path, _log_download_progress
 from filters import (
@@ -42,7 +44,7 @@ from filters import (
     filter_min_volume,
     filter_volume_accumulation,
 )
-from report import _results_to_dataframe
+from report import _results_to_dataframe, export_all
 from scanner import ScanReport, ScanResult
 from score import score_ticker
 
@@ -56,6 +58,42 @@ class RegressionTests(TestCase):
             gui.ScannerGUI(root)
 
         load_results.assert_called_once_with()
+
+    def test_gui_formats_numeric_table_values_and_quality_tags(self):
+        scanner = object.__new__(gui.ScannerGUI)
+
+        self.assertEqual(scanner._format_table_value("Close", "125.8"), "125.80")
+        self.assertEqual(scanner._format_table_value("DistToLow52W", "3.5"), "3.50%")
+        self.assertEqual(scanner._format_table_value("BacktestSamples", "1200"), "1,200")
+        self.assertEqual(scanner._format_table_value("SignalDays", "3"), "3")
+        self.assertEqual(scanner._format_table_value("ScoreConfidence", "0.87"), "87%")
+        self.assertEqual(scanner._format_table_value("ScoreConfidencePct", "87"), "87%")
+        self.assertEqual(scanner._quality_tag("强候选"), "quality-strong")
+        self.assertEqual(scanner._quality_tag("候选"), "quality-candidate")
+        self.assertEqual(scanner._quality_tag("观察"), "quality-watch")
+        self.assertEqual(scanner._quality_tag("普通"), "quality-normal")
+
+    def test_gui_market_overview_summarizes_filtered_lifecycle_rows(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner.market_overview = Mock()
+        indexes = {"OpportunityScore": 0, "SignalDays": 1, "LifecycleStage": 2}
+        rows = [["80", "3", "趋势确认"], ["40", "0", "机构吸筹"]]
+
+        scanner._update_market_overview(rows, indexes)
+
+        scanner.market_overview.set.assert_called_once_with(
+            "市场概览：2 只 · 活跃信号 1 · 趋势确认 1 · 平均机会分 60.0"
+        )
+
+    def test_gui_sorts_numeric_values_numerically(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        indexes = {"Score": 0}
+        rows = [["10"], ["2"], [""]]
+
+        rows.sort(key=lambda row: scanner._sort_value("Score", row, indexes), reverse=True)
+        rows.sort(key=lambda row: not row[0].strip())
+
+        self.assertEqual(rows, [["10"], ["2"], [""]])
 
     def test_gui_load_csv_reloads_when_same_file_is_updated(self):
         scanner = object.__new__(gui.ScannerGUI)
@@ -133,6 +171,67 @@ class RegressionTests(TestCase):
         self.assertTrue(pd.isna(frame.loc[0, "BacktestObjectiveValue"]))
         self.assertEqual(frame.loc[0, "UniverseType"], "current_survivor_pool")
         self.assertTrue(frame.loc[0, "SurvivorshipBiasWarning"])
+
+    def test_export_all_writes_lifecycle_and_sorted_top_files(self):
+        results = [
+            ScanResult(
+                ticker="000001.SZ",
+                data_asof="2026-07-24",
+                passed_filters=True,
+                score=score_ticker(pd.DataFrame({"Close": [10.0]})),
+                filter_details={"signal_count": 4},
+            ),
+            ScanResult(
+                ticker="000002.SZ",
+                data_asof="2026-07-24",
+                passed_filters=True,
+                score=score_ticker(pd.DataFrame({"Close": [10.0]})),
+                filter_details={"signal_count": 3},
+            ),
+        ]
+        results[0].score.total = 90.0
+        results[0].score.trend = 25.0
+        results[0].score.accumulation = 25.0
+        results[0].score.structure = 20.0
+        results[1].score.total = 80.0
+        results[1].score.trend = 20.0
+        results[1].score.accumulation = 20.0
+        results[1].score.structure = 15.0
+
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            with patch("report.OUTPUT_DIR", output_dir), patch("signal_lifecycle.OUTPUT_DIR", output_dir), patch("signal_lifecycle.HISTORY_FILE", output_dir / "SignalHistory.csv"), patch("signal_lifecycle.TRACKING_FILE", output_dir / "SignalTracking.csv"):
+                export_all(results, top_n_csv=2, top_n_parquet=2)
+            all_results = pd.read_csv(Path(temp_dir) / "AllResults.csv", encoding="utf-8-sig")
+            opportunity = pd.read_csv(Path(temp_dir) / "Top2Opportunity.csv", encoding="utf-8-sig")
+            sustained = pd.read_csv(Path(temp_dir) / "Top2SustainedSignals.csv", encoding="utf-8-sig")
+
+        self.assertIn("OpportunityScore", all_results)
+        self.assertIn("SignalDays", all_results)
+        self.assertEqual(opportunity["Ticker"].tolist(), ["000001.SZ", "000002.SZ"])
+        self.assertEqual(sustained["Ticker"].tolist(), ["000001.SZ", "000002.SZ"])
+
+    def test_signal_lifecycle_same_trade_date_does_not_increment_signal_days(self):
+        frame = pd.DataFrame({
+            "Ticker": ["000001.SZ"],
+            "DataAsOf": ["2026-07-24"],
+            "Name": ["平安银行"],
+            "Score": [60.0],
+            "SignalCount": [4],
+            "PassedFilters": [True],
+        })
+
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            with patch("signal_lifecycle.HISTORY_FILE", output_dir / "SignalHistory.csv"), patch("signal_lifecycle.TRACKING_FILE", output_dir / "SignalTracking.csv"), warnings.catch_warnings():
+                warnings.simplefilter("error", FutureWarning)
+                first = signal_lifecycle.enrich_signal_lifecycle(frame)
+                second = signal_lifecycle.enrich_signal_lifecycle(frame)
+            history = pd.read_csv(output_dir / "SignalHistory.csv", encoding="utf-8-sig")
+
+        self.assertEqual(first.loc[0, "SignalDays"], 1)
+        self.assertEqual(second.loc[0, "SignalDays"], 1)
+        self.assertEqual(history["SignalDays"].tolist(), [1])
 
     def test_apply_backtest_ranking_cleans_legacy_columns_on_repeated_calls(self):
         with patch("analytics.OUTPUT_DIR") as output_dir:
@@ -405,9 +504,28 @@ class RegressionTests(TestCase):
         excess = analytics._ticker_backtest_rows(frame, "excess_return_20d")
         risk = analytics._ticker_backtest_rows(frame, "risk_adjusted")
 
-        self.assertEqual(excess[0]["objective_value"], 3.0)
-        self.assertEqual(risk[0]["objective_value"], 2.0)
+        self.assertEqual(excess[0]["raw_objective_value"], 3.0)
+        self.assertEqual(excess[0]["objective_value"], 0.3)
+        self.assertEqual(risk[0]["raw_objective_value"], 2.0)
+        self.assertEqual(risk[0]["objective_value"], 0.2)
 
+    def test_backtest_net_excess_objective_deducts_costs_and_shrinks_small_samples(self):
+        frame = pd.DataFrame({
+            "ticker": ["000001.SZ", "000001.SZ"],
+            "return20": [5.0, 3.0],
+            "return60": [8.0, 6.0],
+            "benchmark_return20": [2.0, 1.0],
+            "benchmark_return60": [3.0, 2.0],
+            "net_return20": [4.0, 2.0],
+            "net_return60": [7.0, 5.0],
+            "drawdown20": [-2.0, -2.0],
+            "drawdown60": [-6.0, -6.0],
+        })
+
+        rows = analytics._ticker_backtest_rows(frame, "net_excess_return_20d")
+
+        self.assertEqual(rows[0]["raw_objective_value"], 1.5)
+        self.assertEqual(rows[0]["objective_value"], 0.3)
     def test_filter_signal_count_excludes_bear_market_context(self):
         result = __import__("filters").AllFilterResults()
         result.min_price.passed = True
@@ -595,7 +713,27 @@ class RegressionTests(TestCase):
         summary = Mock(samples=0, win_rate_20d=0.0, average_return_20d=0.0, average_return_60d=0.0)
         with patch("main.run_historical_backtest", return_value=summary) as run_backtest, patch("main.apply_backtest_ranking"):
             self.assertEqual(main.cmd_backtest(args), 0)
-        run_backtest.assert_called_once_with(tickers, source="eastmoney")
+        run_backtest.assert_called_once_with(
+            tickers,
+            source="eastmoney",
+            workers=None,
+            objective="net_excess_return_20d",
+            benchmark="沪深300",
+            commission=0.0003,
+            stamp_duty=0.0005,
+            slippage=0.001,
+            test_ratio=0.2,
+            validation_ratio=0.2,
+        )
+
+    def test_backtest_all_results_uses_every_unique_result_ticker(self):
+        summary = Mock(samples=0, win_rate_20d=0.0, average_return_20d=0.0, average_return_60d=0.0)
+        args = argparse.Namespace(tickers=None, tickers_file=None, all_results=True, data_source="eastmoney")
+        with TemporaryDirectory() as temp_dir, patch("main.OUTPUT_DIR", Path(temp_dir)), patch("main.run_historical_backtest", return_value=summary) as run_backtest, patch("main.apply_backtest_ranking"):
+            (Path(temp_dir) / "AllResults.csv").write_text("Ticker\n000001.SZ\n000002.SZ\n000001.SZ\n", encoding="utf-8-sig")
+            self.assertEqual(main.cmd_backtest(args), 0)
+        self.assertEqual(run_backtest.call_args.args[0], ["000001.SZ", "000002.SZ"])
+        self.assertEqual(run_backtest.call_args.kwargs["workers"], None)
 
     def test_gui_top50_write_replaces_old_file_and_preserves_filter_order(self):
         scanner = object.__new__(gui.ScannerGUI)
@@ -625,7 +763,7 @@ class RegressionTests(TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), "old")
             self.assertFalse((Path(temp_dir) / ".Top50.csv.tmp").exists())
 
-    def test_gui_backtest_uses_first_50_from_larger_current_filter(self):
+    def test_gui_backtest_uses_all_current_filtered_tickers(self):
         scanner = object.__new__(gui.ScannerGUI)
         scanner.scan_running = False
         scanner.filtered_tickers = [f"{index:06d}.SZ" for index in range(60)]
@@ -635,31 +773,34 @@ class RegressionTests(TestCase):
         scanner.progress = Mock()
         scanner.append_log = Mock()
         scanner.run_process = Mock()
-        written_tickers = []
-        scanner._write_top50_csv = lambda tickers: written_tickers.append(list(tickers))
         scanner._atomic_write_text = Mock()
-        expected = scanner.filtered_tickers[:50]
+        expected = scanner.filtered_tickers
 
         with patch("gui.threading.Thread") as thread, patch("gui.messagebox.showerror") as showerror:
             scanner.start_backtest()
 
-        self.assertEqual(written_tickers, [expected])
         self.assertEqual(scanner._atomic_write_text.call_args.args[1], "\n".join(expected) + "\n")
         showerror.assert_not_called()
         thread.return_value.start.assert_called_once_with()
 
-    def test_gui_backtest_rejects_current_filter_with_fewer_than_50(self):
+    def test_gui_backtest_allows_current_filter_with_fewer_than_50(self):
         scanner = object.__new__(gui.ScannerGUI)
         scanner.scan_running = False
         scanner.filtered_tickers = [f"{index:06d}.SZ" for index in range(49)]
-        scanner._write_top50_csv = Mock()
+        scanner.data_source = Mock()
+        scanner.data_source.get.return_value = "eastmoney"
+        scanner.start_button = Mock()
+        scanner.progress = Mock()
+        scanner.append_log = Mock()
+        scanner.run_process = Mock()
+        scanner._atomic_write_text = Mock()
 
-        with patch("gui.messagebox.showerror") as showerror:
+        with patch("gui.threading.Thread") as thread, patch("gui.messagebox.showerror") as showerror:
             scanner.start_backtest()
 
-        scanner._write_top50_csv.assert_not_called()
-        showerror.assert_called_once()
-        self.assertIn("至少需要 50 个标的", showerror.call_args.args[1])
+        self.assertEqual(scanner._atomic_write_text.call_args.args[1].count("\n"), 49)
+        showerror.assert_not_called()
+        thread.return_value.start.assert_called_once_with()
 
     def test_gui_render_limits_table_rows_but_keeps_all_filtered_tickers(self):
         scanner = object.__new__(gui.ScannerGUI)

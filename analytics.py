@@ -4,7 +4,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -30,8 +30,8 @@ BACKTEST_TEST_START: str | None = None
 class BacktestSummary:
     samples: int = 0
     ticker_count: int = 0
-    objective: str = "return_20d"
-    target_definition: str = "入场日开盘价至持有20个交易日后的收盘价"
+    objective: str = "net_excess_return_20d"
+    target_definition: str = "扣除交易成本后相对基准的20个交易日超额收益率"
     benchmark: str = "沪深300"
     insufficient_test_data: bool = False
     error: str | None = None
@@ -68,6 +68,10 @@ class BacktestSummary:
     average_benchmark_return_60d: float = 0.0
     average_net_return_20d: float = 0.0
     average_net_return_60d: float = 0.0
+    average_net_excess_return_20d: float = 0.0
+    average_net_excess_return_60d: float = 0.0
+    median_net_excess_return_20d: float = 0.0
+    median_net_excess_return_60d: float = 0.0
     maximum_drawdown_20d: float = 0.0
     maximum_drawdown_60d: float = 0.0
     rank_ic_20d: float = 0.0
@@ -185,7 +189,7 @@ def _enrich_one_result(
     if enriched.empty:
         return result, None, 0.0
     latest_date = enriched.index[-1].date()
-    today = datetime.now().date()
+    today = datetime.now(timezone.utc).date()
     data_age = max(0, (today - latest_date).days)
     trading_age = max(0, len(pd.bdate_range(latest_date, today)) - 1)
     result.close = float(enriched["Close"].iloc[-1])
@@ -418,13 +422,15 @@ def _backtest_one_ticker(
 
 
 def _ticker_backtest_rows(
-    sample_frame: pd.DataFrame, objective: str = "return_20d"
+    sample_frame: pd.DataFrame, objective: str = "net_excess_return_20d"
 ) -> list[dict[str, Any]]:
     target_map = {
         "return_20d": "return20",
         "return_60d": "return60",
         "excess_return_20d": "excess20",
         "excess_return_60d": "excess60",
+        "net_excess_return_20d": "net_excess20",
+        "net_excess_return_60d": "net_excess60",
         "max_drawdown": "drawdown60",
         "risk_adjusted": "risk_adjusted",
     }
@@ -436,6 +442,12 @@ def _ticker_backtest_rows(
             sample_frame[column] = np.nan
     sample_frame["excess20"] = sample_frame["return20"] - sample_frame["benchmark_return20"]
     sample_frame["excess60"] = sample_frame["return60"] - sample_frame["benchmark_return60"]
+    sample_frame["net_excess20"] = sample_frame["net_return20"] - sample_frame["benchmark_return20"]
+    sample_frame["net_excess60"] = (
+        sample_frame["net_return60"] - sample_frame["benchmark_return60"]
+        if "net_return60" in sample_frame
+        else np.nan
+    )
     sample_frame["risk_adjusted"] = sample_frame["net_return20"] / sample_frame["drawdown20"].abs().replace(0, np.nan)
     rows: list[dict[str, Any]] = []
     for ticker, group in sample_frame.groupby("ticker", sort=False):
@@ -460,18 +472,20 @@ def _ticker_backtest_rows(
         objective_series = pd.to_numeric(
             group[target_map[objective]], errors="coerce"
         ).dropna()
-        objective_value = (
+        raw_objective_value = (
             float(objective_series.mean()) if not objective_series.empty else 0.0
         )
+        objective_value = raw_objective_value * min(1.0, len(group) / 10.0)
         rows.append(
             {
                 "ticker": str(ticker),
-                "samples": int(len(group)),
+                "samples": len(group),
                 "win_rate_20d": round(win20, 4),
                 "win_rate_60d": round(win60, 4),
                 "average_return_20d": round(avg20, 4),
                 "average_return_60d": round(avg60, 4),
                 "objective_value": round(objective_value, 4),
+                "raw_objective_value": round(raw_objective_value, 4),
                 "backtest_score": round(float(backtest_score), 4),
             }
         )
@@ -593,8 +607,8 @@ def _entry_date_equal_weight_stats(sample_frame: pd.DataFrame) -> dict[str, Any]
     daily["excess20"] = daily["return20"] - daily["benchmark_return20"]
     daily["excess60"] = daily["return60"] - daily["benchmark_return60"]
     return {
-        "entry_dates": int(len(daily)),
-        "samples": int(len(sample_frame)),
+        "entry_dates": len(daily),
+        "samples": len(sample_frame),
         "average_return_20d": float(daily["return20"].mean()),
         "average_return_60d": float(daily["return60"].mean()),
         "average_benchmark_return_20d": float(daily["benchmark_return20"].mean()),
@@ -618,7 +632,7 @@ def _bucket_rows(sample_frame: pd.DataFrame) -> list[dict[str, Any]]:
         rows.append(
             {
                 "bucket": int(bucket) + 1,
-                "samples": int(len(group)),
+                "samples": len(group),
                 "average_return20": round(float(group["return20"].mean()), 4),
                 "average_return60": round(float(group["return60"].mean()), 4),
                 "average_benchmark_return20": round(
@@ -643,19 +657,22 @@ def _bucket_rows(sample_frame: pd.DataFrame) -> list[dict[str, Any]]:
 def run_historical_backtest(
     tickers: list[str],
     source: str = "eastmoney",
-    objective: str = "return_20d",
+    objective: str = "net_excess_return_20d",
     benchmark: str = "沪深300",
     commission: float = 0.0003,
     stamp_duty: float = 0.0005,
     slippage: float = 0.001,
     test_ratio: float = 0.2,
     validation_ratio: float = 0.2,
+    workers: int | None = None,
 ) -> BacktestSummary:
     if objective not in {
         "return_20d",
         "return_60d",
         "excess_return_20d",
         "excess_return_60d",
+        "net_excess_return_20d",
+        "net_excess_return_60d",
         "max_drawdown",
         "risk_adjusted",
     }:
@@ -712,8 +729,8 @@ def run_historical_backtest(
     samples: list[dict[str, Any]] = []
     total = len(tickers)
     completed = 0
-    workers = min(12, max(1, total))
-    with ThreadPoolExecutor(max_workers=workers) as executor:
+    worker_count = min(workers or SCAN_THREADS, max(1, total))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = {
             executor.submit(
                 _backtest_one_ticker,
@@ -795,17 +812,17 @@ def run_historical_backtest(
         )
         summary.average_net_return_20d = float(sample_frame["net_return20"].mean())
         summary.average_net_return_60d = float(sample_frame["net_return60"].mean())
+        sample_frame["excess20"] = sample_frame["return20"] - sample_frame["benchmark_return20"]
+        sample_frame["excess60"] = sample_frame["return60"] - sample_frame["benchmark_return60"]
+        sample_frame["net_excess20"] = sample_frame["net_return20"] - sample_frame["benchmark_return20"]
+        sample_frame["net_excess60"] = sample_frame["net_return60"] - sample_frame["benchmark_return60"]
+        summary.average_net_excess_return_20d = float(sample_frame["net_excess20"].mean())
+        summary.average_net_excess_return_60d = float(sample_frame["net_excess60"].mean())
+        summary.median_net_excess_return_20d = float(sample_frame["net_excess20"].median())
+        summary.median_net_excess_return_60d = float(sample_frame["net_excess60"].median())
         summary.maximum_drawdown_20d = float(sample_frame["drawdown20"].min())
         summary.maximum_drawdown_60d = float(sample_frame["drawdown60"].min())
-        sample_frame["excess20"] = (
-            sample_frame["return20"] - sample_frame["benchmark_return20"]
-        )
-        sample_frame["excess60"] = (
-            sample_frame["return60"] - sample_frame["benchmark_return60"]
-        )
-        sample_frame["risk_adjusted"] = sample_frame["net_return20"] / sample_frame[
-            "drawdown20"
-        ].abs().replace(0, np.nan)
+        sample_frame["risk_adjusted"] = sample_frame["net_return20"] / sample_frame["drawdown20"].abs().replace(0, np.nan)
         summary.rank_ic_20d = _spearman(sample_frame, "return20")
         summary.rank_ic_60d = _spearman(sample_frame, "return60")
         summary.by_ticker = _ticker_backtest_rows(sample_frame, objective)
@@ -824,6 +841,8 @@ def run_historical_backtest(
             "return_60d": "入场日开盘价至第60个交易日后收盘价的平均收益率，越高越好",
             "excess_return_20d": "相对基准的20个交易日超额收益率，越高越好",
             "excess_return_60d": "相对基准的60个交易日超额收益率，越高越好",
+            "net_excess_return_20d": "扣除交易成本后相对基准的20个交易日超额收益率，越高越好",
+            "net_excess_return_60d": "扣除交易成本后相对基准的60个交易日超额收益率，越高越好",
             "max_drawdown": "持有60个交易日内相对运行峰值的最大回撤，越接近0越好",
             "risk_adjusted": "20个交易日净收益率除以绝对最大回撤，越高越好",
         }
@@ -833,6 +852,8 @@ def run_historical_backtest(
             "return_60d": sample_frame["return60"],
             "excess_return_20d": sample_frame["excess20"],
             "excess_return_60d": sample_frame["excess60"],
+            "net_excess_return_20d": sample_frame["net_excess20"],
+            "net_excess_return_60d": sample_frame["net_excess60"],
             "max_drawdown": sample_frame["drawdown60"],
             "risk_adjusted": sample_frame["risk_adjusted"],
         }[objective]
@@ -868,7 +889,7 @@ def run_historical_backtest(
             for split in ("train", "validation", "test")
         }
         summary.rolling_oos_stats = {
-            split: {"samples": int(len(all_frame[all_frame["split"] == split]))}
+            split: {"samples": len(all_frame[all_frame["split"] == split])}
             for split in ("train", "validation", "test")
         }
         for split in ("validation", "test"):

@@ -18,7 +18,7 @@ import re
 import sys
 import tempfile
 import time
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -664,10 +664,10 @@ def _download_from_tencent(
         if not batch:
             break
         rows.extend(batch)
-        oldest_datetime = datetime.strptime(str(batch[0][0]), "%Y-%m-%d")
-        if oldest_datetime <= start_limit or oldest_datetime >= end_date:
+        oldest_date = pd.Timestamp(str(batch[0][0])).date()
+        if oldest_date <= start_limit.date() or oldest_date >= end_date.date():
             break
-        end_date = oldest_datetime - timedelta(days=1)
+        end_date = datetime.combine(oldest_date, datetime.min.time(), timezone.utc) - timedelta(days=1)
         if len(batch) < 640:
             break
     if not rows:
@@ -887,14 +887,10 @@ def download_ticker(
             )
             new_df = new_df[["Open", "High", "Low", "Close", "Volume"]]
             new_df = new_df.dropna(subset=["Close"])
-            # Strip timezone from new data to match cached
-            try:
-                idx = pd.DatetimeIndex(new_df.index)
-                if idx.tz is not None:
-                    idx = idx.tz_localize(None)
-                new_df.index = idx
-            except Exception:
-                pass
+            idx = pd.DatetimeIndex(new_df.index)
+            if idx.tz is not None:
+                idx = idx.tz_localize(None)
+            new_df.index = idx
             if not new_df.empty:
                 combined = cast(pd.DataFrame, pd.concat([cached, new_df]))
                 combined = combined.loc[~combined.index.duplicated(keep="last")]

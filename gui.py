@@ -59,6 +59,26 @@ COLUMN_NAMES = {
     "DataTradingAgeDays": "交易日延迟",
     "DataCoverage": "数据覆盖率",
     "VolAccumDays": "放量天数",
+    "ShortTermScore": "短期机会分",
+    "MediumTermScore": "中期机会分",
+    "LongTermScore": "长期机会分",
+    "OpportunityScore": "机会评分",
+    "LifecycleStage": "生命周期阶段",
+    "ActionSuggestion": "操作建议",
+    "RiskNote": "风险提示",
+    "SignalDays": "连续信号天数",
+    "SignalStartDate": "信号起始日",
+    "SignalStatus": "信号状态",
+    "SignalStrengthHistory": "信号强度历史",
+    "SignalTrend": "信号趋势",
+    "ScoreConfidencePct": "评分置信度",
+    "ScoreCoverage": "指标覆盖率",
+    "ScoreConfidence": "评分置信度",
+    "ScoreContributionTrend": "趋势贡献",
+    "ScoreContributionVolume": "成交量贡献",
+    "ScoreContributionAccumulation": "吸筹贡献",
+    "ScoreContributionCompression": "波动贡献",
+    "ScoreContributionStructure": "结构贡献",
     "SignalCount": "信号数",
     "FilterCount": "通过项数",
     "PassedFilters": "通过筛选",
@@ -80,45 +100,39 @@ DISPLAY_COLUMNS = (
     "Industry",
     "Quality",
     "Score",
-    "BacktestScore",
+    "OpportunityScore",
+    "LifecycleStage",
+    "SignalTrend",
+    "SignalDays",
     "CompositeScore",
-    "BacktestObjectiveValue",
-    "ScoreConfidence",
-    "ScoreMissingIndicators",
-    "BacktestSamples",
+    "BacktestScore",
     "Close",
     "DistToLow52W",
     "WyckoffPhase",
     "Stage",
-    "VolAccumDays",
-    "UniverseType",
-    "SurvivorshipBiasWarning",
     "SignalCount",
     "PassedFilters",
 )
 COLUMN_WIDTHS = {
-    "Ticker": 105,
-    "Name": 150,
-    "AssetType": 68,
-    "Sector": 100,
-    "Industry": 115,
-    "Quality": 78,
-    "Score": 88,
-    "BacktestScore": 96,
-    "CompositeScore": 112,
-    "BacktestObjectiveValue": 104,
-    "ScoreConfidence": 96,
-    "ScoreMissingIndicators": 96,
-    "BacktestSamples": 100,
-    "Close": 92,
-    "DistToLow52W": 110,
-    "WyckoffPhase": 112,
+    "Ticker": 96,
+    "Name": 120,
+    "AssetType": 58,
+    "Sector": 86,
+    "Industry": 98,
+    "Quality": 72,
+    "Score": 72,
+    "OpportunityScore": 82,
+    "LifecycleStage": 96,
+    "SignalTrend": 86,
+    "SignalDays": 94,
+    "BacktestScore": 82,
+    "CompositeScore": 94,
+    "Close": 72,
+    "DistToLow52W": 92,
+    "WyckoffPhase": 118,
     "Stage": 88,
-    "VolAccumDays": 88,
-    "UniverseType": 150,
-    "SurvivorshipBiasWarning": 120,
-    "SignalCount": 78,
-    "PassedFilters": 88,
+    "SignalCount": 68,
+    "PassedFilters": 70,
 }
 NUMBER_COLUMNS = {
     "Score",
@@ -132,8 +146,38 @@ NUMBER_COLUMNS = {
     "DistToLow52W",
     "VolAccumDays",
     "SignalCount",
+    "SignalDays",
+    "OpportunityScore",
+    "ShortTermScore",
+    "MediumTermScore",
+    "LongTermScore",
+    "ScoreCoverage",
+    "ScoreConfidencePct",
+    "ScoreContributionTrend",
+    "ScoreContributionVolume",
+    "ScoreContributionAccumulation",
+    "ScoreContributionCompression",
+    "ScoreContributionStructure",
 }
-TEXT_COLUMNS = {"Name", "Sector", "Industry", "WyckoffPhase", "Stage"}
+TEXT_COLUMNS = {
+    "Name",
+    "Sector",
+    "Industry",
+    "WyckoffPhase",
+    "Stage",
+    "LifecycleStage",
+    "SignalTrend",
+}
+INTEGER_COLUMNS = {
+    "ScoreMissingIndicators",
+    "BacktestSamples",
+    "VolAccumDays",
+    "SignalCount",
+    "SignalDays",
+}
+PERCENTAGE_COLUMNS = {"DistToLow52W", "ScoreCoverage", "ScoreConfidence", "ScoreConfidencePct"}
+FRACTION_PERCENTAGE_COLUMNS = {"ScoreCoverage", "ScoreConfidence"}
+FOUR_DECIMAL_COLUMNS = {"BacktestObjectiveValue"}
 MAX_RENDERED_ROWS = 500
 DOWNLOAD_PROGRESS_RE = re.compile(
     r"DOWNLOAD progress: (\d+)/(\d+) \((\d+) succeeded, (\d+) no-data/failed\)\."
@@ -167,6 +211,8 @@ class ScannerGUI:
         self._csv_path: Path | None = None
         self._csv_mtime: tuple[int, int, str] | None = None
         self._filter_job: str | None = None
+        self._sort_column: str | None = None
+        self._sort_descending = True
         self._log_queue: queue.Queue[str] = queue.Queue()
         self._log_job = self.root.after(150, self._flush_log_queue)
         self._configure_style()
@@ -214,7 +260,7 @@ class ScannerGUI:
         style.map("Accent.TButton", background=[("active", "#4096ff")])
         style.configure(
             "Treeview",
-            rowheight=30,
+            rowheight=24,
             font=("Microsoft YaHei UI", 9),
             background="white",
             fieldbackground="white",
@@ -309,6 +355,14 @@ class ScannerGUI:
         ttk.Button(toolbar, text="查看Top50", command=self._load_top50).pack(
             side=tk.LEFT, padx=(0, 6)
         )
+        ttk.Button(toolbar, text="市场概览", command=self.show_market_overview).pack(
+            side=tk.LEFT, padx=6
+        )
+        ttk.Button(
+            toolbar,
+            text="连续信号榜",
+            command=self.show_sustained_signals,
+        ).pack(side=tk.LEFT, padx=6)
         ttk.Button(
             toolbar,
             text="查看全部结果",
@@ -344,6 +398,13 @@ class ScannerGUI:
         ).pack(side=tk.LEFT)
         ttk.Label(toolbar, text="搜索", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
         ttk.Entry(toolbar, textvariable=self.search, width=20).pack(side=tk.LEFT)
+        self.market_overview = tk.StringVar(value="市场概览：等待结果")
+        ttk.Label(
+            toolbar,
+            textvariable=self.market_overview,
+            style="Status.TLabel",
+            padding=(12, 0, 0, 0),
+        ).pack(side=tk.LEFT)
         self.progress = ttk.Progressbar(toolbar, mode="indeterminate", length=180)
         self.progress.pack(side=tk.RIGHT, padx=(10, 0))
         ttk.Label(toolbar, textvariable=self.status, style="Status.TLabel").pack(
@@ -354,6 +415,10 @@ class ScannerGUI:
         body.pack(fill=tk.BOTH, expand=True, padx=18, pady=(6, 16))
         table_frame = ttk.Frame(body)
         self.table = ttk.Treeview(table_frame, show="headings", selectmode="browse")
+        self.table.tag_configure("quality-strong", background="#e8f7ee", foreground="#17663a")
+        self.table.tag_configure("quality-candidate", background="#eef6ff", foreground="#1f5f9c")
+        self.table.tag_configure("quality-watch", background="#fff8e6", foreground="#8a5a00")
+        self.table.tag_configure("quality-normal", background="#f5f6f8", foreground="#596575")
         ybar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.table.yview)
         xbar = ttk.Scrollbar(
             table_frame, orient=tk.HORIZONTAL, command=self.table.xview
@@ -483,16 +548,14 @@ class ScannerGUI:
             messagebox.showinfo("提示", "当前任务正在运行中")
             return
         backtest_tickers = list(dict.fromkeys(self.filtered_tickers))
-        if len(backtest_tickers) < 50:
+        if not backtest_tickers:
             messagebox.showerror(
                 "无法运行回测",
-                f"回测至少需要 50 个标的，当前筛选结果为 {len(backtest_tickers)} 个。",
+                "当前筛选结果为空，请先完成扫描或调整筛选条件。",
             )
             return
-        backtest_tickers = backtest_tickers[:50]
-        ticker_file = OUTPUT_DIR / "BacktestTop50.txt"
+        ticker_file = OUTPUT_DIR / "BacktestAll.txt"
         try:
-            self._write_top50_csv(backtest_tickers)
             self._atomic_write_text(ticker_file, "\n".join(backtest_tickers) + "\n")
         except (OSError, UnicodeError, csv.Error, ValueError) as exc:
             messagebox.showerror("准备回测失败", str(exc))
@@ -507,12 +570,13 @@ class ScannerGUI:
             "backtest",
             "--data-source",
             self.data_source.get(),
+            "--all-tickers",
             "--tickers-file",
             str(ticker_file),
         ]
-        self.append_log("回测当前筛选结果：严格 50 个标的\n")
+        self.append_log(f"回测当前筛选结果：{len(backtest_tickers)} 个标的\n")
         self.append_log(
-            f"执行回测命令：{MAIN_FILE.name} backtest --data-source {self.data_source.get()} --tickers-file BacktestTop50.txt\n"
+            f"执行回测命令：{MAIN_FILE.name} backtest --data-source {self.data_source.get()} --all-tickers --tickers-file BacktestAll.txt\n"
         )
         threading.Thread(target=self.run_process, args=(command,), daemon=True).start()
 
@@ -533,7 +597,7 @@ class ScannerGUI:
             ).pack(anchor=tk.W, padx=22, pady=(20, 4))
             ttk.Label(
                 dialog,
-                text="仅统计本次回测传入的股票集合，不代表全市场表现",
+                text="统计本次回测传入的股票集合，不代表全市场表现",
                 foreground="#55708a",
             ).pack(anchor=tk.W, padx=22, pady=(0, 12))
             frame = ttk.Frame(dialog, padding=(20, 4))
@@ -757,8 +821,26 @@ class ScannerGUI:
         detail_keys = [
             "Quality",
             "Score",
+            "OpportunityScore",
+            "ShortTermScore",
+            "MediumTermScore",
+            "LongTermScore",
+            "LifecycleStage",
+            "SignalTrend",
+            "SignalStatus",
+            "SignalDays",
+            "SignalStartDate",
+            "ActionSuggestion",
+            "RiskNote",
+            "ScoreCoverage",
             "ScoreConfidence",
+            "ScoreConfidencePct",
             "ScoreMissingIndicators",
+            "ScoreContributionTrend",
+            "ScoreContributionVolume",
+            "ScoreContributionAccumulation",
+            "ScoreContributionCompression",
+            "ScoreContributionStructure",
             "BacktestScore",
             "CompositeScore",
             "BacktestObjectiveValue",
@@ -795,7 +877,7 @@ class ScannerGUI:
             "Error",
         ]
         lines = [
-            f"{COLUMN_NAMES.get(key, key)}：{data.get(key, '')}"
+            f"{COLUMN_NAMES.get(key, key)}：{self._format_table_value(key, data.get(key, ''))}"
             for key in detail_keys
             if data.get(key, "") not in ("", None)
         ]
@@ -887,6 +969,137 @@ class ScannerGUI:
             )
         )
 
+    def _market_overview_values(
+        self, rows: list[list[str]], indexes: dict[str, int]
+    ) -> tuple[int, int, int, float]:
+        def number_for(row: list[str], column: str) -> float:
+            index = indexes.get(column)
+            if index is None or index >= len(row):
+                return 0.0
+            try:
+                return float(row[index].replace(",", "").rstrip("%"))
+            except (AttributeError, ValueError):
+                return 0.0
+
+        total = len(rows)
+        active = sum(number_for(row, "SignalDays") > 0 for row in rows)
+        confirmed = sum(
+            row[indexes["LifecycleStage"]].strip() == "趋势确认"
+            for row in rows
+            if "LifecycleStage" in indexes and len(row) > indexes["LifecycleStage"]
+        )
+        average = (
+            sum(number_for(row, "OpportunityScore") for row in rows) / total
+            if total and "OpportunityScore" in indexes
+            else 0.0
+        )
+        return total, active, confirmed, average
+
+    def _update_market_overview(
+        self, rows: list[list[str]], indexes: dict[str, int]
+    ) -> None:
+        if not hasattr(self, "market_overview"):
+            return
+        total, active, confirmed, average = self._market_overview_values(rows, indexes)
+        self.market_overview.set(
+            f"市场概览：{total} 只 · 活跃信号 {active} · 趋势确认 {confirmed} · 平均机会分 {average:.1f}"
+        )
+
+    def show_market_overview(self) -> None:
+        if not self._csv_headers:
+            messagebox.showinfo("市场概览", "请先完成扫描或加载结果文件。")
+            return
+        indexes = {header: index for index, header in enumerate(self._csv_headers)}
+        query = self.search.get().strip().casefold()
+        rows = [
+            row
+            for row in self._csv_rows
+            if self._row_matches_filters(indexes, row, query)
+        ]
+        total, active, confirmed, average = self._market_overview_values(rows, indexes)
+        dialog = tk.Toplevel(self.root)
+        dialog.title("市场概览")
+        dialog.geometry("520x360")
+        dialog.minsize(460, 300)
+        dialog.configure(background="#f4f7fb")
+        ttk.Label(
+            dialog, text="市场概览", font=("Microsoft YaHei UI", 16, "bold")
+        ).pack(anchor=tk.W, padx=22, pady=(20, 4))
+        ttk.Label(
+            dialog,
+            text=f"基于当前筛选条件 · {getattr(self, 'current_file', '结果文件')}",
+            foreground="#55708a",
+        ).pack(anchor=tk.W, padx=22, pady=(0, 12))
+        lines = [
+            f"标的数量：{total}",
+            f"活跃信号：{active}",
+            f"趋势确认：{confirmed}",
+            f"平均机会评分：{average:.1f}",
+        ]
+        text = tk.Text(
+            dialog,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            bg="white",
+            fg="#243b53",
+            relief=tk.FLAT,
+            padx=16,
+            pady=14,
+            font=("Microsoft YaHei UI", 10),
+        )
+        text.pack(fill=tk.BOTH, expand=True, padx=22, pady=(0, 20))
+        text.configure(state=tk.NORMAL)
+        text.insert("1.0", "\n".join(lines))
+        text.configure(state=tk.DISABLED)
+
+    def show_sustained_signals(self) -> None:
+        for filename in ("Top50SustainedSignals.csv", "SignalTracking.csv"):
+            if self._csv_has_results(filename):
+                self.load_csv(filename)
+                return
+        messagebox.showinfo("连续信号榜", "请先完成扫描，生成连续信号榜后再查看。")
+
+    def _format_table_value(self, column: str, value: str) -> str:
+        text = str(value).strip()
+        if column not in NUMBER_COLUMNS or not text:
+            return text
+        try:
+            number = float(text.replace(",", "").rstrip("%"))
+        except ValueError:
+            return text
+        if column in INTEGER_COLUMNS:
+            return f"{number:,.0f}"
+        if column in PERCENTAGE_COLUMNS:
+            percent = number * 100 if column in FRACTION_PERCENTAGE_COLUMNS else number
+            return f"{percent:.2f}%" if column == "DistToLow52W" else f"{percent:.0f}%"
+        return f"{number:,.2f}"
+
+    def _sort_value(self, column: str, row: list[str], indexes: dict[str, int]):
+        index = indexes[column]
+        value = row[index].strip() if len(row) > index else ""
+        if column not in NUMBER_COLUMNS:
+            return (not value, value.casefold())
+        try:
+            return (False, float(value.replace(",", "").rstrip("%")))
+        except ValueError:
+            return (not value, 0.0)
+
+    def _quality_tag(self, quality: str) -> str:
+        tags = {
+            "强候选": "quality-strong",
+            "候选": "quality-candidate",
+            "观察": "quality-watch",
+        }
+        return tags.get(quality.strip(), "quality-normal")
+
+    def _sort_by_column(self, column: str) -> None:
+        if self._sort_column == column:
+            self._sort_descending = not self._sort_descending
+        else:
+            self._sort_column = column
+            self._sort_descending = column in NUMBER_COLUMNS
+        self._render_cached_rows()
+
     def _render_cached_rows(self) -> bool:
         self._filter_job = None
         headers = self._csv_headers
@@ -899,6 +1112,16 @@ class ScannerGUI:
             row for row in data_rows if self._row_matches_filters(indexes, row, query)
         ]
         ticker_index = indexes.get("Ticker", -1)
+        display_headers = [column for column in DISPLAY_COLUMNS if column in headers]
+        sort_column = getattr(self, "_sort_column", None)
+        sort_descending = getattr(self, "_sort_descending", True)
+        if sort_column in indexes:
+            filtered.sort(
+                key=lambda row: self._sort_value(sort_column, row, indexes),
+                reverse=sort_descending,
+            )
+            sort_index = indexes[sort_column]
+            filtered.sort(key=lambda row: len(row) <= sort_index or not row[sort_index].strip())
         self.filtered_tickers = [
             row[ticker_index].strip().upper()
             for row in filtered
@@ -906,7 +1129,7 @@ class ScannerGUI:
             and len(row) > ticker_index
             and row[ticker_index].strip()
         ]
-        display_headers = [column for column in DISPLAY_COLUMNS if column in headers]
+        self._update_market_overview(filtered, indexes)
         self.table.delete(*self.table.get_children())
         self._row_details.clear()
         self.table["columns"] = display_headers
@@ -918,7 +1141,18 @@ class ScannerGUI:
                 if header in TEXT_COLUMNS
                 else tk.CENTER
             )
-            self.table.heading(header, text=COLUMN_NAMES.get(header, header))
+            arrow = (
+                " ▼"
+                if sort_column == header and sort_descending
+                else " ▲"
+                if sort_column == header
+                else ""
+            )
+            self.table.heading(
+                header,
+                text=f"{COLUMN_NAMES.get(header, header)}{arrow}",
+                command=lambda column=header: self._sort_by_column(column),
+            )
             self.table.column(
                 header,
                 width=COLUMN_WIDTHS.get(header, 90),
@@ -926,10 +1160,14 @@ class ScannerGUI:
                 stretch=False,
             )
         header_indexes = [indexes[column] for column in display_headers]
+        quality_index = indexes.get("Quality")
         rendered_count = min(len(filtered), MAX_RENDERED_ROWS)
         for row in filtered[:rendered_count]:
             values = row + [""] * max(0, len(headers) - len(row))
-            display_values = [values[index] for index in header_indexes]
+            display_values = [
+                self._format_table_value(header, values[index])
+                for header, index in zip(display_headers, header_indexes)
+            ]
             if "AssetType" in display_headers:
                 type_index = display_headers.index("AssetType")
                 display_values[type_index] = (
@@ -945,7 +1183,10 @@ class ScannerGUI:
                     in {"true", "1", "yes", "是"}
                     else "未通过"
                 )
-            item_id = self.table.insert("", tk.END, values=display_values)
+            quality = values[quality_index] if quality_index is not None else ""
+            item_id = self.table.insert(
+                "", tk.END, values=display_values, tags=(self._quality_tag(quality),)
+            )
             self._row_details[item_id] = dict(zip(headers, values))
         self.status.set(
             f"{self.current_file} · 命中 {len(filtered)} / {len(data_rows)} 条 · 实际渲染 {rendered_count} 条 · 双击查看详情"

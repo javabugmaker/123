@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
 import logging
 import sys
 import time
@@ -239,10 +240,22 @@ def cmd_download(args: argparse.Namespace) -> int:
 
 def cmd_backtest(args: argparse.Namespace) -> int:
     logger = logging.getLogger("institution_scanner")
-    if args.tickers_file and args.tickers:
-        logger.error("回测标的只能通过 --tickers 或 --tickers-file 指定一种。")
+    all_results = getattr(args, "all_results", False)
+    all_tickers = getattr(args, "all_tickers", False)
+    sources = sum(bool(value) for value in (args.tickers_file, args.tickers, all_results))
+    if sources > 1:
+        logger.error("回测标的只能通过 --tickers、--tickers-file 或 --all-results 指定一种。")
         return 2
-    if args.tickers_file:
+    if all_results:
+        results_path = OUTPUT_DIR / "AllResults.csv"
+        try:
+            with results_path.open(encoding="utf-8-sig", newline="") as file:
+                raw_tickers = [row.get("Ticker", "") for row in csv.DictReader(file)]
+        except (OSError, UnicodeError, csv.Error) as exc:
+            logger.error("无法读取全量回测结果文件 %s：%s", results_path, exc)
+            return 2
+        tickers = [normalize_ticker(ticker) for ticker in raw_tickers if ticker.strip()]
+    elif args.tickers_file:
         try:
             raw_tickers = args.tickers_file.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeError) as exc:
@@ -256,20 +269,23 @@ def cmd_backtest(args: argparse.Namespace) -> int:
             if ticker.strip()
         ]
     else:
-        logger.error("回测必须通过 --tickers 或 --tickers-file 明确指定 50 个标的。")
+        logger.error("回测必须通过 --tickers、--tickers-file 或 --all-results 指定标的。")
         return 2
     unique_tickers = list(dict.fromkeys(tickers))
-    if len(tickers) != 50 or len(unique_tickers) != 50:
+    if not (all_results or all_tickers) and (len(tickers) != 50 or len(unique_tickers) != 50):
         logger.error(
             "回测必须指定 50 个不重复标的，当前共 %d 个、去重后 %d 个。",
             len(tickers),
             len(unique_tickers),
         )
         return 2
-    logger.info("Backtesting 50 explicitly specified tickers...")
+    if not unique_tickers:
+        logger.error("回测标的为空。")
+        return 2
+    logger.info("Backtesting %d explicitly specified tickers...", len(unique_tickers))
     tickers = unique_tickers
     options = {
-        "objective": getattr(args, "objective", "return_20d"),
+        "objective": getattr(args, "objective", "net_excess_return_20d"),
         "benchmark": getattr(args, "benchmark", "沪深300"),
         "commission": getattr(args, "commission", 0.0003),
         "stamp_duty": getattr(args, "stamp_duty", 0.0005),
@@ -290,10 +306,9 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     if options["test_ratio"] + options["validation_ratio"] >= 1:
         logger.error("--test-ratio 与 --validation-ratio 之和必须小于 1。")
         return 2
-    if all(not hasattr(args, key) for key in options):
-        summary = run_historical_backtest(tickers, source=args.data_source)
-    else:
-        summary = run_historical_backtest(tickers, source=args.data_source, **options)
+    summary = run_historical_backtest(
+        tickers, source=args.data_source, workers=getattr(args, "workers", None), **options
+    )
     if getattr(summary, "insufficient_test_data", False) is True:
         logger.error(
             "回测测试集有效样本不足：%s", getattr(summary, "error", "未知错误")
@@ -447,7 +462,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ---- backtest ----
     backtest_p = sub.add_parser(
-        "backtest", help="Run historical backtest for exactly 50 specified tickers"
+        "backtest", help="Run historical backtest for selected tickers or all results"
     )
     backtest_p.add_argument(
         "--tickers",
@@ -462,6 +477,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="File containing exactly 50 unique tickers",
     )
     backtest_p.add_argument(
+        "--all-results",
+        action="store_true",
+        help="Backtest every unique ticker in output/AllResults.csv",
+    )
+    backtest_p.add_argument(
+        "--all-tickers",
+        action="store_true",
+        help="Allow any number of unique tickers from --tickers or --tickers-file",
+    )
+    backtest_p.add_argument(
+        "--workers",
+        type=lambda value: _positive_int(value, "回测线程数"),
+        default=None,
+        help="Maximum local worker threads for backtest calculation",
+    )
+    backtest_p.add_argument(
         "--data-source", choices=("eastmoney", "sina", "tencent"), default="eastmoney"
     )
     backtest_p.add_argument(
@@ -471,10 +502,12 @@ def build_parser() -> argparse.ArgumentParser:
             "return_60d",
             "excess_return_20d",
             "excess_return_60d",
+            "net_excess_return_20d",
+            "net_excess_return_60d",
             "max_drawdown",
             "risk_adjusted",
         ),
-        default="return_20d",
+        default="net_excess_return_20d",
     )
     backtest_p.add_argument(
         "--benchmark", choices=("沪深300", "中证500", "创业板指"), default="沪深300"
