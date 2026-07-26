@@ -17,9 +17,13 @@ from downloader import (
     is_etf_ticker,
     normalize_ticker,
 )
-from filters import filter_min_market_cap, filter_min_price, filter_volatility_contraction
+from filters import (
+    filter_min_market_cap,
+    filter_min_price,
+    filter_volatility_contraction,
+)
 from scanner import ScanResult
-from score import classify_style, score_ticker
+from score import score_ticker
 
 
 class ScannerLogicTests(TestCase):

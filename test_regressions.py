@@ -30,18 +30,21 @@ if importlib.util.find_spec("pyarrow") is None:
     sys.modules["pyarrow"] = pyarrow
     sys.modules["pyarrow.parquet"] = pyarrow.parquet
 
+import analytics
 import gui
 import main
-import analytics
 import scanner
 from analytics import BacktestSummary, apply_backtest_ranking
-from config import OUTPUT_DIR
+from downloader import TickerInfo, _cache_path, _log_download_progress
+from filters import (
+    filter_bear_market,
+    filter_min_price,
+    filter_min_volume,
+    filter_volume_accumulation,
+)
 from report import _results_to_dataframe
-from scanner import ScanResult
-from downloader import TickerInfo, _cache_path, _load_cache, _log_download_progress
-from filters import filter_bear_market, filter_min_price, filter_min_volume
+from scanner import ScanReport, ScanResult
 from score import score_ticker
-from scanner import ScanReport
 
 
 class RegressionTests(TestCase):
@@ -104,6 +107,23 @@ class RegressionTests(TestCase):
             "MA200": np.linspace(100, 50, 300),
         })
         self.assertFalse(filter_bear_market(frame).passed)
+
+    def test_non_finite_filter_values_are_rejected(self):
+        frame = pd.DataFrame({
+            "Close": [10.0] * 140,
+            "Volume": [np.inf] * 140,
+            "VolMA20": [np.inf] * 140,
+            "VolMA120": [100.0] * 140,
+        })
+
+        self.assertFalse(filter_min_volume(frame).passed)
+        self.assertFalse(filter_volume_accumulation(frame).passed)
+
+    def test_non_finite_ad_slope_is_rejected(self):
+        frame = pd.DataFrame({"AD_Slope": [0.1] * 29 + [np.inf]})
+
+        from filters import filter_ad_slope_positive
+        self.assertFalse(filter_ad_slope_positive(frame).passed)
 
     def test_export_dataframe_supports_backtest_fields(self):
         result = ScanResult(ticker="000001.SZ")
@@ -403,7 +423,6 @@ class RegressionTests(TestCase):
         self.assertEqual(result.signal_count(), 3)
 
     def test_volume_filter_does_not_mutate_input_frame(self):
-        from filters import filter_volume_accumulation
         frame = pd.DataFrame({
             "VolMA20": [120.0] * 140,
             "VolMA120": [100.0] * 140,

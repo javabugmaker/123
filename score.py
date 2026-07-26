@@ -355,14 +355,13 @@ def score_structure(df: pd.DataFrame) -> float:
     # 1. Distance from 52-week low (up to 5 points)
     if "Low52W" in df.columns and "DistToLow52W" in df.columns:
         dist_low = df["DistToLow52W"].iloc[-1]
-        if not np.isnan(dist_low):
-            if 0 <= dist_low <= 20:
-                if dist_low < 8:
-                    score += dist_low / 8 * 5
-                elif dist_low <= 12:
-                    score += 5
-                else:
-                    score += (20 - dist_low) / 8 * 5
+        if _is_finite(dist_low) and 0 <= dist_low <= 20:
+            if dist_low < 8:
+                score += dist_low / 8 * 5
+            elif dist_low <= 12:
+                score += 5
+            else:
+                score += (20 - dist_low) / 8 * 5
 
     # 2. Consolidation duration (up to 5 points)
     # How long has price been range-bound near the bottom?
@@ -380,7 +379,7 @@ def score_structure(df: pd.DataFrame) -> float:
     # 3. Linear regression slope near zero (up to 3 points)
     if "RegSlope" in df.columns:
         reg_slope = df["RegSlope"].iloc[-1]
-        if not np.isnan(reg_slope):
+        if _is_finite(reg_slope):
             # Slope near 0 + high R² = stable base
             abs_slope = abs(reg_slope)
             # 0 → very flat base
@@ -397,9 +396,8 @@ def score_structure(df: pd.DataFrame) -> float:
     if "Above_HVN" in df.columns and "DistToHVN_Pct" in df.columns:
         above_hvn = df["Above_HVN"].iloc[-1]
         dist_hvn = df["DistToHVN_Pct"].iloc[-1]
-        if bool(above_hvn) and pd.notna(dist_hvn):
+        if bool(above_hvn) and _is_finite(dist_hvn) and 0 < dist_hvn < 10:
             # Small positive distance (just above HVN) = ideal
-            if 0 < dist_hvn < 10:
                 score += _clamp(1 - dist_hvn / 10, 0, 1) * 2
 
     return min(score, 15.0)

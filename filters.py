@@ -74,13 +74,11 @@ def filter_min_price(df: pd.DataFrame) -> FilterResult:
 
 def filter_min_volume(df: pd.DataFrame) -> FilterResult:
     """Reject if average daily volume (60d) is below MIN_VOLUME."""
-    vol_avg = (
-        pd.to_numeric(df["Volume"], errors="coerce")
-        .rolling(60, min_periods=30)
-        .mean()
-        .iloc[-1]
+    volume = pd.to_numeric(df["Volume"], errors="coerce").replace(
+        [np.inf, -np.inf], np.nan
     )
-    if pd.isna(vol_avg):
+    vol_avg = volume.rolling(60, min_periods=30).mean().iloc[-1]
+    if not np.isfinite(vol_avg):
         return FilterResult(passed=False, reason="成交量数据不足或无效")
     passed = float(vol_avg) >= MIN_VOLUME
     return FilterResult(
@@ -237,14 +235,15 @@ def filter_volume_accumulation(df: pd.DataFrame) -> FilterResult:
             passed=False, reason="Insufficient history for volume check"
         )
 
-    vol_ma20 = df["VolMA20"]
-    vol_ma120 = df["VolMA120"]
+    vol_ma20 = pd.to_numeric(df["VolMA20"], errors="coerce").replace(
+        [np.inf, -np.inf], np.nan
+    )
+    vol_ma120 = pd.to_numeric(df["VolMA120"], errors="coerce").replace(
+        [np.inf, -np.inf], np.nan
+    )
 
-    # Boolean series: True where volume accumulation condition holds
-    condition = vol_ma20 >= vol_ma120 * VOLUME_ACCUM_RATIO
-    condition = condition.fillna(False)
+    condition = (vol_ma20 >= vol_ma120 * VOLUME_ACCUM_RATIO).fillna(False)
 
-    # Count consecutive True days
     if not condition.iloc[-1]:
         return FilterResult(
             passed=False,
@@ -420,13 +419,17 @@ def filter_ad_slope_positive(df: pd.DataFrame) -> FilterResult:
     if len(df) < AD_SLOPE_LOOKBACK:
         return FilterResult(passed=False, reason="Insufficient history for AD slope")
 
-    ad_slope = df["AD_Slope"].iloc[-1]
-    passed = ad_slope > 0
+    ad_slope = pd.to_numeric(df["AD_Slope"], errors="coerce").replace(
+        [np.inf, -np.inf], np.nan
+    ).iloc[-1]
+    if pd.isna(ad_slope):
+        return FilterResult(passed=False, reason="AD Slope data unavailable")
 
+    passed = ad_slope > 0
     return FilterResult(
         passed=passed,
         reason=f"AD Slope={ad_slope:.6f} {'>' if passed else '<='} 0",
-        details={"ad_slope": ad_slope},
+        details={"ad_slope": float(ad_slope)},
     )
 
 
@@ -462,7 +465,9 @@ def filter_volatility_contraction(df: pd.DataFrame) -> FilterResult:
     # BB Width declining
     bb_contracting = False
     if "BB_Width" in df.columns:
-        bb_width = df["BB_Width"].dropna()
+        bb_width = pd.to_numeric(df["BB_Width"], errors="coerce").replace(
+            [np.inf, -np.inf], np.nan
+        ).dropna()
         if len(bb_width) >= BB_WIDTH_COMPRESSION_LOOKBACK:
             recent_bb = bb_width.iloc[-BB_WIDTH_COMPRESSION_LOOKBACK:]
             bb_contracting = recent_bb.iloc[-1] < recent_bb.iloc[0]
