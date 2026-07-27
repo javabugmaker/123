@@ -160,6 +160,7 @@ def save_checkpoint(processed: set[str], data_source: str = "") -> None:
         return
     try:
         data = {
+            "active": True,
             "processed": sorted(_normalize_ticker(ticker) for ticker in processed),
             "timestamp": datetime.now().isoformat(),
             "data_source": normalize_data_source(data_source) if data_source else "",
@@ -176,6 +177,8 @@ def load_checkpoint(data_source: str = "") -> set[str]:
         return set()
     try:
         data = json.loads(_CHECKPOINT_PATH.read_text(encoding="utf-8"))
+        if not data.get("active"):
+            return set()
         if data.get("scoring_version") != SCORING_VERSION:
             return set()
         expected_source = normalize_data_source(data_source) if data_source else ""
@@ -463,13 +466,15 @@ def run_scan(
     universe_symbols = {_normalize_ticker(ti.ticker) for ti in all_tickers}
     processed_set = load_checkpoint(data_source) if resume else set()
     processed_set.intersection_update(universe_symbols)
+    if processed_set:
+        logger.info("Resuming interrupted scan: %d tickers already analysed.", len(processed_set))
     downloaded = download_batch(
         all_tickers,
         desc="Downloading",
         force=force_download,
         source=data_source,
         cache_first=cache_first and not force_download,
-        skip_tickers=processed_set if resume else None,
+        skip_tickers=None,
     )
 
     # ---- Phase 2: Parallel analyse ----
@@ -728,8 +733,7 @@ def run_scan(
             if sr.passed_filters:
                 passed += 1
 
-    # Final checkpoint
-    save_checkpoint(processed_set, data_source)
+    clear_checkpoint()
 
     logger.info("Enriching %d scan results...", len(results))
     try:

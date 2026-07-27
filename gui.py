@@ -570,13 +570,12 @@ class ScannerGUI:
             "backtest",
             "--data-source",
             self.data_source.get(),
-            "--all-tickers",
             "--tickers-file",
             str(ticker_file),
         ]
         self.append_log(f"回测当前筛选结果：{len(backtest_tickers)} 个标的\n")
         self.append_log(
-            f"执行回测命令：{MAIN_FILE.name} backtest --data-source {self.data_source.get()} --all-tickers --tickers-file BacktestAll.txt\n"
+            f"执行回测命令：{MAIN_FILE.name} backtest --data-source {self.data_source.get()} --tickers-file BacktestAll.txt\n"
         )
         threading.Thread(target=self.run_process, args=(command,), daemon=True).start()
 

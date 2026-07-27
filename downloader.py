@@ -817,7 +817,31 @@ def _download_single(
     ticker = normalize_ticker(ticker)
     selected = normalize_data_source(source)
     if selected == "eastmoney":
-        return _download_from_eastmoney(ticker, start_date=start_date)
+        frame = _download_from_eastmoney(ticker, start_date=start_date)
+        if frame is not None and not frame.empty:
+            return frame
+        for fallback_source, loader in (
+            ("sina", _download_from_sina),
+            ("tencent", _download_from_tencent),
+        ):
+            try:
+                frame = loader(ticker, start_date=start_date)
+            except Exception as exc:
+                logger.debug(
+                    "数据源 %s 获取 %s 失败：%s",
+                    get_data_source_label(fallback_source),
+                    ticker,
+                    exc,
+                )
+                continue
+            if frame is not None and not frame.empty:
+                logger.info(
+                    "东方财富未返回 %s 的数据，已回退至%s并获取成功。",
+                    ticker,
+                    get_data_source_label(fallback_source),
+                )
+                return frame
+        return None
     loaders = {
         "sina": _download_from_sina,
         "tencent": _download_from_tencent,

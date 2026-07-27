@@ -233,6 +233,42 @@ class RegressionTests(TestCase):
         self.assertEqual(second.loc[0, "SignalDays"], 1)
         self.assertEqual(history["SignalDays"].tolist(), [1])
 
+    def test_signal_lifecycle_resets_when_ticker_was_absent_on_previous_trade_date(self):
+        frame = pd.DataFrame({
+            "Ticker": ["000001.SZ"],
+            "DataAsOf": ["2026-07-24"],
+            "Name": ["平安银行"],
+            "Score": [60.0],
+            "SignalCount": [4],
+            "PassedFilters": [True],
+        })
+        history = pd.DataFrame({
+            "TradeDate": ["2026-07-22", "2026-07-23"],
+            "Ticker": ["000001.SZ", "000002.SZ"],
+            "Name": ["平安银行", "万科A"],
+            "Score": [60.0, 20.0],
+            "OpportunityScore": [50.0, 20.0],
+            "ScoreConfidence": [1.0, 1.0],
+            "SignalActive": [True, False],
+            "SignalStatus": ["NEW", ""],
+            "SignalDays": [5, 0],
+            "SignalStartDate": ["2026-07-18", ""],
+            "Stage": ["机构吸筹", "底部观察"],
+            "TrendScore": [10.0, 5.0],
+            "AccumulationScore": [15.0, 5.0],
+            "IndustryRelativeStrength": [0.0, 0.0],
+            "SignalCount": [4, 1],
+        })
+
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            history.to_csv(output_dir / "SignalHistory.csv", index=False, encoding="utf-8-sig")
+            with patch("signal_lifecycle.HISTORY_FILE", output_dir / "SignalHistory.csv"), patch("signal_lifecycle.TRACKING_FILE", output_dir / "SignalTracking.csv"):
+                result = signal_lifecycle.enrich_signal_lifecycle(frame)
+
+        self.assertEqual(result.loc[0, "SignalDays"], 1)
+        self.assertEqual(result.loc[0, "SignalStatus"], "NEW")
+
     def test_apply_backtest_ranking_cleans_legacy_columns_on_repeated_calls(self):
         with patch("analytics.OUTPUT_DIR") as output_dir:
             from tempfile import TemporaryDirectory
@@ -297,12 +333,24 @@ class RegressionTests(TestCase):
             cache_path = output_dir / "000001.SZ__eastmoney.parquet"
             cache_path.touch()
             report_path.touch()
-            with patch.object(scanner, "OUTPUT_DIR", output_dir), patch.object(scanner, "_CHECKPOINT_PATH", output_dir / "_checkpoint.json"), patch.object(scanner, "load_checkpoint", return_value={"000001.SZ"}), patch.object(scanner, "_load_previous_tickers", return_value={"000001.SZ"}), patch.object(scanner, "_cache_path_for", return_value=cache_path), patch.object(scanner, "_legacy_cache_path", return_value=output_dir / "missing.csv"), patch.object(scanner, "download_batch", return_value={"000001.SZ": frame}), patch.object(scanner, "enrich_results"), patch.object(scanner, "save_checkpoint"), patch.object(scanner.pd, "read_parquet", side_effect=[metadata, previous]):
+            with patch.object(scanner, "OUTPUT_DIR", output_dir), patch.object(scanner, "_CHECKPOINT_PATH", output_dir / "_checkpoint.json"), patch.object(scanner, "load_checkpoint", return_value={"000001.SZ"}), patch.object(scanner, "_load_previous_tickers", return_value={"000001.SZ"}), patch.object(scanner, "_cache_path_for", return_value=cache_path), patch.object(scanner, "_legacy_cache_path", return_value=output_dir / "missing.csv"), patch.object(scanner, "download_batch", return_value={"000001.SZ": frame}) as download_batch, patch.object(scanner, "enrich_results"), patch.object(scanner, "save_checkpoint"), patch.object(scanner, "clear_checkpoint") as clear_checkpoint, patch.object(scanner.pd, "read_parquet", side_effect=[metadata, previous]):
                 report = scanner.run_scan(stock_universe=[ticker], etf_universe=[], data_source="eastmoney")
 
+        clear_checkpoint.assert_called_once_with()
+        self.assertIsNone(download_batch.call_args.kwargs["skip_tickers"])
         self.assertEqual(report.successful, 1)
         self.assertEqual([result.ticker for result in report.results], ["000001.SZ"])
         self.assertTrue(pd.isna(report.results[0].backtest_score))
+
+    def test_load_checkpoint_ignores_legacy_completed_scan(self):
+        with TemporaryDirectory() as temp_dir:
+            checkpoint_path = Path(temp_dir) / "_checkpoint.json"
+            checkpoint_path.write_text(
+                '{"processed": ["000001.SZ"], "data_source": "eastmoney", "scoring_version": "' + scanner.SCORING_VERSION + '"}',
+                encoding="utf-8",
+            )
+            with patch.object(scanner, "_CHECKPOINT_PATH", checkpoint_path):
+                self.assertEqual(scanner.load_checkpoint("eastmoney"), set())
 
     def test_max_drawdown_ranking_prefers_shallower_losses(self):
         with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
@@ -700,12 +748,13 @@ class RegressionTests(TestCase):
             self.assertEqual(main.cmd_backtest(args), 2)
         run_backtest.assert_not_called()
 
-    def test_backtest_requires_exactly_50_unique_tickers(self):
+    def test_backtest_allows_any_number_of_unique_tickers(self):
         tickers = [f"{index:06d}.SZ" for index in range(49)]
         args = argparse.Namespace(tickers=",".join(tickers), tickers_file=None, data_source="eastmoney")
-        with patch("main.run_historical_backtest") as run_backtest:
-            self.assertEqual(main.cmd_backtest(args), 2)
-        run_backtest.assert_not_called()
+        summary = Mock(samples=0, win_rate_20d=0.0, average_return_20d=0.0, average_return_60d=0.0)
+        with patch("main.run_historical_backtest", return_value=summary) as run_backtest, patch("main.apply_backtest_ranking"):
+            self.assertEqual(main.cmd_backtest(args), 0)
+        self.assertEqual(run_backtest.call_args.args[0], tickers)
 
     def test_backtest_runs_exactly_50_explicit_tickers(self):
         tickers = [f"{index:06d}.SZ" for index in range(50)]

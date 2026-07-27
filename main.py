@@ -241,7 +241,6 @@ def cmd_download(args: argparse.Namespace) -> int:
 def cmd_backtest(args: argparse.Namespace) -> int:
     logger = logging.getLogger("institution_scanner")
     all_results = getattr(args, "all_results", False)
-    all_tickers = getattr(args, "all_tickers", False)
     sources = sum(bool(value) for value in (args.tickers_file, args.tickers, all_results))
     if sources > 1:
         logger.error("回测标的只能通过 --tickers、--tickers-file 或 --all-results 指定一种。")
@@ -272,13 +271,6 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         logger.error("回测必须通过 --tickers、--tickers-file 或 --all-results 指定标的。")
         return 2
     unique_tickers = list(dict.fromkeys(tickers))
-    if not (all_results or all_tickers) and (len(tickers) != 50 or len(unique_tickers) != 50):
-        logger.error(
-            "回测必须指定 50 个不重复标的，当前共 %d 个、去重后 %d 个。",
-            len(tickers),
-            len(unique_tickers),
-        )
-        return 2
     if not unique_tickers:
         logger.error("回测标的为空。")
         return 2
@@ -468,23 +460,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--tickers",
         type=str,
         default=None,
-        help="Comma-separated list of exactly 50 unique tickers",
+        help="Comma-separated list of tickers",
     )
     backtest_p.add_argument(
         "--tickers-file",
         type=Path,
         default=None,
-        help="File containing exactly 50 unique tickers",
+        help="File containing tickers, one per line",
     )
     backtest_p.add_argument(
         "--all-results",
         action="store_true",
         help="Backtest every unique ticker in output/AllResults.csv",
-    )
-    backtest_p.add_argument(
-        "--all-tickers",
-        action="store_true",
-        help="Allow any number of unique tickers from --tickers or --tickers-file",
     )
     backtest_p.add_argument(
         "--workers",

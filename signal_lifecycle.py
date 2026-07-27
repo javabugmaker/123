@@ -129,15 +129,25 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
     history["TradeDate"] = history["TradeDate"].astype(str)
     trade_dates = result.get("DataAsOf", pd.Series("", index=result.index)).fillna("").astype(str)
     known_dates = set(trade_dates)
-    prior_history = history.loc[~history["TradeDate"].isin(known_dates)]
-    previous_rows = prior_history.sort_values("TradeDate").groupby("Ticker", as_index=False).tail(1).set_index("Ticker")
+    prior_history = history.loc[~history["TradeDate"].isin(known_dates)].copy()
+    prior_history["_TradeDate"] = pd.to_datetime(prior_history["TradeDate"], errors="coerce")
     signal_days: list[int] = []
     starts: list[str] = []
     statuses: list[str] = []
     strengths: list[str] = []
     for index, row in result.iterrows():
         ticker = row["Ticker"]
-        previous = previous_rows.loc[ticker] if ticker in previous_rows.index else None
+        trade_date = pd.to_datetime(trade_dates.loc[index], errors="coerce")
+        previous = None
+        if not pd.isna(trade_date):
+            previous_date = prior_history.loc[prior_history["_TradeDate"] < trade_date, "_TradeDate"].max()
+            if not pd.isna(previous_date):
+                previous_rows = prior_history.loc[
+                    (prior_history["Ticker"] == ticker)
+                    & (prior_history["_TradeDate"] == previous_date)
+                ]
+                if not previous_rows.empty:
+                    previous = previous_rows.iloc[-1]
         is_active = bool(active.loc[index])
         prior_active = previous is not None and _bool(previous["SignalActive"])
         days = int(previous["SignalDays"]) + 1 if is_active and prior_active else int(is_active)
