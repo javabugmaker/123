@@ -193,6 +193,8 @@ class ScannerGUI:
         self.process: subprocess.Popen[str] | None = None
         self.scan_running = False
         self.backtest_running = False
+        self._cancel_requested = False
+        self._closing = False
         self.scope = tk.StringVar(value="全部股票和ETF")
         self.tickers = tk.StringVar()
         self.search = tk.StringVar()
@@ -204,6 +206,7 @@ class ScannerGUI:
         self.data_source = tk.StringVar(value="eastmoney")
         self.data_source_label = tk.StringVar(value="当前：东方财富")
         self.status = tk.StringVar(value="就绪")
+        self.result_summary = tk.StringVar(value="等待加载结果")
         self._row_details: dict[str, dict[str, str]] = {}
         self.filtered_tickers: list[str] = []
         self._csv_headers: list[str] = []
@@ -217,6 +220,7 @@ class ScannerGUI:
         self._log_job = self.root.after(150, self._flush_log_queue)
         self._configure_style()
         self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.search.trace_add("write", self._schedule_filter_refresh)
         self.sector_filter.trace_add("write", self._schedule_filter_refresh)
         self.industry_filter.trace_add("write", self._schedule_filter_refresh)
@@ -251,6 +255,20 @@ class ScannerGUI:
             font=("Microsoft YaHei UI", 9),
         )
         style.configure(
+            "HeaderStatus.TLabel",
+            background="#244864",
+            foreground="#d9ebff",
+            padding=(12, 6),
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        style.configure("Quiet.TButton", padding=(10, 6))
+        style.configure(
+            "ResultTitle.TLabel",
+            background="#f4f7fb",
+            foreground="#17324d",
+            font=("Microsoft YaHei UI", 11, "bold"),
+        )
+        style.configure(
             "Accent.TButton",
             foreground="white",
             background="#1677ff",
@@ -260,7 +278,7 @@ class ScannerGUI:
         style.map("Accent.TButton", background=[("active", "#4096ff")])
         style.configure(
             "Treeview",
-            rowheight=24,
+            rowheight=26,
             font=("Microsoft YaHei UI", 9),
             background="white",
             fieldbackground="white",
@@ -276,7 +294,7 @@ class ScannerGUI:
             font=("Microsoft YaHei UI", 9, "bold"),
             background="#eaf2fb",
             foreground="#17324d",
-            padding=(8, 6),
+            padding=(8, 7),
         )
         style.configure("TCombobox", padding=4)
         style.configure("TEntry", padding=4)
@@ -296,14 +314,20 @@ class ScannerGUI:
         )
 
     def _build_ui(self) -> None:
-        header = ttk.Frame(self.root, style="Header.TFrame", padding=(24, 18))
+        header = ttk.Frame(self.root, style="Header.TFrame", padding=(24, 16))
         header.pack(fill=tk.X)
-        ttk.Label(header, text="A股机构吸筹扫描器", style="Title.TLabel").pack(
+        header.grid_columnconfigure(0, weight=1)
+        title_frame = ttk.Frame(header, style="Header.TFrame")
+        title_frame.grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(title_frame, text="A股机构吸筹扫描器", style="Title.TLabel").pack(
             anchor=tk.W
         )
         ttk.Label(
-            header, text="全市场股票与ETF · 技术指标 · 评分筛选", style="Sub.TLabel"
+            title_frame, text="全市场股票与 ETF · 技术指标 · 评分筛选", style="Sub.TLabel"
         ).pack(anchor=tk.W, pady=(4, 0))
+        ttk.Label(header, textvariable=self.status, style="HeaderStatus.TLabel").grid(
+            row=0, column=1, sticky=tk.E, padx=(20, 0)
+        )
 
         controls = ttk.LabelFrame(self.root, text="扫描设置", padding=12)
         controls.pack(fill=tk.X, padx=18, pady=(14, 8))
@@ -349,32 +373,36 @@ class ScannerGUI:
             controls, text="▶ 开始扫描", style="Accent.TButton", command=self.start_scan
         )
         self.start_button.grid(row=1, column=4, pady=(10, 0), sticky=tk.E)
+        self.cancel_button = ttk.Button(
+            controls, text="取消运行", command=self.cancel_running_task, state=tk.DISABLED
+        )
+        self.cancel_button.grid(row=1, column=5, padx=(8, 0), pady=(10, 0), sticky=tk.W)
 
         toolbar = ttk.Frame(self.root, padding=(18, 2))
         toolbar.pack(fill=tk.X)
-        ttk.Button(toolbar, text="查看Top50", command=self._load_top50).pack(
+        ttk.Button(toolbar, text="Top 50", style="Quiet.TButton", command=self._load_top50).pack(
             side=tk.LEFT, padx=(0, 6)
         )
-        ttk.Button(toolbar, text="市场概览", command=self.show_market_overview).pack(
+        ttk.Button(toolbar, text="市场概览", style="Quiet.TButton", command=self.show_market_overview).pack(
             side=tk.LEFT, padx=6
         )
         ttk.Button(
             toolbar,
-            text="连续信号榜",
+            text="连续信号", style="Quiet.TButton",
             command=self.show_sustained_signals,
         ).pack(side=tk.LEFT, padx=6)
         ttk.Button(
             toolbar,
-            text="查看全部结果",
+            text="全部结果", style="Quiet.TButton",
             command=lambda: self.load_csv("AllResults.csv"),
         ).pack(side=tk.LEFT, padx=6)
-        ttk.Button(toolbar, text="打开结果目录", command=self.open_output).pack(
+        ttk.Button(toolbar, text="结果目录", style="Quiet.TButton", command=self.open_output).pack(
             side=tk.LEFT, padx=6
         )
-        ttk.Button(toolbar, text="运行回测", command=self.start_backtest).pack(
+        ttk.Button(toolbar, text="运行回测", style="Quiet.TButton", command=self.start_backtest).pack(
             side=tk.LEFT, padx=6
         )
-        ttk.Button(toolbar, text="查看回测", command=self.show_backtest).pack(
+        ttk.Button(toolbar, text="查看回测", style="Quiet.TButton", command=self.show_backtest).pack(
             side=tk.LEFT, padx=6
         )
         ttk.Label(toolbar, text="板块", padding=(16, 0, 4, 0)).pack(side=tk.LEFT)
@@ -398,6 +426,9 @@ class ScannerGUI:
         ).pack(side=tk.LEFT)
         ttk.Label(toolbar, text="搜索", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
         ttk.Entry(toolbar, textvariable=self.search, width=20).pack(side=tk.LEFT)
+        ttk.Button(toolbar, text="清空筛选", command=self.clear_filters).pack(
+            side=tk.LEFT, padx=(6, 0)
+        )
         self.market_overview = tk.StringVar(value="市场概览：等待结果")
         ttk.Label(
             toolbar,
@@ -414,6 +445,11 @@ class ScannerGUI:
         body = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
         body.pack(fill=tk.BOTH, expand=True, padx=18, pady=(6, 16))
         table_frame = ttk.Frame(body)
+        result_bar = ttk.Frame(table_frame, padding=(0, 0, 0, 6))
+        result_bar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        ttk.Label(result_bar, text="扫描结果", style="ResultTitle.TLabel").pack(side=tk.LEFT)
+        ttk.Label(result_bar, textvariable=self.result_summary, style="Status.TLabel", padding=(10, 0, 0, 0)).pack(side=tk.LEFT)
+        ttk.Label(result_bar, text="双击行查看完整详情 · 单击表头排序", style="Status.TLabel").pack(side=tk.RIGHT)
         self.table = ttk.Treeview(table_frame, show="headings", selectmode="browse")
         self.table.tag_configure("quality-strong", background="#e8f7ee", foreground="#17663a")
         self.table.tag_configure("quality-candidate", background="#eef6ff", foreground="#1f5f9c")
@@ -425,10 +461,10 @@ class ScannerGUI:
         )
         self.table.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
         self.table.bind("<Double-1>", self.show_selected_detail)
-        self.table.grid(row=0, column=0, sticky="nsew")
-        ybar.grid(row=0, column=1, sticky="ns")
-        xbar.grid(row=1, column=0, sticky="ew")
-        table_frame.rowconfigure(0, weight=1)
+        self.table.grid(row=1, column=0, sticky="nsew")
+        ybar.grid(row=1, column=1, sticky="ns")
+        xbar.grid(row=2, column=0, sticky="ew")
+        table_frame.rowconfigure(1, weight=1)
         table_frame.columnconfigure(0, weight=1)
         body.add(table_frame, weight=5)
         log_frame = ttk.LabelFrame(body, text="运行日志", padding=6)
@@ -448,6 +484,9 @@ class ScannerGUI:
         self.log_text.configure(yscrollcommand=logbar.set)
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         logbar.pack(side=tk.RIGHT, fill=tk.Y)
+        ttk.Button(log_frame, text="清空日志", command=self.clear_log).pack(
+            side=tk.RIGHT, padx=(6, 0), pady=(0, 4), anchor=tk.N
+        )
         body.add(log_frame, weight=2)
 
     def build_command(self) -> list[str]:
@@ -562,7 +601,10 @@ class ScannerGUI:
             return
         self.scan_running = True
         self.backtest_running = True
+        self._cancel_requested = False
         self.start_button.configure(state=tk.DISABLED)
+        if hasattr(self, "cancel_button"):
+            self.cancel_button.configure(state=tk.NORMAL)
         self.progress.start(12)
         command = [
             sys.executable,
@@ -644,10 +686,12 @@ class ScannerGUI:
             return
         self.clear_log()
         self.scan_running = True
+        self._cancel_requested = False
         self._csv_path = None
         self._csv_mtime = None
         self.scan_output_mtime = self._results_mtime()
         self.start_button.configure(state=tk.DISABLED)
+        self.cancel_button.configure(state=tk.NORMAL)
         self.progress.stop()
         self.progress.configure(mode="determinate", maximum=100, value=0)
         self.status.set("准备扫描")
@@ -671,6 +715,8 @@ class ScannerGUI:
                 bufsize=1,
                 env=env,
             )
+            if self._cancel_requested:
+                self.process.terminate()
             assert self.process.stdout is not None
             for line in self.process.stdout:
                 self._log_queue.put(line)
@@ -681,6 +727,8 @@ class ScannerGUI:
             self.root.after(0, self.scan_failed, str(exc))
 
     def _flush_log_queue(self) -> None:
+        if self._closing:
+            return
         lines: list[str] = []
         while len(lines) < 200:
             try:
@@ -694,9 +742,21 @@ class ScannerGUI:
     def scan_finished(self, code: int) -> None:
         self.progress.stop()
         was_backtest = self.backtest_running
+        was_cancelled = self._cancel_requested
         self.scan_running = False
+        self.process = None
         self.start_button.configure(state=tk.NORMAL)
+        if hasattr(self, "cancel_button"):
+            self.cancel_button.configure(state=tk.DISABLED)
         self.backtest_running = False
+        self._cancel_requested = False
+        if self._closing:
+            self._shutdown()
+            return
+        if was_cancelled:
+            self.status.set("任务已取消")
+            self.append_log("任务已取消。\n")
+            return
         self.status.set("扫描完成" if code == 0 else f"任务结束，退出码：{code}")
         if (
             code == 0
@@ -744,11 +804,63 @@ class ScannerGUI:
 
     def scan_failed(self, error: str) -> None:
         self.progress.stop()
+        self.scan_running = False
+        self.process = None
         self.start_button.configure(state=tk.NORMAL)
+        if hasattr(self, "cancel_button"):
+            self.cancel_button.configure(state=tk.DISABLED)
         self.backtest_running = False
+        self._cancel_requested = False
+        if self._closing:
+            self._shutdown()
+            return
         self.status.set("扫描启动失败")
         self.append_log(error + "\n")
         messagebox.showerror("运行失败", error)
+
+    def cancel_running_task(self) -> None:
+        if not self.scan_running:
+            messagebox.showinfo("提示", "当前没有可取消的任务")
+            return
+        if not messagebox.askyesno("取消运行", "确定要取消当前任务吗？"):
+            return
+        self._cancel_process()
+
+    def _cancel_process(self) -> None:
+        self._cancel_requested = True
+        if hasattr(self, "cancel_button"):
+            self.cancel_button.configure(state=tk.DISABLED)
+        self.status.set("正在取消任务")
+        try:
+            if self.process is not None:
+                self.process.terminate()
+        except OSError as exc:
+            self.append_log(f"取消任务失败：{exc}\n")
+
+    def on_close(self) -> None:
+        if not self.scan_running:
+            self._shutdown()
+            return
+        if not messagebox.askyesno("退出程序", "任务正在运行，是否取消任务并退出？"):
+            return
+        self._closing = True
+        self._cancel_process()
+        self._close_when_stopped()
+
+    def _close_when_stopped(self) -> None:
+        if self.scan_running:
+            self.root.after(100, self._close_when_stopped)
+            return
+        self._shutdown()
+
+    def _shutdown(self) -> None:
+        if self._filter_job is not None:
+            self.root.after_cancel(self._filter_job)
+            self._filter_job = None
+        if self._log_job is not None:
+            self.root.after_cancel(self._log_job)
+            self._log_job = None
+        self.root.destroy()
 
     def append_log(self, text: str) -> None:
         self.log_text.configure(state=tk.NORMAL)
@@ -896,6 +1008,16 @@ class ScannerGUI:
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.delete("1.0", tk.END)
         self.log_text.configure(state=tk.DISABLED)
+
+    def clear_filters(self) -> None:
+        self.search.set("")
+        self.sector_filter.set("全部板块")
+        self.industry_filter.set("全部行业")
+        self.quality_filter.set("全部质量")
+        if self._filter_job is not None:
+            self.root.after_cancel(self._filter_job)
+            self._filter_job = None
+        self._render_cached_rows()
 
     def _data_source_changed(self, _event=None) -> None:
         labels = {"eastmoney": "东方财富", "sina": "新浪", "tencent": "腾讯"}
@@ -1187,6 +1309,10 @@ class ScannerGUI:
                 "", tk.END, values=display_values, tags=(self._quality_tag(quality),)
             )
             self._row_details[item_id] = dict(zip(headers, values))
+        if hasattr(self, "result_summary"):
+            self.result_summary.set(
+                f"当前文件：{self.current_file} · 命中 {len(filtered):,} / {len(data_rows):,} 条"
+            )
         self.status.set(
             f"{self.current_file} · 命中 {len(filtered)} / {len(data_rows)} 条 · 实际渲染 {rendered_count} 条 · 双击查看详情"
         )

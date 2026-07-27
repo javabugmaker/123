@@ -57,7 +57,81 @@ class RegressionTests(TestCase):
         with patch("gui.tk.StringVar", return_value=variable), patch("gui.tk.BooleanVar", return_value=variable), patch.object(gui.ScannerGUI, "_configure_style"), patch.object(gui.ScannerGUI, "_build_ui"), patch.object(gui.ScannerGUI, "_load_best_available_results") as load_results:
             gui.ScannerGUI(root)
 
+        root.protocol.assert_called_once()
         load_results.assert_called_once_with()
+
+    def test_gui_clear_log_removes_existing_text(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner.log_text = Mock()
+
+        scanner.clear_log()
+
+        scanner.log_text.configure.assert_any_call(state=gui.tk.NORMAL)
+        scanner.log_text.delete.assert_called_once_with("1.0", gui.tk.END)
+        scanner.log_text.configure.assert_called_with(state=gui.tk.DISABLED)
+
+    def test_gui_clear_filters_restores_default_values_and_refreshes_rows(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner.search = Mock()
+        scanner.sector_filter = Mock()
+        scanner.industry_filter = Mock()
+        scanner.quality_filter = Mock()
+        scanner._filter_job = "filter-job"
+        scanner.root = Mock()
+        scanner._render_cached_rows = Mock()
+
+        scanner.clear_filters()
+
+        scanner.search.set.assert_called_once_with("")
+        scanner.sector_filter.set.assert_called_once_with("全部板块")
+        scanner.industry_filter.set.assert_called_once_with("全部行业")
+        scanner.quality_filter.set.assert_called_once_with("全部质量")
+        scanner.root.after_cancel.assert_called_once_with("filter-job")
+        self.assertIsNone(scanner._filter_job)
+        scanner._render_cached_rows.assert_called_once_with()
+
+    def test_gui_cancel_running_task_terminates_process_after_confirmation(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner.scan_running = True
+        scanner.process = Mock()
+        scanner.cancel_button = Mock()
+        scanner.status = Mock()
+
+        with patch("gui.messagebox.askyesno", return_value=True):
+            scanner.cancel_running_task()
+
+        scanner.process.terminate.assert_called_once_with()
+        scanner.cancel_button.configure.assert_called_once_with(state=gui.tk.DISABLED)
+        scanner.status.set.assert_called_once_with("正在取消任务")
+        self.assertTrue(scanner._cancel_requested)
+
+    def test_gui_on_close_keeps_window_open_when_running_task_is_not_confirmed(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner.scan_running = True
+        scanner._shutdown = Mock()
+        scanner._cancel_process = Mock()
+        scanner._close_when_stopped = Mock()
+
+        with patch("gui.messagebox.askyesno", return_value=False):
+            scanner.on_close()
+
+        scanner._shutdown.assert_not_called()
+        scanner._cancel_process.assert_not_called()
+        scanner._close_when_stopped.assert_not_called()
+
+    def test_gui_shutdown_cancels_scheduled_jobs_and_destroys_window(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner._filter_job = "filter-job"
+        scanner._log_job = "log-job"
+        scanner.root = Mock()
+
+        scanner._shutdown()
+
+        scanner.root.after_cancel.assert_any_call("filter-job")
+        scanner.root.after_cancel.assert_any_call("log-job")
+        scanner.root.destroy.assert_called_once_with()
+        self.assertIsNone(scanner._filter_job)
+        self.assertIsNone(scanner._log_job)
 
     def test_gui_formats_numeric_table_values_and_quality_tags(self):
         scanner = object.__new__(gui.ScannerGUI)
