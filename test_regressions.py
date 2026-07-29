@@ -307,6 +307,27 @@ class RegressionTests(TestCase):
         self.assertEqual(second.loc[0, "SignalDays"], 1)
         self.assertEqual(history["SignalDays"].tolist(), [1])
 
+    def test_signal_lifecycle_increments_despite_mixed_data_dates(self):
+        first_frame = pd.DataFrame({
+            "Ticker": ["000001.SZ", "000002.SZ"],
+            "DataAsOf": ["2026-07-24", "2026-07-24"],
+            "Name": ["平安银行", "万科A"],
+            "Score": [60.0, 60.0],
+            "SignalCount": [4, 4],
+            "PassedFilters": [True, True],
+        })
+        second_frame = first_frame.copy()
+        second_frame.loc[0, "DataAsOf"] = "2026-07-27"
+
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            with patch("signal_lifecycle.HISTORY_FILE", output_dir / "SignalHistory.csv"), patch("signal_lifecycle.TRACKING_FILE", output_dir / "SignalTracking.csv"):
+                signal_lifecycle.enrich_signal_lifecycle(first_frame)
+                result = signal_lifecycle.enrich_signal_lifecycle(second_frame)
+
+        self.assertEqual(result.loc[0, "SignalDays"], 2)
+        self.assertEqual(result.loc[0, "SignalStatus"], "WATCH")
+
     def test_signal_lifecycle_resets_when_ticker_was_absent_on_previous_trade_date(self):
         frame = pd.DataFrame({
             "Ticker": ["000001.SZ"],

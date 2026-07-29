@@ -128,8 +128,7 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
     history["Ticker"] = history["Ticker"].astype(str).str.strip().str.upper()
     history["TradeDate"] = history["TradeDate"].astype(str)
     trade_dates = result.get("DataAsOf", pd.Series("", index=result.index)).fillna("").astype(str)
-    known_dates = set(trade_dates)
-    prior_history = history.loc[~history["TradeDate"].isin(known_dates)].copy()
+    prior_history = history.copy()
     prior_history["_TradeDate"] = pd.to_datetime(prior_history["TradeDate"], errors="coerce")
     signal_days: list[int] = []
     starts: list[str] = []

@@ -670,8 +670,15 @@ def run_scan(
             logger.debug("Could not load previous scan results: %s", exc)
 
     with ThreadPoolExecutor(max_workers=SCAN_THREADS) as executor:
-        futures = {}
-        for ti in analyse_queue:
+        max_pending = max(SCAN_THREADS * 4, SCAN_THREADS)
+        ticker_iter = iter(analyse_queue)
+        futures: dict[Any, TickerInfo] = {}
+
+        def submit_next() -> bool:
+            try:
+                ti = next(ticker_iter)
+            except StopIteration:
+                return False
             ticker = _normalize_ticker(ti.ticker)
             futures[
                 executor.submit(
@@ -680,51 +687,60 @@ def run_scan(
                     downloaded_frames[ticker],
                 )
             ] = ti
+            return True
 
-        for future in tqdm(
-            as_completed(futures),
-            total=len(futures),
+        for _ in range(min(max_pending, len(analyse_queue))):
+            submit_next()
+
+        completed = 0
+        with tqdm(
+            total=len(analyse_queue),
             desc="Analysing",
             unit="ticker",
             disable=not sys.stderr.isatty(),
-        ):
-            ti = futures[future]
-            try:
-                result, frame = future.result(timeout=120)
-            except Exception as exc:
-                logger.warning("Analysis error for %s: %s", ti.ticker, exc)
-                result, frame = ScanResult(ticker=ti.ticker, error=str(exc)), None
+        ) as progress:
+            while futures:
+                future = next(as_completed(futures))
+                ti = futures.pop(future)
+                completed += 1
+                try:
+                    result, frame = future.result(timeout=120)
+                except Exception as exc:
+                    logger.warning("Analysis error for %s: %s", ti.ticker, exc)
+                    result, frame = ScanResult(ticker=ti.ticker, error=str(exc)), None
 
-            results.append(result)
-            if frame is not None:
-                analysed_frames[result.ticker] = frame
+                results.append(result)
+                if frame is not None:
+                    analysed_frames[result.ticker] = frame
 
-            if result.error:
-                failed += 1
-                logger.warning("Analysis failed for %s: %s", ti.ticker, result.error)
-            else:
-                successful += 1
-                if result.passed_filters:
-                    passed += 1
+                if result.error:
+                    failed += 1
+                    logger.warning("Analysis failed for %s: %s", ti.ticker, result.error)
+                else:
+                    successful += 1
+                    if result.passed_filters:
+                        passed += 1
 
-            if not result.error:
-                processed_set.add(ti.ticker)
-            analysed_this_run.add(ti.ticker)
+                if not result.error:
+                    processed_set.add(ti.ticker)
+                analysed_this_run.add(ti.ticker)
+                progress.update(1)
 
-            if len(analysed_this_run) % 100 == 0 or len(analysed_this_run) == len(
-                analyse_queue
-            ):
-                logger.info(
-                    "Analysing complete: %d/%d tickers (%d successful, %d failed).",
-                    len(analysed_this_run),
-                    len(analyse_queue),
-                    successful,
-                    failed,
-                )
+                if len(analysed_this_run) % 100 == 0 or len(analysed_this_run) == len(
+                    analyse_queue
+                ):
+                    logger.info(
+                        "ANALYSE progress: %d/%d (%d successful, %d failed).",
+                        completed,
+                        len(analyse_queue),
+                        successful,
+                        failed,
+                    )
 
-            if ENABLE_CHECKPOINT and len(analysed_this_run) % CHECKPOINT_INTERVAL == 0:
-                save_checkpoint(processed_set, data_source)
+                if ENABLE_CHECKPOINT and len(analysed_this_run) % CHECKPOINT_INTERVAL == 0:
+                    save_checkpoint(processed_set, data_source)
 
+                submit_next()
     # Merge previous results for tickers we didn't re-analyse
     for ticker, sr in prev_results.items():
         if ticker not in analysed_this_run:

@@ -182,6 +182,9 @@ MAX_RENDERED_ROWS = 500
 DOWNLOAD_PROGRESS_RE = re.compile(
     r"DOWNLOAD progress: (\d+)/(\d+) \((\d+) succeeded, (\d+) no-data/failed\)\."
 )
+ANALYSE_PROGRESS_RE = re.compile(
+    r"ANALYSE progress: (\d+)/(\d+) \((\d+) successful, (\d+) failed\)\."
+)
 
 
 class ScannerGUI:
@@ -331,6 +334,8 @@ class ScannerGUI:
 
         controls = ttk.LabelFrame(self.root, text="扫描设置", padding=12)
         controls.pack(fill=tk.X, padx=18, pady=(14, 8))
+        controls.columnconfigure(3, weight=1)
+        controls.columnconfigure(4, weight=1)
         ttk.Label(controls, text="扫描范围").grid(
             row=0, column=0, padx=(0, 6), sticky=tk.W
         )
@@ -346,7 +351,7 @@ class ScannerGUI:
             row=0, column=2, padx=(0, 6), sticky=tk.W
         )
         ttk.Entry(controls, textvariable=self.tickers, width=38).grid(
-            row=0, column=3, padx=(0, 8), sticky=tk.W
+            row=0, column=3, padx=(0, 8), sticky=tk.EW
         )
         ttk.Label(controls, text="例：588000.SH,000001.SZ", foreground="#708399").grid(
             row=0, column=4, sticky=tk.W
@@ -378,69 +383,34 @@ class ScannerGUI:
         )
         self.cancel_button.grid(row=1, column=5, padx=(8, 0), pady=(10, 0), sticky=tk.W)
 
-        toolbar = ttk.Frame(self.root, padding=(18, 2))
-        toolbar.pack(fill=tk.X)
-        ttk.Button(toolbar, text="Top 50", style="Quiet.TButton", command=self._load_top50).pack(
-            side=tk.LEFT, padx=(0, 6)
-        )
-        ttk.Button(toolbar, text="市场概览", style="Quiet.TButton", command=self.show_market_overview).pack(
-            side=tk.LEFT, padx=6
-        )
-        ttk.Button(
-            toolbar,
-            text="连续信号", style="Quiet.TButton",
-            command=self.show_sustained_signals,
-        ).pack(side=tk.LEFT, padx=6)
-        ttk.Button(
-            toolbar,
-            text="全部结果", style="Quiet.TButton",
-            command=lambda: self.load_csv("AllResults.csv"),
-        ).pack(side=tk.LEFT, padx=6)
-        ttk.Button(toolbar, text="结果目录", style="Quiet.TButton", command=self.open_output).pack(
-            side=tk.LEFT, padx=6
-        )
-        ttk.Button(toolbar, text="运行回测", style="Quiet.TButton", command=self.start_backtest).pack(
-            side=tk.LEFT, padx=6
-        )
-        ttk.Button(toolbar, text="查看回测", style="Quiet.TButton", command=self.show_backtest).pack(
-            side=tk.LEFT, padx=6
-        )
-        ttk.Label(toolbar, text="板块", padding=(16, 0, 4, 0)).pack(side=tk.LEFT)
-        self.sector_box = ttk.Combobox(
-            toolbar, textvariable=self.sector_filter, state="readonly", width=12
-        )
+        actions = ttk.Frame(self.root, padding=(18, 2))
+        actions.pack(fill=tk.X)
+        for text, command in (
+            ("Top 50", self._load_top50), ("市场概览", self.show_market_overview),
+            ("连续信号", self.show_sustained_signals), ("全部结果", lambda: self.load_csv("AllResults.csv")),
+            ("结果目录", self.open_output), ("运行回测", self.start_backtest), ("查看回测", self.show_backtest),
+        ):
+            ttk.Button(actions, text=text, style="Quiet.TButton", command=command).pack(side=tk.LEFT, padx=(0, 6))
+        self.progress = ttk.Progressbar(actions, mode="indeterminate", length=180)
+        self.progress.pack(side=tk.RIGHT, padx=(10, 0))
+        ttk.Label(actions, textvariable=self.status, style="Status.TLabel").pack(side=tk.RIGHT)
+
+        filters = ttk.Frame(self.root, padding=(18, 2, 18, 6))
+        filters.pack(fill=tk.X)
+        ttk.Label(filters, text="板块", padding=(0, 0, 4, 0)).pack(side=tk.LEFT)
+        self.sector_box = ttk.Combobox(filters, textvariable=self.sector_filter, state="readonly", width=12)
         self.sector_box.pack(side=tk.LEFT)
         self.sector_box.bind("<<ComboboxSelected>>", self._sector_changed)
-        ttk.Label(toolbar, text="行业", padding=(8, 0, 4, 0)).pack(side=tk.LEFT)
-        self.industry_box = ttk.Combobox(
-            toolbar, textvariable=self.industry_filter, state="readonly", width=14
-        )
+        ttk.Label(filters, text="行业", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
+        self.industry_box = ttk.Combobox(filters, textvariable=self.industry_filter, state="readonly", width=14)
         self.industry_box.pack(side=tk.LEFT)
-        ttk.Label(toolbar, text="质量", padding=(8, 0, 4, 0)).pack(side=tk.LEFT)
-        ttk.Combobox(
-            toolbar,
-            textvariable=self.quality_filter,
-            values=("全部质量", "强候选", "候选", "观察", "普通"),
-            state="readonly",
-            width=9,
-        ).pack(side=tk.LEFT)
-        ttk.Label(toolbar, text="搜索", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
-        ttk.Entry(toolbar, textvariable=self.search, width=20).pack(side=tk.LEFT)
-        ttk.Button(toolbar, text="清空筛选", command=self.clear_filters).pack(
-            side=tk.LEFT, padx=(6, 0)
-        )
+        ttk.Label(filters, text="质量", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
+        ttk.Combobox(filters, textvariable=self.quality_filter, values=("全部质量", "强候选", "候选", "观察", "普通"), state="readonly", width=9).pack(side=tk.LEFT)
+        ttk.Label(filters, text="搜索", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
+        ttk.Entry(filters, textvariable=self.search, width=24).pack(side=tk.LEFT)
+        ttk.Button(filters, text="清空筛选", command=self.clear_filters).pack(side=tk.LEFT, padx=(6, 0))
         self.market_overview = tk.StringVar(value="市场概览：等待结果")
-        ttk.Label(
-            toolbar,
-            textvariable=self.market_overview,
-            style="Status.TLabel",
-            padding=(12, 0, 0, 0),
-        ).pack(side=tk.LEFT)
-        self.progress = ttk.Progressbar(toolbar, mode="indeterminate", length=180)
-        self.progress.pack(side=tk.RIGHT, padx=(10, 0))
-        ttk.Label(toolbar, textvariable=self.status, style="Status.TLabel").pack(
-            side=tk.RIGHT
-        )
+        ttk.Label(filters, textvariable=self.market_overview, style="Status.TLabel", padding=(16, 0, 0, 0)).pack(side=tk.LEFT)
 
         body = ttk.PanedWindow(self.root, orient=tk.VERTICAL)
         body.pack(fill=tk.BOTH, expand=True, padx=18, pady=(6, 16))
@@ -736,7 +706,21 @@ class ScannerGUI:
             except queue.Empty:
                 break
         if lines:
-            self.append_log("".join(lines))
+            latest_download_progress = None
+            latest_analyse_progress = None
+            rendered_lines: list[str] = []
+            for line in lines:
+                if DOWNLOAD_PROGRESS_RE.search(line):
+                    latest_download_progress = line
+                elif ANALYSE_PROGRESS_RE.search(line):
+                    latest_analyse_progress = line
+                else:
+                    rendered_lines.append(line)
+            if latest_download_progress:
+                rendered_lines.append(latest_download_progress)
+            if latest_analyse_progress:
+                rendered_lines.append(latest_analyse_progress)
+            self.append_log("".join(rendered_lines))
         self._log_job = self.root.after(150, self._flush_log_queue)
 
     def scan_finished(self, code: int) -> None:
@@ -868,6 +852,7 @@ class ScannerGUI:
         self.log_text.see(tk.END)
         self.log_text.configure(state=tk.DISABLED)
         progress = DOWNLOAD_PROGRESS_RE.search(text)
+        analyse_progress = ANALYSE_PROGRESS_RE.search(text)
         if progress:
             completed, total, successful, skipped = (
                 int(value) for value in progress.groups()
@@ -878,6 +863,17 @@ class ScannerGUI:
             )
             self.status.set(
                 f"DOWNLOAD {completed}/{total} · 成功 {successful} · 无数据/失败 {skipped}"
+            )
+        elif analyse_progress:
+            completed, total, successful, failed = (
+                int(value) for value in analyse_progress.groups()
+            )
+            self.progress.stop()
+            self.progress.configure(
+                mode="determinate", maximum=max(total, 1), value=completed
+            )
+            self.status.set(
+                f"分析 {completed}/{total} · 成功 {successful} · 失败 {failed}"
             )
         elif "Phase 2/2:" in text:
             self.progress.configure(mode="indeterminate")
