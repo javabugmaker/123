@@ -647,7 +647,7 @@ class ScannerGUI:
             text.configure(state=tk.NORMAL)
             text.insert("1.0", "\n".join(lines))
             text.configure(state=tk.DISABLED)
-        except Exception as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, tk.TclError) as exc:
             messagebox.showerror("读取回测结果失败", str(exc))
 
     def start_scan(self) -> None:
@@ -693,7 +693,7 @@ class ScannerGUI:
             code = self.process.wait()
             self.process = None
             self.root.after(0, self.scan_finished, code)
-        except Exception as exc:
+        except (OSError, subprocess.SubprocessError, tk.TclError) as exc:
             self.root.after(0, self.scan_failed, str(exc))
 
     def _flush_log_queue(self) -> None:
@@ -1339,7 +1339,7 @@ class ScannerGUI:
                 self._csv_mtime = modified_at
                 self._update_filter_values(self._csv_headers, self._csv_rows)
             return self._render_cached_rows()
-        except Exception as exc:
+        except (OSError, UnicodeDecodeError, csv.Error, tk.TclError) as exc:
             messagebox.showerror("读取失败", str(exc))
             return False
 

@@ -428,11 +428,11 @@ class RegressionTests(TestCase):
             cache_path = output_dir / "000001.SZ__eastmoney.parquet"
             cache_path.touch()
             report_path.touch()
-            with patch.object(scanner, "OUTPUT_DIR", output_dir), patch.object(scanner, "_CHECKPOINT_PATH", output_dir / "_checkpoint.json"), patch.object(scanner, "load_checkpoint", return_value={"000001.SZ"}), patch.object(scanner, "_load_previous_tickers", return_value={"000001.SZ"}), patch.object(scanner, "_cache_path_for", return_value=cache_path), patch.object(scanner, "_legacy_cache_path", return_value=output_dir / "missing.csv"), patch.object(scanner, "download_batch", return_value={"000001.SZ": frame}) as download_batch, patch.object(scanner, "enrich_results"), patch.object(scanner, "save_checkpoint"), patch.object(scanner, "clear_checkpoint") as clear_checkpoint, patch.object(scanner.pd, "read_parquet", side_effect=[metadata, previous]):
+            with patch.object(scanner, "OUTPUT_DIR", output_dir), patch.object(scanner, "_CHECKPOINT_PATH", output_dir / "_checkpoint.json"), patch.object(scanner, "load_checkpoint", return_value={"000001.SZ"}), patch.object(scanner, "_load_previous_tickers", return_value={"000001.SZ"}), patch.object(scanner, "_cache_path_for", return_value=cache_path), patch.object(scanner, "download_batch", return_value={"000001.SZ": frame}) as download_batch, patch.object(scanner, "enrich_results"), patch.object(scanner, "save_checkpoint"), patch.object(scanner, "clear_checkpoint") as clear_checkpoint, patch.object(scanner.pd, "read_parquet", side_effect=[metadata, previous]):
                 report = scanner.run_scan(stock_universe=[ticker], etf_universe=[], data_source="eastmoney")
 
         clear_checkpoint.assert_called_once_with()
-        self.assertIsNone(download_batch.call_args.kwargs["skip_tickers"])
+        self.assertEqual(download_batch.call_args.kwargs["skip_tickers"], {"000001.SZ"})
         self.assertEqual(report.successful, 1)
         self.assertEqual([result.ticker for result in report.results], ["000001.SZ"])
         self.assertTrue(pd.isna(report.results[0].backtest_score))
@@ -631,6 +631,13 @@ class RegressionTests(TestCase):
             parser.parse_args(["scan", "--top", "0"])
         with self.assertRaises(SystemExit):
             parser.parse_args(["report", "--top-parquet", "-1"])
+
+    def test_parser_rejects_conflicting_scope_options(self):
+        parser = main.build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["report", "--stocks-only", "--etfs-only"])
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["download", "--stocks-only", "--etfs-only"])
 
     def test_backtest_objective_rows_build_derived_targets(self):
         frame = pd.DataFrame({

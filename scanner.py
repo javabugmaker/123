@@ -43,7 +43,6 @@ from config import (
 )
 from downloader import (
     TickerInfo,
-    _legacy_cache_path,
     _load_cache,
     build_ticker_universe,
     download_batch,
@@ -62,6 +61,9 @@ _fh = logging.FileHandler(LOG_DIR / "scanner.log", mode="a")
 _fh.setLevel(logging.DEBUG)
 _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 logger.addHandler(_fh)
+
+
+_SCAN_RECOVERABLE_ERRORS = (OSError, ValueError, TypeError, KeyError, IndexError)
 
 
 # ======================================================================
@@ -162,12 +164,12 @@ def save_checkpoint(processed: set[str], data_source: str = "") -> None:
         data = {
             "active": True,
             "processed": sorted(_normalize_ticker(ticker) for ticker in processed),
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "data_source": normalize_data_source(data_source) if data_source else "",
             "scoring_version": SCORING_VERSION,
         }
         _CHECKPOINT_PATH.write_text(json.dumps(data), encoding="utf-8")
-    except Exception as exc:
+    except (OSError, TypeError, ValueError) as exc:
         logger.warning("Failed to save checkpoint: %s", exc)
 
 
@@ -185,7 +187,7 @@ def load_checkpoint(data_source: str = "") -> set[str]:
         if expected_source and data.get("data_source") != expected_source:
             return set()
         return {_normalize_ticker(ticker) for ticker in data.get("processed", [])}
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
         return set()
 
 
@@ -196,7 +198,7 @@ def _load_previous_tickers() -> set[str]:
     try:
         prev_df = pd.read_parquet(prev_parquet, columns=["Ticker"])
         return {_normalize_ticker(ticker) for ticker in prev_df["Ticker"].dropna()}
-    except Exception:
+    except (OSError, ImportError, KeyError, ValueError):
         return set()
 
 
@@ -241,7 +243,7 @@ def scan_single_from_df(
         if market_cap is None and not ticker_info.is_etf:
             try:
                 market_cap = get_market_cap(ticker)
-            except Exception as exc:
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
                 return ScanResult(
                     ticker=ticker,
                     name=ticker_info.name,
@@ -340,7 +342,7 @@ def scan_single_from_df(
             style=style,
         )
 
-    except Exception as exc:
+    except _SCAN_RECOVERABLE_ERRORS as exc:
         logger.debug("Error scanning %s: %s", ticker, exc)
         return ScanResult(
             ticker=ticker,
@@ -366,7 +368,7 @@ def scan_single(
     try:
         df = download_ticker(ticker, force=force_download, source=data_source)
         return scan_single_from_df(ticker_info, df)
-    except Exception as exc:
+    except _SCAN_RECOVERABLE_ERRORS as exc:
         logger.debug("Error scanning %s: %s", ticker, exc)
         return ScanResult(
             ticker=ticker,
@@ -474,7 +476,7 @@ def run_scan(
         force=force_download,
         source=data_source,
         cache_first=cache_first and not force_download,
-        skip_tickers=None,
+        skip_tickers=processed_set if resume else None,
     )
 
     # ---- Phase 2: Parallel analyse ----
@@ -526,7 +528,7 @@ def run_scan(
                 previous_report_source = str(
                     metadata["DataSource"].dropna().iloc[0] or ""
                 )
-        except Exception:
+        except (OSError, ImportError, KeyError, ValueError):
             previous_report_source = ""
 
     if resume and prev_parquet.exists() and previous_report_source in ("", data_source):
@@ -666,7 +668,7 @@ def run_scan(
                 )
                 if sr.ticker in universe_symbols and sr.ticker in processed_set:
                     prev_results[sr.ticker] = sr
-        except Exception as exc:
+        except (OSError, ImportError, KeyError, TypeError, ValueError, IndexError) as exc:
             logger.debug("Could not load previous scan results: %s", exc)
 
     with ThreadPoolExecutor(max_workers=SCAN_THREADS) as executor:
@@ -705,7 +707,7 @@ def run_scan(
                 completed += 1
                 try:
                     result, frame = future.result(timeout=120)
-                except Exception as exc:
+                except _SCAN_RECOVERABLE_ERRORS as exc:
                     logger.warning("Analysis error for %s: %s", ti.ticker, exc)
                     result, frame = ScanResult(ticker=ti.ticker, error=str(exc)), None
 
@@ -754,7 +756,7 @@ def run_scan(
     logger.info("Enriching %d scan results...", len(results))
     try:
         enrich_results(results, data_source, frames=analysed_frames)
-    except Exception:
+    except _SCAN_RECOVERABLE_ERRORS:
         logger.exception("Failed to enrich scan results; continuing with base results")
     logger.info("Enrichment complete: %d scan results.", len(results))
 
@@ -816,7 +818,7 @@ def _analyse_one_ticker(
                 error="No cached data",
             )
         return _analyse_one_ticker_from_df(ticker_info, df)[0]
-    except Exception as exc:
+    except _SCAN_RECOVERABLE_ERRORS as exc:
         return ScanResult(ticker=ticker, name=ticker_info.name, error=str(exc))
 
 
@@ -851,7 +853,7 @@ def run_parallel_indicator_scan(
             try:
                 result = future.result(timeout=60)
                 results.append(result)
-            except Exception as exc:
+            except _SCAN_RECOVERABLE_ERRORS as exc:
                 ti = futures[future]
                 logger.warning("Scan timeout/error for %s: %s", ti.ticker, exc)
                 results.append(

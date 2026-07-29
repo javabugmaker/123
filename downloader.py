@@ -50,6 +50,24 @@ _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 logger.addHandler(_fh)
 
 
+class DownloadError(RuntimeError):
+    pass
+
+
+_DOWNLOAD_ERRORS = (
+    DownloadError,
+    RuntimeError,
+    OSError,
+    ValueError,
+    TypeError,
+    KeyError,
+    json.JSONDecodeError,
+    requests.RequestException,
+    pd.errors.EmptyDataError,
+    pd.errors.ParserError,
+)
+
+
 def _log_download_progress(
     completed: int, total: int, successful: int, skipped: int
 ) -> None:
@@ -92,7 +110,7 @@ def _eastmoney_get(
                 last_error = exc
         if attempt < DOWNLOAD_RETRIES:
             time.sleep(2**attempt)
-    raise RuntimeError(f"东方财富接口连接失败: {last_error}") from last_error
+    raise DownloadError(f"东方财富接口连接失败: {last_error}") from last_error
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +260,7 @@ def _fetch_a_share_stocks() -> list[TickerInfo]:
         "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
         "fields": "f12,f13,f14,f20,f100,f102",
     }
+    rows: list[dict[str, Any]] = []
     try:
         response = _eastmoney_get("/api/qt/clist/get", params)
         data = response.json().get("data") or {}
@@ -256,11 +275,26 @@ def _fetch_a_share_stocks() -> list[TickerInfo]:
         _UNIVERSE_CACHE_PATH.write_text(
             json.dumps(rows, ensure_ascii=False), encoding="utf-8"
         )
-    except Exception:
-        if not _UNIVERSE_CACHE_PATH.exists():
-            raise
-        rows = json.loads(_UNIVERSE_CACHE_PATH.read_text(encoding="utf-8"))
-        logger.warning("证券池接口不可用，使用本地缓存的 %d 只A股。", len(rows))
+    except _DOWNLOAD_ERRORS:
+        if _UNIVERSE_CACHE_PATH.exists():
+            try:
+                rows = json.loads(_UNIVERSE_CACHE_PATH.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                rows = []
+        if rows:
+            logger.warning("证券池接口不可用，使用本地缓存的 %d 只A股。", len(rows))
+        else:
+            logger.warning("证券池接口不可用，使用内置的 %d 只A股。", len(_STATIC_A_STOCKS))
+            return [
+                TickerInfo(
+                    ticker=ticker,
+                    name=name,
+                    sector=sector,
+                    industry=industry,
+                    asset_type="stock",
+                )
+                for ticker, name, sector, industry in _STATIC_A_STOCKS
+            ]
 
     tickers: list[TickerInfo] = []
     for row in rows:
@@ -289,7 +323,7 @@ def _fetch_a_share_stocks() -> list[TickerInfo]:
             )
         )
     if len(tickers) < 4000:
-        raise RuntimeError(f"A股证券列表数量异常，仅获取到 {len(tickers)} 只")
+        raise DownloadError(f"A股证券列表数量异常，仅获取到 {len(tickers)} 只")
     logger.info("Loaded %d A-share stocks from Eastmoney.", len(tickers))
     return tickers
 
@@ -318,7 +352,7 @@ def _fetch_a_share_etfs() -> list[TickerInfo]:
             params["pn"] = page
             response = _eastmoney_get("/api/qt/clist/get", params)
             rows.extend((response.json().get("data") or {}).get("diff") or [])
-    except Exception:
+    except _DOWNLOAD_ERRORS:
         logger.exception("获取全量ETF失败")
         return [
             TickerInfo(
@@ -497,7 +531,14 @@ def _load_cache(ticker: str, source: str | None = None) -> pd.DataFrame | None:
             continue
         try:
             return _validate_ohlcv(reader(path))
-        except Exception:
+        except (
+            OSError,
+            UnicodeDecodeError,
+            ImportError,
+            ValueError,
+            pd.errors.EmptyDataError,
+            pd.errors.ParserError,
+        ):
             logger.warning(
                 "Corrupted cache for %s at %s — trying next format.", ticker, path.name
             )
@@ -542,7 +583,7 @@ def _load_meta(ticker: str) -> dict | None:
         return None
     try:
         return json.loads(path.read_text())
-    except Exception:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
 
@@ -565,7 +606,7 @@ def _fetch_market_cap_from_yf(ticker: str) -> float | None:
         if mc is not None and isinstance(mc, (int, float)) and mc > 0:
             return float(mc)
         return None
-    except Exception:
+    except (DownloadError, ValueError, TypeError, json.JSONDecodeError):
         return None
 
 
@@ -753,7 +794,7 @@ def _download_from_eastmoney(
             if df.empty:
                 return None
             return df
-        except Exception as exc:
+        except (DownloadError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             msg = str(exc).lower()
             # 404 / delisted / timeout / curl errors — skip instantly
             if any(
@@ -826,7 +867,7 @@ def _download_single(
         ):
             try:
                 frame = loader(ticker, start_date=start_date)
-            except Exception as exc:
+            except _DOWNLOAD_ERRORS as exc:
                 logger.debug(
                     "数据源 %s 获取 %s 失败：%s",
                     get_data_source_label(fallback_source),
@@ -848,7 +889,7 @@ def _download_single(
     }
     try:
         return loaders[selected](ticker, start_date=start_date)
-    except Exception as exc:
+    except _DOWNLOAD_ERRORS as exc:
         logger.debug(
             "数据源 %s 获取 %s 失败：%s", get_data_source_label(selected), ticker, exc
         )
@@ -921,7 +962,7 @@ def download_ticker(
                 combined = combined.sort_index()
                 _save_cache(ticker, combined, selected)
                 return combined
-    except Exception as exc:
+    except (OSError, ValueError, TypeError, KeyError, pd.errors.InvalidIndexError) as exc:
         logger.debug(
             "Incremental update failed for %s: %s — using cache as-is.", ticker, exc
         )
@@ -982,7 +1023,7 @@ def download_batch(
                     results[sym] = df
                 else:
                     skipped_delisted += 1
-            except Exception:
+            except _DOWNLOAD_ERRORS:
                 skipped_delisted += 1
             _log_download_progress(completed, total, len(results), skipped_delisted)
             time.sleep(DOWNLOAD_RATE_LIMIT_PAUSE)
@@ -1021,7 +1062,7 @@ def download_batch(
                                 results[sym] = df
                             else:
                                 skipped_delisted += 1
-                        except Exception as exc:
+                        except _DOWNLOAD_ERRORS as exc:
                             logger.debug("Download exception for %s: %s", sym, exc)
                             skipped_delisted += 1
                         progress.update(1)

@@ -71,6 +71,17 @@ class ScannerLogicTests(TestCase):
         self.assertGreaterEqual(len(stocks), 4000)
         self.assertEqual(request_get.call_count, 41)
 
+    @patch("downloader._eastmoney_get", side_effect=RuntimeError("接口不可用"))
+    def test_static_stock_fallback_sets_stock_metadata(self, request_get):
+        with TemporaryDirectory() as temp_dir, patch.object(
+            downloader, "_UNIVERSE_CACHE_PATH", Path(temp_dir) / "missing.json"
+        ):
+            stocks = _fetch_a_share_stocks()
+
+        self.assertEqual(len(stocks), len(downloader._STATIC_A_STOCKS))
+        self.assertTrue(all(item.asset_type == "stock" and not item.is_etf for item in stocks))
+        self.assertEqual(stocks[0].ticker, downloader._STATIC_A_STOCKS[0][0])
+
     @patch("downloader._eastmoney_get")
     def test_full_etf_universe(self, request_get):
         response = Mock()

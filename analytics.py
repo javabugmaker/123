@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -110,7 +113,7 @@ def _load_benchmark_frames(source: str) -> dict[str, pd.DataFrame]:
         if frame is None or frame.empty:
             try:
                 frame = download_ticker(ticker, source=source)
-            except Exception as exc:
+            except (OSError, ValueError, TypeError) as exc:
                 logger.warning("无法加载基准 %s: %s", name, exc)
                 frame = None
         if frame is not None and not frame.empty:
@@ -236,7 +239,7 @@ def enrich_results(
             source_result = futures[future]
             try:
                 result, enriched, relative = future.result()
-            except Exception as exc:
+            except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
                 completed += 1
                 logger.warning(
                     "Enrichment failed for %s: %s", source_result.ticker, exc
@@ -748,7 +751,7 @@ def run_historical_backtest(
             ticker = futures[future]
             try:
                 samples.extend(future.result())
-            except Exception as exc:
+            except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
                 logger.warning("Backtest failed for %s: %s", ticker, exc)
             completed += 1
             if completed == total or completed % 250 == 0:
@@ -900,7 +903,15 @@ def run_historical_backtest(
                     )
                 )
             )
-    (OUTPUT_DIR / "BacktestSummary.json").write_text(
-        json.dumps(summary.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    summary_path = OUTPUT_DIR / "BacktestSummary.json"
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=OUTPUT_DIR, delete=False
+    ) as file:
+        temporary_path = Path(file.name)
+        json.dump(summary.to_dict(), file, ensure_ascii=False, indent=2)
+    try:
+        os.replace(temporary_path, summary_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
     return summary

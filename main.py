@@ -427,8 +427,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ---- report ----
     report_p = sub.add_parser("report", help="Re-generate report from cached data")
-    report_p.add_argument("--stocks-only", action="store_true")
-    report_p.add_argument("--etfs-only", action="store_true")
+    report_scope = report_p.add_mutually_exclusive_group()
+    report_scope.add_argument("--stocks-only", action="store_true")
+    report_scope.add_argument("--etfs-only", action="store_true")
     report_p.add_argument(
         "--top", type=lambda value: _positive_int(value, "数量"), default=TOP_N_REPORT
     )
@@ -444,8 +445,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ---- download ----
     dl_p = sub.add_parser("download", help="Download data only (no scan)")
-    dl_p.add_argument("--stocks-only", action="store_true")
-    dl_p.add_argument("--etfs-only", action="store_true")
+    dl_scope = dl_p.add_mutually_exclusive_group()
+    dl_scope.add_argument("--stocks-only", action="store_true")
+    dl_scope.add_argument("--etfs-only", action="store_true")
     dl_p.add_argument("--tickers", type=str, default=None)
     dl_p.add_argument(
         "--data-source", choices=("eastmoney", "sina", "tencent"), default="eastmoney"
@@ -554,7 +556,7 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\nInterrupted by user.", file=sys.stderr)
         return 130
-    except Exception:
+    except (OSError, ValueError, TypeError, KeyError, IndexError):
         logging.getLogger("institution_scanner").exception("Fatal error")
         return 1
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -186,6 +187,18 @@ def _atomic_write_csv(df: pd.DataFrame, path: Path) -> None:
             temporary_path.unlink()
 
 
+def _atomic_write_parquet(df: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(suffix=path.suffix, dir=path.parent, delete=False) as file:
+        temporary_path = Path(file.name)
+    try:
+        pq.write_table(pa.Table.from_pandas(df), temporary_path)
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
 def export_top_csv(results: list[ScanResult], n: int = TOP_N_REPORT) -> Path:
     """
     Export the top *n* tickers to TopN.csv.
@@ -225,8 +238,7 @@ def export_top_parquet(results: list[ScanResult], n: int = TOP_N_PARQUET) -> Pat
     top = df.head(n)
 
     path = OUTPUT_DIR / f"Top{n}.parquet"
-    table = pa.Table.from_pandas(top)
-    pq.write_table(table, path)
+    _atomic_write_parquet(top, path)
     logger.info("Exported Top %d to %s", n, path)
     return path
 
@@ -262,7 +274,7 @@ def export_all(
     logger.info("Exported Top %d (%d rows) to %s", top_n_csv, len(rankable.head(top_n_csv)), csv_path)
 
     parquet_path = OUTPUT_DIR / f"Top{top_n_parquet}.parquet"
-    pq.write_table(pa.Table.from_pandas(rankable.head(top_n_parquet)), parquet_path)
+    _atomic_write_parquet(rankable.head(top_n_parquet), parquet_path)
     logger.info("Exported Top %d to %s", top_n_parquet, parquet_path)
 
     full_csv = OUTPUT_DIR / "AllResults.csv"
@@ -270,7 +282,7 @@ def export_all(
     logger.info("Exported all %d results to %s", len(df), full_csv)
 
     full_parquet_path = OUTPUT_DIR / "AllResults.parquet"
-    pq.write_table(pa.Table.from_pandas(df), full_parquet_path)
+    _atomic_write_parquet(df, full_parquet_path)
     logger.info("Exported all %d results to %s", len(df), full_parquet_path)
 
     opportunity_path = OUTPUT_DIR / f"Top{top_n_csv}Opportunity.csv"
@@ -292,8 +304,7 @@ def export_full_parquet(results: list[ScanResult]) -> Path:
     """Export ALL scored tickers to AllResults.parquet."""
     df = _results_to_dataframe(results)
     path = OUTPUT_DIR / "AllResults.parquet"
-    table = pa.Table.from_pandas(df)
-    pq.write_table(table, path)
+    _atomic_write_parquet(df, path)
     logger.info("Exported all %d results to %s", len(df), path)
     return path
 
