@@ -426,7 +426,7 @@ def run_scan(
         ScanReport with ranked results.
     """
 
-    start_time = time.time()
+    start_time = time.perf_counter()
     data_source = normalize_data_source(data_source)
     if force_download:
         resume = False
@@ -470,6 +470,7 @@ def run_scan(
     processed_set.intersection_update(universe_symbols)
     if processed_set:
         logger.info("Resuming interrupted scan: %d tickers already analysed.", len(processed_set))
+    download_started = time.perf_counter()
     downloaded = download_batch(
         all_tickers,
         desc="Downloading",
@@ -478,6 +479,8 @@ def run_scan(
         cache_first=cache_first and not force_download,
         skip_tickers=processed_set if resume else None,
     )
+    download_elapsed = time.perf_counter() - download_started
+    logger.info("Download phase complete in %.1f seconds.", download_elapsed)
 
     # ---- Phase 2: Parallel analyse ----
     processed_set = load_checkpoint(data_source) if resume else set()
@@ -671,6 +674,7 @@ def run_scan(
         except (OSError, ImportError, KeyError, TypeError, ValueError, IndexError) as exc:
             logger.debug("Could not load previous scan results: %s", exc)
 
+    analysis_started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=SCAN_THREADS) as executor:
         max_pending = max(SCAN_THREADS * 4, SCAN_THREADS)
         ticker_iter = iter(analyse_queue)
@@ -743,6 +747,9 @@ def run_scan(
                     save_checkpoint(processed_set, data_source)
 
                 submit_next()
+    analysis_elapsed = time.perf_counter() - analysis_started
+    logger.info("Analysis phase complete in %.1f seconds.", analysis_elapsed)
+
     # Merge previous results for tickers we didn't re-analyse
     for ticker, sr in prev_results.items():
         if ticker not in analysed_this_run:
@@ -754,16 +761,22 @@ def run_scan(
     clear_checkpoint()
 
     logger.info("Enriching %d scan results...", len(results))
+    enrichment_started = time.perf_counter()
     try:
         enrich_results(results, data_source, frames=analysed_frames)
     except _SCAN_RECOVERABLE_ERRORS:
         logger.exception("Failed to enrich scan results; continuing with base results")
-    logger.info("Enrichment complete: %d scan results.", len(results))
+    enrichment_elapsed = time.perf_counter() - enrichment_started
+    logger.info(
+        "Enrichment complete: %d scan results in %.1f seconds.",
+        len(results),
+        enrichment_elapsed,
+    )
 
     # Sort by score descending
     results.sort(key=lambda r: r.score.total, reverse=True)
 
-    elapsed = time.time() - start_time
+    elapsed = time.perf_counter() - start_time
 
     report = ScanReport(
         results=results,

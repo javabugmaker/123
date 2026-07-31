@@ -258,24 +258,9 @@ def filter_volume_accumulation(df: pd.DataFrame) -> FilterResult:
             },
         )
 
-    # Walk backwards to count consecutive True
-    consecutive = 0
-    for i in range(len(condition) - 1, -1, -1):
-        if condition.iloc[i]:
-            consecutive += 1
-        else:
-            break
-
+    consecutive_series = condition.groupby((~condition).cumsum()).cumsum()
+    consecutive = int(consecutive_series.iloc[-1])
     passed = consecutive >= VOLUME_ACCUM_MIN_DAYS
-
-    consecutive_series = pd.Series(0, index=condition.index, dtype=int)
-    cnt = 0
-    for i in range(len(condition)):
-        if condition.iloc[i]:
-            cnt += 1
-        else:
-            cnt = 0
-        consecutive_series.iloc[i] = cnt
     max_consecutive = int(consecutive_series.max())
     return FilterResult(
         passed=passed,

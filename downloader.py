@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -38,6 +39,7 @@ from config import (
     EXCLUDED_SECURITY_KEYWORDS,
     HISTORY_YEARS,
     LOG_DIR,
+    MARKET_CAP_CACHE_TTL_DAYS,
 )
 
 logger = logging.getLogger("institution_scanner.downloader")
@@ -477,6 +479,14 @@ def _drop_missing_close(df: pd.DataFrame) -> pd.DataFrame:
     return cast(pd.DataFrame, df.loc[df["Close"].notna()])
 
 
+def _is_a_share_market_closed(now: datetime | None = None) -> bool:
+    current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
+    if current.weekday() >= 5:
+        return True
+    minutes = current.hour * 60 + current.minute
+    return minutes >= 15 * 60
+
+
 def _validate_ohlcv(df: pd.DataFrame) -> pd.DataFrame | None:
     required = ["Open", "High", "Low", "Close", "Volume"]
     if df is None or df.empty or any(column not in df.columns for column in required):
@@ -619,7 +629,15 @@ def get_market_cap(ticker: str) -> float | None:
     """
     meta = _load_meta(ticker)
     if meta and "marketCap" in meta:
-        return float(meta["marketCap"])
+        try:
+            fetched_at = datetime.fromisoformat(str(meta.get("fetchedAt", "")))
+            if fetched_at.tzinfo is None:
+                fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+            age = datetime.now(timezone.utc) - fetched_at.astimezone(timezone.utc)
+            if age <= timedelta(days=MARKET_CAP_CACHE_TTL_DAYS):
+                return float(meta["marketCap"])
+        except (TypeError, ValueError):
+            pass
 
     # Try live fetch
     mc = _fetch_market_cap_from_yf(ticker)

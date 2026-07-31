@@ -130,29 +130,44 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
     trade_dates = result.get("DataAsOf", pd.Series("", index=result.index)).fillna("").astype(str)
     prior_history = history.copy()
     prior_history["_TradeDate"] = pd.to_datetime(prior_history["TradeDate"], errors="coerce")
+    dated_history = prior_history.dropna(subset=["_TradeDate"])
+    history_dates = pd.DatetimeIndex(dated_history["_TradeDate"].drop_duplicates().sort_values())
+    history_by_ticker: dict[str, pd.DataFrame] = {
+        str(ticker): group for ticker, group in dated_history.groupby("Ticker", sort=False)
+    }
     signal_days: list[int] = []
     starts: list[str] = []
     statuses: list[str] = []
     strengths: list[str] = []
-    for index, row in result.iterrows():
-        ticker = row["Ticker"]
-        trade_date = pd.to_datetime(trade_dates.loc[index], errors="coerce")
-        previous = None
+    for position, (_, row) in enumerate(result.iterrows()):
+        ticker = str(row["Ticker"])
+        trade_date_text = str(trade_dates.iloc[position])
+        trade_date = pd.to_datetime(trade_date_text, errors="coerce")
+        previous: pd.Series | None = None
+        ticker_history = history_by_ticker.get(ticker)
         if not pd.isna(trade_date):
-            previous_date = prior_history.loc[prior_history["_TradeDate"] < trade_date, "_TradeDate"].max()
-            if not pd.isna(previous_date):
-                previous_rows = prior_history.loc[
-                    (prior_history["Ticker"] == ticker)
-                    & (prior_history["_TradeDate"] == previous_date)
+            previous_index = history_dates.searchsorted(trade_date, side="left") - 1
+            if previous_index >= 0:
+                previous_rows = dated_history.loc[
+                    dated_history["_TradeDate"].eq(history_dates[previous_index])
+                    & dated_history["Ticker"].eq(ticker)
                 ]
                 if not previous_rows.empty:
                     previous = previous_rows.iloc[-1]
-        is_active = bool(active.loc[index])
+        is_active = bool(active.iloc[position])
         prior_active = previous is not None and _bool(previous["SignalActive"])
-        days = int(previous["SignalDays"]) + 1 if is_active and prior_active else int(is_active)
-        start = str(previous["SignalStartDate"]) if is_active and prior_active else trade_dates.loc[index] if is_active else ""
+        if is_active and prior_active and previous is not None:
+            days = int(previous["SignalDays"]) + 1
+            start = str(previous["SignalStartDate"])
+        else:
+            days = int(is_active)
+            start = trade_date_text if is_active else ""
         statuses.append(_status(is_active, previous, float(row["OpportunityScore"]), days))
-        values = prior_history.loc[prior_history["Ticker"] == ticker, "OpportunityScore"].tail(29).tolist()
+        values = (
+            ticker_history["OpportunityScore"].tail(29).tolist()
+            if ticker_history is not None
+            else []
+        )
         strengths.append("|".join(f"{value:.0f}" for value in [*values, float(row["OpportunityScore"])]))
         signal_days.append(days)
         starts.append(start)

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
-import io
 import json
 import os
 import queue
@@ -215,7 +213,7 @@ class ScannerGUI:
         self._csv_headers: list[str] = []
         self._csv_rows: list[list[str]] = []
         self._csv_path: Path | None = None
-        self._csv_mtime: tuple[int, int, str] | None = None
+        self._csv_mtime: tuple[int, int, int] | None = None
         self._filter_job: str | None = None
         self._sort_column: str | None = None
         self._sort_descending = True
@@ -471,6 +469,8 @@ class ScannerGUI:
             command.append("--no-resume")
         if self.force_download.get():
             command.append("--force-download")
+        else:
+            command.append("--cache-first")
         command += ["--data-source", self.data_source.get()]
         return command
 
@@ -1322,14 +1322,10 @@ class ScannerGUI:
             return False
         try:
             stat = path.stat()
-            contents = path.read_bytes()
-            modified_at = (
-                stat.st_mtime_ns,
-                stat.st_size,
-                hashlib.sha256(contents).hexdigest(),
-            )
+            modified_at = (stat.st_mtime_ns, stat.st_size, hash(path.read_bytes()))
             if self._csv_path != path or self._csv_mtime != modified_at:
-                rows = list(csv.reader(io.StringIO(contents.decode("utf-8-sig"))))
+                with path.open("r", encoding="utf-8-sig", newline="") as file:
+                    rows = list(csv.reader(file))
                 if not rows:
                     self.status.set(f"{filename} 没有结果")
                     return False

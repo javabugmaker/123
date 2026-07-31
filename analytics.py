@@ -6,16 +6,22 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from config import OUTPUT_DIR, SCAN_THREADS
-from downloader import _load_cache, download_ticker, is_etf_ticker
-from indicators import compute_all_indicators
+from config import ENABLE_VOLUME_PROFILE, OUTPUT_DIR, SCAN_THREADS
+from downloader import (
+    _fetch_eastmoney_realtime_price,
+    _is_a_share_market_closed,
+    _load_cache,
+    download_ticker,
+    is_etf_ticker,
+)
+from indicators import compute_all_indicators, compute_volume_profile
 from score import score_ticker
 
 logger = logging.getLogger("institution_scanner.analytics")
@@ -193,13 +199,26 @@ def _enrich_one_result(
         return result, None, 0.0
     latest_date = enriched.index[-1].date()
     today = datetime.now(timezone.utc).date()
-    data_age = max(0, (today - latest_date).days)
-    trading_age = max(0, len(pd.bdate_range(latest_date, today)) - 1)
+    reported_date = latest_date
     result.close = float(enriched["Close"].iloc[-1])
+    if (
+        _is_a_share_market_closed()
+        and latest_date >= today - timedelta(days=1)
+        and not is_etf_ticker(result.ticker)
+    ):
+        try:
+            realtime_close = _fetch_eastmoney_realtime_price(result.ticker)
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            realtime_close = None
+        if realtime_close is not None:
+            result.close = realtime_close
+            reported_date = today
+    data_age = max(0, (today - reported_date).days)
+    trading_age = max(0, len(pd.bdate_range(reported_date, today)) - 1)
     result.market_regime = regime
     result.market_regime_reason = regime_reason
     result.data_source = source
-    result.data_asof = enriched.index[-1].strftime("%Y-%m-%d")
+    result.data_asof = reported_date.strftime("%Y-%m-%d")
     result.data_age_days = data_age
     result.data_trading_age_days = trading_age
     result.data_coverage = round(float(enriched["Close"].notna().mean()), 4)
@@ -348,15 +367,15 @@ def _backtest_one_ticker(
         return []
     history_lengths = sorted({index + 1 for index in valid_points})
     is_etf = is_etf_ticker(str(ticker))
-    score_cache = {
-        length: float(
-            score_ticker(
-                compute_all_indicators(frame.iloc[:length].copy()),
-                is_etf=is_etf,
-            ).total
-        )
-        for length in history_lengths
-    }
+    score_cache: dict[int, float] = {}
+    for length in history_lengths:
+        historical = enriched.iloc[:length].copy()
+        if ENABLE_VOLUME_PROFILE:
+            try:
+                compute_volume_profile(historical)
+            except (ArithmeticError, TypeError, ValueError):
+                logger.debug("Historical volume profile failed for %s.", ticker)
+        score_cache[length] = float(score_ticker(historical, is_etf=is_etf).total)
     benchmark_close = None
     if benchmark_frame is not None and not benchmark_frame.empty:
         benchmark_close = benchmark_frame["Close"].astype(float).sort_index()

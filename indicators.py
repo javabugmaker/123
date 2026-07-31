@@ -518,11 +518,19 @@ def detect_wyckoff_phase(df: pd.DataFrame) -> None:
         df["WyckoffPhase"] = "Unknown"
         return
     price_now = close.iloc[-1]
-    ma200 = close.rolling(200, min_periods=100).mean().iloc[-1]
-    ma200_series = close.rolling(200, min_periods=100).mean()
+    ma200_series = df.get("MA200")
+    if ma200_series is None:
+        ma200_series = close.rolling(200, min_periods=100).mean()
+    ma200 = ma200_series.iloc[-1]
     ma200_slope = _rolling_slope(ma200_series, 60).iloc[-1]
-    vol_ma20 = vol.rolling(20, min_periods=10).mean().iloc[-1]
-    vol_ma60 = vol.rolling(60, min_periods=30).mean().iloc[-1]
+    vol_ma20_series = df.get("VolMA20")
+    if vol_ma20_series is None:
+        vol_ma20_series = vol.rolling(20, min_periods=10).mean()
+    vol_ma60_series = df.get("VolMA60")
+    if vol_ma60_series is None:
+        vol_ma60_series = vol.rolling(60, min_periods=30).mean()
+    vol_ma20 = vol_ma20_series.iloc[-1]
+    vol_ma60 = vol_ma60_series.iloc[-1]
     vol_spike = vol_ma20 > vol_ma60 * 1.5
     if "ATR14" not in df.columns:
         compute_atr(df)

@@ -44,6 +44,11 @@ from filters import (
     filter_min_volume,
     filter_volume_accumulation,
 )
+from indicators import (
+    compute_moving_averages,
+    compute_volume_mas,
+    detect_wyckoff_phase,
+)
 from report import _results_to_dataframe, export_all
 from scanner import ScanReport, ScanResult
 from score import score_ticker
@@ -469,6 +474,31 @@ class RegressionTests(TestCase):
         self.assertEqual(result.iloc[0]["Ticker"], "000001.SZ")
         self.assertGreater(result.iloc[0]["CompositeScore"], result.iloc[1]["CompositeScore"])
 
+    def test_wyckoff_phase_reuses_precomputed_moving_averages(self):
+        index = pd.date_range("2020-01-01", periods=260)
+        close = pd.Series(np.linspace(20.0, 10.0, 260), index=index)
+        raw = pd.DataFrame(
+            {
+                "Open": close,
+                "High": close + 1.0,
+                "Low": close - 1.0,
+                "Close": close,
+                "Volume": np.linspace(1_000.0, 2_000.0, 260),
+            },
+            index=index,
+        )
+        precomputed = raw.copy()
+        compute_moving_averages(precomputed)
+        compute_volume_mas(precomputed)
+
+        detect_wyckoff_phase(raw)
+        detect_wyckoff_phase(precomputed)
+
+        self.assertEqual(
+            raw["WyckoffPhase"].iloc[-1],
+            precomputed["WyckoffPhase"].iloc[-1],
+        )
+
     def test_volume_profile_accepts_numpy_bool(self):
         frame = pd.DataFrame({
             "Close": np.full(252, 10.0),
@@ -783,10 +813,7 @@ class RegressionTests(TestCase):
         with patch.object(analytics, "_load_cache", return_value=frame), patch.object(analytics, "compute_all_indicators", side_effect=add_indicators) as compute, patch.object(analytics, "_signal_points", return_value=[200, 220]), patch.object(analytics, "score_ticker", return_value=Mock(total=1.0)) as score:
             analytics._backtest_one_ticker("000001.SZ", "eastmoney")
 
-        self.assertEqual(
-            [item.args[0].shape[0] for item in compute.call_args_list],
-            [320, 201, 221],
-        )
+        self.assertEqual([item.args[0].shape[0] for item in compute.call_args_list], [320])
         self.assertEqual([item.args[0].shape[0] for item in score.call_args_list], [201, 221])
 
     def test_composite_score_preserves_75_25_weighting(self):
@@ -824,6 +851,37 @@ class RegressionTests(TestCase):
 
         self.assertEqual(result.close, 125.82)
         self.assertEqual(result.data_asof, "2026-07-24")
+
+    def test_enrichment_uses_realtime_close_after_market_close(self):
+        result = ScanResult(ticker="000858.SZ", close=78.56)
+        frame = pd.DataFrame({
+            "Open": [78.0],
+            "High": [79.0],
+            "Low": [77.5],
+            "Close": [78.56],
+            "Volume": [1000.0],
+        }, index=pd.to_datetime(["2026-07-30"]))
+
+        with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")), patch.object(analytics, "_is_a_share_market_closed", return_value=True), patch.object(analytics, "_fetch_eastmoney_realtime_price", return_value=78.0):
+            analytics.enrich_results([result], "eastmoney", frames={"000858.SZ": frame})
+
+        self.assertEqual(result.close, 78.0)
+        self.assertEqual(result.data_asof, pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d"))
+
+    def test_enrichment_keeps_daily_close_when_realtime_close_is_unavailable(self):
+        result = ScanResult(ticker="000858.SZ", close=78.56)
+        frame = pd.DataFrame({
+            "Open": [78.0],
+            "High": [79.0],
+            "Low": [77.5],
+            "Close": [78.56],
+            "Volume": [1000.0],
+        }, index=pd.to_datetime(["2026-07-30"]))
+
+        with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")), patch.object(analytics, "_is_a_share_market_closed", return_value=True), patch.object(analytics, "_fetch_eastmoney_realtime_price", return_value=None):
+            analytics.enrich_results([result], "eastmoney", frames={"000858.SZ": frame})
+
+        self.assertEqual(result.close, 78.56)
 
     def test_analysis_reuses_indicators_for_scan_and_enrichment(self):
         frame = pd.DataFrame({
