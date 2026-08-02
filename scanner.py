@@ -51,6 +51,7 @@ from downloader import (
     normalize_data_source,
 )
 from filters import run_all_filters
+from fundamental_quality import get_quality
 from indicators import compute_all_indicators
 from score import ScoreBreakdown, classify_style, score_ticker
 
@@ -101,6 +102,30 @@ class ScanResult:
     market_regime: str = "未知"
     market_regime_reason: str = ""
     industry_relative_strength: float = np.nan
+    industry_momentum_60d: float = np.nan
+    sector_confirmation_factor: float = 1.0
+    failure_signal_factor: float = 1.0
+    failure_adjusted_score: float = np.nan
+    signal_recency_factor: float = 1.0
+    signal_recency_days: int = -1
+    breakout_quality_factor: float = 1.0
+    institutional_score: float = np.nan
+    quality_roe: float = np.nan
+    quality_gross_margin: float = np.nan
+    quality_institution_holding_trend: Any = None
+    quality_institution_holding_periods: float = np.nan
+    quality_net_profit_y1: float = np.nan
+    quality_net_profit_y2: float = np.nan
+    quality_net_profit_y3: float = np.nan
+    quality_industry_gross_margin_percentile: float = np.nan
+    quality_roe_factor: bool = False
+    quality_gross_margin_factor: bool = False
+    quality_institution_holding_factor: bool = False
+    quality_net_profit_factor: bool = False
+    quality_score: float = np.nan
+    quality_gate: bool = False
+    quality_reason: str = "基本面数据缺失"
+    quality_data_available: bool = False
     stage: str = "未知"
     data_source: str = ""
     data_asof: str = ""
@@ -204,8 +229,11 @@ def _load_previous_tickers() -> set[str]:
 
 def clear_checkpoint() -> None:
     """Remove the checkpoint file."""
-    if _CHECKPOINT_PATH.exists():
-        _CHECKPOINT_PATH.unlink(missing_ok=True)
+    try:
+        if _CHECKPOINT_PATH.exists():
+            _CHECKPOINT_PATH.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Failed to remove checkpoint: %s", exc)
 
 
 # ======================================================================
@@ -316,6 +344,7 @@ def scan_single_from_df(
         vol_accum_days = int(
             filter_results.volume_accumulation.details.get("consecutive_days", 0)
         )
+        quality = get_quality(ticker, is_etf=ticker_info.is_etf)
 
         return ScanResult(
             ticker=ticker,
@@ -468,8 +497,10 @@ def run_scan(
     universe_symbols = {_normalize_ticker(ti.ticker) for ti in all_tickers}
     processed_set = load_checkpoint(data_source) if resume else set()
     processed_set.intersection_update(universe_symbols)
-    if processed_set:
-        logger.info("Resuming interrupted scan: %d tickers already analysed.", len(processed_set))
+    previous_tickers = _load_previous_tickers() if resume else set()
+    skip_processed = processed_set.intersection(previous_tickers)
+    if skip_processed:
+        logger.info("Resuming interrupted scan: %d tickers already analysed.", len(skip_processed))
     download_started = time.perf_counter()
     downloaded = download_batch(
         all_tickers,
@@ -477,16 +508,13 @@ def run_scan(
         force=force_download,
         source=data_source,
         cache_first=cache_first and not force_download,
-        skip_tickers=processed_set if resume else None,
+        skip_tickers=skip_processed if resume else None,
     )
     download_elapsed = time.perf_counter() - download_started
     logger.info("Download phase complete in %.1f seconds.", download_elapsed)
 
     # ---- Phase 2: Parallel analyse ----
-    processed_set = load_checkpoint(data_source) if resume else set()
-    previous_tickers = _load_previous_tickers() if resume else set()
-    processed_set.intersection_update(previous_tickers)
-    processed_set.intersection_update(universe_symbols)
+    processed_set = skip_processed
 
     downloaded_frames = {
         _normalize_ticker(ticker): frame for ticker, frame in downloaded.items()
@@ -624,6 +652,46 @@ def run_scan(
                         row.get("BacktestObjectiveValue", np.nan)
                     ),
                     composite_score=_parse_float(row.get("CompositeScore", np.nan)),
+                    failure_signal_factor=_parse_float(
+                        row.get("FailureSignalFactor", 1.0), 1.0
+                    ),
+                    failure_adjusted_score=_parse_float(
+                        row.get("FailureAdjustedScore", np.nan)
+                    ),
+                    signal_recency_factor=_parse_float(
+                        row.get("SignalRecencyFactor", 1.0), 1.0
+                    ),
+                    signal_recency_days=_parse_int(
+                        row.get("SignalRecencyDays", -1), -1
+                    ),
+                    breakout_quality_factor=_parse_float(
+                        row.get("BreakoutQualityFactor", 1.0), 1.0
+                    ),
+                    institutional_score=_parse_float(
+                        row.get("InstitutionalScore", np.nan)
+                    ),
+                    quality_roe=_parse_float(row.get("ROE", np.nan)),
+                    quality_gross_margin=_parse_float(row.get("GrossMargin", np.nan)),
+                    quality_institution_holding_trend=row.get("InstitutionHoldingTrend"),
+                    quality_institution_holding_periods=_parse_float(row.get("InstitutionHoldingPeriods", np.nan)),
+                    quality_net_profit_y1=_parse_float(row.get("NetProfitY1", np.nan)),
+                    quality_net_profit_y2=_parse_float(row.get("NetProfitY2", np.nan)),
+                    quality_net_profit_y3=_parse_float(row.get("NetProfitY3", np.nan)),
+                    quality_industry_gross_margin_percentile=_parse_float(row.get("IndustryGrossMarginPercentile", np.nan)),
+                    quality_roe_factor=_parse_bool(row.get("QualityROE", False)),
+                    quality_gross_margin_factor=_parse_bool(row.get("QualityGrossMargin", False)),
+                    quality_institution_holding_factor=_parse_bool(row.get("QualityInstitutionHolding", False)),
+                    quality_net_profit_factor=_parse_bool(row.get("QualityNetProfit", False)),
+                    quality_score=_parse_float(row.get("QualityScore", np.nan)),
+                    quality_gate=_parse_bool(row.get("QualityGate", False)),
+                    quality_reason=str(row.get("QualityReason", "基本面数据缺失") or "基本面数据缺失"),
+                    quality_data_available=_parse_bool(row.get("QualityDataAvailable", False)),
+                    sector_confirmation_factor=_parse_float(
+                        row.get("SectorConfirmationFactor", 1.0), 1.0
+                    ),
+                    industry_momentum_60d=_parse_float(
+                        row.get("IndustryMomentum60D", np.nan)
+                    ),
                     universe_type=str(
                         row.get("UniverseType", "current_survivor_pool")
                         or "current_survivor_pool"
@@ -710,9 +778,9 @@ def run_scan(
                 ti = futures.pop(future)
                 completed += 1
                 try:
-                    result, frame = future.result(timeout=120)
-                except _SCAN_RECOVERABLE_ERRORS as exc:
-                    logger.warning("Analysis error for %s: %s", ti.ticker, exc)
+                    result, frame = future.result()
+                except Exception as exc:
+                    logger.exception("Analysis error for %s", ti.ticker)
                     result, frame = ScanResult(ticker=ti.ticker, error=str(exc)), None
 
                 results.append(result)
@@ -811,7 +879,19 @@ def _analyse_one_ticker_from_df(
         return scan_single_from_df(ticker_info, df), None
     enriched = compute_all_indicators(df.copy())
     result = scan_single_from_df(ticker_info, enriched, indicators_computed=True)
-    return result, enriched if not result.error else None
+    if result.error:
+        return result, None
+    enrichment_columns = [
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Volume",
+        "MA20",
+        "MA50",
+        "RSI14",
+    ]
+    return result, enriched.loc[:, enrichment_columns].copy()
 
 
 def _analyse_one_ticker(
@@ -851,30 +931,39 @@ def run_parallel_indicator_scan(
     Data must already be cached. This is the fast path for re-scans.
     """
     results: list[ScanResult] = []
+    max_pending = max(max_workers * 4, max_workers)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(_analyse_one_ticker, ti, data_source): ti for ti in tickers
-        }
-        for future in tqdm(
-            as_completed(futures),
-            total=len(futures),
+        ticker_iter = iter(tickers)
+        futures: dict[Any, TickerInfo] = {}
+
+        def submit_next() -> bool:
+            try:
+                ticker_info = next(ticker_iter)
+            except StopIteration:
+                return False
+            futures[executor.submit(_analyse_one_ticker, ticker_info, data_source)] = ticker_info
+            return True
+
+        for _ in range(min(max_pending, len(tickers))):
+            submit_next()
+
+        with tqdm(
+            total=len(tickers),
             desc="Parallel scan",
             unit="ticker",
             disable=not sys.stderr.isatty(),
-        ):
-            try:
-                result = future.result(timeout=60)
-                results.append(result)
-            except _SCAN_RECOVERABLE_ERRORS as exc:
-                ti = futures[future]
-                logger.warning("Scan timeout/error for %s: %s", ti.ticker, exc)
-                results.append(
-                    ScanResult(
-                        ticker=ti.ticker,
-                        error=str(exc),
-                    )
-                )
+        ) as progress:
+            while futures:
+                future = next(as_completed(futures))
+                ticker_info = futures.pop(future)
+                try:
+                    results.append(future.result(timeout=60))
+                except _SCAN_RECOVERABLE_ERRORS as exc:
+                    logger.warning("Scan timeout/error for %s: %s", ticker_info.ticker, exc)
+                    results.append(ScanResult(ticker=ticker_info.ticker, error=str(exc)))
+                progress.update(1)
+                submit_next()
 
     results.sort(key=lambda r: r.score.total, reverse=True)
     return results

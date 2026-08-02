@@ -14,7 +14,7 @@ services:
       # Persist logs
       - ./logs:/app/logs
     environment:
-      - TZ=America/New_York
+      - TZ=Asia/Shanghai
     # Uncomment to run on a schedule using a simple cron approach
     # or trigger externally (e.g. systemd timer, cron, Airflow)
     restart: "no"

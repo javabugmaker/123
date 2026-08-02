@@ -22,11 +22,20 @@ from filters import (
     filter_min_price,
     filter_volatility_contraction,
 )
-from scanner import ScanResult
+from scanner import ScanResult, run_parallel_indicator_scan
 from score import score_ticker
 
 
 class ScannerLogicTests(TestCase):
+    def test_parallel_scan_limits_pending_analysis_tasks(self):
+        tickers = [TickerInfo(ticker=f"{index:06d}.SZ") for index in range(9)]
+
+        with patch("scanner._analyse_one_ticker", side_effect=lambda ticker, _: ScanResult(ticker=ticker.ticker)) as analyse:
+            results = run_parallel_indicator_scan(tickers, max_workers=2)
+
+        self.assertEqual(len(results), len(tickers))
+        self.assertEqual(analyse.call_count, len(tickers))
+
     def test_normalize_ticker_adds_a_share_exchange_suffix(self):
         self.assertEqual(normalize_ticker("002438"), "002438.SZ")
         self.assertEqual(normalize_ticker("600036"), "600036.SH")
@@ -58,7 +67,12 @@ class ScannerLogicTests(TestCase):
             response.json.return_value = {
                 "data": {
                     "diff": [
-                        {"f12": f"{page:02d}{index:04d}", "f13": 1, "f14": "股票", "f20": 1e9}
+                        {
+                            "f12": f"{page:02d}{index:04d}",
+                            "f13": 1,
+                            "f14": "股票",
+                            "f20": 1e9,
+                        }
                         for index in range(100)
                     ]
                 }
@@ -73,51 +87,71 @@ class ScannerLogicTests(TestCase):
 
     @patch("downloader._eastmoney_get", side_effect=RuntimeError("接口不可用"))
     def test_static_stock_fallback_sets_stock_metadata(self, request_get):
-        with TemporaryDirectory() as temp_dir, patch.object(
-            downloader, "_UNIVERSE_CACHE_PATH", Path(temp_dir) / "missing.json"
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch.object(
+                downloader, "_UNIVERSE_CACHE_PATH", Path(temp_dir) / "missing.json"
+            ),
         ):
             stocks = _fetch_a_share_stocks()
 
         self.assertEqual(len(stocks), len(downloader._STATIC_A_STOCKS))
-        self.assertTrue(all(item.asset_type == "stock" and not item.is_etf for item in stocks))
+        self.assertTrue(
+            all(item.asset_type == "stock" and not item.is_etf for item in stocks)
+        )
         self.assertEqual(stocks[0].ticker, downloader._STATIC_A_STOCKS[0][0])
 
     @patch("downloader._eastmoney_get")
     def test_full_etf_universe(self, request_get):
         response = Mock()
         response.raise_for_status.return_value = None
-        response.json.return_value = {"data": {"total": 2, "diff": [
-            {"f12": "588000", "f13": 1, "f14": "科创50ETF", "f20": 1e9},
-            {"f12": "159915", "f13": 0, "f14": "创业板ETF", "f20": 1e9},
-        ]}}
+        response.json.return_value = {
+            "data": {
+                "total": 2,
+                "diff": [
+                    {"f12": "588000", "f13": 1, "f14": "科创50ETF", "f20": 1e9},
+                    {"f12": "159915", "f13": 0, "f14": "创业板ETF", "f20": 1e9},
+                ],
+            }
+        }
         request_get.return_value = response
         etfs = _fetch_a_share_etfs()
         self.assertEqual([item.ticker for item in etfs], ["159915.SZ", "588000.SH"])
         self.assertTrue(all(item.is_etf for item in etfs))
 
     @patch("downloader._eastmoney_get")
-    def test_etf_name_filter_keeps_stock_etfs_and_excludes_non_stock_etfs(self, request_get):
+    def test_etf_name_filter_keeps_stock_etfs_and_excludes_non_stock_etfs(
+        self, request_get
+    ):
         response = Mock()
         response.raise_for_status.return_value = None
-        response.json.return_value = {"data": {"total": 12, "diff": [
-            {"f12": f"{index:06d}", "f13": 1, "f14": name, "f20": 1e9}
-            for index, name in enumerate([
-                "公司债ETF",
-                "国债ETF",
-                "货币ETF",
-                "信用债ETF",
-                "城投债ETF",
-                "同业存单ETF",
-                "短融ETF",
-                "中票ETF",
-                "国开债ETF",
-                "政金债ETF",
-                "REIT ETF",
-                "沪 杭 甬ETF",
-            ])
-        ] + [
-            {"f12": "510300", "f13": 1, "f14": "沪深300 ETF", "f20": 1e9},
-        ]}}
+        response.json.return_value = {
+            "data": {
+                "total": 12,
+                "diff": [
+                    {"f12": f"{index:06d}", "f13": 1, "f14": name, "f20": 1e9}
+                    for index, name in enumerate(
+                        [
+                            "公司债ETF",
+                            "国债ETF",
+                            "货币ETF",
+                            "信用债ETF",
+                            "城投债ETF",
+                            "同业存单ETF",
+                            "短融ETF",
+                            "中票ETF",
+                            "国开债ETF",
+                            "政金债ETF",
+                            "REIT ETF",
+                            "沪 杭 甬ETF",
+                        ]
+                    )
+                ]
+                + [
+                    {"f12": "510300", "f13": 1, "f14": "沪深300 ETF", "f20": 1e9},
+                ],
+            }
+        }
         request_get.return_value = response
 
         etfs = _fetch_a_share_etfs()
@@ -145,21 +179,23 @@ class ScannerLogicTests(TestCase):
         response = Mock()
         response.raise_for_status.return_value = None
         response.json.return_value = {
-            "data": {"klines": ["2026-07-20,10,11,12,9,1000", "2026-07-21,11,12,13,10,1200"]}
+            "data": {
+                "klines": ["2026-07-20,10,11,12,9,1000", "2026-07-21,11,12,13,10,1200"]
+            }
         }
         request_get.return_value = response
 
         frame = _download_single("000001.SZ")
 
-        self.assertEqual(list(frame.columns), ["Open", "High", "Low", "Close", "Volume"])
+        self.assertEqual(
+            list(frame.columns), ["Open", "High", "Low", "Close", "Volume"]
+        )
         self.assertEqual(frame.iloc[-1]["Close"], 12)
 
     @patch("downloader._eastmoney_get")
     def test_eastmoney_history_does_not_use_realtime_price(self, request_get):
         history = Mock()
-        history.json.return_value = {
-            "data": {"klines": ["2026-07-21,10,11,12,9,1000"]}
-        }
+        history.json.return_value = {"data": {"klines": ["2026-07-21,10,11,12,9,1000"]}}
         request_get.return_value = history
 
         frame = downloader._download_from_eastmoney("000001.SZ")
@@ -174,6 +210,7 @@ class ScannerLogicTests(TestCase):
         response.text = 'var _data=([{"day":"2026-07-21","open":"1","high":"2","low":"0.9","close":"1.5","volume":"100"}]);'
         request_get.return_value = response
         frame = _download_from_sina("588000.SH")
+        assert frame is not None
         self.assertEqual(frame.iloc[-1]["Close"], 1.5)
 
     @patch("downloader._HTTP.get")
@@ -181,7 +218,9 @@ class ScannerLogicTests(TestCase):
         response = Mock()
         response.raise_for_status.return_value = None
         response.json.return_value = {
-            "data": {"sz000001": {"qfqday": [["2026-07-21", "11", "12", "13", "10", "1200"]]}}
+            "data": {
+                "sz000001": {"qfqday": [["2026-07-21", "11", "12", "13", "10", "1200"]]}
+            }
         }
         request_get.return_value = response
 
@@ -192,13 +231,29 @@ class ScannerLogicTests(TestCase):
     @patch("downloader._download_single")
     @patch("downloader._load_cache")
     @patch("downloader._save_cache")
-    def test_cached_latest_daily_bar_is_refreshed_incrementally(self, save_cache, load_cache, download_single):
-        cached = pd.DataFrame({
-            "Open": [10.0], "High": [10.5], "Low": [9.5], "Close": [10.0], "Volume": [1000.0],
-        }, index=pd.to_datetime(["2026-07-21"]))
-        refreshed = pd.DataFrame({
-            "Open": [10.0, 11.0], "High": [11.5, 12.5], "Low": [9.5, 10.5], "Close": [11.0, 12.0], "Volume": [2000.0, 3000.0],
-        }, index=pd.to_datetime(["2026-07-21", "2026-07-22"]))
+    def test_cached_latest_daily_bar_is_refreshed_incrementally(
+        self, save_cache, load_cache, download_single
+    ):
+        cached = pd.DataFrame(
+            {
+                "Open": [10.0],
+                "High": [10.5],
+                "Low": [9.5],
+                "Close": [10.0],
+                "Volume": [1000.0],
+            },
+            index=pd.to_datetime(["2026-07-21"]),
+        )
+        refreshed = pd.DataFrame(
+            {
+                "Open": [10.0, 11.0],
+                "High": [11.5, 12.5],
+                "Low": [9.5, 10.5],
+                "Close": [11.0, 12.0],
+                "Volume": [2000.0, 3000.0],
+            },
+            index=pd.to_datetime(["2026-07-21", "2026-07-22"]),
+        )
         load_cache.return_value = cached
         download_single.return_value = refreshed
 
@@ -206,29 +261,53 @@ class ScannerLogicTests(TestCase):
 
         self.assertEqual(frame.iloc[-1]["Close"], 12.0)
         self.assertEqual(len(frame), 2)
-        self.assertEqual(download_single.call_args.kwargs["start_date"].date().isoformat(), "2026-07-14")
+        self.assertEqual(
+            download_single.call_args.kwargs["start_date"].date().isoformat(),
+            "2026-07-14",
+        )
         save_cache.assert_called_once()
 
     def test_save_cache_writes_parquet(self):
-        frame = pd.DataFrame({
-            "Open": [10.0], "High": [10.5], "Low": [9.5], "Close": [10.0], "Volume": [1000.0],
-        }, index=pd.to_datetime(["2026-07-21"]))
-        with TemporaryDirectory() as temp_dir, patch("downloader.CACHE_DIR", Path(temp_dir)), \
-                patch("pandas.DataFrame.to_parquet") as to_parquet, \
-                patch("pandas.read_parquet", return_value=frame) as read_parquet:
+        frame = pd.DataFrame(
+            {
+                "Open": [10.0],
+                "High": [10.5],
+                "Low": [9.5],
+                "Close": [10.0],
+                "Volume": [1000.0],
+            },
+            index=pd.to_datetime(["2026-07-21"]),
+        )
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch("downloader.CACHE_DIR", Path(temp_dir)),
+            patch("pandas.DataFrame.to_parquet") as to_parquet,
+            patch("pandas.read_parquet", return_value=frame) as read_parquet,
+        ):
             downloader._save_cache("000001.SZ", frame, "eastmoney")
             cached = downloader._load_cache("000001.SZ", "eastmoney")
             self.assertTrue(downloader._cache_path("000001.SZ", "eastmoney").exists())
 
+        assert cached is not None
         to_parquet.assert_called_once()
         read_parquet.assert_called_once()
         self.assertEqual(cached.iloc[-1]["Close"], 10.0)
 
     def test_load_cache_reads_legacy_csv(self):
-        frame = pd.DataFrame({
-            "Open": [10.0], "High": [10.5], "Low": [9.5], "Close": [10.0], "Volume": [1000.0],
-        }, index=pd.to_datetime(["2026-07-21"]))
-        with TemporaryDirectory() as temp_dir, patch("downloader.CACHE_DIR", Path(temp_dir)):
+        frame = pd.DataFrame(
+            {
+                "Open": [10.0],
+                "High": [10.5],
+                "Low": [9.5],
+                "Close": [10.0],
+                "Volume": [1000.0],
+            },
+            index=pd.to_datetime(["2026-07-21"]),
+        )
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch("downloader.CACHE_DIR", Path(temp_dir)),
+        ):
             frame.to_csv(downloader._legacy_cache_path("000001.SZ", "eastmoney"))
             cached = downloader._load_cache("000001.SZ", "eastmoney")
 
@@ -249,7 +328,9 @@ class ScannerLogicTests(TestCase):
         self.assertTrue(_is_excluded_security_name("浙商沪"))
         self.assertTrue(_is_excluded_security_name("浙商沪杭甬REIT"))
         self.assertTrue(_is_excluded_security_name("浙商\u3000沪杭甬\u00a0REIT"))
-        self.assertTrue(_is_excluded_security_name("浙商\u2009沪杭甬\u202f仓储物流REIT"))
+        self.assertTrue(
+            _is_excluded_security_name("浙商\u2009沪杭甬\u202f仓储物流REIT")
+        )
         self.assertFalse(_is_excluded_security_name("沪深300ETF"))
 
     def test_ticker_info_defaults_to_stock_and_etf_is_explicit(self):
@@ -262,7 +343,9 @@ class ScannerLogicTests(TestCase):
             ScanResult(ticker="000001.SZ", passed_filters=False),
             ScanResult(ticker="600000.SH", passed_filters=True),
         ]
-        candidates = [result for result in results if result.passed_filters and not result.error]
+        candidates = [
+            result for result in results if result.passed_filters and not result.error
+        ]
 
         self.assertEqual([result.ticker for result in candidates], ["600000.SH"])
 
@@ -271,11 +354,13 @@ class ScannerLogicTests(TestCase):
         self.assertEqual(score_ticker(frame).structure, 0.0)
 
     def test_volatility_filter_uses_atr14_to_atr50_ratio(self):
-        frame = pd.DataFrame({
-            "ATR14": [8.0] * 60,
-            "ATR50": [10.0] * 60,
-            "BB_Width": [1.0] * 60,
-        })
+        frame = pd.DataFrame(
+            {
+                "ATR14": [8.0] * 60,
+                "ATR50": [10.0] * 60,
+                "BB_Width": [1.0] * 60,
+            }
+        )
         result = filter_volatility_contraction(frame)
         self.assertTrue(result.passed)
         self.assertTrue(result.details["atr_compressing"])

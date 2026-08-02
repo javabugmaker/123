@@ -6,9 +6,10 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -151,6 +152,30 @@ def _benchmark_regime(frames: dict[str, pd.DataFrame]) -> tuple[str, str]:
     return "震荡", f"基准60日平均收益 {average_return:.1f}%"
 
 
+def _breakout_quality_factor(frame: pd.DataFrame) -> float:
+    if len(frame) < 21 or not {"Close", "High", "Low", "Volume"}.issubset(frame.columns):
+        return 1.0
+    recent = frame.iloc[-1]
+    close = float(recent["Close"])
+    high = float(recent["High"])
+    low = float(recent["Low"])
+    volume = float(recent["Volume"])
+    prior_high = float(frame["High"].iloc[-21:-1].max())
+    volume_average = float(frame["Volume"].iloc[-21:-1].mean())
+    if not all(
+        np.isfinite(value) for value in (close, high, low, volume, prior_high, volume_average)
+    ) or high <= low or volume_average <= 0:
+        return 1.0
+    platform_breakout = float(close >= prior_high)
+    volume_confirmation = float(np.clip(volume / volume_average / 1.5, 0.0, 1.0))
+    close_position = float(np.clip((close - low) / (high - low), 0.0, 1.0))
+    return round(float(np.clip(
+        platform_breakout * 0.45 + volume_confirmation * 0.35 + close_position * 0.20,
+        0.0,
+        1.0,
+    )), 4)
+
+
 def _stage_label(df: pd.DataFrame, phase: str) -> str:
     if len(df) < 60:
         return "数据不足"
@@ -198,11 +223,12 @@ def _enrich_one_result(
     if enriched.empty:
         return result, None, 0.0
     latest_date = enriched.index[-1].date()
-    today = datetime.now(timezone.utc).date()
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
     reported_date = latest_date
     result.close = float(enriched["Close"].iloc[-1])
     if (
         _is_a_share_market_closed()
+        and latest_date < today
         and latest_date >= today - timedelta(days=1)
         and not is_etf_ticker(result.ticker)
     ):
@@ -223,6 +249,7 @@ def _enrich_one_result(
     result.data_trading_age_days = trading_age
     result.data_coverage = round(float(enriched["Close"].notna().mean()), 4)
     result.stage = _stage_label(enriched, result.wyckoff_phase)
+    result.breakout_quality_factor = _breakout_quality_factor(enriched)
     relative = _safe_return(enriched["Close"], 60)
     result.filter_details["market_regime"] = regime
     result.filter_details["market_regime_reason"] = regime_reason
@@ -289,6 +316,145 @@ def enrich_results(
         result.industry_relative_strength = (
             round(value - peer, 2) if np.isfinite(value) else np.nan
         )
+        result.industry_momentum_60d = (
+            round(peer, 2) if np.isfinite(peer) else np.nan
+        )
+        if np.isfinite(peer):
+            result.sector_confirmation_factor = round(
+                float(np.clip(0.2 + _bounded_score(peer, -20.0, 20.0) * 0.8, 0.2, 1.0)),
+                4,
+            )
+        else:
+            result.sector_confirmation_factor = 1.0
+    for result in results:
+        base_score = result.failure_adjusted_score
+        if not np.isfinite(base_score):
+            base_score = result.score.total
+        sector_multiplier = 0.7 + 0.3 * result.sector_confirmation_factor
+        breakout_multiplier = 0.8 + 0.2 * result.breakout_quality_factor
+        result.institutional_score = round(
+            float(base_score * sector_multiplier * breakout_multiplier), 4
+        )
+
+
+def refresh_research_outcomes(
+    source: str,
+    history_path: Path | None = None,
+) -> pd.DataFrame:
+    from signal_lifecycle import HISTORY_FILE, HISTORY_COLUMNS
+
+    path = history_path or HISTORY_FILE
+    if not path.exists():
+        return pd.DataFrame(columns=HISTORY_COLUMNS)
+    try:
+        history = pd.read_csv(path, encoding="utf-8-sig", dtype={"Ticker": str})
+    except (OSError, UnicodeError, pd.errors.ParserError):
+        return pd.DataFrame(columns=HISTORY_COLUMNS)
+    for horizon in (20, 60):
+        for column in (f"Return{horizon}D", f"MaxDrawdown{horizon}D"):
+            if column not in history:
+                history[column] = np.nan
+    for ticker, positions in history.groupby("Ticker", sort=False).groups.items():
+        frame = _load_cache(str(ticker), source)
+        if frame is None or frame.empty or "Close" not in frame:
+            continue
+        prices = frame["Close"].astype(float).replace([np.inf, -np.inf], np.nan)
+        dates = pd.DatetimeIndex(frame.index)
+        for position in positions:
+            entry_date = pd.to_datetime(history.at[position, "TradeDate"], errors="coerce")
+            entry_price = pd.to_numeric(history.at[position, "Close"], errors="coerce")
+            if pd.isna(entry_date) or not np.isfinite(entry_price) or entry_price <= 0:
+                continue
+            entry_index = int(dates.searchsorted(entry_date, side="left"))
+            if entry_index >= len(prices):
+                continue
+            for horizon in (20, 60):
+                exit_index = entry_index + horizon
+                if exit_index >= len(prices) or not np.isfinite(prices.iloc[exit_index]):
+                    continue
+                holding = prices.iloc[entry_index : exit_index + 1]
+                history.at[position, f"Return{horizon}D"] = (
+                    float(prices.iloc[exit_index] / entry_price - 1.0) * 100
+                )
+                history.at[position, f"MaxDrawdown{horizon}D"] = (
+                    float(holding.min() / entry_price - 1.0) * 100
+                )
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    try:
+        history.to_csv(temporary_path, index=False, encoding="utf-8-sig")
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+    return history
+
+
+def write_research_reports(history: pd.DataFrame) -> tuple[Path, Path]:
+    tier_path = OUTPUT_DIR / "TierPerformanceReport.csv"
+    ic_path = OUTPUT_DIR / "FactorICReport.csv"
+    performance_columns = [
+        "InstitutionalTier",
+        "Samples",
+        "WinRate20D",
+        "AverageReturn20D",
+        "MedianReturn20D",
+        "MaxDrawdown20D",
+        "WinRate60D",
+        "AverageReturn60D",
+        "MedianReturn60D",
+        "MaxDrawdown60D",
+    ]
+    factor_columns = ["Factor", "Samples20D", "IC20D", "Samples60D", "IC60D"]
+    tier_rows: list[dict[str, Any]] = []
+    if not history.empty and "InstitutionalTier" in history:
+        for tier, group in history.groupby("InstitutionalTier", sort=True):
+            row: dict[str, Any] = {"InstitutionalTier": tier, "Samples": len(group)}
+            for horizon in (20, 60):
+                returns = pd.to_numeric(group.get(f"Return{horizon}D"), errors="coerce")
+                drawdowns = pd.to_numeric(
+                    group.get(f"MaxDrawdown{horizon}D"), errors="coerce"
+                )
+                valid = returns.dropna()
+                row[f"WinRate{horizon}D"] = float((valid > 0).mean()) if not valid.empty else np.nan
+                row[f"AverageReturn{horizon}D"] = float(valid.mean()) if not valid.empty else np.nan
+                row[f"MedianReturn{horizon}D"] = float(valid.median()) if not valid.empty else np.nan
+                row[f"MaxDrawdown{horizon}D"] = float(drawdowns.min()) if not drawdowns.dropna().empty else np.nan
+            tier_rows.append(row)
+    pd.DataFrame(tier_rows, columns=performance_columns).to_csv(
+        tier_path, index=False, encoding="utf-8-sig"
+    )
+    factors = [
+        "InstitutionalScore",
+        "QualityScore",
+        "Score",
+        "OpportunityScore",
+        "BreakoutQualityFactor",
+        "SignalRecencyFactor",
+        "SectorConfirmationFactor",
+        "FailureSignalFactor",
+        "TrendScore",
+        "AccumulationScore",
+        "IndustryRelativeStrength",
+    ]
+    factor_rows: list[dict[str, Any]] = []
+    for factor in factors:
+        if factor not in history:
+            continue
+        row = {"Factor": factor}
+        for horizon in (20, 60):
+            target = f"Return{horizon}D"
+            data = history[[factor, target]].apply(pd.to_numeric, errors="coerce").dropna()
+            row[f"Samples{horizon}D"] = len(data)
+            row[f"IC{horizon}D"] = (
+                float(data[factor].rank().corr(data[target].rank()))
+                if len(data) >= 2 and data[factor].nunique() >= 2 and data[target].nunique() >= 2
+                else np.nan
+            )
+        factor_rows.append(row)
+    pd.DataFrame(factor_rows, columns=factor_columns).to_csv(
+        ic_path, index=False, encoding="utf-8-sig"
+    )
+    return tier_path, ic_path
 
 
 def _signal_points(enriched: pd.DataFrame, cooldown: int = 60) -> list[int]:
@@ -498,6 +664,13 @@ def _ticker_backtest_rows(
             float(objective_series.mean()) if not objective_series.empty else 0.0
         )
         objective_value = raw_objective_value * min(1.0, len(group) / 10.0)
+        failure_signal_factor = 1.0
+        if avg20 < 0 and avg60 < 0:
+            loss20 = 1.0 - _bounded_score(avg20, -30.0, 0.0)
+            loss60 = 1.0 - _bounded_score(avg60, -50.0, 0.0)
+            failure_strength = loss20 * 0.3 + loss60 * 0.7
+            sample_confidence = min(1.0, len(group) / 10.0)
+            failure_signal_factor = 1.0 - failure_strength * sample_confidence * 0.7
         rows.append(
             {
                 "ticker": str(ticker),
@@ -509,6 +682,7 @@ def _ticker_backtest_rows(
                 "objective_value": round(objective_value, 4),
                 "raw_objective_value": round(raw_objective_value, 4),
                 "backtest_score": round(float(backtest_score), 4),
+                "failure_signal_factor": round(float(failure_signal_factor), 4),
             }
         )
     return sorted(
@@ -529,6 +703,7 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "average_return_60d": "BacktestAverageReturn60D",
         "objective_value": "BacktestObjectiveValue",
         "backtest_score": "BacktestScore",
+        "failure_signal_factor": "FailureSignalFactor",
     }
     legacy_columns = {
         "backtest_score",
@@ -546,6 +721,13 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "BacktestAverageReturn20D",
         "BacktestAverageReturn60D",
         "BacktestObjectiveValue",
+        "FailureSignalFactor",
+        "FailureAdjustedScore",
+        "SignalRecencyDays",
+        "SignalRecencyFactor",
+        "BreakoutQualityFactor",
+        "InstitutionalTier",
+        "InstitutionalScore",
     }
     frame = frame.drop(
         columns=[column for column in frame.columns if column in legacy_columns],
@@ -555,7 +737,12 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         columns={"ticker": "Ticker", **metric_columns}
     )
     frame = frame.merge(metrics, on="Ticker", how="left", validate="one_to_one")
-    for column in ("BacktestSamples", "BacktestScore", "BacktestObjectiveValue"):
+    for column in (
+        "BacktestSamples",
+        "BacktestScore",
+        "BacktestObjectiveValue",
+        "FailureSignalFactor",
+    ):
         if column not in frame:
             frame[column] = np.nan
     observed = frame["BacktestSamples"].fillna(0).astype(float)
@@ -578,9 +765,82 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         backtest_component * sample_factor + 50.0 * (1.0 - sample_factor)
     )
     frame["CompositeScore"] = frame["Score"] * 0.75 + blended_backtest * 0.25
+    frame["FailureSignalFactor"] = frame["FailureSignalFactor"].fillna(1.0)
+    failure_multiplier = 0.7 + 0.3 * frame["FailureSignalFactor"]
+    frame["FailureAdjustedScore"] = frame["CompositeScore"] * failure_multiplier
+    if "SectorConfirmationFactor" in frame:
+        sector_factor = pd.to_numeric(
+            frame["SectorConfirmationFactor"], errors="coerce"
+        ).fillna(1.0)
+    else:
+        sector_factor = pd.Series(1.0, index=frame.index)
+    sector_multiplier = 0.7 + 0.3 * sector_factor
+    signal_start = pd.to_datetime(
+        frame.get("SignalStartDate", pd.Series(pd.NaT, index=frame.index)),
+        errors="coerce",
+    )
+    data_asof = pd.to_datetime(
+        frame.get("DataAsOf", pd.Series(pd.NaT, index=frame.index)),
+        errors="coerce",
+    )
+    recency_days = (data_asof - signal_start).dt.days
+    valid_recency = recency_days.notna() & recency_days.ge(0)
+    frame["SignalRecencyDays"] = recency_days.where(valid_recency)
+    frame["SignalRecencyFactor"] = np.where(
+        valid_recency,
+        np.maximum(0.7, 1.0 - recency_days / 100.0),
+        1.0,
+    )
+    recency_multiplier = 0.8 + 0.2 * frame["SignalRecencyFactor"]
+    breakout_factor = pd.to_numeric(
+        frame.get("BreakoutQualityFactor", pd.Series(1.0, index=frame.index)),
+        errors="coerce",
+    ).fillna(1.0).clip(0.0, 1.0)
+    frame["BreakoutQualityFactor"] = breakout_factor
+    breakout_multiplier = 0.8 + 0.2 * breakout_factor
+    institutional_component = (
+        frame["FailureAdjustedScore"]
+        * sector_multiplier
+        * recency_multiplier
+        * breakout_multiplier
+    )
+    quality_score = pd.to_numeric(
+        frame.get("QualityScore", pd.Series(np.nan, index=frame.index)), errors="coerce"
+    )
+    quality_available = frame.get(
+        "QualityDataAvailable", pd.Series(False, index=frame.index)
+    ).astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y", "是"})
+    quality_gate = frame.get(
+        "QualityGate", pd.Series(True, index=frame.index)
+    ).astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y", "是"})
+    is_etf = frame.get("IsETF", pd.Series(False, index=frame.index)).astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y", "是"})
+    quality_failed = quality_available & ~quality_gate & ~is_etf
+    frame["InstitutionalScore"] = np.where(
+        quality_available & np.isfinite(quality_score),
+        institutional_component * 0.7 + quality_score * 0.3,
+        institutional_component,
+    )
+    volume_score = pd.to_numeric(
+        frame.get("VolumeScore", pd.Series(0.0, index=frame.index)), errors="coerce"
+    ).fillna(0.0)
+    volume_confirmed = frame.get(
+        "VolAccum", pd.Series(False, index=frame.index)
+    ).astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y", "是"}) | volume_score.ge(15.0)
+    frame["InstitutionalTier"] = "D级陷阱池"
+    frame.loc[frame["InstitutionalScore"].ge(65.0), "InstitutionalTier"] = "C级价值观察"
+    frame.loc[frame["InstitutionalScore"].between(75.0, 85.0, inclusive="left"), "InstitutionalTier"] = "B级观察"
+    frame.loc[quality_failed & frame["InstitutionalScore"].ge(65.0), "InstitutionalTier"] = "D级陷阱池"
+    frame.loc[quality_failed & frame["InstitutionalScore"].between(75.0, 85.0, inclusive="left"), "InstitutionalTier"] = "C级价值观察"
+    frame.loc[
+        frame["InstitutionalScore"].gt(85.0)
+        & frame["SignalRecencyDays"].le(20)
+        & volume_confirmed
+        & ~quality_failed,
+        "InstitutionalTier",
+    ] = "A级机构启动"
     frame = frame.sort_values(
-        ["PassedFilters", "CompositeScore", "Score", "SignalCount"],
-        ascending=[False, False, False, False],
+        ["PassedFilters", "InstitutionalScore", "FailureAdjustedScore", "Score", "SignalCount"],
+        ascending=[False, False, False, False, False],
         kind="mergesort",
     ).reset_index(drop=True)
     frame.to_csv(path, index=False, encoding="utf-8-sig")

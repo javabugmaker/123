@@ -213,10 +213,12 @@ class ScannerGUI:
         self._csv_headers: list[str] = []
         self._csv_rows: list[list[str]] = []
         self._csv_path: Path | None = None
-        self._csv_mtime: tuple[int, int, int] | None = None
+        self._csv_mtime: tuple[int, int] | None = None
         self._filter_job: str | None = None
         self._sort_column: str | None = None
         self._sort_descending = True
+        self._current_page = 0
+        self.page_summary = tk.StringVar(value="")
         self._log_queue: queue.Queue[str] = queue.Queue()
         self._log_job = self.root.after(150, self._flush_log_queue)
         self._configure_style()
@@ -226,6 +228,10 @@ class ScannerGUI:
         self.sector_filter.trace_add("write", self._schedule_filter_refresh)
         self.industry_filter.trace_add("write", self._schedule_filter_refresh)
         self.quality_filter.trace_add("write", self._schedule_filter_refresh)
+        self.root.bind("<Control-f>", lambda _event: self._focus_search())
+        self.root.bind("<Escape>", lambda _event: self.clear_filters())
+        self.root.bind("<F5>", lambda _event: self.refresh_results())
+        self.search_entry.bind("<Return>", self._render_search_results)
         self._load_best_available_results()
 
     def _configure_style(self) -> None:
@@ -263,20 +269,14 @@ class ScannerGUI:
             font=("Microsoft YaHei UI", 9, "bold"),
         )
         style.configure("Quiet.TButton", padding=(10, 6))
+        style.configure("Toolbar.TFrame", background="#ffffff")
+        style.configure("Filter.TFrame", background="#eaf2fb")
         style.configure(
             "ResultTitle.TLabel",
             background="#f4f7fb",
             foreground="#17324d",
             font=("Microsoft YaHei UI", 11, "bold"),
         )
-        style.configure(
-            "Accent.TButton",
-            foreground="white",
-            background="#1677ff",
-            padding=(16, 8),
-            font=("Microsoft YaHei UI", 10, "bold"),
-        )
-        style.map("Accent.TButton", background=[("active", "#4096ff")])
         style.configure(
             "Treeview",
             rowheight=26,
@@ -334,6 +334,7 @@ class ScannerGUI:
         controls.pack(fill=tk.X, padx=18, pady=(14, 8))
         controls.columnconfigure(3, weight=1)
         controls.columnconfigure(4, weight=1)
+        controls.columnconfigure(6, weight=1)
         ttk.Label(controls, text="扫描范围").grid(
             row=0, column=0, padx=(0, 6), sticky=tk.W
         )
@@ -381,8 +382,8 @@ class ScannerGUI:
         )
         self.cancel_button.grid(row=1, column=5, padx=(8, 0), pady=(10, 0), sticky=tk.W)
 
-        actions = ttk.Frame(self.root, padding=(18, 2))
-        actions.pack(fill=tk.X)
+        actions = ttk.Frame(self.root, style="Toolbar.TFrame", padding=(14, 8))
+        actions.pack(fill=tk.X, padx=18, pady=(0, 2))
         for text, command in (
             ("Top 50", self._load_top50), ("市场概览", self.show_market_overview),
             ("连续信号", self.show_sustained_signals), ("全部结果", lambda: self.load_csv("AllResults.csv")),
@@ -393,8 +394,8 @@ class ScannerGUI:
         self.progress.pack(side=tk.RIGHT, padx=(10, 0))
         ttk.Label(actions, textvariable=self.status, style="Status.TLabel").pack(side=tk.RIGHT)
 
-        filters = ttk.Frame(self.root, padding=(18, 2, 18, 6))
-        filters.pack(fill=tk.X)
+        filters = ttk.Frame(self.root, style="Filter.TFrame", padding=(14, 8))
+        filters.pack(fill=tk.X, padx=18, pady=(0, 4))
         ttk.Label(filters, text="板块", padding=(0, 0, 4, 0)).pack(side=tk.LEFT)
         self.sector_box = ttk.Combobox(filters, textvariable=self.sector_filter, state="readonly", width=12)
         self.sector_box.pack(side=tk.LEFT)
@@ -405,8 +406,10 @@ class ScannerGUI:
         ttk.Label(filters, text="质量", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
         ttk.Combobox(filters, textvariable=self.quality_filter, values=("全部质量", "强候选", "候选", "观察", "普通"), state="readonly", width=9).pack(side=tk.LEFT)
         ttk.Label(filters, text="搜索", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
-        ttk.Entry(filters, textvariable=self.search, width=24).pack(side=tk.LEFT)
+        self.search_entry = ttk.Entry(filters, textvariable=self.search, width=24)
+        self.search_entry.pack(side=tk.LEFT)
         ttk.Button(filters, text="清空筛选", command=self.clear_filters).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(filters, text="刷新结果", command=self.refresh_results).pack(side=tk.LEFT, padx=(6, 0))
         self.market_overview = tk.StringVar(value="市场概览：等待结果")
         ttk.Label(filters, textvariable=self.market_overview, style="Status.TLabel", padding=(16, 0, 0, 0)).pack(side=tk.LEFT)
 
@@ -418,6 +421,19 @@ class ScannerGUI:
         ttk.Label(result_bar, text="扫描结果", style="ResultTitle.TLabel").pack(side=tk.LEFT)
         ttk.Label(result_bar, textvariable=self.result_summary, style="Status.TLabel", padding=(10, 0, 0, 0)).pack(side=tk.LEFT)
         ttk.Label(result_bar, text="双击行查看完整详情 · 单击表头排序", style="Status.TLabel").pack(side=tk.RIGHT)
+        pagination = ttk.Frame(table_frame, padding=(0, 0, 0, 6))
+        pagination.grid(row=1, column=0, columnspan=2, sticky=tk.E)
+        self.previous_page_button = ttk.Button(
+            pagination, text="上一页", command=self._show_previous_page
+        )
+        self.previous_page_button.pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(pagination, textvariable=self.page_summary, style="Status.TLabel").pack(
+            side=tk.LEFT
+        )
+        self.next_page_button = ttk.Button(
+            pagination, text="下一页", command=self._show_next_page
+        )
+        self.next_page_button.pack(side=tk.LEFT, padx=(6, 0))
         self.table = ttk.Treeview(table_frame, show="headings", selectmode="browse")
         self.table.tag_configure("quality-strong", background="#e8f7ee", foreground="#17663a")
         self.table.tag_configure("quality-candidate", background="#eef6ff", foreground="#1f5f9c")
@@ -429,10 +445,10 @@ class ScannerGUI:
         )
         self.table.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
         self.table.bind("<Double-1>", self.show_selected_detail)
-        self.table.grid(row=1, column=0, sticky="nsew")
-        ybar.grid(row=1, column=1, sticky="ns")
-        xbar.grid(row=2, column=0, sticky="ew")
-        table_frame.rowconfigure(1, weight=1)
+        self.table.grid(row=2, column=0, sticky="nsew")
+        ybar.grid(row=2, column=1, sticky="ns")
+        xbar.grid(row=3, column=0, sticky="ew")
+        table_frame.rowconfigure(2, weight=1)
         table_frame.columnconfigure(0, weight=1)
         body.add(table_frame, weight=5)
         log_frame = ttk.LabelFrame(body, text="运行日志", padding=6)
@@ -501,6 +517,10 @@ class ScannerGUI:
             if temporary_path.exists():
                 temporary_path.unlink()
 
+    @staticmethod
+    def _cell_text(value: object) -> str:
+        return "" if value is None else str(value).strip()
+
     def _write_top50_csv(self, tickers: list[str]) -> Path:
         path = OUTPUT_DIR / "Top50.csv"
         if "Ticker" not in self._csv_headers:
@@ -512,9 +532,9 @@ class ScannerGUI:
         )[:50]
         ticker_index = self._csv_headers.index("Ticker")
         rows_by_ticker = {
-            row[ticker_index].strip().upper(): row
+            self._cell_text(row[ticker_index]).upper(): row
             for row in self._csv_rows
-            if len(row) > ticker_index and row[ticker_index].strip()
+            if len(row) > ticker_index and self._cell_text(row[ticker_index])
         }
         selected = [
             rows_by_ticker[ticker]
@@ -1000,6 +1020,11 @@ class ScannerGUI:
             if (OUTPUT_DIR / name).exists()
         )
 
+    def _focus_search(self):
+        self.search_entry.focus_set()
+        self.search_entry.selection_range(0, tk.END)
+        return "break"
+
     def clear_log(self) -> None:
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.delete("1.0", tk.END)
@@ -1010,6 +1035,7 @@ class ScannerGUI:
         self.sector_filter.set("全部板块")
         self.industry_filter.set("全部行业")
         self.quality_filter.set("全部质量")
+        self._current_page = 0
         if self._filter_job is not None:
             self.root.after_cancel(self._filter_job)
             self._filter_job = None
@@ -1017,12 +1043,14 @@ class ScannerGUI:
 
     def _data_source_changed(self, _event=None) -> None:
         labels = {"eastmoney": "东方财富", "sina": "新浪", "tencent": "腾讯"}
-        self.data_source_label.set(f"当前：{labels[self.data_source.get()]}")
-        self.status.set(f"已切换数据源：{labels[self.data_source.get()]}")
+        source = self.data_source.get()
+        label = labels.get(source, source or "未知")
+        self.data_source_label.set(f"当前：{label}")
+        self.status.set(f"已切换数据源：{label}")
 
     def _sector_changed(self, _event=None) -> None:
         self.industry_filter.set("全部行业")
-        self.load_csv(self.current_file)
+        self._update_filter_values(self._csv_headers, self._csv_rows)
 
     def _update_filter_values(self, headers: list[str], rows: list[list[str]]) -> None:
         def values_for(column: str) -> list[str]:
@@ -1030,7 +1058,11 @@ class ScannerGUI:
                 return []
             index = headers.index(column)
             return sorted(
-                {row[index] for row in rows if len(row) > index and row[index].strip()}
+                {
+                    self._cell_text(row[index])
+                    for row in rows
+                    if len(row) > index and self._cell_text(row[index])
+                }
             )
 
         sectors = values_for("Sector")
@@ -1044,12 +1076,12 @@ class ScannerGUI:
             industry_index = headers.index("Industry") if "Industry" in headers else -1
             industries = sorted(
                 {
-                    row[industry_index]
+                    self._cell_text(row[industry_index])
                     for row in rows
                     if industry_index >= 0
                     and len(row) > max(sector_index, industry_index)
-                    and row[sector_index] == self.sector_filter.get()
-                    and row[industry_index].strip()
+                    and self._cell_text(row[sector_index]) == self.sector_filter.get()
+                    and self._cell_text(row[industry_index])
                 }
             )
         self.industry_box["values"] = ["全部行业", *industries]
@@ -1057,9 +1089,53 @@ class ScannerGUI:
             self.industry_filter.set("全部行业")
 
     def _schedule_filter_refresh(self, *_args) -> None:
+        self._current_page = 0
         if self._filter_job is not None:
             self.root.after_cancel(self._filter_job)
         self._filter_job = self.root.after(180, self._render_cached_rows)
+
+    def _render_search_results(self, _event=None):
+        self._current_page = 0
+        self._render_cached_rows()
+        return "break"
+
+    def refresh_results(self) -> bool:
+        filename = getattr(self, "current_file", "")
+        if self._filter_job is not None:
+            self.root.after_cancel(self._filter_job)
+            self._filter_job = None
+        self._current_page = 0
+        if not filename:
+            return self._load_best_available_results()
+        self._csv_path = None
+        self._csv_mtime = None
+        loaded = self.load_csv(filename)
+        if loaded:
+            self.status.set(f"已刷新：{filename}")
+        return loaded
+
+    def _clear_result_view(self) -> None:
+        self._csv_headers = []
+        self._csv_rows = []
+        self._csv_path = None
+        self._csv_mtime = None
+        self.filtered_tickers = []
+        self._current_page = 0
+        if hasattr(self, "_row_details"):
+            self._row_details.clear()
+        if hasattr(self, "table"):
+            self.table.delete(*self.table.get_children())
+            self.table["columns"] = ()
+        if hasattr(self, "sector_box"):
+            self._update_filter_values([], [])
+        if hasattr(self, "page_summary"):
+            self.page_summary.set("")
+        if hasattr(self, "previous_page_button"):
+            self.previous_page_button.configure(state=tk.DISABLED)
+        if hasattr(self, "next_page_button"):
+            self.next_page_button.configure(state=tk.DISABLED)
+        if hasattr(self, "result_summary"):
+            self.result_summary.set("等待加载结果")
 
     def _row_matches_filters(
         self, indexes: dict[str, int], row: list[str], query: str
@@ -1068,10 +1144,10 @@ class ScannerGUI:
 
         def value_for(column: str) -> str:
             index = indexes.get(column)
-            return values[index] if index is not None and index < len(values) else ""
+            return self._cell_text(values[index]) if index is not None and index < len(values) else ""
 
         return (
-            (not query or query in " ".join(values).casefold())
+            (not query or query in " ".join(map(self._cell_text, values)).casefold())
             and (
                 self.sector_filter.get() == "全部板块"
                 or value_for("Sector") == self.sector_filter.get()
@@ -1094,16 +1170,18 @@ class ScannerGUI:
             if index is None or index >= len(row):
                 return 0.0
             try:
-                return float(row[index].replace(",", "").rstrip("%"))
-            except (AttributeError, ValueError):
+                return float(self._cell_text(row[index]).replace(",", "").rstrip("%"))
+            except ValueError:
                 return 0.0
 
         total = len(rows)
         active = sum(number_for(row, "SignalDays") > 0 for row in rows)
+        lifecycle_index = indexes.get("LifecycleStage")
         confirmed = sum(
-            row[indexes["LifecycleStage"]].strip() == "趋势确认"
+            len(row) > lifecycle_index
+            and self._cell_text(row[lifecycle_index]) == "趋势确认"
             for row in rows
-            if "LifecycleStage" in indexes and len(row) > indexes["LifecycleStage"]
+            if lifecycle_index is not None
         )
         average = (
             sum(number_for(row, "OpportunityScore") for row in rows) / total
@@ -1191,9 +1269,11 @@ class ScannerGUI:
             return f"{percent:.2f}%" if column == "DistToLow52W" else f"{percent:.0f}%"
         return f"{number:,.2f}"
 
-    def _sort_value(self, column: str, row: list[str], indexes: dict[str, int]):
+    def _sort_value(
+        self, column: str, row: list[str], indexes: dict[str, int]
+    ) -> tuple[bool, str | float]:
         index = indexes[column]
-        value = row[index].strip() if len(row) > index else ""
+        value = self._cell_text(row[index]) if len(row) > index else ""
         if column not in NUMBER_COLUMNS:
             return (not value, value.casefold())
         try:
@@ -1215,10 +1295,22 @@ class ScannerGUI:
         else:
             self._sort_column = column
             self._sort_descending = column in NUMBER_COLUMNS
+        self._current_page = 0
+        self._render_cached_rows()
+
+    def _show_previous_page(self) -> None:
+        if self._current_page > 0:
+            self._current_page -= 1
+            self._render_cached_rows()
+
+    def _show_next_page(self) -> None:
+        self._current_page += 1
         self._render_cached_rows()
 
     def _render_cached_rows(self) -> bool:
         self._filter_job = None
+        if not hasattr(self, "_current_page"):
+            self._current_page = 0
         headers = self._csv_headers
         data_rows = self._csv_rows
         if not headers:
@@ -1237,14 +1329,15 @@ class ScannerGUI:
                 key=lambda row: self._sort_value(sort_column, row, indexes),
                 reverse=sort_descending,
             )
-            sort_index = indexes[sort_column]
-            filtered.sort(key=lambda row: len(row) <= sort_index or not row[sort_index].strip())
+            filtered.sort(
+                key=lambda row: self._sort_value(sort_column, row, indexes)[0]
+            )
         self.filtered_tickers = [
-            row[ticker_index].strip().upper()
+            self._cell_text(row[ticker_index]).upper()
             for row in filtered
             if ticker_index >= 0
             and len(row) > ticker_index
-            and row[ticker_index].strip()
+            and self._cell_text(row[ticker_index])
         ]
         self._update_market_overview(filtered, indexes)
         self.table.delete(*self.table.get_children())
@@ -1278,8 +1371,12 @@ class ScannerGUI:
             )
         header_indexes = [indexes[column] for column in display_headers]
         quality_index = indexes.get("Quality")
-        rendered_count = min(len(filtered), MAX_RENDERED_ROWS)
-        for row in filtered[:rendered_count]:
+        page_count = max(1, (len(filtered) + MAX_RENDERED_ROWS - 1) // MAX_RENDERED_ROWS)
+        self._current_page = min(self._current_page, page_count - 1)
+        start_index = self._current_page * MAX_RENDERED_ROWS
+        page_rows = filtered[start_index : start_index + MAX_RENDERED_ROWS]
+        rendered_count = len(page_rows)
+        for row in page_rows:
             values = row + [""] * max(0, len(headers) - len(row))
             display_values = [
                 self._format_table_value(header, values[index])
@@ -1305,12 +1402,24 @@ class ScannerGUI:
                 "", tk.END, values=display_values, tags=(self._quality_tag(quality),)
             )
             self._row_details[item_id] = dict(zip(headers, values))
+        if hasattr(self, "page_summary"):
+            self.page_summary.set(
+                f"第 {self._current_page + 1} / {page_count} 页 · {start_index + 1 if filtered else 0}-{start_index + rendered_count} 条"
+            )
+        if hasattr(self, "previous_page_button"):
+            self.previous_page_button.configure(
+                state=tk.NORMAL if self._current_page > 0 else tk.DISABLED
+            )
+        if hasattr(self, "next_page_button"):
+            self.next_page_button.configure(
+                state=tk.NORMAL if self._current_page + 1 < page_count else tk.DISABLED
+            )
         if hasattr(self, "result_summary"):
             self.result_summary.set(
                 f"当前文件：{self.current_file} · 命中 {len(filtered):,} / {len(data_rows):,} 条"
             )
         self.status.set(
-            f"{self.current_file} · 命中 {len(filtered)} / {len(data_rows)} 条 · 实际渲染 {rendered_count} 条 · 双击查看详情"
+            f"{self.current_file} · 命中 {len(filtered)} / {len(data_rows)} 条 · 第 {self._current_page + 1} / {page_count} 页 · 双击查看详情"
         )
         return True
 
@@ -1318,24 +1427,29 @@ class ScannerGUI:
         path = OUTPUT_DIR / filename
         self.current_file = filename
         if not path.exists():
+            self._clear_result_view()
             self.status.set(f"未找到 {filename}")
             return False
         try:
             stat = path.stat()
-            modified_at = (stat.st_mtime_ns, stat.st_size, hash(path.read_bytes()))
+            modified_at = (stat.st_mtime_ns, stat.st_size)
             if self._csv_path != path or self._csv_mtime != modified_at:
                 with path.open("r", encoding="utf-8-sig", newline="") as file:
                     rows = list(csv.reader(file))
-                if not rows:
-                    self.status.set(f"{filename} 没有结果")
+                headers = rows[0] if rows else []
+                if not rows or not any(column in DISPLAY_COLUMNS for column in headers):
+                    self._clear_result_view()
+                    self.status.set(f"{filename} 没有可展示结果")
                     return False
-                self._csv_headers = rows[0]
+                self._csv_headers = headers
                 self._csv_rows = rows[1:]
                 self._csv_path = path
                 self._csv_mtime = modified_at
                 self._update_filter_values(self._csv_headers, self._csv_rows)
             return self._render_cached_rows()
         except (OSError, UnicodeDecodeError, csv.Error, tk.TclError) as exc:
+            self._clear_result_view()
+            self.status.set(f"读取 {filename} 失败")
             messagebox.showerror("读取失败", str(exc))
             return False
 

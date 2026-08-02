@@ -37,6 +37,9 @@ import main
 import scanner
 import signal_lifecycle
 from analytics import BacktestSummary, apply_backtest_ranking
+from fundamental_quality import calculate_quality
+from report import _institutional_tier
+from score import ScoreBreakdown
 from downloader import TickerInfo, _cache_path, _log_download_progress
 from filters import (
     filter_bear_market,
@@ -55,6 +58,48 @@ from score import score_ticker
 
 
 class RegressionTests(TestCase):
+    def test_fundamental_quality_calculates_four_factors(self):
+        quality = calculate_quality({
+            "Ticker": "000001.SZ",
+            "ROE": 12.0,
+            "GrossMargin": 30.0,
+            "InstitutionHoldingTrend": "increasing",
+            "InstitutionHoldingPeriods": 3,
+            "NetProfitY1": 30.0,
+            "NetProfitY2": 20.0,
+            "NetProfitY3": 20.0,
+            "IndustryGrossMarginPercentile": 0.30,
+        })
+
+        self.assertEqual(quality.quality_score, 100.0)
+        self.assertTrue(quality.quality_gate)
+        self.assertEqual(quality.quality_reason, "全部通过")
+
+    def test_institutional_tier_downgrades_when_quality_gate_fails(self):
+        result = ScanResult(
+            ticker="000001.SZ",
+            institutional_score=90.0,
+            quality_data_available=True,
+            quality_gate=False,
+            signal_recency_days=10,
+            filter_details={"volume_accumulation": True},
+        )
+
+        self.assertEqual(_institutional_tier(result), "B级观察")
+
+    def test_etf_skips_quality_tier_downgrade(self):
+        result = ScanResult(
+            ticker="510300.SH",
+            is_etf=True,
+            institutional_score=90.0,
+            quality_data_available=True,
+            quality_gate=False,
+            signal_recency_days=10,
+            filter_details={"volume_accumulation": True},
+        )
+
+        self.assertEqual(_institutional_tier(result), "A级机构启动")
+
     def test_gui_startup_loads_best_available_results(self):
         root = Mock()
         root.after.return_value = "log-job"
@@ -94,6 +139,20 @@ class RegressionTests(TestCase):
         scanner.root.after_cancel.assert_called_once_with("filter-job")
         self.assertIsNone(scanner._filter_job)
         scanner._render_cached_rows.assert_called_once_with()
+
+    def test_gui_sector_change_refreshes_industry_options_from_cached_rows(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner.industry_filter = Mock()
+        scanner._csv_headers = ["Sector", "Industry"]
+        scanner._csv_rows = [["金融", "银行"], ["科技", "软件"]]
+        scanner._update_filter_values = Mock()
+
+        scanner._sector_changed()
+
+        scanner.industry_filter.set.assert_called_once_with("全部行业")
+        scanner._update_filter_values.assert_called_once_with(
+            scanner._csv_headers, scanner._csv_rows
+        )
 
     def test_gui_cancel_running_task_terminates_process_after_confirmation(self):
         scanner = object.__new__(gui.ScannerGUI)
@@ -164,15 +223,38 @@ class RegressionTests(TestCase):
             "市场概览：2 只 · 活跃信号 1 · 趋势确认 1 · 平均机会分 60.0"
         )
 
+    def test_gui_page_navigation_updates_current_page(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner._current_page = 1
+        scanner._render_cached_rows = Mock()
+
+        scanner._show_previous_page()
+        self.assertEqual(scanner._current_page, 0)
+        scanner._render_cached_rows.assert_called_once_with()
+
+        scanner._render_cached_rows.reset_mock()
+        scanner._show_next_page()
+        self.assertEqual(scanner._current_page, 1)
+        scanner._render_cached_rows.assert_called_once_with()
+
     def test_gui_sorts_numeric_values_numerically(self):
         scanner = object.__new__(gui.ScannerGUI)
         indexes = {"Score": 0}
         rows = [["10"], ["2"], [""]]
 
         rows.sort(key=lambda row: scanner._sort_value("Score", row, indexes), reverse=True)
-        rows.sort(key=lambda row: not row[0].strip())
+        rows.sort(key=lambda row: scanner._sort_value("Score", row, indexes)[0])
 
         self.assertEqual(rows, [["10"], ["2"], [""]])
+
+    def test_gui_cell_text_handles_non_string_table_values(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        indexes = {"Score": 0}
+
+        self.assertEqual(scanner._cell_text(None), "")
+        self.assertEqual(scanner._cell_text(True), "True")
+        self.assertEqual(scanner._cell_text(12.5), "12.5")
+        self.assertEqual(scanner._sort_value("Score", [12.5], indexes), (False, 12.5))
 
     def test_gui_load_csv_reloads_when_same_file_is_updated(self):
         scanner = object.__new__(gui.ScannerGUI)
@@ -194,6 +276,137 @@ class RegressionTests(TestCase):
         self.assertNotEqual(scanner._csv_mtime, first_mtime)
         self.assertEqual(scanner._csv_rows, [["605499.SH", "125.82"]])
         self.assertEqual(scanner._update_filter_values.call_count, 2)
+
+    def test_gui_refresh_results_resets_pagination_before_reloading(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner.current_file = "AllResults.csv"
+        scanner._current_page = 1
+        scanner._csv_path = Path("cached.csv")
+        scanner._csv_mtime = (1, 1)
+        scanner._filter_job = "filter-job"
+        scanner.root = Mock()
+        scanner.load_csv = Mock(return_value=True)
+        scanner.status = Mock()
+
+        self.assertTrue(scanner.refresh_results())
+
+        scanner.root.after_cancel.assert_called_once_with("filter-job")
+        self.assertIsNone(scanner._filter_job)
+        self.assertEqual(scanner._current_page, 0)
+        self.assertIsNone(scanner._csv_path)
+        self.assertIsNone(scanner._csv_mtime)
+        scanner.load_csv.assert_called_once_with("AllResults.csv")
+
+    def test_gui_load_csv_clears_old_state_for_empty_or_unrenderable_results(self):
+        for content in ("", "Unknown\nvalue\n"):
+            scanner = object.__new__(gui.ScannerGUI)
+            scanner._csv_headers = ["Ticker"]
+            scanner._csv_rows = [["000001.SZ"]]
+            scanner._csv_path = Path("cached.csv")
+            scanner._csv_mtime = (1, 1)
+            scanner.filtered_tickers = ["000001.SZ"]
+            scanner._current_page = 1
+            scanner._row_details = {"row-1": {"Ticker": "000001.SZ"}}
+            scanner.status = Mock()
+            scanner._clear_result_view = Mock(wraps=scanner._clear_result_view)
+
+            with TemporaryDirectory() as temp_dir, patch("gui.OUTPUT_DIR", Path(temp_dir)):
+                (Path(temp_dir) / "AllResults.csv").write_text(content, encoding="utf-8-sig")
+                self.assertFalse(scanner.load_csv("AllResults.csv"))
+
+            scanner._clear_result_view.assert_called_once_with()
+            self.assertEqual(scanner._csv_headers, [])
+            self.assertEqual(scanner._csv_rows, [])
+            self.assertEqual(scanner.filtered_tickers, [])
+            self.assertEqual(scanner._current_page, 0)
+            self.assertEqual(scanner._row_details, {})
+            scanner.status.set.assert_called_once_with("AllResults.csv 没有可展示结果")
+
+    def test_gui_load_csv_pads_short_rows_without_reusing_old_values(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner._csv_headers = ["Ticker", "Close"]
+        scanner._csv_rows = [["000001.SZ", "99"]]
+        scanner._csv_path = None
+        scanner._csv_mtime = None
+        scanner.filtered_tickers = []
+        scanner._row_details = {}
+        scanner._update_filter_values = Mock()
+        scanner.search = Mock()
+        scanner.search.get.return_value = ""
+        scanner.sector_filter = Mock()
+        scanner.sector_filter.get.return_value = "全部板块"
+        scanner.industry_filter = Mock()
+        scanner.industry_filter.get.return_value = "全部行业"
+        scanner.quality_filter = Mock()
+        scanner.quality_filter.get.return_value = "全部质量"
+        scanner.table = MagicMock()
+        scanner.table.get_children.return_value = []
+        scanner._row_details = {}
+        scanner.status = Mock()
+        scanner.current_file = "AllResults.csv"
+        scanner.market_overview = Mock()
+        scanner.page_summary = Mock()
+        scanner.previous_page_button = Mock()
+        scanner.next_page_button = Mock()
+        scanner._sort_column = "Close"
+        scanner._sort_descending = True
+
+        with TemporaryDirectory() as temp_dir, patch("gui.OUTPUT_DIR", Path(temp_dir)):
+            (Path(temp_dir) / "AllResults.csv").write_text(
+                "Ticker,Close\n000002.SZ\n", encoding="utf-8-sig"
+            )
+            self.assertTrue(scanner.load_csv("AllResults.csv"))
+
+        self.assertEqual(scanner._csv_rows, [["000002.SZ"]])
+        scanner._render_cached_rows.assert_called_once_with()
+
+    def test_gui_load_csv_clears_old_state_when_file_is_missing(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner._csv_headers = ["Ticker"]
+        scanner._csv_rows = [["000001.SZ"]]
+        scanner._csv_path = Path("cached.csv")
+        scanner._csv_mtime = (1, 1)
+        scanner.filtered_tickers = ["000001.SZ"]
+        scanner._current_page = 1
+        scanner._row_details = {"row-1": {"Ticker": "000001.SZ"}}
+        scanner.status = Mock()
+        scanner._clear_result_view = Mock(wraps=scanner._clear_result_view)
+
+        with TemporaryDirectory() as temp_dir, patch("gui.OUTPUT_DIR", Path(temp_dir)):
+            self.assertFalse(scanner.load_csv("AllResults.csv"))
+
+        scanner._clear_result_view.assert_called_once_with()
+        self.assertEqual(scanner._csv_headers, [])
+        self.assertEqual(scanner._csv_rows, [])
+        self.assertEqual(scanner.filtered_tickers, [])
+        self.assertEqual(scanner._current_page, 0)
+        self.assertEqual(scanner._row_details, {})
+        scanner.status.set.assert_called_once_with("未找到 AllResults.csv")
+
+    def test_gui_load_csv_clears_old_state_when_reading_fails(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner._csv_headers = ["Ticker"]
+        scanner._csv_rows = [["000001.SZ"]]
+        scanner._csv_path = Path("cached.csv")
+        scanner._csv_mtime = (1, 1)
+        scanner.filtered_tickers = ["000001.SZ"]
+        scanner._current_page = 1
+        scanner._row_details = {"row-1": {"Ticker": "000001.SZ"}}
+        scanner.status = Mock()
+        scanner._clear_result_view = Mock(wraps=scanner._clear_result_view)
+
+        with TemporaryDirectory() as temp_dir, patch("gui.OUTPUT_DIR", Path(temp_dir)), patch("gui.messagebox.showerror") as showerror:
+            (Path(temp_dir) / "AllResults.csv").write_bytes(b"\xff\xfe")
+            self.assertFalse(scanner.load_csv("AllResults.csv"))
+
+        scanner._clear_result_view.assert_called_once_with()
+        self.assertEqual(scanner._csv_headers, [])
+        self.assertEqual(scanner._csv_rows, [])
+        self.assertEqual(scanner.filtered_tickers, [])
+        self.assertEqual(scanner._current_page, 0)
+        self.assertEqual(scanner._row_details, {})
+        scanner.status.set.assert_called_once_with("读取 AllResults.csv 失败")
+        showerror.assert_called_once()
 
     def test_gui_best_available_results_skips_empty_top50_and_loads_all_results(self):
         scanner = object.__new__(gui.ScannerGUI)
@@ -441,6 +654,43 @@ class RegressionTests(TestCase):
         self.assertEqual(report.successful, 1)
         self.assertEqual([result.ticker for result in report.results], ["000001.SZ"])
         self.assertTrue(pd.isna(report.results[0].backtest_score))
+
+    def test_resume_scan_redownloads_checkpoint_ticker_without_previous_report(self):
+        ticker = TickerInfo(ticker="000001.SZ")
+        frame = pd.DataFrame(
+            {
+                "Open": [10.0],
+                "High": [11.0],
+                "Low": [9.0],
+                "Close": [10.0],
+                "Volume": [1000.0],
+            },
+            index=pd.to_datetime(["2026-07-21"]),
+        )
+        result = ScanResult(ticker="000001.SZ")
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            with (
+                patch.object(scanner, "OUTPUT_DIR", output_dir),
+                patch.object(scanner, "_CHECKPOINT_PATH", output_dir / "_checkpoint.json"),
+                patch.object(scanner, "load_checkpoint", return_value={"000001.SZ"}),
+                patch.object(scanner, "_load_previous_tickers", return_value=set()),
+                patch.object(
+                    scanner, "download_batch", return_value={"000001.SZ": frame}
+                ) as download_batch,
+                patch.object(
+                    scanner, "_analyse_one_ticker_from_df", return_value=(result, frame)
+                ),
+                patch.object(scanner, "enrich_results"),
+                patch.object(scanner, "save_checkpoint"),
+                patch.object(scanner, "clear_checkpoint"),
+            ):
+                report = scanner.run_scan(
+                    stock_universe=[ticker], etf_universe=[], data_source="eastmoney"
+                )
+
+        self.assertEqual(download_batch.call_args.kwargs["skip_tickers"], set())
+        self.assertEqual([item.ticker for item in report.results], ["000001.SZ"])
 
     def test_load_checkpoint_ignores_legacy_completed_scan(self):
         with TemporaryDirectory() as temp_dir:
@@ -816,6 +1066,64 @@ class RegressionTests(TestCase):
         self.assertEqual([item.args[0].shape[0] for item in compute.call_args_list], [320])
         self.assertEqual([item.args[0].shape[0] for item in score.call_args_list], [201, 221])
 
+    def test_failed_signal_history_reduces_factor_when_both_horizons_lose(self):
+        frame = pd.DataFrame({
+            "ticker": ["000001.SZ"] * 10,
+            "return20": [-20.0] * 10,
+            "return60": [-40.0] * 10,
+            "benchmark_return20": [0.0] * 10,
+            "benchmark_return60": [0.0] * 10,
+            "net_return20": [-20.0] * 10,
+            "net_return60": [-40.0] * 10,
+            "drawdown20": [-20.0] * 10,
+            "drawdown60": [-40.0] * 10,
+        })
+
+        rows = analytics._ticker_backtest_rows(frame)
+
+        self.assertAlmostEqual(rows[0]["failure_signal_factor"], 0.468, places=4)
+
+    def test_sector_confirmation_factor_uses_peer_momentum(self):
+        result = ScanResult(
+            ticker="000001.SZ",
+            industry="银行",
+            score=ScoreBreakdown(total=80.0),
+        )
+        index = pd.date_range("2026-05-01", periods=62, freq="D")
+        frame = pd.DataFrame({
+            "Close": [100.0] * 61 + [110.0],
+            "Open": [100.0] * 61 + [110.0],
+            "High": [100.0] * 61 + [110.0],
+            "Low": [100.0] * 61 + [110.0],
+            "Volume": [1000.0] * 62,
+        }, index=index)
+
+        with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")):
+            analytics.enrich_results([result], "eastmoney", frames={"000001.SZ": frame})
+
+        self.assertGreater(result.sector_confirmation_factor, 0.2)
+        self.assertEqual(result.industry_momentum_60d, 10.0)
+
+    def test_report_sorts_by_institutional_score(self):
+        results = [
+            ScanResult(
+                ticker="000001.SZ",
+                score=ScoreBreakdown(total=90.0),
+                institutional_score=30.0,
+                passed_filters=True,
+            ),
+            ScanResult(
+                ticker="000002.SZ",
+                score=ScoreBreakdown(total=70.0),
+                institutional_score=60.0,
+                passed_filters=True,
+            ),
+        ]
+
+        frame = __import__("report")._results_to_dataframe(results)
+
+        self.assertEqual(frame.loc[0, "Ticker"], "000002.SZ")
+
     def test_composite_score_preserves_75_25_weighting(self):
         with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
             pd.DataFrame({
@@ -835,6 +1143,112 @@ class RegressionTests(TestCase):
             result = pd.read_csv(Path(temp_dir) / "AllResults.csv", encoding="utf-8-sig")
 
         self.assertEqual(result.loc[0, "CompositeScore"], 85.0)
+        self.assertEqual(result.loc[0, "FailureSignalFactor"], 1.0)
+        self.assertEqual(result.loc[0, "InstitutionalScore"], 85.0)
+
+    def test_institutional_score_uses_tempered_confirmation_multipliers(self):
+        with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
+            pd.DataFrame({
+                "Ticker": ["000001.SZ"],
+                "Score": [95.0],
+                "PassedFilters": [True],
+                "SignalCount": [4],
+                "SectorConfirmationFactor": [0.5],
+            }).to_csv(Path(temp_dir) / "AllResults.csv", index=False, encoding="utf-8-sig")
+            summary = BacktestSummary(by_ticker=[{
+                "ticker": "000001.SZ",
+                "samples": 10,
+                "backtest_score": 90.0,
+                "objective_value": 10.0,
+                "failure_signal_factor": 0.4,
+            }])
+
+            apply_backtest_ranking(summary)
+            result = pd.read_csv(Path(temp_dir) / "AllResults.csv", encoding="utf-8-sig")
+
+        self.assertEqual(result.loc[0, "CompositeScore"], 95.0)
+        self.assertEqual(result.loc[0, "FailureAdjustedScore"], 77.9)
+        self.assertEqual(result.loc[0, "InstitutionalScore"], 66.215)
+
+    def test_institutional_score_applies_signal_recency_factor_and_tier(self):
+        with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
+            pd.DataFrame({
+                "Ticker": ["000001.SZ"],
+                "Score": [95.0],
+                "PassedFilters": [True],
+                "SignalCount": [4],
+                "VolumeScore": [15.0],
+                "SignalStartDate": ["2026-07-11"],
+                "DataAsOf": ["2026-07-31"],
+            }).to_csv(Path(temp_dir) / "AllResults.csv", index=False, encoding="utf-8-sig")
+            summary = BacktestSummary(by_ticker=[{
+                "ticker": "000001.SZ",
+                "samples": 10,
+                "backtest_score": 95.0,
+                "objective_value": 10.0,
+            }])
+
+            apply_backtest_ranking(summary)
+            result = pd.read_csv(Path(temp_dir) / "AllResults.csv", encoding="utf-8-sig")
+
+        self.assertEqual(result.loc[0, "SignalRecencyDays"], 20)
+        self.assertEqual(result.loc[0, "SignalRecencyFactor"], 0.8)
+        self.assertEqual(result.loc[0, "InstitutionalScore"], 91.8)
+        self.assertEqual(result.loc[0, "InstitutionalTier"], "A级机构启动")
+
+    def test_breakout_quality_rewards_confirmed_platform_breakout(self):
+        frame = pd.DataFrame({
+            "Close": [10.0] * 20 + [12.0],
+            "High": [10.5] * 20 + [12.1],
+            "Low": [9.5] * 20 + [10.0],
+            "Volume": [1000.0] * 20 + [2000.0],
+        })
+
+        self.assertEqual(analytics._breakout_quality_factor(frame), 0.9905)
+
+    def test_breakout_quality_penalizes_weak_close_without_breakout(self):
+        frame = pd.DataFrame({
+            "Close": [10.0] * 20 + [9.6],
+            "High": [10.5] * 20 + [10.4],
+            "Low": [9.5] * 20 + [9.5],
+            "Volume": [1000.0] * 21,
+        })
+
+        self.assertLess(analytics._breakout_quality_factor(frame), 0.4)
+
+    def test_research_reports_group_tiers_and_calculate_factor_ic(self):
+        history = pd.DataFrame({
+            "InstitutionalTier": ["A级机构启动", "D级陷阱池", "A级机构启动"],
+            "InstitutionalScore": [90.0, 50.0, 80.0],
+            "Score": [88.0, 52.0, 78.0],
+            "OpportunityScore": [85.0, 50.0, 75.0],
+            "BreakoutQualityFactor": [1.0, 0.2, 0.8],
+            "SignalRecencyFactor": [1.0, 0.7, 0.9],
+            "SectorConfirmationFactor": [1.0, 0.8, 0.9],
+            "FailureSignalFactor": [1.0, 0.7, 0.9],
+            "TrendScore": [20.0, 5.0, 16.0],
+            "AccumulationScore": [20.0, 5.0, 16.0],
+            "IndustryRelativeStrength": [5.0, -5.0, 3.0],
+            "Return20D": [10.0, -5.0, 4.0],
+            "Return60D": [20.0, -10.0, 8.0],
+            "MaxDrawdown20D": [-2.0, -12.0, -4.0],
+            "MaxDrawdown60D": [-4.0, -20.0, -8.0],
+        })
+
+        with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)):
+            tier_path, ic_path = analytics.write_research_reports(history)
+            tier_report = pd.read_csv(tier_path, encoding="utf-8-sig")
+            ic_report = pd.read_csv(ic_path, encoding="utf-8-sig")
+
+        self.assertEqual(tier_report.loc[0, "InstitutionalTier"], "D级陷阱池")
+        self.assertIn("InstitutionalScore", ic_report["Factor"].tolist())
+
+    def test_institutional_tier_uses_trap_pool_below_65(self):
+        result = ScanResult(ticker="000001.SZ", score=ScoreBreakdown(total=60.0))
+
+        frame = __import__("report")._results_to_dataframe([result])
+
+        self.assertEqual(frame.loc[0, "InstitutionalTier"], "D级陷阱池")
 
     def test_enrichment_refreshes_close_from_latest_cached_bar(self):
         result = ScanResult(ticker="605499.SH", close=128.17)
@@ -1026,10 +1440,14 @@ class RegressionTests(TestCase):
         scanner.quality_filter.get.return_value = "全部质量"
         scanner.table = MagicMock()
         scanner.table.get_children.return_value = []
-        scanner.table.insert.side_effect = [f"row-{index}" for index in range(gui.MAX_RENDERED_ROWS)]
+        scanner.table.insert.side_effect = [f"row-{index}" for index in range(600)]
         scanner._row_details = {}
         scanner.status = Mock()
         scanner.current_file = "AllResults.csv"
+        scanner._current_page = 0
+        scanner.page_summary = Mock()
+        scanner.previous_page_button = Mock()
+        scanner.next_page_button = Mock()
 
         self.assertTrue(scanner._render_cached_rows())
 
@@ -1038,8 +1456,15 @@ class RegressionTests(TestCase):
         self.assertEqual(scanner.table.insert.call_count, gui.MAX_RENDERED_ROWS)
         self.assertEqual(len(scanner._row_details), gui.MAX_RENDERED_ROWS)
         scanner.status.set.assert_called_once_with(
-            f"AllResults.csv · 命中 600 / 600 条 · 实际渲染 {gui.MAX_RENDERED_ROWS} 条 · 双击查看详情"
+            "AllResults.csv · 命中 600 / 600 条 · 第 1 / 2 页 · 双击查看详情"
         )
+
+        scanner.table.insert.reset_mock()
+        scanner._show_next_page()
+
+        self.assertEqual(scanner.table.insert.call_count, 100)
+        self.assertEqual(len(scanner._row_details), 100)
+        scanner.page_summary.set.assert_called_with("第 2 / 2 页 · 501-600 条")
 
     def test_download_progress_logs_first_interval_and_final_updates(self):
         with patch("downloader.logger.info") as info:

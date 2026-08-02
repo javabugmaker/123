@@ -39,6 +39,7 @@ from config import (
     TOP_N_PARQUET,
     TOP_N_REPORT,
 )
+from fundamental_data import fundamental_data_path, refresh_fundamental_data
 from downloader import (
     TickerInfo,
     build_ticker_universe,
@@ -155,6 +156,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         report.results,
         top_n_csv=args.top,
         top_n_parquet=args.top_parquet,
+        data_source=args.data_source,
     )
 
     if report.successful == 0:
@@ -192,11 +194,19 @@ def cmd_report(args: argparse.Namespace) -> int:
     all_tickers = list(stock_universe) + list(etf_universe)
 
     logger.info("Re-scanning %d cached tickers...", len(all_tickers))
+    fundamental_path = refresh_fundamental_data(
+        [ticker.ticker for ticker in stock_universe],
+        force=False,
+    )
+    logger.info("基本面数据路径: %s", fundamental_data_path() or fundamental_path)
     results = run_parallel_indicator_scan(all_tickers, data_source=args.data_source)
     enrich_results(results, args.data_source)
 
     csv_path, parquet_path, full_csv, full_parquet = export_all(
-        results, top_n_csv=args.top, top_n_parquet=args.top_parquet
+        results,
+        top_n_csv=args.top,
+        top_n_parquet=args.top_parquet,
+        data_source=args.data_source,
     )
     print_terminal_report(results, n=args.top)
 
@@ -221,7 +231,13 @@ def cmd_download(args: argparse.Namespace) -> int:
                 normalize_ticker(t) for t in args.tickers.split(",") if t.strip()
             )
         )
-        all_tickers = [TickerInfo(ticker=s) for s in symbols]
+        stock_universe = [TickerInfo(ticker=s) for s in symbols if not is_etf_ticker(s)]
+        etf_universe = [
+            TickerInfo(ticker=s, is_etf=True, asset_type="etf")
+            for s in symbols
+            if is_etf_ticker(s)
+        ]
+        all_tickers = stock_universe + etf_universe
     else:
         stock_universe, etf_universe = build_ticker_universe(
             include_stocks=include_stocks,

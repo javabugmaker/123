@@ -1,11 +1,7 @@
 """
-downloader.py — Multi-source ticker universe & historical data manager.
+downloader.py — A 股与 ETF 多数据源行情及历史数据管理。
 
-Responsible for:
-1. Building the ticker universe (stocks: NASDAQ / NYSE / AMEX; ETFs: free lists).
-2. Downloading 10+ years of daily OHLCV data via yfinance.
-3. Incremental cache: existing data is extended, new data is downloaded fresh.
-4. Rate-limiting, batch parallelism (ThreadPoolExecutor), and graceful error recovery.
+负责构建标的池、下载历史 OHLCV 数据、维护增量缓存，并提供限速并行下载与错误恢复。
 """
 
 from __future__ import annotations
@@ -17,6 +13,7 @@ import math
 import re
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
@@ -86,9 +83,30 @@ def _log_download_progress(
 
 _HTTP = requests.Session()
 _HTTP.trust_env = True
+_HTTP.headers.update({"User-Agent": "Mozilla/5.0"})
+_HTTP.mount(
+    "https://",
+    requests.adapters.HTTPAdapter(
+        pool_connections=max(16, DOWNLOAD_THREADS * 2),
+        pool_maxsize=max(16, DOWNLOAD_THREADS * 2),
+        max_retries=0,
+    ),
+)
 _EASTMONEY_HOSTS = ("push2delay.eastmoney.com", "push2.eastmoney.com")
 _EASTMONEY_HISTORY_HOSTS = ("push2delay.eastmoney.com", "push2his.eastmoney.com")
 _UNIVERSE_CACHE_PATH = CACHE_DIR / "_a_share_universe.json"
+_DOWNLOAD_RATE_LOCK = threading.Lock()
+_LAST_DOWNLOAD_AT = 0.0
+
+
+def _wait_for_download_slot() -> None:
+    global _LAST_DOWNLOAD_AT
+    with _DOWNLOAD_RATE_LOCK:
+        now = time.monotonic()
+        delay = DOWNLOAD_RATE_LIMIT_PAUSE - (now - _LAST_DOWNLOAD_AT)
+        if delay > 0:
+            time.sleep(delay)
+        _LAST_DOWNLOAD_AT = time.monotonic()
 
 
 def _eastmoney_get(
@@ -96,7 +114,7 @@ def _eastmoney_get(
 ) -> requests.Response:
     hosts = _EASTMONEY_HISTORY_HOSTS if history else _EASTMONEY_HOSTS
     last_error: Exception | None = None
-    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
+    headers = {"Referer": "https://quote.eastmoney.com/"}
     for attempt in range(DOWNLOAD_RETRIES + 1):
         for host in hosts:
             try:
@@ -495,15 +513,12 @@ def _validate_ohlcv(df: pd.DataFrame) -> pd.DataFrame | None:
     cleaned.index = pd.to_datetime(cleaned.index, errors="coerce")
     for column in required:
         cleaned[column] = pd.to_numeric(cleaned[column], errors="coerce")
-    valid_index = pd.DatetimeIndex(cleaned.index).dropna()
-    if valid_index.empty:
-        return None
-    latest_index = pd.Timestamp(cast(Any, valid_index[-1]))
-    if latest_index > pd.Timestamp.now(tz="UTC").tz_localize(None):
-        return None
     cleaned = cleaned.loc[cleaned.index.notna()].sort_index()
     cleaned = cleaned.loc[~cleaned.index.duplicated(keep="last")]
     if cleaned.empty:
+        return None
+    latest_index = pd.Timestamp(cast(Any, cleaned.index.max()))
+    if latest_index > pd.Timestamp.now(tz="UTC").tz_localize(None):
         return None
     valid_ohlc = (
         cleaned[["Open", "High", "Low", "Close"]].notna().all(axis=1)
@@ -597,11 +612,11 @@ def _load_meta(ticker: str) -> dict | None:
         return None
 
 
-def _fetch_market_cap_from_yf(ticker: str) -> float | None:
+def _fetch_market_cap(ticker: str) -> float | None:
     """
-    Fetch market cap from yfinance Ticker.info for a single ticker.
+    Fetch market cap from Eastmoney for a single ticker.
 
-    Returns a float in USD or None on failure.
+    Returns a float in CNY or None on failure.
     """
     ticker = normalize_ticker(ticker)
     try:
@@ -624,7 +639,7 @@ def get_market_cap(ticker: str) -> float | None:
     """
     Return the cached market cap for *ticker*.
 
-    If no cached metadata exists, attempts a live fetch from yfinance,
+    If no cached metadata exists, attempts a live fetch from Eastmoney,
     caches the result, and returns it.  Returns None when unavailable.
     """
     meta = _load_meta(ticker)
@@ -640,7 +655,7 @@ def get_market_cap(ticker: str) -> float | None:
             pass
 
     # Try live fetch
-    mc = _fetch_market_cap_from_yf(ticker)
+    mc = _fetch_market_cap(ticker)
     if mc is not None:
         _save_meta(
             ticker,
@@ -661,10 +676,7 @@ def _download_from_sina(
     response = _HTTP.get(
         "https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_data=/CN_MarketDataService.getKLineData",
         params={"symbol": symbol, "scale": 240, "ma": "no", "datalen": 1023},
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://finance.sina.com.cn/",
-        },
+        headers={"Referer": "https://finance.sina.com.cn/"},
         timeout=DOWNLOAD_TIMEOUT,
     )
     response.raise_for_status()
@@ -714,7 +726,7 @@ def _download_from_tencent(
             params={
                 "param": f"{symbol},day,{start_limit:%Y-%m-%d},{end_date:%Y-%m-%d},640,qfq",
             },
-            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
+            headers={"Referer": "https://gu.qq.com/"},
             timeout=DOWNLOAD_TIMEOUT,
         )
         response.raise_for_status()
@@ -978,6 +990,8 @@ def download_ticker(
                 combined = cast(pd.DataFrame, pd.concat([cached, new_df]))
                 combined = combined.loc[~combined.index.duplicated(keep="last")]
                 combined = combined.sort_index()
+                if combined.equals(cached):
+                    return cached
                 _save_cache(ticker, combined, selected)
                 return combined
     except (OSError, ValueError, TypeError, KeyError, pd.errors.InvalidIndexError) as exc:
@@ -1024,8 +1038,6 @@ def download_batch(
     total = len(symbols)
     skipped_delisted = 0
 
-    # Single-threaded download with inter-request pause (respects Yahoo's
-    # ~60 req/min soft limit).  Parallel path kept for DOWNLOAD_THREADS > 1.
     if not total:
         _log_download_progress(0, 0, 0, 0)
     elif DOWNLOAD_THREADS <= 1:
@@ -1034,6 +1046,7 @@ def download_batch(
             start=1,
         ):
             try:
+                _wait_for_download_slot()
                 df = download_ticker(
                     sym, force=force, source=source, cache_first=cache_first
                 )
@@ -1044,19 +1057,22 @@ def download_batch(
             except _DOWNLOAD_ERRORS:
                 skipped_delisted += 1
             _log_download_progress(completed, total, len(results), skipped_delisted)
-            time.sleep(DOWNLOAD_RATE_LIMIT_PAUSE)
     else:
-        max_pending = max(DOWNLOAD_THREADS * 4, DOWNLOAD_THREADS)
+        max_pending = max(DOWNLOAD_THREADS * 2, DOWNLOAD_THREADS)
         symbol_iter = iter(symbols)
         with ThreadPoolExecutor(max_workers=DOWNLOAD_THREADS) as pool:
             futures: dict[Any, str] = {}
+
+            def download_scheduled(sym: str) -> pd.DataFrame | None:
+                _wait_for_download_slot()
+                return download_ticker(sym, force, source, cache_first)
 
             def submit_next() -> bool:
                 try:
                     sym = next(symbol_iter)
                 except StopIteration:
                     return False
-                futures[pool.submit(download_ticker, sym, force, source, cache_first)] = sym
+                futures[pool.submit(download_scheduled, sym)] = sym
                 return True
 
             for _ in range(min(max_pending, total)):
@@ -1102,10 +1118,8 @@ def get_etf_fund_flows(ticker: str) -> float | None:
     """
     Attempt to retrieve ETF fund flow data from free sources.
 
-    Currently uses yfinance info dict which sometimes contains
-    'fundFamily', 'netAssets', etc. — not daily flows.
-    For daily flows a paid API (e.g. ETFdb Pro, Bloomberg) is needed,
-    so this function returns None when flows are unavailable.
+    The current free data sources do not provide reliable daily ETF fund flows,
+    so this function returns None when unavailable.
 
     Returns:
         Estimated net flow (positive = inflow) or None.

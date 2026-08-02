@@ -13,14 +13,16 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from analytics import refresh_research_outcomes, write_research_reports
 from config import OUTPUT_DIR, TOP_N_PARQUET, TOP_N_REPORT
 from scanner import ScanReport, ScanResult
 from signal_lifecycle import enrich_signal_lifecycle
@@ -47,6 +49,34 @@ def _quality_label(result: ScanResult) -> str:
     return "普通"
 
 
+def _institutional_tier(result: ScanResult) -> str:
+    score = (
+        float(result.institutional_score)
+        if np.isfinite(result.institutional_score)
+        else float(result.score.total)
+    )
+    volume_confirmed = bool(
+        result.filter_details.get("volume_accumulation", False)
+    ) or result.score.volume >= 15
+    quality_failed = (
+        not result.is_etf
+        and result.quality_data_available
+        and not result.quality_gate
+    )
+    if quality_failed:
+        if score >= 75:
+            return "C级价值观察"
+        if score >= 65:
+            return "D级陷阱池"
+    if score > 85 and 0 <= result.signal_recency_days <= 20 and volume_confirmed:
+        return "A级机构启动"
+    if 75 <= score < 85:
+        return "B级观察"
+    if score >= 65:
+        return "C级价值观察"
+    return "D级陷阱池"
+
+
 def _rankable_results(results: list[ScanResult]) -> list[ScanResult]:
     valid = [r for r in results if not r.error]
     passed = [r for r in valid if r.passed_filters]
@@ -54,7 +84,11 @@ def _rankable_results(results: list[ScanResult]) -> list[ScanResult]:
     return sorted(
         candidates,
         key=lambda r: (
-            float(r.score.total),
+            float(
+                r.institutional_score
+                if np.isfinite(r.institutional_score)
+                else r.score.total
+            ),
             int(r.passed_filters),
             int(r.filter_details.get("signal_count", 0)),
         ),
@@ -76,6 +110,7 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "AssetType": r.asset_type,
                 "Style": r.style,
                 "Quality": _quality_label(r),
+                "InstitutionalTier": _institutional_tier(r),
                 "Close": r.close,
                 "Score": round(r.score.total, 2),
                 "BacktestScore": round(r.backtest_score, 2)
@@ -84,6 +119,35 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "CompositeScore": round(r.composite_score, 2)
                 if np.isfinite(r.composite_score)
                 else None,
+                "FailureSignalFactor": round(r.failure_signal_factor, 4),
+                "FailureAdjustedScore": round(r.failure_adjusted_score, 2)
+                if np.isfinite(r.failure_adjusted_score)
+                else None,
+                "SectorConfirmationFactor": round(r.sector_confirmation_factor, 4),
+                "SignalRecencyDays": r.signal_recency_days
+                if r.signal_recency_days >= 0
+                else None,
+                "SignalRecencyFactor": round(r.signal_recency_factor, 4),
+                "BreakoutQualityFactor": round(r.breakout_quality_factor, 4),
+                "InstitutionalScore": round(r.institutional_score, 2)
+                if np.isfinite(r.institutional_score)
+                else None,
+                "ROE": round(r.quality_roe, 4) if np.isfinite(r.quality_roe) else None,
+                "GrossMargin": round(r.quality_gross_margin, 4) if np.isfinite(r.quality_gross_margin) else None,
+                "InstitutionHoldingTrend": r.quality_institution_holding_trend,
+                "InstitutionHoldingPeriods": round(r.quality_institution_holding_periods, 4) if np.isfinite(r.quality_institution_holding_periods) else None,
+                "NetProfitY1": round(r.quality_net_profit_y1, 4) if np.isfinite(r.quality_net_profit_y1) else None,
+                "NetProfitY2": round(r.quality_net_profit_y2, 4) if np.isfinite(r.quality_net_profit_y2) else None,
+                "NetProfitY3": round(r.quality_net_profit_y3, 4) if np.isfinite(r.quality_net_profit_y3) else None,
+                "IndustryGrossMarginPercentile": round(r.quality_industry_gross_margin_percentile, 4) if np.isfinite(r.quality_industry_gross_margin_percentile) else None,
+                "QualityROE": r.quality_roe_factor,
+                "QualityGrossMargin": r.quality_gross_margin_factor,
+                "QualityInstitutionHolding": r.quality_institution_holding_factor,
+                "QualityNetProfit": r.quality_net_profit_factor,
+                "QualityScore": round(r.quality_score, 2) if np.isfinite(r.quality_score) else None,
+                "QualityGate": r.quality_gate,
+                "QualityReason": r.quality_reason,
+                "QualityDataAvailable": r.quality_data_available,
                 "BacktestSamples": r.backtest_samples,
                 "BacktestWinRate20D": round(r.backtest_win_rate_20d, 4)
                 if np.isfinite(r.backtest_win_rate_20d)
@@ -139,6 +203,9 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "IndustryRelativeStrength": round(r.industry_relative_strength, 2)
                 if not np.isnan(r.industry_relative_strength)
                 else None,
+                "IndustryMomentum60D": round(r.industry_momentum_60d, 2)
+                if not np.isnan(r.industry_momentum_60d)
+                else None,
                 "DataSource": r.data_source,
                 "DataAsOf": r.data_asof,
                 "DataAgeDays": r.data_age_days,
@@ -164,11 +231,14 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df = df.sort_values(
-        ["PassedFilters", "Score", "SignalCount"],
-        ascending=[False, False, False],
+    rank_score = pd.to_numeric(df["InstitutionalScore"], errors="coerce").fillna(
+        pd.to_numeric(df["Score"], errors="coerce")
+    )
+    df = df.assign(_RankScore=rank_score).sort_values(
+        ["PassedFilters", "_RankScore", "Score", "SignalCount"],
+        ascending=[False, False, False, False],
         kind="mergesort",
-    ).reset_index(drop=True)
+    ).drop(columns="_RankScore").reset_index(drop=True)
     return df
 
 
@@ -252,9 +322,12 @@ def export_all(
     results: list[ScanResult],
     top_n_csv: int = TOP_N_REPORT,
     top_n_parquet: int = TOP_N_PARQUET,
+    data_source: str = "eastmoney",
 ) -> tuple[Path, Path, Path, Path]:
     """Export CSV, Parquet, and full results. Returns (csv_path, parquet_path, full_csv, full_parquet)."""
     df = enrich_signal_lifecycle(_results_to_dataframe(results))
+    research_history = refresh_research_outcomes(data_source)
+    write_research_reports(research_history)
     if df.empty:
         csv_path = export_top_csv(results, n=top_n_csv)
         parquet_path = export_top_parquet(results, n=top_n_parquet)
@@ -362,7 +435,9 @@ def print_terminal_report(results: list[ScanResult], n: int = TOP_N_REPORT) -> N
     print()
     print("=" * 70)
     print(f"  INSTITUTIONAL ACCUMULATION SCANNER — TOP {min(n, len(top))}")
-    print(f"  {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    print(
+        f"  {datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M CST')}"
+    )
     print("=" * 70)
     print()
 

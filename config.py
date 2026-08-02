@@ -18,6 +18,8 @@ BASE_DIR: Final[Path] = Path(__file__).resolve().parent
 CACHE_DIR: Final[Path] = BASE_DIR / "cache"
 OUTPUT_DIR: Final[Path] = BASE_DIR / "output"
 LOG_DIR: Final[Path] = BASE_DIR / "logs"
+FUNDAMENTAL_DATA_PATH: str = ""
+FUNDAMENTAL_REFRESH_FORCE: bool = False
 
 # Ensure directories exist
 for _d in (CACHE_DIR, OUTPUT_DIR, LOG_DIR):
@@ -46,17 +48,8 @@ EXCLUDED_SECURITY_KEYWORDS: tuple[str, ...] = (
 # ======================================================================
 HISTORY_YEARS: int = 10  # Years of daily data to pull
 
-# Yahoo Finance rate limits (empirically observed, not officially documented):
-#   ~1-2 req/s  per IP without TLS fingerprint evasion
-#   ~60 req/min Yahoo's unofficial guideline
-#   ~900 burst requests before hard throttling
-#   Historical data (period > 1y) is heavier — triggers limits faster
-#   TLS fingerprint: Python's 'requests' is detected as bot since 2025
-#
-# Strategy: 2 threads, 1s pause = ~2 req/s = ~120 req/min
-# Phase 2 (indicator computation) stays parallel since it's CPU-bound, no network
-DOWNLOAD_THREADS: int = 2
-DOWNLOAD_RATE_LIMIT_PAUSE: float = 1.0
+DOWNLOAD_THREADS: int = 10
+DOWNLOAD_RATE_LIMIT_PAUSE: float = 0.1
 DOWNLOAD_RETRIES: int = 2  # retries on transient errors (401s, 429s, timeouts) — don't waste time retrying dead URLs
 DOWNLOAD_TIMEOUT: int = (
     10  # seconds per ticker (lower = less accumulated delay on dead URLs)
@@ -164,7 +157,20 @@ SCORING_WEIGHTS: Final[ScoringWeights] = ScoringWeights()
 TOP_N_REPORT: int = 50
 TOP_N_PARQUET: int = 200
 
-SCORING_VERSION: str = "2026-07-22-v2"
+SCORING_VERSION: str = "2026-08-02-v4-quality-dual-factor"
+
+FRESHNESS_MULTIPLIERS: Final[tuple[tuple[int, float], ...]] = (
+    (0, 1.00),
+    (1, 0.98),
+    (2, 0.95),
+    (5, 0.90),
+    (999_999, 0.80),
+)
+INSTITUTIONAL_SCORE_TIERS: Final[tuple[tuple[str, float], ...]] = (
+    ("A", 75.0),
+    ("B", 60.0),
+    ("C", 45.0),
+)
 
 # ======================================================================
 # Runtime
