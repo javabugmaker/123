@@ -25,12 +25,14 @@ from config import (
     AD_SLOPE_LOOKBACK,
     BB_WIDTH_COMPRESSION_LOOKBACK,
     CONSOLIDATION_DAYS,
+    LOG_DIR,
     SCORING_WEIGHTS,
     VOLUME_ACCUM_MIN_DAYS,
     VOLUME_ACCUM_RATIO,
+    setup_logging,
 )
 
-logger = logging.getLogger("institution_scanner.score")
+logger = setup_logging("institution_scanner.score", level=logging.INFO, log_to_file=True, log_dir=LOG_DIR)
 
 
 # ======================================================================
@@ -471,15 +473,21 @@ def _score_dimensions_available(
     trend_available = len(df) >= 252 and _has_finite_values(
         df, ("Close", "MA200"), minimum=60
     )
-    volume_available = len(df) >= 120 and any(
-        _has_finite_values(df, (column,)) for column in ("VolMA20", "VolMA120", "VolZScore")
+    volume_available = len(df) >= 120 and (
+        _has_finite_values(
+            df, ("VolMA20", "VolMA120"), minimum=VOLUME_ACCUM_MIN_DAYS
+        )
+        or _has_finite_values(df, ("VolZScore",), minimum=10)
     )
     accumulation_available = len(df) >= 60 and any(
         _has_finite_values(df, (column,)) for column in ("OBV", "AD", "CMF", "MFI")
     )
-    volatility_available = len(df) >= BB_WIDTH_COMPRESSION_LOOKBACK and any(
-        _has_finite_values(df, columns)
-        for columns in (("ATR14", "ATR50"), ("BB_Width",), ("HV20", "HV60"))
+    volatility_available = len(df) >= BB_WIDTH_COMPRESSION_LOOKBACK and (
+        _has_finite_values(df, ("ATR14", "ATR50"))
+        or _has_finite_values(
+            df, ("BB_Width",), minimum=BB_WIDTH_COMPRESSION_LOOKBACK
+        )
+        or _has_finite_values(df, ("HV20", "HV60"))
     )
     structure_available = len(df) >= 252 and _has_finite_values(
         df, ("Close", "High", "Low")
@@ -497,18 +505,39 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
     """
     Compute the full accumulation score for one ticker.
 
+    评分前会先检查数据可用性：如果关键维度数据不足，直接返回低分，
+    避免因数据缺失导致评分虚高或误判。
+
     Args:
         df: DataFrame with all indicators pre-computed.
 
     Returns:
         ScoreBreakdown with total and sub-scores.
     """
+    # ---- 评分前数据可用性检查 ----
+    available = _score_dimensions_available(df)
+    missing_indicators = available.count(False)
+    indicator_coverage = sum(available) / len(available)
+
+    # 当超过 3 个维度（共 5 个）不可用时，直接返回低分，不做完整评分
+    if missing_indicators >= 4:
+        logger.warning(
+            "数据不足：%d/5 个维度不可用，覆盖率 %.1f%%，跳过评分",
+            missing_indicators, indicator_coverage * 100,
+        )
+        return ScoreBreakdown(
+            total=0.0,
+            missing_indicators=missing_indicators,
+            indicator_coverage=indicator_coverage,
+            confidence=0.0,
+        )
+
     raw_scores = (
-        score_trend(df),
-        score_volume(df),
-        score_accumulation(df),
-        score_volatility(df),
-        score_structure(df),
+        score_trend(df) if available[0] else 0.0,
+        score_volume(df) if available[1] else 0.0,
+        score_accumulation(df) if available[2] else 0.0,
+        score_volatility(df) if available[3] else 0.0,
+        score_structure(df) if available[4] else 0.0,
     )
     style = classify_style(df, is_etf=is_etf)
     adjustments = _style_adjustment(df, style)
@@ -527,9 +556,6 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
         for score, adjustment, limit in zip(raw_scores, adjustments, limits)
     )
     trend, volume, accumulation, volatility, structure = adjusted_scores
-    available = _score_dimensions_available(df)
-    missing_indicators = available.count(False)
-    indicator_coverage = sum(available) / len(available)
     available_weight = sum(
         limit for is_available, limit in zip(available, limits) if is_available
     )

@@ -176,8 +176,9 @@ INSTITUTIONAL_SCORE_TIERS: Final[tuple[tuple[str, float], ...]] = (
 # Runtime
 # ======================================================================
 SCAN_THREADS: int = (
-    12  # Threads for parallel indicator calculation (numpy releases GIL)
+    24  # Threads for parallel indicator calculation (numpy releases GIL) — 3060 GPU 高配CPU建议值
 )
+DOWNLOAD_THREADS: int = 20  # 并行下载线程数（3060高配系统，网络IO密集可开更多）
 CHECKPOINT_INTERVAL: int = 100  # Save checkpoint every N tickers
 ENABLE_CHECKPOINT: bool = True
 
@@ -186,3 +187,80 @@ ENABLE_FUND_FLOWS: bool = True
 
 # Volume Profile in scoring
 ENABLE_VOLUME_PROFILE: bool = True
+
+# ======================================================================
+# 集中日志配置
+# ======================================================================
+import logging
+import sys
+import time
+from typing import Literal
+
+_LOG_LEVEL_MAP: dict[str, int] = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+}
+
+
+def setup_logging(
+    name: str = "institution_scanner",
+    level: str | int = logging.INFO,
+    log_to_file: bool = True,
+    log_dir: Path | None = None,
+    console_level: str | int = logging.INFO,
+    file_level: str | int = logging.DEBUG,
+) -> logging.Logger:
+    """
+    集中式日志配置：统一管理所有模块的日志格式、级别和输出目标。
+
+    使用方式（各模块只需调用此函数即可，无需手动创建 FileHandler）：
+        logger = setup_logging("institution_scanner.scanner")
+
+    Args:
+        name: 日志器名称，建议按模块命名如 'institution_scanner.scanner'
+        level: 日志器全局级别
+        log_to_file: 是否输出到文件
+        log_dir: 日志文件目录，默认使用 LOG_DIR
+        console_level: 控制台输出级别
+        file_level: 文件输出级别
+
+    Returns:
+        配置好的 logging.Logger 实例
+    """
+    level = _LOG_LEVEL_MAP.get(str(level).upper(), level) if isinstance(level, str) else level
+    console_level = _LOG_LEVEL_MAP.get(str(console_level).upper(), console_level) if isinstance(console_level, str) else console_level
+    file_level = _LOG_LEVEL_MAP.get(str(file_level).upper(), file_level) if isinstance(file_level, str) else file_level
+
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+
+    # 避免重复添加 handler
+    if logger.handlers:
+        return logger
+
+    formatter_console = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    formatter_file = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    )
+
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(console_level)
+    console.setFormatter(formatter_console)
+    logger.addHandler(console)
+
+    if log_to_file:
+        _log_dir = log_dir or LOG_DIR
+        _log_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = name.replace("institution_scanner", "scanner").replace(".", "_")
+        log_path = _log_dir / f"{safe_name}_{time.strftime('%Y%m%d_%H%M%S')}.log"
+        fh = logging.FileHandler(log_path, mode="a")
+        fh.setLevel(file_level)
+        fh.setFormatter(formatter_file)
+        logger.addHandler(fh)
+
+    return logger

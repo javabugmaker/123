@@ -40,6 +40,7 @@ from config import (
     OUTPUT_DIR,
     SCAN_THREADS,
     SCORING_VERSION,
+    setup_logging,
 )
 from downloader import (
     TickerInfo,
@@ -55,13 +56,7 @@ from fundamental_quality import get_quality
 from indicators import compute_all_indicators
 from score import ScoreBreakdown, classify_style, score_ticker
 
-logger = logging.getLogger("institution_scanner.scanner")
-logger.setLevel(logging.DEBUG)
-
-_fh = logging.FileHandler(LOG_DIR / "scanner.log", mode="a")
-_fh.setLevel(logging.DEBUG)
-_fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-logger.addHandler(_fh)
+logger = setup_logging("institution_scanner.scanner", level=logging.DEBUG, log_to_file=True, log_dir=LOG_DIR)
 
 
 _SCAN_RECOVERABLE_ERRORS = (OSError, ValueError, TypeError, KeyError, IndexError)
@@ -369,6 +364,22 @@ def scan_single_from_df(
             passed_filters=passed,
             filter_details=filter_map,
             style=style,
+            quality_roe=quality.roe,
+            quality_gross_margin=quality.gross_margin,
+            quality_institution_holding_trend=quality.institution_holding_trend,
+            quality_institution_holding_periods=quality.institution_holding_periods,
+            quality_net_profit_y1=quality.net_profit_y1,
+            quality_net_profit_y2=quality.net_profit_y2,
+            quality_net_profit_y3=quality.net_profit_y3,
+            quality_industry_gross_margin_percentile=quality.industry_gross_margin_percentile,
+            quality_roe_factor=quality.roe_factor,
+            quality_gross_margin_factor=quality.gross_margin_factor,
+            quality_institution_holding_factor=quality.institution_holding_factor,
+            quality_net_profit_factor=quality.net_profit_factor,
+            quality_score=quality.quality_score,
+            quality_gate=quality.quality_gate,
+            quality_reason=quality.quality_reason,
+            quality_data_available=quality.data_available,
         )
 
     except _SCAN_RECOVERABLE_ERRORS as exc:

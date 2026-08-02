@@ -563,6 +563,7 @@ def _backtest_one_ticker(
                 if (
                     pd.notna(start_date)
                     and pd.notna(end_date)
+                    and end_date == future_date
                     and benchmark_close.loc[start_date] > 0
                 ):
                     benchmark_returns[period] = (
@@ -1070,7 +1071,10 @@ def run_historical_backtest(
         validation_ratio=validation_ratio,
         split_dates=split_dates,
     )
-    if samples:
+    if not samples:
+        summary.insufficient_test_data = True
+        summary.error = "未生成有效回测样本"
+    else:
         all_frame = pd.DataFrame(samples)
         summary.all_samples = len(all_frame)
         test_frame = all_frame[all_frame["split"] == "test"]

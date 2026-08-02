@@ -23,7 +23,6 @@ import argparse
 import csv
 import logging
 import sys
-import time
 from pathlib import Path
 
 # Add project root to path so imports work from anywhere
@@ -38,6 +37,7 @@ from config import (
     OUTPUT_DIR,
     TOP_N_PARQUET,
     TOP_N_REPORT,
+    setup_logging,
 )
 from fundamental_data import fundamental_data_path, refresh_fundamental_data
 from downloader import (
@@ -59,41 +59,24 @@ from scanner import (
 )
 
 # ======================================================================
-# Logging setup
+# Logging setup — 委托给 config 的集中式日志配置
 # ======================================================================
 
 
-def setup_logging(verbose: bool = False) -> None:
-    """Configure root logger with console and file handlers."""
-    root = logging.getLogger("institution_scanner")
-    root.setLevel(logging.DEBUG if verbose else logging.INFO)
-
-    # Remove old handlers to avoid duplicate output
-    for handler in list(root.handlers):
-        root.removeHandler(handler)
-        handler.close()
-
-    # Console handler
-    console = logging.StreamHandler(sys.stdout)
-    console.setLevel(logging.INFO)
-    console.setFormatter(
-        logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(message)s",
-            datefmt="%H:%M:%S",
-        )
+def _configure_logging(verbose: bool = False) -> None:
+    """
+    Configure root logger with console and file handlers.
+    委托给 config.setup_logging 实现集中管理。
+    """
+    root = setup_logging(
+        "institution_scanner",
+        level=logging.DEBUG if verbose else logging.INFO,
+        log_to_file=True,
+        log_dir=LOG_DIR,
+        console_level=logging.INFO,
+        file_level=logging.DEBUG,
     )
-    root.addHandler(console)
-
-    # File handler
-    log_path = LOG_DIR / f"scan_{time.strftime('%Y%m%d_%H%M%S')}.log"
-    fh = logging.FileHandler(log_path, mode="w")
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(
-        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    )
-    root.addHandler(fh)
-
-    root.info("Logging to %s", log_path)
+    root.info("Logging to %s", LOG_DIR)
 
 
 # ======================================================================
@@ -115,11 +98,15 @@ def cmd_scan(args: argparse.Namespace) -> int:
                 normalize_ticker(t) for t in args.tickers.split(",") if t.strip()
             )
         )
-        stock_universe = [TickerInfo(ticker=s) for s in symbols if not is_etf_ticker(s)]
+        stock_universe = [
+            TickerInfo(ticker=s)
+            for s in symbols
+            if include_stocks and not is_etf_ticker(s)
+        ]
         etf_universe = [
             TickerInfo(ticker=s, is_etf=True, asset_type="etf")
             for s in symbols
-            if is_etf_ticker(s)
+            if include_etfs and is_etf_ticker(s)
         ]
         logger.info(
             "Scanning %d specified tickers: %s", len(symbols), ", ".join(symbols)
@@ -231,11 +218,15 @@ def cmd_download(args: argparse.Namespace) -> int:
                 normalize_ticker(t) for t in args.tickers.split(",") if t.strip()
             )
         )
-        stock_universe = [TickerInfo(ticker=s) for s in symbols if not is_etf_ticker(s)]
+        stock_universe = [
+            TickerInfo(ticker=s)
+            for s in symbols
+            if include_stocks and not is_etf_ticker(s)
+        ]
         etf_universe = [
             TickerInfo(ticker=s, is_etf=True, asset_type="etf")
             for s in symbols
-            if is_etf_ticker(s)
+            if include_etfs and is_etf_ticker(s)
         ]
         all_tickers = stock_universe + etf_universe
     else:
@@ -552,7 +543,7 @@ def main() -> int:
         parser.print_help()
         return 0
 
-    setup_logging(verbose=getattr(args, "verbose", False))
+    _configure_logging(verbose=getattr(args, "verbose", False))
 
     commands = {
         "scan": cmd_scan,

@@ -1,6 +1,7 @@
 # InstitutionScanner Docker Image
 # Build:  docker build -t institution-scanner .
-# Run:    docker compose up
+# Run:    docker run --rm -v "%cd%/cache:/app/cache" -v "%cd%/output:/app/output" -v "%cd%/logs:/app/logs" -it institution-scanner python main.py scan
+# Run (interactive shell): docker run --rm -v "%cd%/cache:/app/cache" -v "%cd%/output:/app/output" -v "%cd%/logs:/app/logs" -it institution-scanner
 
 FROM python:3.12-slim-bookworm
 
@@ -11,6 +12,10 @@ LABEL description="Institutional Accumulation Scanner — detect stocks/ETFs wit
 ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Health check — verify Python and key modules are functional
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD python -c "import requests,pandas,numpy; print('OK')" || exit 1
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -36,5 +41,5 @@ RUN mkdir -p /app/cache /app/output /app/logs && \
 
 USER scanner
 
-# Default: drop into interactive terminal — user decides what to run
-CMD ["/bin/bash"]
+# Default: run a scan — override with docker run args for custom commands
+CMD ["python", "main.py", "scan"]

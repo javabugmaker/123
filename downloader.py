@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
 from tqdm import tqdm
 
 from config import (
@@ -37,16 +38,10 @@ from config import (
     HISTORY_YEARS,
     LOG_DIR,
     MARKET_CAP_CACHE_TTL_DAYS,
+    setup_logging,
 )
 
-logger = logging.getLogger("institution_scanner.downloader")
-logger.setLevel(logging.DEBUG)
-
-# Attach a rotating file handler so we don't lose logs
-_fh = logging.FileHandler(LOG_DIR / "downloader.log", mode="a")
-_fh.setLevel(logging.DEBUG)
-_fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-logger.addHandler(_fh)
+logger = setup_logging("institution_scanner.downloader", level=logging.DEBUG, log_to_file=True, log_dir=LOG_DIR)
 
 
 class DownloadError(RuntimeError):
@@ -84,19 +79,64 @@ def _log_download_progress(
 _HTTP = requests.Session()
 _HTTP.trust_env = True
 _HTTP.headers.update({"User-Agent": "Mozilla/5.0"})
-_HTTP.mount(
-    "https://",
-    requests.adapters.HTTPAdapter(
-        pool_connections=max(16, DOWNLOAD_THREADS * 2),
-        pool_maxsize=max(16, DOWNLOAD_THREADS * 2),
-        max_retries=0,
+
+# 使用带重试机制的 HTTPAdapter，自动处理网络波动导致的连接失败
+_retry_adapter = HTTPAdapter(
+    pool_connections=max(16, DOWNLOAD_THREADS * 2),
+    pool_maxsize=max(16, DOWNLOAD_THREADS * 2),
+    max_retries=requests.urllib3.Retry(
+        total=DOWNLOAD_RETRIES,
+        connect=DOWNLOAD_RETRIES,
+        read=DOWNLOAD_RETRIES,
+        status=1,
+        backoff_factor=0.5,
+        status_forcelist={429, 500, 502, 503, 504},
+        allowed_methods={"GET", "POST"},
     ),
 )
+_HTTP.mount("https://", _retry_adapter)
+_HTTP.mount("http://", _retry_adapter)
 _EASTMONEY_HOSTS = ("push2delay.eastmoney.com", "push2.eastmoney.com")
 _EASTMONEY_HISTORY_HOSTS = ("push2delay.eastmoney.com", "push2his.eastmoney.com")
 _UNIVERSE_CACHE_PATH = CACHE_DIR / "_a_share_universe.json"
 _DOWNLOAD_RATE_LOCK = threading.Lock()
 _LAST_DOWNLOAD_AT = 0.0
+
+# 主机级断路器：连续失败超过阈值后临时跳过该主机
+_HOST_FAILURE_COUNTER: dict[str, int] = {}
+_HOST_FAILURE_LOCK = threading.Lock()
+_HOST_CIRCUIT_BREAKER_THRESHOLD = 5  # 连续失败 N 次后熔断
+_HOST_CIRCUIT_BREAKER_RESET_SECONDS = 60  # 熔断后等待 N 秒再尝试
+_HOST_CIRCUIT_OPEN_UNTIL: dict[str, float] = {}
+
+
+def _is_host_available(host: str) -> bool:
+    """检查主机是否可用（未被断路器熔断）。"""
+    with _HOST_FAILURE_LOCK:
+        open_until = _HOST_CIRCUIT_OPEN_UNTIL.get(host, 0.0)
+        if open_until > time.monotonic():
+            return False
+        # 熔断时间已过，重置计数器
+        if open_until > 0:
+            _HOST_FAILURE_COUNTER.pop(host, None)
+            _HOST_CIRCUIT_OPEN_UNTIL.pop(host, None)
+        return True
+
+
+def _record_host_failure(host: str) -> None:
+    """记录主机失败，触发熔断条件。"""
+    with _HOST_FAILURE_LOCK:
+        count = _HOST_FAILURE_COUNTER.get(host, 0) + 1
+        _HOST_FAILURE_COUNTER[host] = count
+        if count >= _HOST_CIRCUIT_BREAKER_THRESHOLD:
+            _HOST_CIRCUIT_OPEN_UNTIL[host] = time.monotonic() + _HOST_CIRCUIT_BREAKER_RESET_SECONDS
+            logger.warning("主机 %s 已触发断路器，暂停 %ds", host, _HOST_CIRCUIT_BREAKER_RESET_SECONDS)
+
+
+def _record_host_success(host: str) -> None:
+    """主机请求成功，重置失败计数器。"""
+    with _HOST_FAILURE_LOCK:
+        _HOST_FAILURE_COUNTER.pop(host, None)
 
 
 def _wait_for_download_slot() -> None:
@@ -112,25 +152,72 @@ def _wait_for_download_slot() -> None:
 def _eastmoney_get(
     path: str, params: dict[str, Any], history: bool = False
 ) -> requests.Response:
+    """
+    向东方财富 API 发送 GET 请求，带增强的网络波动处理。
+
+    增强点：
+    - 区分 ConnectionError（网络不通）与 Timeout（超时），分别处理
+    - 连接错误时立即切换 host，不做无效重试
+    - 超时错误时递增 backoff
+    - 主机级断路器：连续失败 N 次后临时跳过该主机 60 秒
+    - 捕获更细粒度的异常类型
+    """
     hosts = _EASTMONEY_HISTORY_HOSTS if history else _EASTMONEY_HOSTS
     last_error: Exception | None = None
     headers = {"Referer": "https://quote.eastmoney.com/"}
     for attempt in range(DOWNLOAD_RETRIES + 1):
         for host in hosts:
+            # 断路器检查：跳过已被熔断的主机
+            if not _is_host_available(host):
+                logger.debug("主机 %s 已被断路器熔断，跳过", host)
+                continue
+
             try:
                 response = _HTTP.get(
                     f"https://{host}{path}",
                     params=params,
                     headers=headers,
-                    timeout=DOWNLOAD_TIMEOUT,
+                    timeout=(
+                        DOWNLOAD_TIMEOUT * 1.5 if attempt > 0 else DOWNLOAD_TIMEOUT
+                    ),
                 )
                 response.raise_for_status()
+                # 请求成功，重置该主机的失败计数器
+                _record_host_success(host)
                 return response
+            except requests.ConnectionError as exc:
+                # 网络不通（DNS 解析失败、连接被拒绝等）— 立即切换 host，不等待
+                last_error = exc
+                _record_host_failure(host)
+                logger.debug(
+                    "连接失败 %s (attempt %d/%d): %s", host, attempt + 1, DOWNLOAD_RETRIES + 1, exc
+                )
+                continue
+            except requests.Timeout as exc:
+                # 超时 — 递增 backoff
+                last_error = exc
+                _record_host_failure(host)
+                delay = 3 * (attempt + 1)
+                logger.debug(
+                    "超时 %s (attempt %d/%d): 等待 %ds 后重试...",
+                    host, attempt + 1, DOWNLOAD_RETRIES + 1, delay,
+                )
+                time.sleep(delay)
+                continue
             except requests.RequestException as exc:
                 last_error = exc
+                _record_host_failure(host)
+                logger.debug(
+                    "HTTP 错误 %s (attempt %d/%d): %s", host, attempt + 1, DOWNLOAD_RETRIES + 1, exc
+                )
+                continue
         if attempt < DOWNLOAD_RETRIES:
-            time.sleep(2**attempt)
-    raise DownloadError(f"东方财富接口连接失败: {last_error}") from last_error
+            wait_time = 2 ** (attempt + 1)
+            logger.debug("所有 host 尝试失败，等待 %ds 后进入第 %d 轮重试...", wait_time, attempt + 2)
+            time.sleep(wait_time)
+    raise DownloadError(
+        f"东方财富接口连接失败 (已重试 {DOWNLOAD_RETRIES + 1} 轮): {last_error}"
+    ) from last_error
 
 
 # ---------------------------------------------------------------------------

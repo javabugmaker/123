@@ -206,6 +206,8 @@ class RegressionTests(TestCase):
         self.assertEqual(scanner._format_table_value("SignalDays", "3"), "3")
         self.assertEqual(scanner._format_table_value("ScoreConfidence", "0.87"), "87%")
         self.assertEqual(scanner._format_table_value("ScoreConfidencePct", "87"), "87%")
+        self.assertEqual(scanner._format_table_value("BacktestWinRate20D", "0.75"), "75%")
+        self.assertEqual(scanner._format_table_value("BacktestWinRate60D", "0.625"), "62%")
         self.assertEqual(scanner._quality_tag("强候选"), "quality-strong")
         self.assertEqual(scanner._quality_tag("候选"), "quality-candidate")
         self.assertEqual(scanner._quality_tag("观察"), "quality-watch")
@@ -502,6 +504,46 @@ class RegressionTests(TestCase):
         self.assertIn("SignalDays", all_results)
         self.assertEqual(opportunity["Ticker"].tolist(), ["000001.SZ", "000002.SZ"])
         self.assertEqual(sustained["Ticker"].tolist(), ["000001.SZ", "000002.SZ"])
+
+    def test_signal_lifecycle_preserves_quality_tier_downgrade(self):
+        frame = pd.DataFrame({
+            "Ticker": ["000001.SZ"],
+            "DataAsOf": ["2026-07-24"],
+            "Score": [90.0],
+            "InstitutionalScore": [90.0],
+            "VolumeScore": [15.0],
+            "QualityDataAvailable": [True],
+            "QualityGate": [False],
+            "IsETF": [False],
+        })
+
+        with TemporaryDirectory() as temp_dir, patch.object(
+            signal_lifecycle, "HISTORY_FILE", Path(temp_dir) / "SignalHistory.csv"
+        ), patch.object(
+            signal_lifecycle, "TRACKING_FILE", Path(temp_dir) / "SignalTracking.csv"
+        ):
+            result = signal_lifecycle.enrich_signal_lifecycle(frame)
+
+        self.assertEqual(result.loc[0, "InstitutionalTier"], "C级价值观察")
+
+    def test_gui_build_command_keeps_scope_for_specified_tickers(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner.tickers = Mock()
+        scanner.tickers.get.return_value = "600036.SH,510300.SH"
+        scanner.scope = Mock()
+        scanner.scope.get.return_value = "仅股票"
+        scanner.no_resume = Mock()
+        scanner.no_resume.get.return_value = False
+        scanner.force_download = Mock()
+        scanner.force_download.get.return_value = False
+        scanner.data_source = Mock()
+        scanner.data_source.get.return_value = "eastmoney"
+
+        command = scanner.build_command()
+
+        self.assertIn("--tickers", command)
+        self.assertIn("--stocks-only", command)
+        self.assertNotIn("--etfs-only", command)
 
     def test_signal_lifecycle_same_trade_date_does_not_increment_signal_days(self):
         frame = pd.DataFrame({
@@ -871,6 +913,40 @@ class RegressionTests(TestCase):
         self.assertEqual([ticker.ticker for ticker in stock_universe], ["600036.SH"])
         self.assertEqual([ticker.ticker for ticker in etf_universe], ["510300.SH", "159915.SZ"])
         self.assertTrue(all(ticker.is_etf and ticker.asset_type == "etf" for ticker in etf_universe))
+
+    def test_cmd_scan_respects_scope_for_specified_tickers(self):
+        report = ScanReport(successful=1)
+        common = {
+            "tickers": "600036.SH,510300.SH",
+            "force_download": False,
+            "no_resume": False,
+            "data_source": "eastmoney",
+            "cache_first": False,
+            "top": 50,
+            "top_parquet": 200,
+        }
+        with patch("main.run_scan", return_value=report) as run_scan, patch(
+            "main.export_all", return_value=(Path("top.csv"), Path("top.parquet"), Path("all.csv"), Path("all.parquet"))
+        ), patch("main.print_terminal_report"), patch("main.print_scan_summary"):
+            self.assertEqual(
+                main.cmd_scan(argparse.Namespace(**common, stocks_only=True, etfs_only=False)),
+                0,
+            )
+            self.assertEqual(
+                [ticker.ticker for ticker in run_scan.call_args.kwargs["stock_universe"]],
+                ["600036.SH"],
+            )
+            self.assertEqual(run_scan.call_args.kwargs["etf_universe"], [])
+
+            self.assertEqual(
+                main.cmd_scan(argparse.Namespace(**common, stocks_only=False, etfs_only=True)),
+                0,
+            )
+            self.assertEqual(run_scan.call_args.kwargs["stock_universe"], [])
+            self.assertEqual(
+                [ticker.ticker for ticker in run_scan.call_args.kwargs["etf_universe"]],
+                ["510300.SH"],
+            )
 
     def test_cmd_scan_normalizes_and_deduplicates_specified_tickers(self):
         args = argparse.Namespace(

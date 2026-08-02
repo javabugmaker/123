@@ -306,6 +306,16 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
         & volume_confirmed,
         "InstitutionalTier",
     ] = "A级机构启动"
+    quality_failed = (
+        ~result.get("IsETF", pd.Series(False, index=result.index)).map(_bool)
+        & result.get("QualityDataAvailable", pd.Series(False, index=result.index)).map(_bool)
+        & ~result.get("QualityGate", pd.Series(False, index=result.index)).map(_bool)
+    )
+    result.loc[
+        quality_failed & result["InstitutionalScore"].ge(75.0),
+        "InstitutionalTier",
+    ] = "C级价值观察"
+    result.loc[quality_failed & result["InstitutionalScore"].lt(75.0), "InstitutionalTier"] = "D级陷阱池"
     result["SignalStatus"] = statuses
     result["SignalStrengthHistory"] = strengths
     result["SignalTrend"] = (

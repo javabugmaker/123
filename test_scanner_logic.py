@@ -22,11 +22,66 @@ from filters import (
     filter_min_price,
     filter_volatility_contraction,
 )
-from scanner import ScanResult, run_parallel_indicator_scan
+from fundamental_quality import FundamentalQuality
+from scanner import ScanResult, run_parallel_indicator_scan, scan_single_from_df
 from score import score_ticker
 
 
 class ScannerLogicTests(TestCase):
+    def test_scan_preserves_fundamental_quality_fields(self):
+        ticker = TickerInfo(ticker="000001.SZ", market_cap=1e10)
+        frame = pd.DataFrame({"Close": [10.0] * 20})
+        filters = Mock()
+        filters.all_passed.return_value = True
+        for name in (
+            "min_price",
+            "min_volume",
+            "min_market_cap",
+            "sufficient_history",
+            "bear_market",
+            "consolidation",
+            "volume_accumulation",
+            "obv_divergence",
+            "cmf_positive",
+            "ad_slope",
+            "volatility_contraction",
+        ):
+            setattr(filters, name, Mock(passed=True, details={}))
+        filters.signal_count.return_value = 1
+        filters.passed_count.return_value = 11
+        quality = FundamentalQuality(
+            ticker="000001.SZ",
+            roe=12.0,
+            gross_margin=30.0,
+            institution_holding_trend="increasing",
+            institution_holding_periods=3,
+            net_profit_y1=30.0,
+            net_profit_y2=20.0,
+            net_profit_y3=10.0,
+            industry_gross_margin_percentile=0.2,
+            roe_factor=True,
+            gross_margin_factor=True,
+            institution_holding_factor=True,
+            net_profit_factor=True,
+            quality_score=100.0,
+            quality_gate=True,
+            quality_reason="全部通过",
+            data_available=True,
+        )
+
+        with patch("scanner.run_all_filters", return_value=filters), patch(
+            "scanner.score_ticker"
+        ), patch("scanner.classify_style", return_value="均衡"), patch(
+            "scanner.get_quality", return_value=quality
+        ):
+            result = scan_single_from_df(ticker, frame, indicators_computed=True)
+
+        self.assertEqual(result.quality_roe, 12.0)
+        self.assertEqual(result.quality_score, 100.0)
+        self.assertTrue(result.quality_gate)
+        self.assertTrue(result.quality_data_available)
+        self.assertTrue(result.quality_net_profit_factor)
+
     def test_parallel_scan_limits_pending_analysis_tasks(self):
         tickers = [TickerInfo(ticker=f"{index:06d}.SZ") for index in range(9)]
 

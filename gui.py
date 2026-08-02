@@ -137,6 +137,8 @@ NUMBER_COLUMNS = {
     "BacktestScore",
     "CompositeScore",
     "BacktestObjectiveValue",
+    "BacktestWinRate20D",
+    "BacktestWinRate60D",
     "ScoreConfidence",
     "ScoreMissingIndicators",
     "BacktestSamples",
@@ -173,8 +175,20 @@ INTEGER_COLUMNS = {
     "SignalCount",
     "SignalDays",
 }
-PERCENTAGE_COLUMNS = {"DistToLow52W", "ScoreCoverage", "ScoreConfidence", "ScoreConfidencePct"}
-FRACTION_PERCENTAGE_COLUMNS = {"ScoreCoverage", "ScoreConfidence"}
+PERCENTAGE_COLUMNS = {
+    "DistToLow52W",
+    "ScoreCoverage",
+    "ScoreConfidence",
+    "ScoreConfidencePct",
+    "BacktestWinRate20D",
+    "BacktestWinRate60D",
+}
+FRACTION_PERCENTAGE_COLUMNS = {
+    "ScoreCoverage",
+    "ScoreConfidence",
+    "BacktestWinRate20D",
+    "BacktestWinRate60D",
+}
 FOUR_DECIMAL_COLUMNS = {"BacktestObjectiveValue"}
 MAX_RENDERED_ROWS = 500
 DOWNLOAD_PROGRESS_RE = re.compile(
@@ -477,7 +491,7 @@ class ScannerGUI:
         command = [sys.executable, str(MAIN_FILE), "scan"]
         if self.tickers.get().strip():
             command += ["--tickers", self.tickers.get().strip()]
-        elif self.scope.get() == "仅股票":
+        if self.scope.get() == "仅股票":
             command.append("--stocks-only")
         elif self.scope.get() == "仅ETF":
             command.append("--etfs-only")
@@ -485,8 +499,6 @@ class ScannerGUI:
             command.append("--no-resume")
         if self.force_download.get():
             command.append("--force-download")
-        else:
-            command.append("--cache-first")
         command += ["--data-source", self.data_source.get()]
         return command
 
