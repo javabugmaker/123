@@ -85,9 +85,13 @@ def _rankable_results(results: list[ScanResult]) -> list[ScanResult]:
         candidates,
         key=lambda r: (
             float(
-                r.institutional_score
-                if np.isfinite(r.institutional_score)
-                else r.score.total
+                r.final_score
+                if np.isfinite(r.final_score)
+                else (
+                    r.institutional_score
+                    if np.isfinite(r.institutional_score)
+                    else r.score.total
+                )
             ),
             int(r.passed_filters),
             int(r.filter_details.get("signal_count", 0)),
@@ -113,6 +117,19 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "InstitutionalTier": _institutional_tier(r),
                 "Close": r.close,
                 "Score": round(r.score.total, 2),
+                "BaseScore": round(r.base_score, 2) if np.isfinite(r.base_score) else None,
+                "TriggerScore": round(r.trigger_score, 2) if np.isfinite(r.trigger_score) else None,
+                "FinalScore": round(r.final_score, 2) if np.isfinite(r.final_score) else None,
+                "BreakoutScore": round(r.breakout_score, 2) if np.isfinite(r.breakout_score) else None,
+                "SmartMoneyStage": r.smart_money_stage,
+                "EntryScore": round(r.entry_score, 2) if np.isfinite(r.entry_score) else None,
+                "EntrySignal": r.entry_signal,
+                "EntryZone": r.entry_zone,
+                "BreakoutBuyPrice": round(r.breakout_buy_price, 2) if np.isfinite(r.breakout_buy_price) else None,
+                "StopLoss": round(r.stop_loss, 2) if np.isfinite(r.stop_loss) else None,
+                "ValueTrapRisk": round(r.value_trap_risk, 2) if np.isfinite(r.value_trap_risk) else None,
+                "RiskWarning": r.risk_warning,
+                "OperationAdvice": r.operation_advice,
                 "BacktestScore": round(r.backtest_score, 2)
                 if np.isfinite(r.backtest_score)
                 else None,
@@ -333,7 +350,13 @@ def export_all(
         parquet_path = export_top_parquet(results, n=top_n_parquet)
         full_csv = export_full_csv(results)
         full_parquet_path = export_full_parquet(results)
-        for name in (f"Top{top_n_csv}Opportunity.csv", f"Top{top_n_csv}SustainedSignals.csv"):
+        for name in (
+            f"Top{top_n_csv}Opportunity.csv",
+            f"Top{top_n_csv}BreakoutCandidates.csv",
+            f"Top{top_n_csv}EntryCandidates.csv",
+            f"Top{top_n_csv}ValueTrapRisk.csv",
+            f"Top{top_n_csv}SustainedSignals.csv",
+        ):
             _atomic_write_csv(df, OUTPUT_DIR / name)
         return csv_path, parquet_path, full_csv, full_parquet_path
 
@@ -341,6 +364,12 @@ def export_all(
         "Ticker", pd.Series(dtype=str)
     )
     rankable = df.set_index("Ticker").reindex(rankable_tickers).reset_index()
+    if "FinalScore" in rankable.columns:
+        rankable = rankable.sort_values(
+            ["FinalScore", "TriggerScore", "BaseScore"],
+            ascending=False,
+            kind="mergesort",
+        )
 
     csv_path = OUTPUT_DIR / f"Top{top_n_csv}.csv"
     _atomic_write_csv(rankable.head(top_n_csv), csv_path)
@@ -359,9 +388,49 @@ def export_all(
     logger.info("Exported all %d results to %s", len(df), full_parquet_path)
 
     opportunity_path = OUTPUT_DIR / f"Top{top_n_csv}Opportunity.csv"
-    opportunity = df.sort_values(["OpportunityScore", "Score"], ascending=False, kind="mergesort")
+    opportunity = df.sort_values(
+        ["FinalScore", "TriggerScore", "BaseScore"],
+        ascending=False,
+        kind="mergesort",
+    ) if "FinalScore" in df.columns else df.sort_values(
+        ["OpportunityScore", "Score"], ascending=False, kind="mergesort"
+    )
     _atomic_write_csv(opportunity.head(top_n_csv), opportunity_path)
     logger.info("Exported Top %d opportunities to %s", top_n_csv, opportunity_path)
+
+    trigger_path = OUTPUT_DIR / f"Top{top_n_csv}BreakoutCandidates.csv"
+    trigger = df.loc[
+        (
+            pd.to_numeric(
+                df.get("BreakoutScore", pd.Series(0.0, index=df.index)),
+                errors="coerce",
+            ).fillna(0) >= 55
+        )
+        & df.get(
+            "SmartMoneyStage", pd.Series("NONE", index=df.index)
+        ).isin(["ACCUMULATION", "BREAKOUT"])
+    ].sort_values(["BreakoutScore", "FinalScore"], ascending=False, kind="mergesort")
+    _atomic_write_csv(trigger.head(top_n_csv), trigger_path)
+    logger.info("Exported Top %d breakout candidates to %s", top_n_csv, trigger_path)
+
+    entry_path = OUTPUT_DIR / f"Top{top_n_csv}EntryCandidates.csv"
+    entry = df.loc[
+        df.get("EntrySignal", pd.Series("AVOID", index=df.index)).isin(
+            ["BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"]
+        )
+    ].sort_values(["EntryScore", "FinalScore"], ascending=False, kind="mergesort")
+    _atomic_write_csv(entry.head(top_n_csv), entry_path)
+    logger.info("Exported Top %d entry candidates to %s", top_n_csv, entry_path)
+
+    trap_path = OUTPUT_DIR / f"Top{top_n_csv}ValueTrapRisk.csv"
+    trap = df.loc[
+        pd.to_numeric(
+            df.get("ValueTrapRisk", pd.Series(0.0, index=df.index)),
+            errors="coerce",
+        ).fillna(0) >= 60
+    ].sort_values("ValueTrapRisk", ascending=False, kind="mergesort")
+    _atomic_write_csv(trap.head(top_n_csv), trap_path)
+    logger.info("Exported Top %d value trap risks to %s", top_n_csv, trap_path)
 
     sustained_path = OUTPUT_DIR / f"Top{top_n_csv}SustainedSignals.csv"
     sustained = df.loc[df["SignalDays"] > 0].sort_values(

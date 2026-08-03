@@ -15,6 +15,24 @@ from tkinter import messagebox, ttk
 PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
 MAIN_FILE = PROJECT_ROOT / "main.py"
+DISPLAY_VALUE_NAMES = {
+    "ACCUMULATION": "吸筹阶段",
+    "BREAKOUT": "启动阶段",
+    "DISTRIBUTION": "派发阶段",
+    "NONE": "无明显资金行为",
+    "BUY_NOW": "回调可买",
+    "WAIT_PULLBACK": "等待回调",
+    "BREAKOUT_CONFIRM": "突破确认买入",
+    "HOLD_WAIT": "继续观察",
+    "AVOID": "回避",
+    "ETF": "ETF",
+    "STOCK": "股票",
+    "eastmoney": "东方财富",
+    "sina": "新浪财经",
+    "tencent": "腾讯财经",
+    "current_survivor_pool": "当前结果股票池",
+}
+
 COLUMN_NAMES = {
     "Ticker": "代码",
     "Name": "名称",
@@ -25,7 +43,20 @@ COLUMN_NAMES = {
     "Style": "风格",
     "Quality": "质量",
     "Close": "收盘价",
-    "Score": "综合评分",
+    "Score": "基础评分",
+    "BaseScore": "基础质量分",
+    "TriggerScore": "启动买点分",
+    "FinalScore": "最终评分",
+    "BreakoutScore": "启动概率",
+    "SmartMoneyStage": "资金阶段",
+    "EntryScore": "买点评分",
+    "EntrySignal": "买点信号",
+    "EntryZone": "买入区间",
+    "BreakoutBuyPrice": "突破买入价",
+    "StopLoss": "止损位",
+    "ValueTrapRisk": "价值陷阱风险",
+    "RiskWarning": "风险提示",
+    "OperationAdvice": "操作建议",
     "BacktestScore": "回测评分",
     "CompositeScore": "综合回测评分",
     "BacktestSamples": "回测样本数",
@@ -41,17 +72,19 @@ COLUMN_NAMES = {
     "AccumulationScore": "吸筹分",
     "CompressionScore": "波动分",
     "StructureScore": "结构分",
-    "OBV": "OBV",
-    "CMF": "CMF",
-    "AD": "A/D",
-    "ATR14": "ATR14",
+    "OBV": "能量潮指标",
+    "CMF": "资金流量指标",
+    "AD": "累积派发指标",
+    "ATR14": "平均真实波幅",
+    "MA20": "20日均线",
+    "MA50": "50日均线",
+    "MA200": "200日均线",
     "RSI14": "RSI14",
     "DistToLow52W": "距52周低点",
     "WyckoffPhase": "威科夫阶段",
     "Stage": "阶段",
     "MarketRegime": "市场环境",
     "IndustryRelativeStrength": "行业强度",
-    "DataSource": "数据源",
     "DataAsOf": "数据日期",
     "DataAgeDays": "自然日延迟",
     "DataTradingAgeDays": "交易日延迟",
@@ -97,7 +130,15 @@ DISPLAY_COLUMNS = (
     "Sector",
     "Industry",
     "Quality",
-    "Score",
+    "FinalScore",
+    "BaseScore",
+    "TriggerScore",
+    "BreakoutScore",
+    "SmartMoneyStage",
+    "EntrySignal",
+    "EntryZone",
+    "StopLoss",
+    "ValueTrapRisk",
     "OpportunityScore",
     "LifecycleStage",
     "SignalTrend",
@@ -119,6 +160,15 @@ COLUMN_WIDTHS = {
     "Industry": 98,
     "Quality": 72,
     "Score": 72,
+    "BaseScore": 78,
+    "TriggerScore": 92,
+    "FinalScore": 78,
+    "BreakoutScore": 78,
+    "SmartMoneyStage": 92,
+    "EntrySignal": 112,
+    "EntryZone": 112,
+    "StopLoss": 78,
+    "ValueTrapRisk": 92,
     "OpportunityScore": 82,
     "LifecycleStage": 96,
     "SignalTrend": 86,
@@ -134,6 +184,14 @@ COLUMN_WIDTHS = {
 }
 NUMBER_COLUMNS = {
     "Score",
+    "BaseScore",
+    "TriggerScore",
+    "FinalScore",
+    "BreakoutScore",
+    "EntryScore",
+    "StopLoss",
+    "ValueTrapRisk",
+    "BreakoutBuyPrice",
     "BacktestScore",
     "CompositeScore",
     "BacktestObjectiveValue",
@@ -167,6 +225,11 @@ TEXT_COLUMNS = {
     "Stage",
     "LifecycleStage",
     "SignalTrend",
+    "SmartMoneyStage",
+    "EntrySignal",
+    "EntryZone",
+    "RiskWarning",
+    "OperationAdvice",
 }
 INTEGER_COLUMNS = {
     "ScoreMissingIndicators",
@@ -216,9 +279,11 @@ class ScannerGUI:
         self.sector_filter = tk.StringVar(value="全部板块")
         self.industry_filter = tk.StringVar(value="全部行业")
         self.quality_filter = tk.StringVar(value="全部质量")
+        self.stage_filter = tk.StringVar(value="全部阶段")
+        self.entry_filter = tk.StringVar(value="全部买点")
         self.no_resume = tk.BooleanVar(value=False)
         self.force_download = tk.BooleanVar(value=False)
-        self.data_source = tk.StringVar(value="eastmoney")
+        self.data_source = tk.StringVar(value="东方财富")
         self.data_source_label = tk.StringVar(value="当前：东方财富")
         self.status = tk.StringVar(value="就绪")
         self.result_summary = tk.StringVar(value="等待加载结果")
@@ -242,6 +307,8 @@ class ScannerGUI:
         self.sector_filter.trace_add("write", self._schedule_filter_refresh)
         self.industry_filter.trace_add("write", self._schedule_filter_refresh)
         self.quality_filter.trace_add("write", self._schedule_filter_refresh)
+        self.stage_filter.trace_add("write", self._schedule_filter_refresh)
+        self.entry_filter.trace_add("write", self._schedule_filter_refresh)
         self.root.bind("<Control-f>", lambda _event: self._focus_search())
         self.root.bind("<Escape>", lambda _event: self.clear_filters())
         self.root.bind("<F5>", lambda _event: self.refresh_results())
@@ -372,7 +439,7 @@ class ScannerGUI:
         self.source_box = ttk.Combobox(
             controls,
             textvariable=self.data_source,
-            values=("eastmoney", "sina", "tencent"),
+            values=("东方财富", "新浪财经", "腾讯财经"),
             state="readonly",
             width=12,
         )
@@ -399,7 +466,10 @@ class ScannerGUI:
         actions = ttk.Frame(self.root, style="Toolbar.TFrame", padding=(14, 8))
         actions.pack(fill=tk.X, padx=18, pady=(0, 2))
         for text, command in (
-            ("Top 50", self._load_top50), ("市场概览", self.show_market_overview),
+            ("生成前50名", self._load_top50), ("启动候选", lambda: self.load_csv("Top50BreakoutCandidates.csv")),
+            ("买点候选", lambda: self.load_csv("Top50EntryCandidates.csv")),
+            ("风险榜", lambda: self.load_csv("Top50ValueTrapRisk.csv")),
+            ("市场概览", self.show_market_overview),
             ("连续信号", self.show_sustained_signals), ("全部结果", lambda: self.load_csv("AllResults.csv")),
             ("结果目录", self.open_output), ("运行回测", self.start_backtest), ("查看回测", self.show_backtest),
         ):
@@ -419,6 +489,12 @@ class ScannerGUI:
         self.industry_box.pack(side=tk.LEFT)
         ttk.Label(filters, text="质量", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
         ttk.Combobox(filters, textvariable=self.quality_filter, values=("全部质量", "强候选", "候选", "观察", "普通"), state="readonly", width=9).pack(side=tk.LEFT)
+        ttk.Label(filters, text="资金阶段", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
+        self.stage_box = ttk.Combobox(filters, textvariable=self.stage_filter, state="readonly", width=12)
+        self.stage_box.pack(side=tk.LEFT)
+        ttk.Label(filters, text="买点", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
+        self.entry_box = ttk.Combobox(filters, textvariable=self.entry_filter, state="readonly", width=15)
+        self.entry_box.pack(side=tk.LEFT)
         ttk.Label(filters, text="搜索", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
         self.search_entry = ttk.Entry(filters, textvariable=self.search, width=24)
         self.search_entry.pack(side=tk.LEFT)
@@ -499,7 +575,8 @@ class ScannerGUI:
             command.append("--no-resume")
         if self.force_download.get():
             command.append("--force-download")
-        command += ["--data-source", self.data_source.get()]
+        source_codes = {"东方财富": "eastmoney", "新浪财经": "sina", "腾讯财经": "tencent"}
+        command += ["--data-source", source_codes.get(self.data_source.get(), "eastmoney")]
         return command
 
     def _top50_tickers(self) -> list[str]:
@@ -613,13 +690,15 @@ class ScannerGUI:
             str(MAIN_FILE),
             "backtest",
             "--data-source",
-            self.data_source.get(),
+            {"东方财富": "eastmoney", "新浪财经": "sina", "腾讯财经": "tencent"}.get(
+                self.data_source.get(), "eastmoney"
+            ),
             "--tickers-file",
             str(ticker_file),
         ]
         self.append_log(f"回测当前筛选结果：{len(backtest_tickers)} 个标的\n")
         self.append_log(
-            f"执行回测命令：{MAIN_FILE.name} backtest --data-source {self.data_source.get()} --tickers-file BacktestAll.txt\n"
+            f"执行回测命令：{MAIN_FILE.name} backtest --数据源 {self.data_source.get()} --股票列表 BacktestAll.txt\n"
         )
         threading.Thread(target=self.run_process, args=(command,), daemon=True).start()
 
@@ -894,7 +973,7 @@ class ScannerGUI:
                 mode="determinate", maximum=max(total, 1), value=completed
             )
             self.status.set(
-                f"DOWNLOAD {completed}/{total} · 成功 {successful} · 无数据/失败 {skipped}"
+                f"下载进度 {completed}/{total} · 成功 {successful} · 无数据/失败 {skipped}"
             )
         elif analyse_progress:
             completed, total, successful, failed = (
@@ -905,12 +984,12 @@ class ScannerGUI:
                 mode="determinate", maximum=max(total, 1), value=completed
             )
             self.status.set(
-                f"分析 {completed}/{total} · 成功 {successful} · 失败 {failed}"
+                f"指标分析 {completed}/{total} · 成功 {successful} · 失败 {failed}"
             )
         elif "Phase 2/2:" in text:
             self.progress.configure(mode="indeterminate")
             self.progress.start(12)
-            self.status.set("分析数据中")
+            self.status.set("正在生成评分与买点")
         elif "扫描" in text and "完成" in text:
             self.status.set("扫描完成")
         elif text.strip() and not self.backtest_running:
@@ -937,7 +1016,11 @@ class ScannerGUI:
         ).pack(anchor=tk.W, padx=22, pady=(20, 4))
         ttk.Label(
             dialog,
-            text=f"阶段：{data.get('Stage', '未知')}  ·  市场环境：{data.get('MarketRegime', '未知')}",
+            text=(
+                f"资金阶段：{data.get('SmartMoneyStage', 'NONE')}  ·  "
+                f"买点：{data.get('EntrySignal', 'AVOID')}  ·  "
+                f"最终评分：{data.get('FinalScore', data.get('Score', ''))}"
+            ),
             foreground="#55708a",
         ).pack(anchor=tk.W, padx=22, pady=(0, 12))
         frame = ttk.Frame(dialog, padding=(20, 4))
@@ -980,6 +1063,19 @@ class ScannerGUI:
             "ScoreContributionAccumulation",
             "ScoreContributionCompression",
             "ScoreContributionStructure",
+            "BaseScore",
+            "TriggerScore",
+            "FinalScore",
+            "BreakoutScore",
+            "SmartMoneyStage",
+            "EntryScore",
+            "EntrySignal",
+            "EntryZone",
+            "BreakoutBuyPrice",
+            "StopLoss",
+            "ValueTrapRisk",
+            "RiskWarning",
+            "OperationAdvice",
             "BacktestScore",
             "CompositeScore",
             "BacktestObjectiveValue",
@@ -1047,6 +1143,10 @@ class ScannerGUI:
         self.sector_filter.set("全部板块")
         self.industry_filter.set("全部行业")
         self.quality_filter.set("全部质量")
+        if hasattr(self, "stage_filter"):
+            self.stage_filter.set("全部阶段")
+        if hasattr(self, "entry_filter"):
+            self.entry_filter.set("全部买点")
         self._current_page = 0
         if self._filter_job is not None:
             self.root.after_cancel(self._filter_job)
@@ -1054,9 +1154,7 @@ class ScannerGUI:
         self._render_cached_rows()
 
     def _data_source_changed(self, _event=None) -> None:
-        labels = {"eastmoney": "东方财富", "sina": "新浪", "tencent": "腾讯"}
-        source = self.data_source.get()
-        label = labels.get(source, source or "未知")
+        label = self.data_source.get() or "未知"
         self.data_source_label.set(f"当前：{label}")
         self.status.set(f"已切换数据源：{label}")
 
@@ -1081,6 +1179,17 @@ class ScannerGUI:
         self.sector_box["values"] = ["全部板块", *sectors]
         if self.sector_filter.get() not in self.sector_box["values"]:
             self.sector_filter.set("全部板块")
+
+        if hasattr(self, "stage_box"):
+            stages = [DISPLAY_VALUE_NAMES.get(value, value) for value in values_for("SmartMoneyStage")]
+            self.stage_box["values"] = ["全部阶段", *stages]
+            if self.stage_filter.get() not in self.stage_box["values"]:
+                self.stage_filter.set("全部阶段")
+        if hasattr(self, "entry_box"):
+            entries = [DISPLAY_VALUE_NAMES.get(value, value) for value in values_for("EntrySignal")]
+            self.entry_box["values"] = ["全部买点", *entries]
+            if self.entry_filter.get() not in self.entry_box["values"]:
+                self.entry_filter.set("全部买点")
 
         industries = values_for("Industry")
         if self.sector_filter.get() != "全部板块" and "Sector" in headers:
@@ -1158,6 +1267,9 @@ class ScannerGUI:
             index = indexes.get(column)
             return self._cell_text(values[index]) if index is not None and index < len(values) else ""
 
+        stage_value = self.stage_filter.get() if hasattr(self, "stage_filter") else "全部阶段"
+        entry_value = self.entry_filter.get() if hasattr(self, "entry_filter") else "全部买点"
+        reverse_display_names = {label: value for value, label in DISPLAY_VALUE_NAMES.items()}
         return (
             (not query or query in " ".join(map(self._cell_text, values)).casefold())
             and (
@@ -1172,11 +1284,19 @@ class ScannerGUI:
                 self.quality_filter.get() == "全部质量"
                 or value_for("Quality") == self.quality_filter.get()
             )
+            and (
+                stage_value == "全部阶段"
+                or value_for("SmartMoneyStage") == reverse_display_names.get(stage_value, stage_value)
+            )
+            and (
+                entry_value == "全部买点"
+                or value_for("EntrySignal") == reverse_display_names.get(entry_value, entry_value)
+            )
         )
 
     def _market_overview_values(
         self, rows: list[list[str]], indexes: dict[str, int]
-    ) -> tuple[int, int, int, float]:
+    ) -> tuple[int, int, int, int, int, float]:
         def number_for(row: list[str], column: str) -> float:
             index = indexes.get(column)
             if index is None or index >= len(row):
@@ -1195,21 +1315,36 @@ class ScannerGUI:
             for row in rows
             if lifecycle_index is not None
         )
+        breakout_index = indexes.get("SmartMoneyStage")
+        entry_index = indexes.get("EntrySignal")
+        breakout = sum(
+            self._cell_text(row[breakout_index]) == "BREAKOUT"
+            for row in rows
+            if breakout_index is not None and len(row) > breakout_index
+        )
+        actionable = sum(
+            self._cell_text(row[entry_index])
+            in {"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"}
+            for row in rows
+            if entry_index is not None and len(row) > entry_index
+        )
         average = (
-            sum(number_for(row, "OpportunityScore") for row in rows) / total
+            sum(number_for(row, "FinalScore") for row in rows) / total
+            if total and "FinalScore" in indexes
+            else sum(number_for(row, "OpportunityScore") for row in rows) / total
             if total and "OpportunityScore" in indexes
             else 0.0
         )
-        return total, active, confirmed, average
+        return total, active, confirmed, breakout, actionable, average
 
     def _update_market_overview(
         self, rows: list[list[str]], indexes: dict[str, int]
     ) -> None:
         if not hasattr(self, "market_overview"):
             return
-        total, active, confirmed, average = self._market_overview_values(rows, indexes)
+        total, active, confirmed, breakout, actionable, average = self._market_overview_values(rows, indexes)
         self.market_overview.set(
-            f"市场概览：{total} 只 · 活跃信号 {active} · 趋势确认 {confirmed} · 平均机会分 {average:.1f}"
+            f"市场概览：{total} 只 · 启动 {breakout} · 可交易 {actionable} · 最终均分 {average:.1f}"
         )
 
     def show_market_overview(self) -> None:
@@ -1223,7 +1358,7 @@ class ScannerGUI:
             for row in self._csv_rows
             if self._row_matches_filters(indexes, row, query)
         ]
-        total, active, confirmed, average = self._market_overview_values(rows, indexes)
+        total, active, confirmed, breakout, actionable, average = self._market_overview_values(rows, indexes)
         dialog = tk.Toplevel(self.root)
         dialog.title("市场概览")
         dialog.geometry("520x360")
@@ -1241,7 +1376,9 @@ class ScannerGUI:
             f"标的数量：{total}",
             f"活跃信号：{active}",
             f"趋势确认：{confirmed}",
-            f"平均机会评分：{average:.1f}",
+            f"启动阶段：{breakout}",
+            f"可交易信号：{actionable}",
+            f"平均最终评分：{average:.1f}",
         ]
         text = tk.Text(
             dialog,
@@ -1268,6 +1405,8 @@ class ScannerGUI:
 
     def _format_table_value(self, column: str, value: str) -> str:
         text = str(value).strip()
+        if column in {"SmartMoneyStage", "EntrySignal", "AssetType", "DataSource", "UniverseType"}:
+            return DISPLAY_VALUE_NAMES.get(text, text)
         if column not in NUMBER_COLUMNS or not text:
             return text
         try:

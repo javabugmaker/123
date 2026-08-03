@@ -54,7 +54,13 @@ from downloader import (
 from filters import run_all_filters
 from fundamental_quality import get_quality
 from indicators import compute_all_indicators
-from score import ScoreBreakdown, classify_style, score_ticker
+from score import (
+    ScoreBreakdown,
+    classify_style,
+    entry_point,
+    score_ticker,
+    smart_money_stage,
+)
 
 logger = setup_logging("institution_scanner.scanner", level=logging.DEBUG, log_to_file=True, log_dir=LOG_DIR)
 
@@ -90,6 +96,19 @@ class ScanResult:
     dist_to_low_52w: float = np.nan
     wyckoff_phase: str = "Unknown"
     volume_accum_days: int = 0
+    base_score: float = np.nan
+    breakout_score: float = np.nan
+    smart_money_stage: str = "NONE"
+    entry_score: float = np.nan
+    entry_signal: str = "AVOID"
+    entry_zone: str = ""
+    breakout_buy_price: float = np.nan
+    stop_loss: float = np.nan
+    value_trap_risk: float = np.nan
+    risk_warning: str = ""
+    operation_advice: str = ""
+    trigger_score: float = np.nan
+    final_score: float = np.nan
     passed_filters: bool = False
     filter_details: dict[str, bool | int] = field(default_factory=dict)
     error: str = ""
@@ -340,6 +359,21 @@ def scan_single_from_df(
             filter_results.volume_accumulation.details.get("consecutive_days", 0)
         )
         quality = get_quality(ticker, is_etf=ticker_info.is_etf)
+        entry = entry_point(df, sb.breakout_score)
+        smart_stage = smart_money_stage(df, sb.breakout_score, sb.value_trap_risk)
+        entry_zone = (
+            f"{sb.entry_zone_low:.2f}-{sb.entry_zone_high:.2f}"
+            if np.isfinite(sb.entry_zone_low) and np.isfinite(sb.entry_zone_high)
+            else ""
+        )
+        risk_warning = "价值陷阱风险偏高" if sb.value_trap_risk >= 60 else ""
+        operation_advice = {
+            "BUY_NOW": "回调至买入区间可分批介入",
+            "BREAKOUT_CONFIRM": "放量突破确认后跟随，控制仓位",
+            "WAIT_PULLBACK": "等待回踩买入区间，不追高",
+            "HOLD_WAIT": "保持观察，等待趋势和量能确认",
+            "AVOID": "回避，等待结构改善",
+        }.get(entry["signal"], "保持观察")
 
         return ScanResult(
             ticker=ticker,
@@ -361,6 +395,19 @@ def scan_single_from_df(
             dist_to_low_52w=dist_low,
             wyckoff_phase=phase,
             volume_accum_days=vol_accum_days,
+            base_score=sb.base_score,
+            breakout_score=sb.breakout_score,
+            smart_money_stage=smart_stage,
+            entry_score=sb.entry_score,
+            entry_signal=entry["signal"],
+            entry_zone=entry_zone,
+            breakout_buy_price=sb.breakout_buy_price,
+            stop_loss=sb.stop_loss,
+            value_trap_risk=sb.value_trap_risk,
+            risk_warning=risk_warning,
+            operation_advice=operation_advice,
+            trigger_score=sb.trigger_score,
+            final_score=sb.final_score,
             passed_filters=passed,
             filter_details=filter_map,
             style=style,
@@ -681,6 +728,19 @@ def run_scan(
                     institutional_score=_parse_float(
                         row.get("InstitutionalScore", np.nan)
                     ),
+                    base_score=_parse_float(row.get("BaseScore", np.nan)),
+                    trigger_score=_parse_float(row.get("TriggerScore", np.nan)),
+                    final_score=_parse_float(row.get("FinalScore", np.nan)),
+                    breakout_score=_parse_float(row.get("BreakoutScore", np.nan)),
+                    smart_money_stage=str(row.get("SmartMoneyStage", "NONE") or "NONE"),
+                    entry_score=_parse_float(row.get("EntryScore", np.nan)),
+                    entry_signal=str(row.get("EntrySignal", "AVOID") or "AVOID"),
+                    entry_zone=str(row.get("EntryZone", "") or ""),
+                    breakout_buy_price=_parse_float(row.get("BreakoutBuyPrice", np.nan)),
+                    stop_loss=_parse_float(row.get("StopLoss", np.nan)),
+                    value_trap_risk=_parse_float(row.get("ValueTrapRisk", np.nan)),
+                    risk_warning=str(row.get("RiskWarning", "") or ""),
+                    operation_advice=str(row.get("OperationAdvice", "") or ""),
                     quality_roe=_parse_float(row.get("ROE", np.nan)),
                     quality_gross_margin=_parse_float(row.get("GrossMargin", np.nan)),
                     quality_institution_holding_trend=row.get("InstitutionHoldingTrend"),

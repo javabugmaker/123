@@ -25,6 +25,7 @@ from config import (
     AD_SLOPE_LOOKBACK,
     BB_WIDTH_COMPRESSION_LOOKBACK,
     CONSOLIDATION_DAYS,
+    CONSOLIDATION_MAX_RANGE_PCT,
     LOG_DIR,
     SCORING_WEIGHTS,
     VOLUME_ACCUM_MIN_DAYS,
@@ -58,11 +59,26 @@ class ScoreBreakdown:
     missing_indicators: int = 0
     indicator_coverage: float = 1.0
     confidence: float = 1.0
+    base_score: float = 0.0
+    breakout_score: float = 0.0
+    entry_score: float = 0.0
+    value_trap_risk: float = 0.0
+    trigger_score: float = 0.0
+    final_score: float = 0.0
+    entry_zone_low: float = 0.0
+    entry_zone_high: float = 0.0
+    breakout_buy_price: float = 0.0
+    stop_loss: float = 0.0
     contributions: dict[str, float] = field(default_factory=ScoreContributions)
 
     def to_dict(self) -> dict[str, float]:
         return {
             "Score": round(self.total, 2),
+            "BaseScore": round(self.base_score, 2),
+            "BreakoutScore": round(self.breakout_score, 2),
+            "EntryScore": round(self.entry_score, 2),
+            "ValueTrapRisk": round(self.value_trap_risk, 2),
+            "TriggerScore": round(self.trigger_score, 2),
             "TrendScore": round(self.trend, 2),
             "VolumeScore": round(self.volume, 2),
             "AccumulationScore": round(self.accumulation, 2),
@@ -373,10 +389,10 @@ def score_structure(df: pd.DataFrame) -> float:
         avg_price = recent["Close"].mean()
         if avg_price > 0:
             range_pct = (high - low) / avg_price * 100
-            if range_pct <= 15:
-                # Tighter + longer = up to 5 points
-                # Use the range tightness
-                score += _clamp(1 - range_pct / 15, 0, 1) * 5
+            if range_pct <= CONSOLIDATION_MAX_RANGE_PCT:
+                score += _clamp(
+                    1 - range_pct / CONSOLIDATION_MAX_RANGE_PCT, 0, 1
+                ) * 5
 
     # 3. Linear regression slope near zero (up to 3 points)
     if "RegSlope" in df.columns:
@@ -403,6 +419,235 @@ def score_structure(df: pd.DataFrame) -> float:
                 score += _clamp(1 - dist_hvn / 10, 0, 1) * 2
 
     return min(score, 15.0)
+
+
+# ======================================================================
+# Cyclical turn scoring
+# ======================================================================
+
+
+def cyclical_turn_factor(
+    df: pd.DataFrame,
+    industry_return: float | None = None,
+    quality_net_profit_y1: float | None = None,
+    quality_net_profit_y2: float | None = None,
+    quality_net_profit_y3: float | None = None,
+) -> dict[str, float | int]:
+    close = _series(df, "Close")
+    volume = _series(df, "Volume")
+    if len(close.dropna()) < 60:
+        return {"score": 50.0, "confidence": 0.0, "available": 0, "price": 50.0, "inventory": 50.0, "earnings": 50.0, "capex": 50.0}
+    components: list[float] = []
+    price_turn = 50.0
+    ret20 = _safe_return(close, 20)
+    ret60 = _safe_return(close, 60)
+    ma20 = _latest(df, "MA20")
+    ma50 = _latest(df, "MA50")
+    if _is_finite(ret20) and _is_finite(ret60):
+        price_turn = _clamp(50.0 + (ret20 - ret60 * 0.35) * 2.0, 0.0, 100.0)
+        if _is_finite(ma20) and _is_finite(ma50) and close.iloc[-1] > ma20 > ma50:
+            price_turn = min(100.0, price_turn + 12.0)
+        components.append(price_turn)
+    industry_turn = 50.0
+    if industry_return is not None and _is_finite(float(industry_return)):
+        industry_turn = _clamp(50.0 + float(industry_return) * 1.5, 0.0, 100.0)
+        components.append(industry_turn)
+    inventory = 50.0
+    if len(volume.dropna()) >= 60 and len(close.dropna()) >= 60:
+        vol20 = volume.iloc[-20:].mean()
+        vol60 = volume.iloc[-60:-20].mean()
+        recent_range = (close.iloc[-10:].max() - close.iloc[-10:].min()) / max(close.iloc[-1], 1e-9)
+        prior_range = (close.iloc[-50:-10].max() - close.iloc[-50:-10].min()) / max(close.iloc[-1], 1e-9)
+        if vol60 > 0 and prior_range > 0:
+            inventory = _clamp(50.0 + (1.0 - vol20 / vol60) * 35.0 + (1.0 - recent_range / prior_range) * 25.0, 0.0, 100.0)
+            components.append(inventory)
+    earnings = 50.0
+    profits = [value for value in (quality_net_profit_y1, quality_net_profit_y2, quality_net_profit_y3) if value is not None and _is_finite(float(value))]
+    if len(profits) >= 2:
+        earnings = _clamp(50.0 + (profits[0] - profits[1]) / max(abs(profits[1]), 1e-9) * 45.0, 0.0, 100.0)
+        components.append(earnings)
+    capex = 50.0
+    score = float(np.mean(components)) if components else 50.0
+    return {"score": round(_clamp(score, 0.0, 100.0), 2), "confidence": round(len(components) / 4.0, 4), "available": len(components), "price": round(price_turn, 2), "industry": round(industry_turn, 2), "inventory": round(inventory, 2), "earnings": round(earnings, 2), "capex": capex}
+
+
+# ======================================================================
+# Second-stage trigger and entry scoring
+# ======================================================================
+
+
+def _series(df: pd.DataFrame, column: str) -> pd.Series:
+    if column not in df.columns:
+        return pd.Series(index=df.index, dtype=float)
+    return pd.to_numeric(df[column], errors="coerce").replace([np.inf, -np.inf], np.nan)
+
+
+def _latest(df: pd.DataFrame, column: str) -> float:
+    values = _series(df, column).dropna()
+    return float(values.iloc[-1]) if not values.empty else np.nan
+
+
+def _rolling_mean(df: pd.DataFrame, column: str, window: int) -> float:
+    values = _series(df, column).dropna()
+    return float(values.iloc[-window:].mean()) if len(values) >= window else np.nan
+
+
+def value_trap_risk(df: pd.DataFrame) -> float:
+    close = _series(df, "Close")
+    volume = _series(df, "Volume")
+    if len(close.dropna()) < 121:
+        return 0.0
+    risk = 0.0
+    close_now = _latest(df, "Close")
+    ma200 = _latest(df, "MA200")
+    if _is_finite(close_now) and _is_finite(ma200) and close_now < ma200:
+        risk += _clamp((ma200 - close_now) / ma200 / 0.35) * 30.0
+    if len(close.dropna()) >= 120:
+        ret120 = close.iloc[-1] / close.iloc[-121] - 1.0
+        if ret120 < 0:
+            risk += _clamp(abs(ret120) / 0.35) * 25.0
+    if len(volume.dropna()) >= 60:
+        vol_now = volume.iloc[-20:].mean()
+        vol_old = volume.iloc[-80:-60].mean()
+        if vol_old > 0 and vol_now < vol_old:
+            risk += _clamp((1.0 - vol_now / vol_old) / 0.6) * 20.0
+    flow_positive = 0
+    flow_available = 0
+    cmf = _latest(df, "CMF")
+    ad_slope = _latest(df, "AD_Slope")
+    obv = _series(df, "OBV").dropna()
+    for value in (cmf, ad_slope):
+        if _is_finite(value):
+            flow_available += 1
+            flow_positive += int(value > 0)
+    if len(obv) >= 20:
+        obv_change = float(obv.iloc[-1] - obv.iloc[-20])
+        flow_available += 1
+        flow_positive += int(obv_change > 0)
+    if flow_available and flow_positive == 0:
+        risk += 25.0
+    elif flow_available >= 2 and flow_positive == 1:
+        risk += 10.0
+    return _clamp(risk, 0.0, 100.0)
+
+
+def breakout_score(df: pd.DataFrame) -> float:
+    close, high, volume = _series(df, "Close"), _series(df, "High"), _series(df, "Volume")
+    valid = pd.concat({"close": close, "high": high, "volume": volume}, axis=1).dropna()
+    if len(valid) < 60:
+        return 0.0
+    close, high, volume = valid["close"], valid["high"], valid["volume"]
+    points = 0.0
+    price = _latest(df, "Close")
+    ma20, ma50, ma200 = _latest(df, "MA20"), _latest(df, "MA50"), _latest(df, "MA200")
+    if all(_is_finite(value) for value in (price, ma20, ma50)):
+        points += 15.0 if price > ma20 > ma50 else 8.0 if price > ma20 else 0.0
+    if _is_finite(ma200) and price > ma200:
+        points += 10.0
+    if len(close) >= 21 and len(high) >= 21 and len(volume.dropna()) >= 21:
+        resistance = high.iloc[-21:-1].max()
+        vol20 = volume.iloc[-21:-1].mean()
+        vol_now = volume.iloc[-1]
+        if _is_finite(resistance) and price > resistance:
+            points += 25.0
+            if vol20 > 0 and vol_now >= vol20 * 1.5:
+                points += 15.0
+    if len(close) >= 10 and len(volume.dropna()) >= 10:
+        up = close.diff() > 0
+        up_volume = volume.where(up).iloc[-10:].mean()
+        down_volume = volume.where(~up).iloc[-10:].mean()
+        if _is_finite(up_volume) and _is_finite(down_volume) and down_volume > 0 and up_volume > down_volume * 1.15:
+            points += 15.0
+    if len(close) >= 20:
+        recent_range = (close.iloc[-5:].max() - close.iloc[-5:].min()) / max(price, 1e-9)
+        prior_range = (close.iloc[-20:-5].max() - close.iloc[-20:-5].min()) / max(price, 1e-9)
+        if prior_range > 0 and recent_range < prior_range * 0.75:
+            points += 10.0
+    if _is_finite(ma20) and len(close) >= 10 and close.iloc[-1] > close.iloc[-10] and ma20 > _rolling_mean(df, "MA20", 10):
+        points += 10.0
+    return _clamp(points, 0.0, 100.0)
+
+
+def smart_money_stage(df: pd.DataFrame, breakout: float | None = None, trap: float | None = None) -> str:
+    breakout = breakout_score(df) if breakout is None else breakout
+    trap = value_trap_risk(df) if trap is None else trap
+    close, volume = _series(df, "Close"), _series(df, "Volume")
+    price = _latest(df, "Close")
+    ma20, ma50 = _latest(df, "MA20"), _latest(df, "MA50")
+    vol20, vol60 = _rolling_mean(df, "Volume", 20), _rolling_mean(df, "Volume", 60)
+    if trap >= 70.0:
+        return "NONE"
+    if (
+        len(close.dropna()) >= 20
+        and _is_finite(vol20)
+        and _is_finite(vol60)
+        and vol20 > vol60 * 1.4
+        and _is_finite(price)
+        and _is_finite(ma20)
+        and price < ma20
+    ):
+        return "DISTRIBUTION"
+    if breakout >= 65.0 and _is_finite(price) and _is_finite(ma20) and price > ma20:
+        return "BREAKOUT"
+    if _is_finite(ma20) and _is_finite(ma50) and ma20 >= ma50 and breakout >= 35.0 and _is_finite(vol20) and _is_finite(vol60) and vol20 >= vol60 * 0.9:
+        return "ACCUMULATION"
+    if (
+        len(close.dropna()) >= 20
+        and _is_finite(vol20)
+        and _is_finite(vol60)
+        and vol20 > vol60 * 1.4
+        and _is_finite(price)
+        and _is_finite(ma20)
+        and price < ma20
+    ):
+        return "DISTRIBUTION"
+    return "NONE"
+
+
+def entry_point(df: pd.DataFrame, breakout: float | None = None) -> dict[str, Any]:
+    breakout = breakout_score(df) if breakout is None else breakout
+    close, high, low = _series(df, "Close"), _series(df, "High"), _series(df, "Low")
+    price, atr = _latest(df, "Close"), _latest(df, "ATR14")
+    ma20, ma50 = _latest(df, "MA20"), _latest(df, "MA50")
+    resistance = float(high.iloc[-21:-1].max()) if len(high.dropna()) >= 21 else price
+    support = float(low.iloc[-20:].min()) if len(low.dropna()) >= 20 else price
+    if not _is_finite(price):
+        return {"score": 0.0, "signal": "AVOID", "low": np.nan, "high": np.nan, "breakout": np.nan, "stop": np.nan}
+    atr = atr if _is_finite(atr) and atr > 0 else price * 0.03
+    low_zone = max(support, price - atr * 1.2)
+    high_zone = min(price + atr * 0.3, resistance)
+    if high_zone < low_zone:
+        low_zone = max(support, min(price, resistance))
+        high_zone = max(low_zone, min(price + atr * 0.3, resistance))
+    score = 0.0
+    if _is_finite(ma20) and price >= ma20:
+        score += 20.0
+    if _is_finite(ma50) and _is_finite(ma20) and ma20 >= ma50:
+        score += 20.0
+    if support <= price <= support + atr * 1.5:
+        score += 20.0
+    if breakout >= 65.0:
+        score += 25.0
+    elif breakout >= 45.0:
+        score += 10.0
+    if len(close) >= 6 and close.iloc[-1] >= close.iloc[-6]:
+        score += 15.0
+    score = _clamp(score, 0.0, 100.0)
+    if breakout >= 75.0 and price > resistance:
+        signal = "BREAKOUT_CONFIRM"
+    elif score >= 70.0 and price <= support + atr * 1.5:
+        signal = "BUY_NOW"
+    elif _is_finite(ma20) and score >= 50.0 and price > ma20:
+        signal = "WAIT_PULLBACK"
+    elif score >= 35.0:
+        signal = "HOLD_WAIT"
+    else:
+        signal = "AVOID"
+    return {"score": score, "signal": signal, "low": low_zone, "high": high_zone, "breakout": resistance, "stop": max(support - atr, 0.0)}
+
+
+def value_trap_risk_score(df: pd.DataFrame) -> float:
+    return value_trap_risk(df)
 
 
 # ======================================================================
@@ -479,8 +724,11 @@ def _score_dimensions_available(
         )
         or _has_finite_values(df, ("VolZScore",), minimum=10)
     )
-    accumulation_available = len(df) >= 60 and any(
-        _has_finite_values(df, (column,)) for column in ("OBV", "AD", "CMF", "MFI")
+    accumulation_available = len(df) >= 60 and (
+        _has_finite_values(df, ("OBV",), minimum=40)
+        or _has_finite_values(df, ("AD", "AD_Slope"), minimum=AD_SLOPE_LOOKBACK)
+        or _has_finite_values(df, ("CMF",), minimum=20)
+        or _has_finite_values(df, ("MFI",), minimum=1)
     )
     volatility_available = len(df) >= BB_WIDTH_COMPRESSION_LOOKBACK and (
         _has_finite_values(df, ("ATR14", "ATR50"))
@@ -570,6 +818,14 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
         if available_weight
         else 0.0
     )
+    trap = value_trap_risk(df)
+    breakout = breakout_score(df)
+    entry = entry_point(df, breakout)
+    base_score = total * (1.0 - 0.55 * trap / 100.0)
+    trigger_score = _clamp(breakout * 0.55 + entry["score"] * 0.45, 0.0, 100.0)
+    if trap >= 70.0:
+        trigger_score *= 0.5
+    final_score = _clamp(base_score * 0.65 + trigger_score * 0.35, 0.0, 100.0)
     contributions = ScoreContributions(
         {
             "trend": trend,
@@ -579,6 +835,12 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
             "structure": structure,
         }
     )
+    contributions.update({
+        "base": base_score,
+        "breakout": breakout,
+        "entry": entry["score"],
+        "value_trap_risk": trap,
+    })
 
     return ScoreBreakdown(
         total=total,
@@ -590,5 +852,15 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
         missing_indicators=missing_indicators,
         indicator_coverage=indicator_coverage,
         confidence=indicator_coverage,
+        base_score=base_score,
+        breakout_score=breakout,
+        entry_score=entry["score"],
+        value_trap_risk=trap,
+        trigger_score=trigger_score,
+        final_score=final_score,
+        entry_zone_low=entry["low"],
+        entry_zone_high=entry["high"],
+        breakout_buy_price=entry["breakout"],
+        stop_loss=entry["stop"],
         contributions=contributions,
     )

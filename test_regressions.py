@@ -36,10 +36,10 @@ import gui
 import main
 import scanner
 import signal_lifecycle
-from analytics import BacktestSummary, apply_backtest_ranking
+from analytics import BacktestSummary, _ticker_backtest_rows, apply_backtest_ranking
 from fundamental_quality import calculate_quality
 from report import _institutional_tier
-from score import ScoreBreakdown
+from score import ScoreBreakdown, _score_dimensions_available, score_structure
 from downloader import TickerInfo, _cache_path, _log_download_progress
 from filters import (
     filter_bear_market,
@@ -222,7 +222,7 @@ class RegressionTests(TestCase):
         scanner._update_market_overview(rows, indexes)
 
         scanner.market_overview.set.assert_called_once_with(
-            "市场概览：2 只 · 活跃信号 1 · 趋势确认 1 · 平均机会分 60.0"
+            "市场概览：2 只 · 启动 0 · 可交易 0 · 最终均分 60.0"
         )
 
     def test_gui_page_navigation_updates_current_page(self):
@@ -835,6 +835,42 @@ class RegressionTests(TestCase):
         self.assertTrue(all(np.isfinite(value) for value in score.__dict__.values()))
         self.assertTrue(all(np.isfinite(value) for value in score.to_dict().values()))
 
+    def test_score_accumulation_requires_computable_indicator_history(self):
+        frame = pd.DataFrame({
+            "Close": [10.0] * 60,
+            "OBV": [1.0] * 10 + [np.nan] * 50,
+        })
+
+        self.assertFalse(_score_dimensions_available(frame)[2])
+
+    def test_score_structure_uses_configured_consolidation_range(self):
+        frame = pd.DataFrame({
+            "Close": [100.0] * 252,
+            "High": [110.0] * 252,
+            "Low": [90.0] * 252,
+            "DistToLow52W": [10.0] * 252,
+        })
+
+        self.assertGreater(score_structure(frame), 0.0)
+
+    def test_backtest_score_is_robust_to_single_extreme_return(self):
+        returns = [2.0] * 9 + [200.0]
+        frame = pd.DataFrame({
+            "ticker": ["000001.SZ"] * len(returns),
+            "return20": returns,
+            "return60": returns,
+            "net_return20": returns,
+            "net_return60": returns,
+            "drawdown20": [-5.0] * len(returns),
+            "drawdown60": [-8.0] * len(returns),
+            "benchmark_return20": [0.0] * len(returns),
+            "benchmark_return60": [0.0] * len(returns),
+        })
+
+        result = _ticker_backtest_rows(frame)[0]
+
+        self.assertLess(result["average_return_20d"], 30.0)
+
     def test_score_ticker_normalizes_using_available_indicator_weights(self):
         frame = pd.DataFrame({
             "Close": [10.0] * 252,
@@ -1221,6 +1257,29 @@ class RegressionTests(TestCase):
         self.assertEqual(result.loc[0, "CompositeScore"], 85.0)
         self.assertEqual(result.loc[0, "FailureSignalFactor"], 1.0)
         self.assertEqual(result.loc[0, "InstitutionalScore"], 85.0)
+
+    def test_composite_score_falls_back_to_raw_score_without_backtest_samples(self):
+        with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
+            pd.DataFrame({
+                "Ticker": ["000001.SZ", "600000.SH"],
+                "Score": [80.0, 60.0],
+                "PassedFilters": [True, True],
+                "SignalCount": [4, 4],
+            }).to_csv(Path(temp_dir) / "AllResults.csv", index=False, encoding="utf-8-sig")
+            summary = BacktestSummary(by_ticker=[{
+                "ticker": "000001.SZ",
+                "samples": 10,
+                "backtest_score": 100.0,
+                "objective_value": 10.0,
+            }])
+
+            apply_backtest_ranking(summary)
+            result = pd.read_csv(Path(temp_dir) / "AllResults.csv", encoding="utf-8-sig")
+
+        missing_backtest = result.loc[result["Ticker"] == "600000.SH"].iloc[0]
+        self.assertTrue(pd.isna(missing_backtest["BacktestScore"]))
+        self.assertTrue(pd.isna(missing_backtest["BacktestObjectiveValue"]))
+        self.assertEqual(missing_backtest["CompositeScore"], 60.0)
 
     def test_institutional_score_uses_tempered_confirmation_multipliers(self):
         with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):

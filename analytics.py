@@ -113,6 +113,18 @@ def _bounded_score(value: float, low: float, high: float) -> float:
     return float(np.clip((value - low) / (high - low), 0.0, 1.0))
 
 
+def _robust_mean(values: pd.Series) -> float:
+    numeric = pd.to_numeric(values, errors="coerce").replace(
+        [np.inf, -np.inf], np.nan
+    ).dropna()
+    if numeric.empty:
+        return float("nan")
+    if len(numeric) < 5:
+        return float(numeric.median())
+    lower, upper = numeric.quantile([0.1, 0.9])
+    return float(numeric.clip(lower, upper).mean())
+
+
 def _load_benchmark_frames(source: str) -> dict[str, pd.DataFrame]:
     frames: dict[str, pd.DataFrame] = {}
     for name, ticker in BENCHMARKS.items():
@@ -642,11 +654,12 @@ def _ticker_backtest_rows(
     for ticker, group in sample_frame.groupby("ticker", sort=False):
         win20 = float((group["return20"] > 0).mean())
         win60 = float((group["return60"] > 0).mean())
-        avg20 = float(group["return20"].mean())
-        avg60 = float(group["return60"].mean())
+        avg20 = _robust_mean(group["return20"])
+        avg60 = _robust_mean(group["return60"])
+        negative_returns60 = group.loc[group["return60"] < 0, "return60"]
         downside60 = (
-            float(group.loc[group["return60"] < 0, "return60"].mean())
-            if (group["return60"] < 0).any()
+            _robust_mean(negative_returns60)
+            if not negative_returns60.empty
             else 0.0
         )
         win_score = win20 * 0.20 + win60 * 0.20
@@ -661,10 +674,12 @@ def _ticker_backtest_rows(
         objective_series = pd.to_numeric(
             group[target_map[objective]], errors="coerce"
         ).dropna()
-        raw_objective_value = (
-            float(objective_series.mean()) if not objective_series.empty else 0.0
+        raw_objective_value = _robust_mean(objective_series)
+        objective_value = (
+            raw_objective_value * min(1.0, len(objective_series) / 10.0)
+            if np.isfinite(raw_objective_value)
+            else np.nan
         )
-        objective_value = raw_objective_value * min(1.0, len(group) / 10.0)
         failure_signal_factor = 1.0
         if avg20 < 0 and avg60 < 0:
             loss20 = 1.0 - _bounded_score(avg20, -30.0, 0.0)
@@ -687,7 +702,14 @@ def _ticker_backtest_rows(
             }
         )
     return sorted(
-        rows, key=lambda row: (row["objective_value"], row["samples"]), reverse=True
+        rows,
+        key=lambda row: (
+            row["objective_value"]
+            if np.isfinite(row["objective_value"])
+            else -np.inf,
+            row["samples"],
+        ),
+        reverse=True,
     )
 
 
@@ -746,26 +768,32 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     ):
         if column not in frame:
             frame[column] = np.nan
-    observed = frame["BacktestSamples"].fillna(0).astype(float)
-    frame["BacktestScore"] = frame["BacktestScore"].fillna(50.0)
+    observed = pd.to_numeric(frame["BacktestSamples"], errors="coerce").fillna(0.0)
+    frame["BacktestScore"] = pd.to_numeric(
+        frame["BacktestScore"], errors="coerce"
+    )
     frame["BacktestObjectiveValue"] = pd.to_numeric(
         frame["BacktestObjectiveValue"], errors="coerce"
     )
     objective_values = frame["BacktestObjectiveValue"].where(
-        np.isfinite(frame["BacktestObjectiveValue"])
+        np.isfinite(frame["BacktestObjectiveValue"]) & observed.gt(0)
     )
     if summary.objective == "max_drawdown":
-        objective_rank = (
-            objective_values.rank(pct=True, ascending=True).fillna(0.5) * 100.0
-        )
+        objective_rank = objective_values.rank(pct=True, ascending=True) * 100.0
     else:
-        objective_rank = objective_values.rank(pct=True).fillna(0.5) * 100.0
+        objective_rank = objective_values.rank(pct=True) * 100.0
     sample_factor = np.clip(observed / 10.0, 0.0, 1.0)
-    backtest_component = frame["BacktestScore"] * 0.5 + objective_rank * 0.5
+    backtest_score = frame["BacktestScore"].where(
+        np.isfinite(frame["BacktestScore"])
+    )
+    backtest_component = backtest_score * 0.5 + objective_rank * 0.5
     blended_backtest = (
         backtest_component * sample_factor + 50.0 * (1.0 - sample_factor)
+    ).where(observed.gt(0))
+    composite_score = frame["Score"] * 0.75 + blended_backtest * 0.25
+    frame["CompositeScore"] = composite_score.where(
+        blended_backtest.notna(), frame["Score"]
     )
-    frame["CompositeScore"] = frame["Score"] * 0.75 + blended_backtest * 0.25
     frame["FailureSignalFactor"] = frame["FailureSignalFactor"].fillna(1.0)
     failure_multiplier = 0.7 + 0.3 * frame["FailureSignalFactor"]
     frame["FailureAdjustedScore"] = frame["CompositeScore"] * failure_multiplier
