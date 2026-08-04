@@ -272,6 +272,10 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
     recency_days = (data_asof - signal_start).dt.days
     valid_recency = recency_days.notna() & recency_days.ge(0)
     result["SignalRecencyDays"] = recency_days.where(valid_recency)
+    prior_recency_factor = _number(
+        result.get("SignalRecencyFactor", pd.Series(np.nan, index=result.index)),
+        np.nan,
+    )
     result["SignalRecencyFactor"] = np.where(
         valid_recency,
         np.maximum(0.7, 1.0 - recency_days / 100.0),
@@ -286,8 +290,18 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
     result["BreakoutQualityFactor"] = _number(
         result.get("BreakoutQualityFactor", pd.Series(1.0, index=result.index)), 1.0
     ).clip(0.0, 1.0)
-    result["InstitutionalScore"] = (
-        base_institutional * (0.8 + 0.2 * result["SignalRecencyFactor"])
+    recency_multiplier = 0.8 + 0.2 * result["SignalRecencyFactor"]
+    # Historical calibration already writes a non-neutral recency factor into
+    # InstitutionalScore.  Preserve that result instead of applying the same
+    # penalty a second time when reports are regenerated.
+    already_adjusted = prior_recency_factor.notna() & prior_recency_factor.lt(0.9999)
+    result["InstitutionalScore"] = pd.Series(
+        np.where(
+            already_adjusted,
+            base_institutional,
+            base_institutional * recency_multiplier,
+        ),
+        index=result.index,
     ).round(4)
     volume_confirmed = _number(
         result.get("VolumeScore", pd.Series(index=result.index))
@@ -311,11 +325,14 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
         & result.get("QualityDataAvailable", pd.Series(False, index=result.index)).map(_bool)
         & ~result.get("QualityGate", pd.Series(False, index=result.index)).map(_bool)
     )
-    result.loc[
-        quality_failed & result["InstitutionalScore"].ge(75.0),
-        "InstitutionalTier",
-    ] = "C级价值观察"
-    result.loc[quality_failed & result["InstitutionalScore"].lt(75.0), "InstitutionalTier"] = "D级陷阱池"
+    quality_tier_map = {
+        "A级机构启动": "B级观察",
+        "B级观察": "C级价值观察",
+        "C级价值观察": "C级价值观察",
+    }
+    result.loc[quality_failed, "InstitutionalTier"] = result.loc[
+        quality_failed, "InstitutionalTier"
+    ].map(quality_tier_map).fillna("D级陷阱池")
     result["SignalStatus"] = statuses
     result["SignalStrengthHistory"] = strengths
     result["SignalTrend"] = (
