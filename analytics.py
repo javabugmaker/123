@@ -100,10 +100,13 @@ class BacktestSummary:
 
 
 def _safe_return(series: pd.Series, periods: int) -> float:
-    if len(series) <= periods:
+    clean = pd.to_numeric(series, errors="coerce").replace(
+        [np.inf, -np.inf], np.nan
+    ).dropna()
+    if len(clean) <= periods:
         return np.nan
-    start = float(series.iloc[-periods - 1])
-    end = float(series.iloc[-1])
+    start = float(clean.iloc[-periods - 1])
+    end = float(clean.iloc[-1])
     return (end / start - 1.0) * 100 if start > 0 else np.nan
 
 
@@ -150,14 +153,16 @@ def _benchmark_regime(frames: dict[str, pd.DataFrame]) -> tuple[str, str]:
         close = float(enriched["Close"].iloc[-1])
         ma60 = float(enriched["Close"].rolling(60, min_periods=30).mean().iloc[-1])
         ma200 = float(enriched["MA200"].iloc[-1]) if "MA200" in enriched else np.nan
-        states.append(bool(close >= ma60 and close >= ma200))
+        long_average = ma200 if np.isfinite(ma200) else ma60
+        states.append(bool(close >= ma60 and close >= long_average))
         value = _safe_return(enriched["Close"], 60)
         if np.isfinite(value):
             returns.append(value)
     if not states:
         return "未知", "基准数据不足"
     average_return = float(np.mean(returns)) if returns else 0.0
-    if sum(states) >= max(2, len(states) - 1) and average_return > 3:
+    required_positive = max(1, (len(states) * 2 + 2) // 3)
+    if sum(states) >= required_positive and average_return > 3:
         return "风险偏好", f"基准60日平均收益 {average_return:.1f}%"
     if sum(states) == 0 and average_return < -3:
         return "风险规避", f"基准60日平均收益 {average_return:.1f}%"
@@ -234,22 +239,33 @@ def _enrich_one_result(
         enriched = compute_all_indicators(frame.copy())
     if enriched.empty:
         return result, None, 0.0
-    latest_date = enriched.index[-1].date()
+    required_indicators = {"MA20", "MA50", "RSI14"}
+    if not required_indicators.issubset(enriched.columns):
+        enriched = compute_all_indicators(enriched.copy())
+    if enriched.empty or "Close" not in enriched:
+        return result, None, 0.0
     today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    indexed_date = pd.to_datetime(enriched.index[-1], errors="coerce")
+    latest_date = indexed_date.date() if not pd.isna(indexed_date) else today
     reported_date = latest_date
     result.close = float(enriched["Close"].iloc[-1])
+    last_business_day = (pd.Timestamp(today) - pd.offsets.BDay(1)).date()
     if (
         _is_a_share_market_closed()
         and latest_date < today
-        and latest_date >= today - timedelta(days=1)
+        and latest_date >= last_business_day
         and not is_etf_ticker(result.ticker)
     ):
         try:
             realtime_close = _fetch_eastmoney_realtime_price(result.ticker)
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             realtime_close = None
-        if realtime_close is not None:
-            result.close = realtime_close
+        try:
+            realtime_value = float(realtime_close)
+        except (TypeError, ValueError):
+            realtime_value = np.nan
+        if np.isfinite(realtime_value):
+            result.close = realtime_value
             reported_date = today
     data_age = max(0, (today - reported_date).days)
     trading_age = max(0, len(pd.bdate_range(reported_date, today)) - 1)
@@ -341,6 +357,8 @@ def enrich_results(
     for result in results:
         base_score = result.failure_adjusted_score
         if not np.isfinite(base_score):
+            base_score = result.final_score
+        if not np.isfinite(base_score):
             base_score = result.score.total
         sector_multiplier = 0.7 + 0.3 * result.sector_confirmation_factor
         breakout_multiplier = 0.8 + 0.2 * result.breakout_quality_factor
@@ -419,7 +437,18 @@ def write_research_reports(history: pd.DataFrame) -> tuple[Path, Path]:
     factor_columns = ["Factor", "Samples20D", "IC20D", "Samples60D", "IC60D"]
     tier_rows: list[dict[str, Any]] = []
     if not history.empty and "InstitutionalTier" in history:
-        for tier, group in history.groupby("InstitutionalTier", sort=True):
+        tier_order = {
+            "A级机构启动": 0,
+            "B级观察": 1,
+            "C级价值观察": 2,
+            "D级陷阱池": 3,
+        }
+        tiers = sorted(
+            history["InstitutionalTier"].dropna().unique(),
+            key=lambda value: (tier_order.get(str(value), len(tier_order)), str(value)),
+        )
+        for tier in tiers:
+            group = history.loc[history["InstitutionalTier"].eq(tier)]
             row: dict[str, Any] = {"InstitutionalTier": tier, "Samples": len(group)}
             for horizon in (20, 60):
                 returns = pd.to_numeric(group.get(f"Return{horizon}D"), errors="coerce")
@@ -790,13 +819,16 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     blended_backtest = (
         backtest_component * sample_factor + 50.0 * (1.0 - sample_factor)
     ).where(observed.gt(0))
-    composite_score = frame["Score"] * 0.75 + blended_backtest * 0.25
+    raw_score = pd.to_numeric(frame["Score"], errors="coerce").fillna(0.0)
+    composite_score = raw_score * 0.75 + blended_backtest * 0.25
     frame["CompositeScore"] = composite_score.where(
-        blended_backtest.notna(), frame["Score"]
+        blended_backtest.notna(), raw_score
     )
     frame["FailureSignalFactor"] = frame["FailureSignalFactor"].fillna(1.0)
     failure_multiplier = 0.7 + 0.3 * frame["FailureSignalFactor"]
-    frame["FailureAdjustedScore"] = frame["CompositeScore"] * failure_multiplier
+    frame["FailureAdjustedScore"] = (
+        frame["CompositeScore"] * failure_multiplier
+    ).round(4)
     if "SectorConfirmationFactor" in frame:
         sector_factor = pd.to_numeric(
             frame["SectorConfirmationFactor"], errors="coerce"
@@ -844,11 +876,14 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     ).astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y", "是"})
     is_etf = frame.get("IsETF", pd.Series(False, index=frame.index)).astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y", "是"})
     quality_failed = quality_available & ~quality_gate & ~is_etf
-    frame["InstitutionalScore"] = np.where(
-        quality_available & np.isfinite(quality_score),
-        institutional_component * 0.7 + quality_score * 0.3,
-        institutional_component,
-    )
+    frame["InstitutionalScore"] = pd.Series(
+        np.where(
+            quality_available & np.isfinite(quality_score),
+            institutional_component * 0.7 + quality_score * 0.3,
+            institutional_component,
+        ),
+        index=frame.index,
+    ).round(4)
     volume_score = pd.to_numeric(
         frame.get("VolumeScore", pd.Series(0.0, index=frame.index)), errors="coerce"
     ).fillna(0.0)
@@ -858,8 +893,14 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     frame["InstitutionalTier"] = "D级陷阱池"
     frame.loc[frame["InstitutionalScore"].ge(65.0), "InstitutionalTier"] = "C级价值观察"
     frame.loc[frame["InstitutionalScore"].between(75.0, 85.0, inclusive="left"), "InstitutionalTier"] = "B级观察"
-    frame.loc[quality_failed & frame["InstitutionalScore"].ge(65.0), "InstitutionalTier"] = "D级陷阱池"
-    frame.loc[quality_failed & frame["InstitutionalScore"].between(75.0, 85.0, inclusive="left"), "InstitutionalTier"] = "C级价值观察"
+    quality_tier_map = {
+        "A级机构启动": "B级观察",
+        "B级观察": "C级价值观察",
+        "C级价值观察": "C级价值观察",
+    }
+    frame.loc[quality_failed, "InstitutionalTier"] = frame.loc[
+        quality_failed, "InstitutionalTier"
+    ].map(quality_tier_map).fillna("D级陷阱池")
     frame.loc[
         frame["InstitutionalScore"].gt(85.0)
         & frame["SignalRecencyDays"].le(20)
