@@ -745,6 +745,20 @@ class RegressionTests(TestCase):
             with patch.object(scanner, "_CHECKPOINT_PATH", checkpoint_path):
                 self.assertEqual(scanner.load_checkpoint("eastmoney"), set())
 
+    def test_load_checkpoint_ignores_a_previous_trade_date(self):
+        with TemporaryDirectory() as temp_dir:
+            checkpoint_path = Path(temp_dir) / "_checkpoint.json"
+            checkpoint_path.write_text(
+                '{"active": true, "processed": ["000001.SZ"], '
+                '"trade_date": "2026-08-03", "data_source": "eastmoney", '
+                '"scoring_version": "' + scanner.SCORING_VERSION + '"}',
+                encoding="utf-8",
+            )
+            with patch.object(scanner, "_CHECKPOINT_PATH", checkpoint_path), patch.object(
+                scanner, "_checkpoint_trade_date", return_value="2026-08-04"
+            ):
+                self.assertEqual(scanner.load_checkpoint("eastmoney"), set())
+
     def test_max_drawdown_ranking_prefers_shallower_losses(self):
         with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
             pd.DataFrame({
@@ -1111,6 +1125,24 @@ class RegressionTests(TestCase):
         self.assertAlmostEqual(samples[0]["drawdown20"], -20.0)
         self.assertAlmostEqual(samples[0]["drawdown60"], -20.0)
 
+    def test_backtest_uses_final_score_when_available(self):
+        frame = pd.DataFrame({
+            "Open": np.full(320, 100.0),
+            "High": np.full(320, 101.0),
+            "Low": np.full(320, 99.0),
+            "Close": np.full(320, 100.0),
+            "Volume": np.full(320, 1000.0),
+        }, index=pd.date_range("2020-01-01", periods=320))
+
+        with patch.object(analytics, "_load_cache", return_value=frame), patch.object(
+            analytics, "compute_all_indicators", side_effect=lambda data: data
+        ), patch.object(analytics, "_signal_points", return_value=[250]), patch.object(
+            analytics, "score_ticker", return_value=ScoreBreakdown(total=90.0, final_score=60.0)
+        ):
+            samples = analytics._backtest_one_ticker("000001.SZ", "eastmoney")
+
+        self.assertEqual(samples[0]["score"], 60.0)
+
     def test_backtest_fails_explicitly_when_benchmark_is_unavailable(self):
         with patch.object(analytics, "_load_benchmark_frames", return_value={}):
             summary = analytics.run_historical_backtest(["000001.SZ"])
@@ -1196,26 +1228,73 @@ class RegressionTests(TestCase):
 
         self.assertAlmostEqual(rows[0]["failure_signal_factor"], 0.468, places=4)
 
-    def test_sector_confirmation_factor_uses_peer_momentum(self):
-        result = ScanResult(
+    def test_sector_confirmation_uses_leave_one_out_peer_momentum(self):
+        stronger = ScanResult(
             ticker="000001.SZ",
             industry="银行",
             score=ScoreBreakdown(total=80.0),
         )
+        weaker = ScanResult(
+            ticker="000002.SZ",
+            industry="银行",
+            score=ScoreBreakdown(total=80.0),
+        )
         index = pd.date_range("2026-05-01", periods=62, freq="D")
-        frame = pd.DataFrame({
+        stronger_frame = pd.DataFrame({
             "Close": [100.0] * 61 + [110.0],
             "Open": [100.0] * 61 + [110.0],
             "High": [100.0] * 61 + [110.0],
             "Low": [100.0] * 61 + [110.0],
             "Volume": [1000.0] * 62,
         }, index=index)
+        weaker_frame = pd.DataFrame({
+            "Close": [100.0] * 62,
+            "Open": [100.0] * 62,
+            "High": [100.0] * 62,
+            "Low": [100.0] * 62,
+            "Volume": [1000.0] * 62,
+        }, index=index)
 
         with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")):
+            analytics.enrich_results(
+                [stronger, weaker],
+                "eastmoney",
+                frames={
+                    "000001.SZ": stronger_frame,
+                    "000002.SZ": weaker_frame,
+                },
+            )
+
+        self.assertEqual(stronger.industry_momentum_60d, 0.0)
+        self.assertEqual(stronger.industry_relative_strength, 10.0)
+        self.assertEqual(stronger.sector_confirmation_factor, 0.6)
+        self.assertEqual(weaker.industry_momentum_60d, 10.0)
+        self.assertEqual(weaker.industry_relative_strength, -10.0)
+        self.assertEqual(weaker.sector_confirmation_factor, 0.8)
+
+    def test_enrichment_blends_available_quality_score(self):
+        result = ScanResult(
+            ticker="000001.SZ",
+            industry="银行",
+            score=ScoreBreakdown(total=80.0),
+            final_score=80.0,
+            quality_data_available=True,
+            quality_score=20.0,
+        )
+        index = pd.date_range("2026-05-01", periods=62, freq="D")
+        frame = pd.DataFrame({
+            "Close": [100.0] * 62,
+            "Open": [100.0] * 62,
+            "High": [101.0] * 62,
+            "Low": [99.0] * 62,
+            "Volume": [1000.0] * 62,
+        }, index=index)
+
+        with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")), patch.object(analytics, "_breakout_quality_factor", return_value=1.0):
             analytics.enrich_results([result], "eastmoney", frames={"000001.SZ": frame})
 
-        self.assertGreater(result.sector_confirmation_factor, 0.2)
-        self.assertEqual(result.industry_momentum_60d, 10.0)
+        self.assertEqual(result.sector_confirmation_factor, 1.0)
+        self.assertEqual(result.institutional_score, 62.0)
 
     def test_report_sorts_by_institutional_score(self):
         results = [
@@ -1258,6 +1337,27 @@ class RegressionTests(TestCase):
         self.assertEqual(result.loc[0, "CompositeScore"], 85.0)
         self.assertEqual(result.loc[0, "FailureSignalFactor"], 1.0)
         self.assertEqual(result.loc[0, "InstitutionalScore"], 85.0)
+
+    def test_composite_score_uses_final_score_when_available(self):
+        with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
+            pd.DataFrame({
+                "Ticker": ["000001.SZ"],
+                "Score": [90.0],
+                "FinalScore": [40.0],
+                "PassedFilters": [True],
+                "SignalCount": [4],
+            }).to_csv(Path(temp_dir) / "AllResults.csv", index=False, encoding="utf-8-sig")
+            summary = BacktestSummary(by_ticker=[{
+                "ticker": "000001.SZ",
+                "samples": 10,
+                "backtest_score": 100.0,
+                "objective_value": 10.0,
+            }])
+
+            apply_backtest_ranking(summary)
+            result = pd.read_csv(Path(temp_dir) / "AllResults.csv", encoding="utf-8-sig")
+
+        self.assertEqual(result.loc[0, "CompositeScore"], 55.0)
 
     def test_composite_score_falls_back_to_raw_score_without_backtest_samples(self):
         with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
