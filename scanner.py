@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -195,6 +196,15 @@ def _parse_float(value: Any, default: float = np.nan) -> float:
     return parsed if np.isfinite(parsed) else default
 
 
+def _checkpoint_trade_date(now: datetime | None = None) -> str:
+    current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+    else:
+        current = current.astimezone(ZoneInfo("Asia/Shanghai"))
+    return current.date().isoformat()
+
+
 def save_checkpoint(processed: set[str], data_source: str = "") -> None:
     """Save the set of already-processed tickers."""
     if not ENABLE_CHECKPOINT:
@@ -204,6 +214,7 @@ def save_checkpoint(processed: set[str], data_source: str = "") -> None:
             "active": True,
             "processed": sorted(_normalize_ticker(ticker) for ticker in processed),
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "trade_date": _checkpoint_trade_date(),
             "data_source": normalize_data_source(data_source) if data_source else "",
             "scoring_version": SCORING_VERSION,
         }
@@ -219,6 +230,8 @@ def load_checkpoint(data_source: str = "") -> set[str]:
     try:
         data = json.loads(_CHECKPOINT_PATH.read_text(encoding="utf-8"))
         if not data.get("active"):
+            return set()
+        if data.get("trade_date") != _checkpoint_trade_date():
             return set()
         if data.get("scoring_version") != SCORING_VERSION:
             return set()
