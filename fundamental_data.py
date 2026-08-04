@@ -102,7 +102,8 @@ def _request_report(report_name: str, secucode: str, columns: str, request: Call
             response = requester(_EASTMONEY_URL, params=params, timeout=DOWNLOAD_TIMEOUT)
             response.raise_for_status()
             payload = response.json()
-            data = payload.get("result", {}).get("data", []) if isinstance(payload, dict) else []
+            result = payload.get("result") if isinstance(payload, dict) else None
+            data = result.get("data", []) if isinstance(result, dict) else []
             return data if isinstance(data, list) else []
         except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError) as exc:
             last_error = exc
