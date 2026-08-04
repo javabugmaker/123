@@ -312,7 +312,8 @@ class ScannerGUI:
         self.root.bind("<Control-f>", lambda _event: self._focus_search())
         self.root.bind("<Escape>", lambda _event: self.clear_filters())
         self.root.bind("<F5>", lambda _event: self.refresh_results())
-        self.search_entry.bind("<Return>", self._render_search_results)
+        if hasattr(self, "search_entry"):
+            self.search_entry.bind("<Return>", self._render_search_results)
         self._load_best_available_results()
 
     def _configure_style(self) -> None:
@@ -1129,6 +1130,8 @@ class ScannerGUI:
         )
 
     def _focus_search(self):
+        if not hasattr(self, "search_entry"):
+            return "break"
         self.search_entry.focus_set()
         self.search_entry.selection_range(0, tk.END)
         return "break"
