@@ -181,11 +181,17 @@ def cmd_report(args: argparse.Namespace) -> int:
     all_tickers = list(stock_universe) + list(etf_universe)
 
     logger.info("Re-scanning %d cached tickers...", len(all_tickers))
-    fundamental_path = refresh_fundamental_data(
-        [ticker.ticker for ticker in stock_universe],
-        force=False,
-    )
-    logger.info("基本面数据路径: %s", fundamental_data_path() or fundamental_path)
+    fundamental_path = fundamental_data_path()
+    if getattr(args, "refresh_fundamentals", False):
+        try:
+            fundamental_path = refresh_fundamental_data(
+                [ticker.ticker for ticker in stock_universe],
+                force=False,
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("基本面刷新失败，继续使用现有数据：%s", exc)
+        else:
+            logger.info("基本面数据路径: %s", fundamental_data_path() or fundamental_path)
     results = run_parallel_indicator_scan(all_tickers, data_source=args.data_source)
     enrich_results(results, args.data_source)
 
@@ -447,6 +453,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report_p.add_argument(
         "--data-source", choices=("eastmoney", "sina", "tencent"), default="eastmoney"
+    )
+    report_p.add_argument(
+        "--refresh-fundamentals",
+        action="store_true",
+        help="刷新缓存中的基本面数据后再生成报告",
     )
     report_p.add_argument("--verbose", "-v", action="store_true")
 
