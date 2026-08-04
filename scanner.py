@@ -311,7 +311,17 @@ def scan_single_from_df(
 
         if not indicators_computed:
             df = compute_all_indicators(df.copy())
-        close = float(df["Close"].iloc[-1])
+        close = _parse_float(df["Close"].iloc[-1], np.nan)
+        if not np.isfinite(close):
+            return ScanResult(
+                ticker=ticker,
+                name=ticker_info.name,
+                sector=ticker_info.sector,
+                industry=ticker_info.industry,
+                is_etf=ticker_info.is_etf,
+                asset_type=ticker_info.asset_type,
+                error="最新收盘价无效",
+            )
 
         # ---- 3. Filters ----
         filter_results = run_all_filters(
@@ -359,14 +369,16 @@ def scan_single_from_df(
             filter_results.volume_accumulation.details.get("consecutive_days", 0)
         )
         quality = get_quality(ticker, is_etf=ticker_info.is_etf)
-        entry = entry_point(df, sb.breakout_score)
-        smart_stage = smart_money_stage(df, sb.breakout_score, sb.value_trap_risk)
+        breakout = _parse_float(getattr(sb, "breakout_score", np.nan), 0.0)
+        trap = _parse_float(getattr(sb, "value_trap_risk", np.nan), 0.0)
+        entry = entry_point(df, breakout)
+        smart_stage = smart_money_stage(df, breakout, trap)
         entry_zone = (
-            f"{sb.entry_zone_low:.2f}-{sb.entry_zone_high:.2f}"
-            if np.isfinite(sb.entry_zone_low) and np.isfinite(sb.entry_zone_high)
+            f"{entry['low']:.2f}-{entry['high']:.2f}"
+            if np.isfinite(entry["low"]) and np.isfinite(entry["high"])
             else ""
         )
-        risk_warning = "价值陷阱风险偏高" if sb.value_trap_risk >= 60 else ""
+        risk_warning = "价值陷阱风险偏高" if trap >= 60 else ""
         operation_advice = {
             "BUY_NOW": "回调至买入区间可分批介入",
             "BREAKOUT_CONFIRM": "放量突破确认后跟随，控制仓位",
@@ -384,9 +396,13 @@ def scan_single_from_df(
             asset_type=ticker_info.asset_type,
             close=close,
             score=sb,
-            score_missing_indicators=sb.missing_indicators,
-            score_coverage=sb.indicator_coverage,
-            score_confidence=sb.confidence,
+            score_missing_indicators=_parse_int(
+                getattr(sb, "missing_indicators", 0), 0
+            ),
+            score_coverage=_parse_float(
+                getattr(sb, "indicator_coverage", np.nan), 0.0
+            ),
+            score_confidence=_parse_float(getattr(sb, "confidence", np.nan), 0.0),
             obv=obv_val,
             cmf=cmf_val,
             ad=ad_val,
@@ -395,19 +411,19 @@ def scan_single_from_df(
             dist_to_low_52w=dist_low,
             wyckoff_phase=phase,
             volume_accum_days=vol_accum_days,
-            base_score=sb.base_score,
-            breakout_score=sb.breakout_score,
+            base_score=_parse_float(getattr(sb, "base_score", np.nan)),
+            breakout_score=breakout,
             smart_money_stage=smart_stage,
-            entry_score=sb.entry_score,
+            entry_score=_parse_float(entry["score"], 0.0),
             entry_signal=entry["signal"],
             entry_zone=entry_zone,
-            breakout_buy_price=sb.breakout_buy_price,
-            stop_loss=sb.stop_loss,
-            value_trap_risk=sb.value_trap_risk,
+            breakout_buy_price=_parse_float(entry["breakout"]),
+            stop_loss=_parse_float(entry["stop"]),
+            value_trap_risk=trap,
             risk_warning=risk_warning,
             operation_advice=operation_advice,
-            trigger_score=sb.trigger_score,
-            final_score=sb.final_score,
+            trigger_score=_parse_float(getattr(sb, "trigger_score", np.nan)),
+            final_score=_parse_float(getattr(sb, "final_score", np.nan)),
             passed_filters=passed,
             filter_details=filter_map,
             style=style,
@@ -566,7 +582,7 @@ def run_scan(
         force=force_download,
         source=data_source,
         cache_first=cache_first and not force_download,
-        skip_tickers=skip_processed if resume else None,
+        skip_tickers=set(skip_processed) if resume else None,
     )
     download_elapsed = time.perf_counter() - download_started
     logger.info("Download phase complete in %.1f seconds.", download_elapsed)
@@ -912,8 +928,16 @@ def run_scan(
         enrichment_elapsed,
     )
 
-    # Sort by score descending
-    results.sort(key=lambda r: r.score.total, reverse=True)
+    # Prefer the post-enrichment rank when it is available; fall back to the
+    # technical score for partially processed or legacy rows.
+    results.sort(
+        key=lambda result: (
+            _parse_float(result.institutional_score, np.nan)
+            if np.isfinite(_parse_float(result.institutional_score, np.nan))
+            else _parse_float(result.final_score, result.score.total)
+        ),
+        reverse=True,
+    )
 
     elapsed = time.perf_counter() - start_time
 
@@ -962,7 +986,8 @@ def _analyse_one_ticker_from_df(
         "MA50",
         "RSI14",
     ]
-    return result, enriched.loc[:, enrichment_columns].copy()
+    available_columns = [column for column in enrichment_columns if column in enriched]
+    return result, enriched.loc[:, available_columns].copy()
 
 
 def _analyse_one_ticker(
