@@ -157,7 +157,7 @@ SCORING_WEIGHTS: Final[ScoringWeights] = ScoringWeights()
 TOP_N_REPORT: int = 50
 TOP_N_PARQUET: int = 200
 
-SCORING_VERSION: str = "2026-08-02-v4-quality-dual-factor"
+SCORING_VERSION: str = "2026-08-04-v5-final-score-consistency"
 
 FRESHNESS_MULTIPLIERS: Final[tuple[tuple[int, float], ...]] = (
     (0, 1.00),
