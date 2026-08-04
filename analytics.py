@@ -116,6 +116,29 @@ def _bounded_score(value: float, low: float, high: float) -> float:
     return float(np.clip((value - low) / (high - low), 0.0, 1.0))
 
 
+def _finite_float(value: Any, default: float = np.nan) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if np.isfinite(parsed) else default
+
+
+def _quality_adjusted_score(
+    score: float,
+    quality_score: Any,
+    quality_available: bool,
+    is_etf: bool,
+) -> float:
+    """Blend available stock quality data into an otherwise technical score."""
+    if not np.isfinite(score):
+        return np.nan
+    quality = _finite_float(quality_score)
+    if quality_available and not is_etf and np.isfinite(quality):
+        return float(score * 0.7 + quality * 0.3)
+    return float(score)
+
+
 def _robust_mean(values: pd.Series) -> float:
     numeric = pd.to_numeric(values, errors="coerce").replace(
         [np.inf, -np.inf], np.nan
@@ -291,7 +314,7 @@ def enrich_results(
 ) -> None:
     benchmark_frames = _load_benchmark_frames(source)
     regime, regime_reason = _benchmark_regime(benchmark_frames)
-    industry_returns: dict[str, list[float]] = {}
+    industry_returns: dict[str, dict[str, float]] = {}
     cached_frames: dict[str, pd.DataFrame] = {}
     total = len(results)
     completed = 0
@@ -326,12 +349,12 @@ def enrich_results(
                 cached_frames[result.ticker] = enriched
                 if np.isfinite(relative):
                     industry = result.industry or result.sector or "未分类"
-                    industry_returns.setdefault(industry, []).append(relative)
+                    industry_returns.setdefault(industry, {})[result.ticker] = relative
             if completed == total or completed % 100 == 0:
                 logger.info("Enrichment progress: %d/%d results.", completed, total)
-    peer_average = {
-        key: float(np.mean(values))
-        for key, values in industry_returns.items()
+    industry_totals = {
+        industry: (float(sum(values.values())), len(values))
+        for industry, values in industry_returns.items()
         if values
     }
     for result in results:
@@ -340,7 +363,12 @@ def enrich_results(
             continue
         value = _safe_return(frame["Close"], 60)
         industry = result.industry or result.sector or "未分类"
-        peer = peer_average.get(industry, 0.0)
+        total, count = industry_totals.get(industry, (0.0, 0))
+        peer = (
+            (total - value) / (count - 1)
+            if np.isfinite(value) and count >= 2
+            else np.nan
+        )
         result.industry_relative_strength = (
             round(value - peer, 2) if np.isfinite(value) else np.nan
         )
@@ -355,15 +383,28 @@ def enrich_results(
         else:
             result.sector_confirmation_factor = 1.0
     for result in results:
-        base_score = result.failure_adjusted_score
+        base_score = _finite_float(result.failure_adjusted_score)
         if not np.isfinite(base_score):
-            base_score = result.final_score
+            base_score = _finite_float(result.final_score)
         if not np.isfinite(base_score):
-            base_score = result.score.total
-        sector_multiplier = 0.7 + 0.3 * result.sector_confirmation_factor
-        breakout_multiplier = 0.8 + 0.2 * result.breakout_quality_factor
+            base_score = _finite_float(result.score.total, 0.0)
+        sector_factor = float(
+            np.clip(_finite_float(result.sector_confirmation_factor, 1.0), 0.0, 1.0)
+        )
+        breakout_factor = float(
+            np.clip(_finite_float(result.breakout_quality_factor, 1.0), 0.0, 1.0)
+        )
+        sector_multiplier = 0.7 + 0.3 * sector_factor
+        breakout_multiplier = 0.8 + 0.2 * breakout_factor
+        technical_score = base_score * sector_multiplier * breakout_multiplier
         result.institutional_score = round(
-            float(base_score * sector_multiplier * breakout_multiplier), 4
+            _quality_adjusted_score(
+                technical_score,
+                result.quality_score,
+                result.quality_data_available,
+                result.is_etf,
+            ),
+            4,
         )
 
 
@@ -582,7 +623,13 @@ def _backtest_one_ticker(
                 compute_volume_profile(historical)
             except (ArithmeticError, TypeError, ValueError):
                 logger.debug("Historical volume profile failed for %s.", ticker)
-        score_cache[length] = float(score_ticker(historical, is_etf=is_etf).total)
+        historical_score = score_ticker(historical, is_etf=is_etf)
+        final_score = _finite_float(getattr(historical_score, "final_score", np.nan))
+        score_cache[length] = (
+            final_score
+            if np.isfinite(final_score)
+            else _finite_float(getattr(historical_score, "total", np.nan), 0.0)
+        )
     benchmark_close = None
     if benchmark_frame is not None and not benchmark_frame.empty:
         benchmark_close = benchmark_frame["Close"].astype(float).sort_index()
@@ -819,7 +866,14 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     blended_backtest = (
         backtest_component * sample_factor + 50.0 * (1.0 - sample_factor)
     ).where(observed.gt(0))
-    raw_score = pd.to_numeric(frame["Score"], errors="coerce").fillna(0.0)
+    final_score = pd.to_numeric(
+        frame.get("FinalScore", pd.Series(np.nan, index=frame.index)),
+        errors="coerce",
+    )
+    raw_score = final_score.where(
+        np.isfinite(final_score),
+        pd.to_numeric(frame["Score"], errors="coerce"),
+    ).fillna(0.0)
     composite_score = raw_score * 0.75 + blended_backtest * 0.25
     frame["CompositeScore"] = composite_score.where(
         blended_backtest.notna(), raw_score
@@ -876,9 +930,10 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     ).astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y", "是"})
     is_etf = frame.get("IsETF", pd.Series(False, index=frame.index)).astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y", "是"})
     quality_failed = quality_available & ~quality_gate & ~is_etf
+    quality_eligible = quality_available & np.isfinite(quality_score) & ~is_etf
     frame["InstitutionalScore"] = pd.Series(
         np.where(
-            quality_available & np.isfinite(quality_score),
+            quality_eligible,
             institutional_component * 0.7 + quality_score * 0.3,
             institutional_component,
         ),
