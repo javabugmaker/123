@@ -37,7 +37,11 @@ logger = logging.getLogger("institution_scanner.report")
 
 def _quality_label(result: ScanResult) -> str:
     signal_count = int(result.filter_details.get("signal_count", 0))
-    score = float(result.score.total)
+    score = (
+        float(result.final_score)
+        if np.isfinite(result.final_score)
+        else float(result.score.total)
+    )
     if result.passed_filters and (
         (signal_count >= 5 and score >= 40) or (signal_count >= 4 and score >= 48)
     ):
@@ -53,6 +57,8 @@ def _institutional_tier(result: ScanResult) -> str:
     score = (
         float(result.institutional_score)
         if np.isfinite(result.institutional_score)
+        else float(result.final_score)
+        if np.isfinite(result.final_score)
         else float(result.score.total)
     )
     volume_confirmed = bool(
