@@ -390,9 +390,12 @@ def score_structure(df: pd.DataFrame) -> float:
         if avg_price > 0:
             range_pct = (high - low) / avg_price * 100
             if range_pct <= CONSOLIDATION_MAX_RANGE_PCT:
-                score += _clamp(
+                # Passing the configured range ceiling is itself evidence of a
+                # base; tighter ranges receive progressively more credit.
+                tightness = _clamp(
                     1 - range_pct / CONSOLIDATION_MAX_RANGE_PCT, 0, 1
-                ) * 5
+                )
+                score += (0.2 + tightness * 0.8) * 5
 
     # 3. Linear regression slope near zero (up to 3 points)
     if "RegSlope" in df.columns:
@@ -416,7 +419,7 @@ def score_structure(df: pd.DataFrame) -> float:
         dist_hvn = df["DistToHVN_Pct"].iloc[-1]
         if bool(above_hvn) and _is_finite(dist_hvn) and 0 < dist_hvn < 10:
             # Small positive distance (just above HVN) = ideal
-                score += _clamp(1 - dist_hvn / 10, 0, 1) * 2
+            score += _clamp(1 - dist_hvn / 10, 0, 1) * 2
 
     return min(score, 15.0)
 
@@ -490,6 +493,17 @@ def _latest(df: pd.DataFrame, column: str) -> float:
 def _rolling_mean(df: pd.DataFrame, column: str, window: int) -> float:
     values = _series(df, column).dropna()
     return float(values.iloc[-window:].mean()) if len(values) >= window else np.nan
+
+
+def _safe_return(values: pd.Series, periods: int) -> float:
+    clean = pd.to_numeric(values, errors="coerce").replace(
+        [np.inf, -np.inf], np.nan
+    ).dropna()
+    if len(clean) <= periods:
+        return np.nan
+    start = float(clean.iloc[-periods - 1])
+    end = float(clean.iloc[-1])
+    return (end / start - 1.0) * 100.0 if start > 0 else np.nan
 
 
 def value_trap_risk(df: pd.DataFrame) -> float:
@@ -591,16 +605,6 @@ def smart_money_stage(df: pd.DataFrame, breakout: float | None = None, trap: flo
         return "BREAKOUT"
     if _is_finite(ma20) and _is_finite(ma50) and ma20 >= ma50 and breakout >= 35.0 and _is_finite(vol20) and _is_finite(vol60) and vol20 >= vol60 * 0.9:
         return "ACCUMULATION"
-    if (
-        len(close.dropna()) >= 20
-        and _is_finite(vol20)
-        and _is_finite(vol60)
-        and vol20 > vol60 * 1.4
-        and _is_finite(price)
-        and _is_finite(ma20)
-        and price < ma20
-    ):
-        return "DISTRIBUTION"
     return "NONE"
 
 
