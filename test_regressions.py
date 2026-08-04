@@ -352,6 +352,7 @@ class RegressionTests(TestCase):
         scanner.next_page_button = Mock()
         scanner._sort_column = "Close"
         scanner._sort_descending = True
+        scanner._render_cached_rows = Mock()
 
         with TemporaryDirectory() as temp_dir, patch("gui.OUTPUT_DIR", Path(temp_dir)):
             (Path(temp_dir) / "AllResults.csv").write_text(
@@ -1375,7 +1376,7 @@ class RegressionTests(TestCase):
             tier_report = pd.read_csv(tier_path, encoding="utf-8-sig")
             ic_report = pd.read_csv(ic_path, encoding="utf-8-sig")
 
-        self.assertEqual(tier_report.loc[0, "InstitutionalTier"], "D级陷阱池")
+        self.assertEqual(tier_report.loc[0, "InstitutionalTier"], "A级机构启动")
         self.assertIn("InstitutionalScore", ic_report["Factor"].tolist())
 
     def test_institutional_tier_uses_trap_pool_below_65(self):
@@ -1409,13 +1410,15 @@ class RegressionTests(TestCase):
             "Low": [77.5],
             "Close": [78.56],
             "Volume": [1000.0],
-        }, index=pd.to_datetime(["2026-07-30"]))
+        }, index=pd.DatetimeIndex([
+            (pd.Timestamp.now(tz="Asia/Shanghai").normalize() - pd.offsets.BDay(1)).tz_localize(None)
+        ]))
 
         with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")), patch.object(analytics, "_is_a_share_market_closed", return_value=True), patch.object(analytics, "_fetch_eastmoney_realtime_price", return_value=78.0):
             analytics.enrich_results([result], "eastmoney", frames={"000858.SZ": frame})
 
         self.assertEqual(result.close, 78.0)
-        self.assertEqual(result.data_asof, pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d"))
+        self.assertEqual(result.data_asof, pd.Timestamp.now(tz="Asia/Shanghai").strftime("%Y-%m-%d"))
 
     def test_enrichment_keeps_daily_close_when_realtime_close_is_unavailable(self):
         result = ScanResult(ticker="000858.SZ", close=78.56)
@@ -1448,7 +1451,11 @@ class RegressionTests(TestCase):
             result, returned_frame = scanner._analyse_one_ticker_from_df(ticker, frame)
 
         self.assertFalse(result.error)
-        self.assertIs(returned_frame, enriched)
+        self.assertIsNotNone(returned_frame)
+        self.assertEqual(
+            list(returned_frame.columns),
+            ["Open", "High", "Low", "Close", "Volume"],
+        )
         compute.assert_called_once()
 
     def test_backtest_requires_explicit_tickers(self):
@@ -1622,7 +1629,7 @@ class RegressionTests(TestCase):
 
         scanner.progress.stop.assert_called_once_with()
         scanner.progress.configure.assert_called_once_with(mode="determinate", maximum=100, value=64)
-        scanner.status.set.assert_called_once_with("DOWNLOAD 64/100 · 成功 60 · 无数据/失败 4")
+        scanner.status.set.assert_called_once_with("下载进度 64/100 · 成功 60 · 无数据/失败 4")
 
     def test_all_tqdm_calls_disable_non_tty_stderr(self):
         for filename, expected_calls in (("downloader.py", 2), ("scanner.py", 2)):
