@@ -63,36 +63,41 @@ def _institutional_tier(result: ScanResult) -> str:
         and result.quality_data_available
         and not result.quality_gate
     )
-    if quality_failed:
-        if score >= 75:
-            return "C级价值观察"
-        if score >= 65:
-            return "D级陷阱池"
     if score > 85 and 0 <= result.signal_recency_days <= 20 and volume_confirmed:
-        return "A级机构启动"
-    if 75 <= score < 85:
-        return "B级观察"
-    if score >= 65:
-        return "C级价值观察"
-    return "D级陷阱池"
+        tier = "A级机构启动"
+    elif 75 <= score < 85:
+        tier = "B级观察"
+    elif score >= 65:
+        tier = "C级价值观察"
+    else:
+        tier = "D级陷阱池"
+    if not quality_failed:
+        return tier
+    return {
+        "A级机构启动": "B级观察",
+        "B级观察": "C级价值观察",
+        "C级价值观察": "C级价值观察",
+    }.get(tier, "D级陷阱池")
 
 
 def _rankable_results(results: list[ScanResult]) -> list[ScanResult]:
     valid = [r for r in results if not r.error]
     passed = [r for r in valid if r.passed_filters]
     candidates = passed if passed else valid
+    def rank_score(result: ScanResult) -> float:
+        for value in (
+            result.institutional_score,
+            result.final_score,
+            result.score.total,
+        ):
+            if np.isfinite(value):
+                return float(value)
+        return 0.0
+
     return sorted(
         candidates,
         key=lambda r: (
-            float(
-                r.final_score
-                if np.isfinite(r.final_score)
-                else (
-                    r.institutional_score
-                    if np.isfinite(r.institutional_score)
-                    else r.score.total
-                )
-            ),
+            rank_score(r),
             int(r.passed_filters),
             int(r.filter_details.get("signal_count", 0)),
         ),
@@ -248,9 +253,12 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
     if df.empty:
         return df
 
-    rank_score = pd.to_numeric(df["InstitutionalScore"], errors="coerce").fillna(
-        pd.to_numeric(df["Score"], errors="coerce")
+    rank_score = pd.to_numeric(df["InstitutionalScore"], errors="coerce")
+    rank_score = rank_score.where(
+        np.isfinite(rank_score),
+        pd.to_numeric(df["FinalScore"], errors="coerce"),
     )
+    rank_score = rank_score.fillna(pd.to_numeric(df["Score"], errors="coerce"))
     df = df.assign(_RankScore=rank_score).sort_values(
         ["PassedFilters", "_RankScore", "Score", "SignalCount"],
         ascending=[False, False, False, False],
@@ -364,12 +372,28 @@ def export_all(
         "Ticker", pd.Series(dtype=str)
     )
     rankable = df.set_index("Ticker").reindex(rankable_tickers).reset_index()
-    if "FinalScore" in rankable.columns:
+    if not rankable.empty:
+        rankable = rankable.assign(
+            _RankScore=pd.to_numeric(
+                rankable.get("InstitutionalScore", pd.Series(np.nan, index=rankable.index)),
+                errors="coerce",
+            )
+        )
+        rankable["_RankScore"] = rankable["_RankScore"].where(
+            np.isfinite(rankable["_RankScore"]),
+            pd.to_numeric(
+                rankable.get("FinalScore", pd.Series(np.nan, index=rankable.index)),
+                errors="coerce",
+            ),
+        )
+        rankable["_RankScore"] = rankable["_RankScore"].fillna(
+            pd.to_numeric(rankable.get("Score", pd.Series(0.0, index=rankable.index)), errors="coerce").fillna(0.0)
+        )
         rankable = rankable.sort_values(
-            ["FinalScore", "TriggerScore", "BaseScore"],
+            ["_RankScore", "TriggerScore", "BaseScore", "Score"],
             ascending=False,
             kind="mergesort",
-        )
+        ).drop(columns="_RankScore")
 
     csv_path = OUTPUT_DIR / f"Top{top_n_csv}.csv"
     _atomic_write_csv(rankable.head(top_n_csv), csv_path)
