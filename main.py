@@ -59,6 +59,9 @@ from scanner import (
     run_scan,
 )
 
+
+DATA_SOURCE_CHOICES = ("auto", "akshare", "eastmoney", "sina", "tencent")
+
 # ======================================================================
 # Logging setup — 委托给 config 的集中式日志配置
 # ======================================================================
@@ -441,9 +444,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan_p.add_argument(
         "--data-source",
-        choices=("akshare", "eastmoney", "sina", "tencent"),
-        default="eastmoney",
-        help="历史行情数据源",
+        choices=DATA_SOURCE_CHOICES,
+        default="auto",
+        help="历史行情数据源（默认自动优选）",
     )
     scan_p.add_argument(
         "--top",
@@ -479,7 +482,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=TOP_N_PARQUET,
     )
     report_p.add_argument(
-        "--data-source", choices=("akshare", "eastmoney", "sina", "tencent"), default="eastmoney"
+        "--data-source", choices=DATA_SOURCE_CHOICES, default="auto"
     )
     report_p.add_argument(
         "--refresh-fundamentals",
@@ -495,7 +498,7 @@ def build_parser() -> argparse.ArgumentParser:
     dl_scope.add_argument("--etfs-only", action="store_true")
     dl_p.add_argument("--tickers", type=str, default=None)
     dl_p.add_argument(
-        "--data-source", choices=("akshare", "eastmoney", "sina", "tencent"), default="eastmoney"
+        "--data-source", choices=DATA_SOURCE_CHOICES, default="auto"
     )
     dl_p.add_argument("--verbose", "-v", action="store_true")
 
@@ -527,7 +530,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum local worker threads for backtest calculation",
     )
     backtest_p.add_argument(
-        "--data-source", choices=("akshare", "eastmoney", "sina", "tencent"), default="eastmoney"
+        "--data-source", choices=DATA_SOURCE_CHOICES, default="auto"
     )
     backtest_p.add_argument(
         "--objective",
