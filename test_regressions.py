@@ -578,6 +578,25 @@ class RegressionTests(TestCase):
 
         self.assertIn("--refresh-fundamentals", command)
 
+    def test_gui_build_command_supports_akshare(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner.tickers = Mock()
+        scanner.tickers.get.return_value = ""
+        scanner.scope = Mock()
+        scanner.scope.get.return_value = "全部股票和ETF"
+        scanner.no_resume = Mock()
+        scanner.no_resume.get.return_value = False
+        scanner.force_download = Mock()
+        scanner.force_download.get.return_value = False
+        scanner.refresh_fundamentals = Mock()
+        scanner.refresh_fundamentals.get.return_value = False
+        scanner.data_source = Mock()
+        scanner.data_source.get.return_value = "AkShare"
+
+        command = scanner.build_command()
+
+        self.assertEqual(command[command.index("--data-source") + 1], "akshare")
+
     def test_signal_lifecycle_same_trade_date_does_not_increment_signal_days(self):
         frame = pd.DataFrame({
             "Ticker": ["000001.SZ"],
