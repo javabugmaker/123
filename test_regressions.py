@@ -27,7 +27,11 @@ except ModuleNotFoundError:
 if importlib.util.find_spec("pyarrow") is None:
     pyarrow = MagicMock()
     pyarrow.__version__ = "0.0.0"
+    pyarrow.__spec__ = importlib.util.spec_from_loader("pyarrow", loader=None)
     pyarrow.parquet = MagicMock()
+    pyarrow.parquet.__spec__ = importlib.util.spec_from_loader(
+        "pyarrow.parquet", loader=None
+    )
     sys.modules["pyarrow"] = pyarrow
     sys.modules["pyarrow.parquet"] = pyarrow.parquet
 
@@ -111,6 +115,8 @@ class RegressionTests(TestCase):
                 fundamental_data, "_META_PATH", cache_dir / "fundamentals.meta.json"
             ), patch.object(
                 fundamental_data, "_fetch_ticker", side_effect=fetched
+            ), patch.object(
+                fundamental_data, "_prefetch_batch_data"
             ), patch.object(fundamental_data.logger, "info") as info:
                 result_path = fundamental_data.refresh_fundamental_data(
                     ["000001.SZ", "000002.SZ"],
@@ -128,6 +134,130 @@ class RegressionTests(TestCase):
         self.assertEqual(progress_calls[0], (0, 2, 0, 0))
         self.assertEqual(progress_calls[-1], (2, 2, 1, 1))
         self.assertEqual(refreshed["Ticker"].tolist(), ["000001.SZ"])
+
+    def test_akshare_batch_financial_data_keeps_three_annual_profit_values(self):
+        reports = [
+            pd.DataFrame({
+                "股票代码": [600000.0, "000001"],
+                "所处行业": ["银行", "银行"],
+                "净资产收益率": ["12.0%", "10.0%"],
+                "销售毛利率": ["35.0%", "30.0%"],
+                "净利润-净利润": [300.0, 200.0],
+            }),
+            pd.DataFrame({
+                "股票代码": [600000.0, "000001"],
+                "净利润-净利润": [250.0, 180.0],
+            }),
+            pd.DataFrame({
+                "股票代码": [600000.0, "000001"],
+                "净利润-净利润": [200.0, 160.0],
+            }),
+        ]
+        akshare = Mock()
+        akshare.stock_yjbb_em.side_effect = reports
+
+        with patch.object(fundamental_data, "ak", akshare), patch.object(
+            fundamental_data,
+            "_annual_report_dates",
+            return_value=("20251231", "20241231", "20231231"),
+        ):
+            rows = fundamental_data._batch_fetch_financial_data()
+
+        self.assertEqual(rows["600000.SH"]["ROE"], 12.0)
+        self.assertEqual(rows["600000.SH"]["GrossMargin"], 35.0)
+        self.assertEqual(rows["600000.SH"]["NetProfitY1"], 300.0)
+        self.assertEqual(rows["600000.SH"]["NetProfitY2"], 250.0)
+        self.assertEqual(rows["600000.SH"]["NetProfitY3"], 200.0)
+        self.assertEqual(rows["000001.SZ"]["NetProfitY3"], 160.0)
+        self.assertEqual(akshare.stock_yjbb_em.call_count, 3)
+
+    def test_current_incomplete_fundamental_cache_is_rebuilt(self):
+        incomplete = {
+            "Ticker": "000001.SZ",
+            "Industry": "银行",
+            "ROE": 12.0,
+            "GrossMargin": 30.0,
+            "InstitutionHoldingTrend": "not_increasing",
+            "InstitutionHoldingPeriods": 0.0,
+            "NetProfitY1": 100.0,
+            "NetProfitY2": np.nan,
+            "NetProfitY3": np.nan,
+            "IndustryGrossMarginPercentile": 0.2,
+        }
+        refreshed = {
+            **incomplete,
+            "NetProfitY2": 90.0,
+            "NetProfitY3": 80.0,
+        }
+        with TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir)
+            cache_path = cache_dir / "fundamentals.csv"
+            pd.DataFrame([incomplete]).to_csv(cache_path, index=False)
+            with patch.object(fundamental_data, "CACHE_DIR", cache_dir), patch.object(
+                fundamental_data, "_CACHE_PATH", cache_path
+            ), patch.object(
+                fundamental_data, "_META_PATH", cache_dir / "fundamentals.meta.json"
+            ), patch.object(
+                fundamental_data, "_is_current_quarter", return_value=True
+            ), patch.object(
+                fundamental_data, "_prefetch_batch_data"
+            ), patch.object(
+                fundamental_data, "_fetch_ticker", return_value=refreshed
+            ) as fetch:
+                result_path = fundamental_data.refresh_fundamental_data(
+                    ["000001.SZ"],
+                    industry_by_ticker={"000001.SZ": "银行"},
+                )
+
+            result = pd.read_csv(result_path, dtype={"Ticker": str})
+
+        fetch.assert_called_once_with("000001.SZ", None)
+        self.assertEqual(result.loc[0, "NetProfitY2"], 90.0)
+        self.assertEqual(result.loc[0, "NetProfitY3"], 80.0)
+
+    def test_lifecycle_blocks_aggressive_entry_signals_in_risk_stages(self):
+        frame = pd.DataFrame({
+            "Ticker": ["000001.SZ", "000002.SZ", "000003.SZ"],
+            "DataAsOf": ["2026-08-05"] * 3,
+            "Score": [80.0, 70.0, 60.0],
+            "EntrySignal": ["BREAKOUT_CONFIRM", "WAIT_PULLBACK", "BUY_NOW"],
+            "RSI14": [80.0, 79.0, 35.0],
+            "DistToLow52W": [20.0, 20.0, 50.0],
+        })
+
+        with TemporaryDirectory() as temp_dir, patch.object(
+            signal_lifecycle, "HISTORY_FILE", Path(temp_dir) / "SignalHistory.csv"
+        ), patch.object(
+            signal_lifecycle, "TRACKING_FILE", Path(temp_dir) / "SignalTracking.csv"
+        ):
+            result = signal_lifecycle.enrich_signal_lifecycle(frame)
+
+        self.assertEqual(result["LifecycleStage"].tolist(), ["加速风险", "加速风险", "派发"])
+        self.assertEqual(result["EntrySignal"].tolist(), ["HOLD_WAIT", "HOLD_WAIT", "AVOID"])
+
+    def test_scan_refresh_option_forces_fundamental_rebuild(self):
+        args = argparse.Namespace(
+            tickers="000001.SZ",
+            stocks_only=False,
+            etfs_only=False,
+            refresh_fundamentals=True,
+            force_download=False,
+            no_resume=False,
+            data_source="akshare",
+            cache_first=False,
+            top=50,
+            top_parquet=50,
+        )
+        with patch.object(main, "refresh_fundamental_data") as refresh, patch.object(
+            main, "fundamental_data_path", return_value=Path("fundamentals.csv")
+        ), patch.object(
+            main, "run_scan", return_value=ScanReport(successful=0)
+        ), patch.object(
+            main, "export_all", return_value=(Path("top.csv"),) * 4
+        ), patch.object(main, "print_scan_summary"):
+            main.cmd_scan(args)
+
+        self.assertTrue(refresh.call_args.kwargs["force"])
 
     def test_institutional_tier_downgrades_when_quality_gate_fails(self):
         result = ScanResult(
