@@ -287,6 +287,7 @@ class ScannerGUI:
         self.entry_filter = tk.StringVar(value="全部买点")
         self.no_resume = tk.BooleanVar(value=False)
         self.force_download = tk.BooleanVar(value=False)
+        self.refresh_fundamentals = tk.BooleanVar(value=False)
         self.data_source = tk.StringVar(value="东方财富")
         self.data_source_label = tk.StringVar(value="当前：东方财富")
         self.status = tk.StringVar(value="就绪")
@@ -459,14 +460,17 @@ class ScannerGUI:
         ttk.Checkbutton(
             controls, text="强制重新下载", variable=self.force_download
         ).grid(row=1, column=2, columnspan=2, pady=(12, 0), sticky=tk.W)
+        ttk.Checkbutton(
+            controls, text="刷新基本面数据", variable=self.refresh_fundamentals
+        ).grid(row=1, column=4, pady=(12, 0), sticky=tk.W)
         self.start_button = ttk.Button(
             controls, text="▶ 开始扫描", style="Accent.TButton", command=self.start_scan
         )
-        self.start_button.grid(row=1, column=4, pady=(10, 0), sticky=tk.E)
+        self.start_button.grid(row=1, column=5, pady=(10, 0), sticky=tk.E)
         self.cancel_button = ttk.Button(
             controls, text="取消运行", command=self.cancel_running_task, state=tk.DISABLED
         )
-        self.cancel_button.grid(row=1, column=5, padx=(8, 0), pady=(10, 0), sticky=tk.W)
+        self.cancel_button.grid(row=1, column=6, padx=(8, 0), pady=(10, 0), sticky=tk.W)
 
         actions = ttk.Frame(self.root, style="Toolbar.TFrame", padding=(14, 8))
         actions.pack(fill=tk.X, padx=18, pady=(0, 2))
@@ -580,6 +584,9 @@ class ScannerGUI:
             command.append("--no-resume")
         if self.force_download.get():
             command.append("--force-download")
+        refresh_fundamentals = getattr(self, "refresh_fundamentals", None)
+        if refresh_fundamentals is not None and refresh_fundamentals.get():
+            command.append("--refresh-fundamentals")
         source_codes = {"东方财富": "eastmoney", "新浪财经": "sina", "腾讯财经": "tencent"}
         command += ["--data-source", source_codes.get(self.data_source.get(), "eastmoney")]
         return command
