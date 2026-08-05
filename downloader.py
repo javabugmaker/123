@@ -36,6 +36,7 @@ except ImportError:  # Optional at import time so existing cache-only runs still
 from config import (
     CACHE_DIR,
     DOWNLOAD_RATE_LIMIT_PAUSE,
+    DOWNLOAD_PROGRESS_HEARTBEAT_SECONDS,
     DOWNLOAD_RETRIES,
     DOWNLOAD_THREADS,
     DOWNLOAD_TIMEOUT,
@@ -930,22 +931,13 @@ def _download_from_akshare(
     request_start = start_date or end_date - timedelta(days=HISTORY_YEARS * 365 + 30)
     try:
         if is_etf_ticker(ticker):
-            prefix = "sh" if suffix == "SH" else "sz"
-            try:
-                frame = ak.fund_etf_hist_sina(symbol=f"{prefix}{code}")
-            except Exception as exc:
-                logger.debug(
-                    "AkShare ETF Sina endpoint failed for %s: %s; trying Eastmoney.",
-                    ticker,
-                    exc,
-                )
-                frame = ak.fund_etf_hist_em(
-                    symbol=code,
-                    period="daily",
-                    start_date=request_start.strftime("%Y%m%d"),
-                    end_date=end_date.strftime("%Y%m%d"),
-                    adjust="qfq",
-                )
+            frame = ak.fund_etf_hist_em(
+                symbol=code,
+                period="daily",
+                start_date=request_start.strftime("%Y%m%d"),
+                end_date=end_date.strftime("%Y%m%d"),
+                adjust="qfq",
+            )
         else:
             frame = ak.stock_zh_a_hist(
                 symbol=code,
@@ -953,6 +945,7 @@ def _download_from_akshare(
                 start_date=request_start.strftime("%Y%m%d"),
                 end_date=end_date.strftime("%Y%m%d"),
                 adjust="qfq",
+                timeout=DOWNLOAD_TIMEOUT,
             )
     except Exception as exc:  # Third-party providers raise several transport-specific errors.
         logger.debug("AkShare failed for %s: %s", ticker, exc)
@@ -1362,10 +1355,18 @@ def download_batch(
     skipped_delisted = 0
     selected_source = normalize_data_source(source)
     worker_count = _download_worker_count(selected_source, total)
+    logger.info(
+        "DOWNLOAD start: %d tickers via %s with %d workers (force=%s).",
+        total,
+        get_data_source_label(selected_source),
+        worker_count,
+        force,
+    )
 
     if not total:
         _log_download_progress(0, 0, 0, 0)
     elif worker_count <= 1:
+        _log_download_progress(0, total, 0, 0)
         for completed, sym in enumerate(
             tqdm(symbols, desc=desc, unit="ticker", disable=not sys.stderr.isatty()),
             start=1,
@@ -1383,6 +1384,7 @@ def download_batch(
                 skipped_delisted += 1
             _log_download_progress(completed, total, len(results), skipped_delisted)
     else:
+        _log_download_progress(0, total, 0, 0)
         max_pending = max(worker_count * 2, worker_count)
         symbol_iter = iter(symbols)
         with ThreadPoolExecutor(max_workers=worker_count) as pool:
@@ -1411,7 +1413,19 @@ def download_batch(
                 disable=not sys.stderr.isatty(),
             ) as progress:
                 while futures:
-                    done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                    done, _ = wait(
+                        futures,
+                        timeout=DOWNLOAD_PROGRESS_HEARTBEAT_SECONDS,
+                        return_when=FIRST_COMPLETED,
+                    )
+                    if not done:
+                        logger.info(
+                            "DOWNLOAD waiting: %d/%d complete, %d requests still active.",
+                            completed,
+                            total,
+                            len(futures),
+                        )
+                        continue
                     for future in done:
                         sym = futures.pop(future)
                         completed += 1
