@@ -29,6 +29,7 @@ from config import (
 )
 from downloader import (
     _fetch_eastmoney_realtime_price,
+    _fetch_eastmoney_realtime_prices,
     _is_a_share_market_closed,
     _load_cache,
     download_ticker,
@@ -265,6 +266,7 @@ def _enrich_one_result(
     regime: str,
     regime_reason: str,
     frames: dict[str, pd.DataFrame] | None = None,
+    realtime_prices: dict[str, float] | None = None,
 ) -> tuple[Any, pd.DataFrame | None, float]:
     enriched = frames.get(result.ticker) if frames is not None else None
     if enriched is None:
@@ -291,10 +293,13 @@ def _enrich_one_result(
         and latest_date >= last_business_day
         and not is_etf_ticker(result.ticker)
     ):
-        try:
-            realtime_close = _fetch_eastmoney_realtime_price(result.ticker)
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-            realtime_close = None
+        if realtime_prices is None:
+            try:
+                realtime_close = _fetch_eastmoney_realtime_price(result.ticker)
+            except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+                realtime_close = None
+        else:
+            realtime_close = realtime_prices.get(result.ticker)
         try:
             realtime_value = float(realtime_close)
         except (TypeError, ValueError):
@@ -326,6 +331,15 @@ def enrich_results(
 ) -> None:
     benchmark_frames = _load_benchmark_frames(source)
     regime, regime_reason = _benchmark_regime(benchmark_frames)
+    realtime_prices: dict[str, float] | None = None
+    if _is_a_share_market_closed():
+        try:
+            realtime_prices = _fetch_eastmoney_realtime_prices(
+                [result.ticker for result in results if not is_etf_ticker(result.ticker)]
+            )
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            logger.debug("批量实时行情获取失败：%s", exc)
+            realtime_prices = {}
     industry_returns: dict[str, dict[str, float]] = {}
     cached_frames: dict[str, pd.DataFrame] = {}
     total = len(results)
@@ -341,6 +355,7 @@ def enrich_results(
                 regime,
                 regime_reason,
                 frames,
+                realtime_prices,
             ): result
             for result in results
         }
