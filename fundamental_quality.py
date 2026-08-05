@@ -8,18 +8,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from fundamental_data import fundamental_data_path
-
-FUNDAMENTAL_COLUMNS = (
-    "Ticker",
-    "ROE",
-    "GrossMargin",
-    "InstitutionHoldingTrend",
-    "InstitutionHoldingPeriods",
-    "NetProfitY1",
-    "NetProfitY2",
-    "NetProfitY3",
-    "IndustryGrossMarginPercentile",
+from fundamental_data import FUNDAMENTAL_COLUMNS, fundamental_data_path
+FUNDAMENTAL_FACTOR_COLUMNS = tuple(
+    column for column in FUNDAMENTAL_COLUMNS if column not in {"Ticker", "Industry"}
 )
 
 
@@ -81,11 +72,13 @@ def _trend_is_increasing(value: Any) -> bool:
 def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> FundamentalQuality:
     values = row.to_dict() if isinstance(row, pd.Series) else row
     normalized_ticker = _ticker(values.get("Ticker", ticker))
-    numeric = {column: _number(values.get(column)) for column in FUNDAMENTAL_COLUMNS[1:]}
+    numeric = {
+        column: _number(values.get(column)) for column in FUNDAMENTAL_FACTOR_COLUMNS
+    }
     trend = values.get("InstitutionHoldingTrend")
     fields_present = all(
         pd.notna(values.get(column))
-        for column in FUNDAMENTAL_COLUMNS[1:]
+        for column in FUNDAMENTAL_FACTOR_COLUMNS
     )
     if not fields_present:
         return FundamentalQuality(
@@ -152,8 +145,11 @@ def load_fundamental_data(path_value: str) -> dict[str, pd.Series]:
         frame = pd.read_csv(path, dtype={"Ticker": str})
     except (OSError, UnicodeError, pd.errors.ParserError, ValueError):
         return {}
-    if not set(FUNDAMENTAL_COLUMNS).issubset(frame.columns):
+    required_columns = set(FUNDAMENTAL_COLUMNS) - {"Industry"}
+    if not required_columns.issubset(frame.columns):
         return {}
+    if "Industry" not in frame:
+        frame["Industry"] = ""
     frame = frame.loc[:, FUNDAMENTAL_COLUMNS].copy()
     frame["Ticker"] = frame["Ticker"].map(_ticker)
     return {
