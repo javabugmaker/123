@@ -157,7 +157,13 @@ SCORING_WEIGHTS: Final[ScoringWeights] = ScoringWeights()
 TOP_N_REPORT: int = 50
 TOP_N_PARQUET: int = 200
 
-SCORING_VERSION: str = "2026-08-04-v5-final-score-consistency"
+SCORING_VERSION: str = "2026-08-05-v6-evidence-aware-ranking"
+
+# Per-ticker historical evidence is only allowed to influence the composite
+# rank after more than a couple of independent observations.  This prevents a
+# single recent signal from moving a stock ahead of a stronger technical setup.
+BACKTEST_MIN_SAMPLES_FOR_RANKING: Final[int] = 3
+BACKTEST_FULL_WEIGHT_SAMPLES: Final[int] = 10
 
 FRESHNESS_MULTIPLIERS: Final[tuple[tuple[int, float], ...]] = (
     (0, 1.00),
@@ -166,10 +172,16 @@ FRESHNESS_MULTIPLIERS: Final[tuple[tuple[int, float], ...]] = (
     (5, 0.90),
     (999_999, 0.80),
 )
+INSTITUTIONAL_TIER_A_SCORE: Final[float] = 85.0
+INSTITUTIONAL_TIER_B_SCORE: Final[float] = 75.0
+INSTITUTIONAL_TIER_C_SCORE: Final[float] = 65.0
+INSTITUTIONAL_TIER_WAIT_LABEL: Final[str] = "D级等待确认"
+INSTITUTIONAL_TIER_TRAP_LABEL: Final[str] = "D级陷阱池"
+VALUE_TRAP_RISK_THRESHOLD: Final[float] = 60.0
 INSTITUTIONAL_SCORE_TIERS: Final[tuple[tuple[str, float], ...]] = (
-    ("A", 75.0),
-    ("B", 60.0),
-    ("C", 45.0),
+    ("A级机构启动", INSTITUTIONAL_TIER_A_SCORE),
+    ("B级观察", INSTITUTIONAL_TIER_B_SCORE),
+    ("C级价值观察", INSTITUTIONAL_TIER_C_SCORE),
 )
 
 # ======================================================================
