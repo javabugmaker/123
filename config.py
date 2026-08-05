@@ -48,7 +48,7 @@ EXCLUDED_SECURITY_KEYWORDS: tuple[str, ...] = (
 # ======================================================================
 HISTORY_YEARS: int = 10  # Years of daily data to pull
 
-DOWNLOAD_THREADS: int = 10
+DOWNLOAD_THREADS: int = 20  # Global ceiling; providers may apply lower limits.
 DOWNLOAD_RATE_LIMIT_PAUSE: float = 0.1
 DOWNLOAD_RETRIES: int = 2  # retries on transient errors (401s, 429s, timeouts) — don't waste time retrying dead URLs
 DOWNLOAD_TIMEOUT: int = (
@@ -190,7 +190,6 @@ INSTITUTIONAL_SCORE_TIERS: Final[tuple[tuple[str, float], ...]] = (
 SCAN_THREADS: int = (
     24  # Threads for parallel indicator calculation (numpy releases GIL) — 3060 GPU 高配CPU建议值
 )
-DOWNLOAD_THREADS: int = 20  # 并行下载线程数（3060高配系统，网络IO密集可开更多）
 CHECKPOINT_INTERVAL: int = 100  # Save checkpoint every N tickers
 ENABLE_CHECKPOINT: bool = True
 
