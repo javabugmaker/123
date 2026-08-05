@@ -12,6 +12,7 @@ from downloader import (
     _download_from_sina,
     _download_from_tencent,
     _download_single,
+    _download_worker_count,
     _fetch_a_share_etfs,
     _fetch_a_share_stocks,
     _is_excluded_security_name,
@@ -363,6 +364,26 @@ class ScannerLogicTests(TestCase):
 
     def test_akshare_is_a_supported_data_source(self):
         self.assertEqual(normalize_data_source("AkShare"), "akshare")
+
+    def test_auto_is_a_supported_data_source_with_safe_worker_cap(self):
+        self.assertEqual(normalize_data_source("auto"), "auto")
+        self.assertEqual(_download_worker_count("auto", 100), 4)
+        self.assertEqual(_download_worker_count("auto", 2), 2)
+        self.assertEqual(_download_worker_count("eastmoney", 100), downloader.DOWNLOAD_THREADS)
+
+    @patch("downloader._download_from_eastmoney")
+    @patch("downloader._download_from_akshare", return_value=None)
+    def test_auto_source_falls_back_from_akshare(self, akshare, eastmoney):
+        eastmoney.return_value = pd.DataFrame({
+            "Open": [10.0], "High": [11.0], "Low": [9.0], "Close": [10.5], "Volume": [1000.0],
+        }, index=pd.to_datetime(["2026-07-21"]))
+
+        frame = _download_single("000001.SZ", source="auto")
+
+        assert frame is not None
+        self.assertEqual(frame.iloc[-1]["Close"], 10.5)
+        akshare.assert_called_once()
+        eastmoney.assert_called_once()
 
     @patch("downloader._download_single")
     @patch("downloader._load_cache")
