@@ -86,6 +86,49 @@ class RegressionTests(TestCase):
 
         self.assertEqual(percentiles.round(4).tolist(), [1.0, 0.5, 0.0, 0.0, 0.5, 1.0])
 
+    def test_fundamental_refresh_reports_live_progress(self):
+        def fetched(ticker, _request):
+            if ticker == "000002.SZ":
+                return None
+            return {
+                "Ticker": ticker,
+                "Industry": "",
+                "ROE": 12.0,
+                "GrossMargin": 30.0,
+                "InstitutionHoldingTrend": "increasing",
+                "InstitutionHoldingPeriods": 2.0,
+                "NetProfitY1": 10.0,
+                "NetProfitY2": 9.0,
+                "NetProfitY3": 8.0,
+                "IndustryGrossMarginPercentile": np.nan,
+            }
+
+        with TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir)
+            with patch.object(fundamental_data, "CACHE_DIR", cache_dir), patch.object(
+                fundamental_data, "_CACHE_PATH", cache_dir / "fundamentals.csv"
+            ), patch.object(
+                fundamental_data, "_META_PATH", cache_dir / "fundamentals.meta.json"
+            ), patch.object(
+                fundamental_data, "_fetch_ticker", side_effect=fetched
+            ), patch.object(fundamental_data.logger, "info") as info:
+                result_path = fundamental_data.refresh_fundamental_data(
+                    ["000001.SZ", "000002.SZ"],
+                    industry_by_ticker={"000001.SZ": "银行"},
+                    workers=2,
+                )
+
+            progress_calls = [
+                call.args[1:]
+                for call in info.call_args_list
+                if call.args and call.args[0].startswith("FUNDAMENTAL progress:")
+            ]
+            refreshed = pd.read_csv(result_path, dtype={"Ticker": str})
+
+        self.assertEqual(progress_calls[0], (0, 2, 0, 0))
+        self.assertEqual(progress_calls[-1], (2, 2, 1, 1))
+        self.assertEqual(refreshed["Ticker"].tolist(), ["000001.SZ"])
+
     def test_institutional_tier_downgrades_when_quality_gate_fails(self):
         result = ScanResult(
             ticker="000001.SZ",
@@ -1893,6 +1936,25 @@ class RegressionTests(TestCase):
         scanner.progress.stop.assert_called_once_with()
         scanner.progress.configure.assert_called_once_with(mode="determinate", maximum=100, value=64)
         scanner.status.set.assert_called_once_with("下载进度 64/100 · 成功 60 · 无数据/失败 4")
+
+    def test_gui_fundamental_progress_updates_determinate_bar(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner.log_text = MagicMock()
+        scanner.progress = MagicMock()
+        scanner.status = Mock()
+        scanner.backtest_running = False
+
+        scanner.append_log(
+            "[INFO] FUNDAMENTAL progress: 64/100 (60 updated, 4 unavailable).\n"
+        )
+
+        scanner.progress.stop.assert_called_once_with()
+        scanner.progress.configure.assert_called_once_with(
+            mode="determinate", maximum=100, value=64
+        )
+        scanner.status.set.assert_called_once_with(
+            "基本面进度 64/100 · 已更新 60 · 暂不可用 4"
+        )
 
     def test_all_tqdm_calls_disable_non_tty_stderr(self):
         for filename, expected_calls in (("downloader.py", 2), ("scanner.py", 2)):
