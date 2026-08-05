@@ -384,6 +384,46 @@ class ScannerLogicTests(TestCase):
         self.assertEqual(progress.call_args_list[0].args, (0, 1, 0, 0))
         self.assertEqual(progress.call_args_list[-1].args, (1, 1, 1, 0))
 
+    def test_download_batch_does_not_rate_limit_cached_reads(self):
+        frame = pd.DataFrame(
+            {
+                "Open": [10.0],
+                "High": [11.0],
+                "Low": [9.0],
+                "Close": [10.5],
+                "Volume": [1000.0],
+            },
+            index=pd.to_datetime(["2026-08-05"]),
+        )
+        tickers = [TickerInfo(ticker="000001.SZ"), TickerInfo(ticker="000002.SZ")]
+
+        with patch("downloader.download_ticker", return_value=frame), patch(
+            "downloader._wait_for_download_slot"
+        ) as wait_for_slot:
+            result = downloader.download_batch(tickers, source="akshare")
+
+        self.assertEqual(set(result), {"000001.SZ", "000002.SZ"})
+        wait_for_slot.assert_not_called()
+
+    def test_live_provider_requests_are_rate_limited(self):
+        frame = pd.DataFrame(
+            {
+                "Open": [10.0],
+                "High": [11.0],
+                "Low": [9.0],
+                "Close": [10.5],
+                "Volume": [1000.0],
+            },
+            index=pd.to_datetime(["2026-08-05"]),
+        )
+        with patch("downloader._download_from_akshare", return_value=frame), patch(
+            "downloader._wait_for_download_slot"
+        ) as wait_for_slot:
+            result = _download_single("000001.SZ", source="akshare")
+
+        self.assertIs(result, frame)
+        wait_for_slot.assert_called_once_with()
+
     @patch("downloader._download_from_eastmoney")
     @patch("downloader._download_from_akshare", return_value=None)
     def test_akshare_falls_back_to_eastmoney(self, akshare, eastmoney):
