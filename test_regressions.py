@@ -754,6 +754,27 @@ class RegressionTests(TestCase):
 
         self.assertIn("--refresh-fundamentals", command)
 
+    def test_gui_build_command_includes_cache_first_when_requested(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner.tickers = Mock()
+        scanner.tickers.get.return_value = ""
+        scanner.scope = Mock()
+        scanner.scope.get.return_value = "全部股票和ETF"
+        scanner.no_resume = Mock()
+        scanner.no_resume.get.return_value = False
+        scanner.force_download = Mock()
+        scanner.force_download.get.return_value = False
+        scanner.cache_first = Mock()
+        scanner.cache_first.get.return_value = True
+        scanner.refresh_fundamentals = Mock()
+        scanner.refresh_fundamentals.get.return_value = False
+        scanner.data_source = Mock()
+        scanner.data_source.get.return_value = "AkShare"
+
+        command = scanner.build_command()
+
+        self.assertIn("--cache-first", command)
+
     def test_gui_build_command_supports_akshare(self):
         scanner = object.__new__(gui.ScannerGUI)
         scanner.tickers = Mock()
