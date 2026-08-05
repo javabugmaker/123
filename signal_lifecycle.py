@@ -213,6 +213,21 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
     result["LifecycleStage"], result["ActionSuggestion"], result["RiskNote"] = _stage(
         result
     )
+    entry_signal = (
+        result.get("EntrySignal", pd.Series("AVOID", index=result.index))
+        .fillna("AVOID")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+    acceleration = result["LifecycleStage"].eq("加速风险")
+    distribution = result["LifecycleStage"].eq("派发")
+    result.loc[
+        acceleration
+        & entry_signal.isin(["BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"]),
+        "EntrySignal",
+    ] = "HOLD_WAIT"
+    result.loc[distribution & entry_signal.ne("AVOID"), "EntrySignal"] = "AVOID"
     active = _is_active(result)
     history = _load_history()
     history["Ticker"] = history["Ticker"].astype(str).str.strip().str.upper()
