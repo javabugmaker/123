@@ -32,6 +32,7 @@ if importlib.util.find_spec("pyarrow") is None:
     sys.modules["pyarrow.parquet"] = pyarrow.parquet
 
 import analytics
+import fundamental_data
 import gui
 import main
 import scanner
@@ -74,6 +75,16 @@ class RegressionTests(TestCase):
         self.assertEqual(quality.quality_score, 100.0)
         self.assertTrue(quality.quality_gate)
         self.assertEqual(quality.quality_reason, "全部通过")
+
+    def test_fundamental_margin_percentile_is_industry_relative(self):
+        frame = pd.DataFrame({
+            "Industry": ["银行", "银行", "银行", "白酒", "白酒", "白酒"],
+            "GrossMargin": [10.0, 20.0, 30.0, 50.0, 40.0, 30.0],
+        })
+
+        percentiles = fundamental_data._industry_margin_percentiles(frame)
+
+        self.assertEqual(percentiles.round(4).tolist(), [1.0, 0.5, 0.0, 0.0, 0.5, 1.0])
 
     def test_institutional_tier_downgrades_when_quality_gate_fails(self):
         result = ScanResult(
@@ -537,6 +548,8 @@ class RegressionTests(TestCase):
         scanner.no_resume.get.return_value = False
         scanner.force_download = Mock()
         scanner.force_download.get.return_value = False
+        scanner.refresh_fundamentals = Mock()
+        scanner.refresh_fundamentals.get.return_value = False
         scanner.data_source = Mock()
         scanner.data_source.get.return_value = "eastmoney"
 
@@ -545,6 +558,25 @@ class RegressionTests(TestCase):
         self.assertIn("--tickers", command)
         self.assertIn("--stocks-only", command)
         self.assertNotIn("--etfs-only", command)
+
+    def test_gui_build_command_includes_requested_fundamental_refresh(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner.tickers = Mock()
+        scanner.tickers.get.return_value = ""
+        scanner.scope = Mock()
+        scanner.scope.get.return_value = "全部股票和ETF"
+        scanner.no_resume = Mock()
+        scanner.no_resume.get.return_value = False
+        scanner.force_download = Mock()
+        scanner.force_download.get.return_value = False
+        scanner.refresh_fundamentals = Mock()
+        scanner.refresh_fundamentals.get.return_value = True
+        scanner.data_source = Mock()
+        scanner.data_source.get.return_value = "东方财富"
+
+        command = scanner.build_command()
+
+        self.assertIn("--refresh-fundamentals", command)
 
     def test_signal_lifecycle_same_trade_date_does_not_increment_signal_days(self):
         frame = pd.DataFrame({
@@ -634,10 +666,11 @@ class RegressionTests(TestCase):
                 pd.DataFrame({
                     "Ticker": ["000001.SZ", "600000.SH"], "Score": [60, 50], "PassedFilters": [True, False], "SignalCount": [3, 2],
                     "BacktestScore": [1, 2], "CompositeScore": [3, 4], "backtest_score": [5, 6], "composite_score": [7, 8], "samples": [1, 1],
+                    "raw_objective_value_x": [8, 9], "raw_objective_value_y": [10, 11],
                 }).to_csv(all_results, index=False, encoding="utf-8-sig")
                 summary = BacktestSummary(by_ticker=[{
                     "ticker": "000001.SZ", "samples": 4, "win_rate_20d": 0.75, "win_rate_60d": 0.5,
-                    "average_return_20d": 2.0, "average_return_60d": 4.0, "backtest_score": 80.0,
+                    "average_return_20d": 2.0, "average_return_60d": 4.0, "raw_objective_value": 4.0, "backtest_score": 80.0,
                 }])
                 with patch("pandas.DataFrame.to_parquet"):
                     apply_backtest_ranking(summary)
@@ -649,6 +682,7 @@ class RegressionTests(TestCase):
                 self.assertFalse(any(column.endswith(("_x", "_y")) for column in result.columns))
                 self.assertNotIn("backtest_score", result.columns)
                 self.assertNotIn("samples", result.columns)
+                self.assertFalse(any(column.startswith("raw_objective_value") for column in result.columns))
                 self.assertEqual(int(result.loc[result["Ticker"] == "000001.SZ", "BacktestSamples"].iloc[0]), 4)
     def test_resume_scan_restores_previous_results_with_missing_metrics(self):
         ticker = TickerInfo(ticker="000001.SZ")
