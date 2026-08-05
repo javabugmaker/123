@@ -6,7 +6,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from config import OUTPUT_DIR
+from config import (
+    INSTITUTIONAL_TIER_A_SCORE,
+    INSTITUTIONAL_TIER_B_SCORE,
+    INSTITUTIONAL_TIER_C_SCORE,
+    INSTITUTIONAL_TIER_TRAP_LABEL,
+    INSTITUTIONAL_TIER_WAIT_LABEL,
+    OUTPUT_DIR,
+    VALUE_TRAP_RISK_THRESHOLD,
+)
 
 HISTORY_FILE = OUTPUT_DIR / "SignalHistory.csv"
 TRACKING_FILE = OUTPUT_DIR / "SignalTracking.csv"
@@ -308,14 +316,21 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
     ).ge(15.0) | result.get(
         "VolAccum", pd.Series(False, index=result.index)
     ).map(_bool)
-    result["InstitutionalTier"] = "D级陷阱池"
-    result.loc[result["InstitutionalScore"].ge(65.0), "InstitutionalTier"] = "C级价值观察"
+    result["InstitutionalTier"] = INSTITUTIONAL_TIER_WAIT_LABEL
     result.loc[
-        result["InstitutionalScore"].between(75.0, 85.0, inclusive="left"),
+        result["InstitutionalScore"].ge(INSTITUTIONAL_TIER_C_SCORE),
+        "InstitutionalTier",
+    ] = "C级价值观察"
+    result.loc[
+        result["InstitutionalScore"].between(
+            INSTITUTIONAL_TIER_B_SCORE,
+            INSTITUTIONAL_TIER_A_SCORE,
+            inclusive="left",
+        ),
         "InstitutionalTier",
     ] = "B级观察"
     result.loc[
-        result["InstitutionalScore"].gt(85.0)
+        result["InstitutionalScore"].gt(INSTITUTIONAL_TIER_A_SCORE)
         & result["SignalRecencyDays"].le(20)
         & volume_confirmed,
         "InstitutionalTier",
@@ -332,7 +347,15 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
     }
     result.loc[quality_failed, "InstitutionalTier"] = result.loc[
         quality_failed, "InstitutionalTier"
-    ].map(quality_tier_map).fillna("D级陷阱池")
+    ].map(quality_tier_map).fillna(INSTITUTIONAL_TIER_WAIT_LABEL)
+    value_trap_risk = _number(
+        result.get("ValueTrapRisk", pd.Series(0.0, index=result.index)), 0.0
+    )
+    result.loc[
+        ~result.get("IsETF", pd.Series(False, index=result.index)).map(_bool)
+        & value_trap_risk.ge(VALUE_TRAP_RISK_THRESHOLD),
+        "InstitutionalTier",
+    ] = INSTITUTIONAL_TIER_TRAP_LABEL
     result["SignalStatus"] = statuses
     result["SignalStrengthHistory"] = strengths
     result["SignalTrend"] = (
