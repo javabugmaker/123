@@ -387,6 +387,9 @@ class RegressionTests(TestCase):
         self.assertEqual(scanner._format_table_value("Close", "125.8"), "125.80")
         self.assertEqual(scanner._format_table_value("DistToLow52W", "3.5"), "3.50%")
         self.assertEqual(scanner._format_table_value("BacktestSamples", "1200"), "1,200")
+        self.assertEqual(
+            scanner._format_table_value("BacktestEffectiveSamples", "2.5"), "2.50"
+        )
         self.assertEqual(scanner._format_table_value("SignalDays", "3"), "3")
         self.assertEqual(scanner._format_table_value("ScoreConfidence", "0.87"), "87%")
         self.assertEqual(scanner._format_table_value("ScoreConfidencePct", "87"), "87%")
@@ -1168,6 +1171,26 @@ class RegressionTests(TestCase):
 
         self.assertLess(result["average_return_20d"], 30.0)
 
+    def test_backtest_signal_points_use_the_configured_cooldown(self):
+        frame = pd.DataFrame({
+            "Close": [100.0] * 400,
+            "MA50": [100.0] * 400,
+            "VolMA20": [120.0] * 400,
+            "VolMA120": [100.0] * 400,
+            "CMF": [0.1] * 400,
+        })
+
+        points = analytics._signal_points(frame)
+
+        self.assertEqual(points[:4], [0, 20, 40, 60])
+        self.assertTrue(
+            all(
+                right - left >= analytics.BACKTEST_SIGNAL_COOLDOWN_DAYS
+                for left, right in zip(points, points[1:])
+            )
+        )
+        self.assertLess(points[-1], len(frame) - analytics.BACKTEST_OUTCOME_HORIZON_DAYS)
+
     def test_score_ticker_normalizes_using_available_indicator_weights(self):
         frame = pd.DataFrame({
             "Close": [10.0] * 252,
@@ -1497,6 +1520,51 @@ class RegressionTests(TestCase):
 
         self.assertEqual([item.args[0].shape[0] for item in compute.call_args_list], [320])
         self.assertEqual([item.args[0].shape[0] for item in score.call_args_list], [201, 221])
+
+    def test_backtest_overlap_tracks_effective_sample_evidence(self):
+        frame = pd.DataFrame({
+            "Open": np.full(360, 100.0),
+            "High": np.full(360, 101.0),
+            "Low": np.full(360, 99.0),
+            "Close": np.full(360, 100.0),
+            "Volume": np.full(360, 1000.0),
+        }, index=pd.date_range("2020-01-01", periods=360))
+
+        with patch.object(analytics, "_load_cache", return_value=frame), patch.object(
+            analytics, "compute_all_indicators", side_effect=lambda data: data
+        ), patch.object(analytics, "_signal_points", return_value=[200, 220, 260]), patch.object(
+            analytics, "score_ticker", return_value=Mock(total=50.0)
+        ):
+            samples = analytics._backtest_one_ticker("000001.SZ", "eastmoney")
+
+        self.assertEqual([sample["sample_weight"] for sample in samples], [1.0, 0.3333, 0.6667])
+        row = analytics._ticker_backtest_rows(pd.DataFrame(samples))[0]
+        self.assertEqual(row["samples"], 3)
+        self.assertAlmostEqual(row["effective_samples"], 2.0, places=4)
+
+    def test_backtest_reliability_downweights_overlapping_samples(self):
+        with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
+            pd.DataFrame({
+                "Ticker": ["000001.SZ"],
+                "Score": [80.0],
+                "PassedFilters": [True],
+                "SignalCount": [4],
+            }).to_csv(Path(temp_dir) / "AllResults.csv", index=False, encoding="utf-8-sig")
+            summary = BacktestSummary(by_ticker=[{
+                "ticker": "000001.SZ",
+                "samples": 3,
+                "effective_samples": 1.6667,
+                "backtest_score": 100.0,
+                "objective_value": 10.0,
+            }])
+
+            apply_backtest_ranking(summary)
+            result = pd.read_csv(Path(temp_dir) / "AllResults.csv", encoding="utf-8-sig")
+
+        self.assertAlmostEqual(result.loc[0, "BacktestEffectiveSamples"], 1.6667, places=4)
+        self.assertGreater(result.loc[0, "BacktestReliability"], 0.0)
+        self.assertLess(result.loc[0, "BacktestReliability"], 0.125)
+        self.assertLess(result.loc[0, "CompositeScore"], 74.0625)
 
     def test_failed_signal_history_reduces_factor_when_both_horizons_lose(self):
         frame = pd.DataFrame({
