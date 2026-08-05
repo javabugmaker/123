@@ -198,6 +198,7 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "QualityReason": r.quality_reason,
                 "QualityDataAvailable": r.quality_data_available,
                 "BacktestSamples": r.backtest_samples,
+                "BacktestEffectiveSamples": round(r.backtest_effective_samples, 4),
                 "BacktestWinRate20D": round(r.backtest_win_rate_20d, 4)
                 if np.isfinite(r.backtest_win_rate_20d)
                 else None,
