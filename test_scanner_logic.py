@@ -8,6 +8,7 @@ import pandas as pd
 import downloader
 from downloader import (
     TickerInfo,
+    _download_from_akshare,
     _download_from_sina,
     _download_from_tencent,
     _download_single,
@@ -15,6 +16,7 @@ from downloader import (
     _fetch_a_share_stocks,
     _is_excluded_security_name,
     is_etf_ticker,
+    normalize_data_source,
     normalize_ticker,
 )
 from filters import (
@@ -291,6 +293,76 @@ class ScannerLogicTests(TestCase):
         frame = _download_from_tencent("000001.SZ")
 
         self.assertEqual(frame.iloc[-1]["Close"], 12)
+
+    @patch("downloader.ak")
+    def test_akshare_stock_history_is_normalized(self, akshare):
+        akshare.stock_zh_a_hist.return_value = pd.DataFrame({
+            "日期": ["2026-07-20", "2026-07-21"],
+            "开盘": [10.0, 11.0],
+            "最高": [12.0, 13.0],
+            "最低": [9.0, 10.0],
+            "收盘": [11.0, 12.0],
+            "成交量": [1000.0, 1200.0],
+        })
+
+        frame = _download_from_akshare("000001.SZ")
+
+        assert frame is not None
+        self.assertEqual(list(frame.columns), ["Open", "High", "Low", "Close", "Volume"])
+        self.assertEqual(frame.iloc[-1]["Close"], 12.0)
+        self.assertEqual(akshare.stock_zh_a_hist.call_args.kwargs["symbol"], "000001")
+        self.assertEqual(akshare.stock_zh_a_hist.call_args.kwargs["adjust"], "qfq")
+
+    @patch("downloader.ak")
+    def test_akshare_etf_history_uses_sina_endpoint(self, akshare):
+        akshare.fund_etf_hist_sina.return_value = pd.DataFrame({
+            "date": ["2026-07-21"],
+            "open": [4.0],
+            "high": [4.2],
+            "low": [3.9],
+            "close": [4.1],
+            "volume": [10000.0],
+        })
+
+        frame = _download_from_akshare("510300.SH")
+
+        assert frame is not None
+        self.assertEqual(frame.iloc[-1]["Close"], 4.1)
+        akshare.fund_etf_hist_sina.assert_called_once_with(symbol="sh510300")
+
+    @patch("downloader.ak")
+    def test_akshare_etf_history_falls_back_to_eastmoney_endpoint(self, akshare):
+        akshare.fund_etf_hist_sina.side_effect = RuntimeError("Sina unavailable")
+        akshare.fund_etf_hist_em.return_value = pd.DataFrame({
+            "日期": ["2026-07-21"],
+            "开盘": [4.0],
+            "最高": [4.2],
+            "最低": [3.9],
+            "收盘": [4.1],
+            "成交量": [10000.0],
+        })
+
+        frame = _download_from_akshare("510300.SH")
+
+        assert frame is not None
+        self.assertEqual(frame.iloc[-1]["Close"], 4.1)
+        self.assertTrue(akshare.fund_etf_hist_em.called)
+
+    @patch("downloader._download_from_eastmoney")
+    @patch("downloader._download_from_akshare", return_value=None)
+    def test_akshare_falls_back_to_eastmoney(self, akshare, eastmoney):
+        eastmoney.return_value = pd.DataFrame({
+            "Open": [10.0], "High": [11.0], "Low": [9.0], "Close": [10.5], "Volume": [1000.0],
+        }, index=pd.to_datetime(["2026-07-21"]))
+
+        frame = _download_single("000001.SZ", source="akshare")
+
+        assert frame is not None
+        self.assertEqual(frame.iloc[-1]["Close"], 10.5)
+        eastmoney.assert_called_once()
+
+    def test_akshare_is_a_supported_data_source(self):
+        self.assertEqual(normalize_data_source("AkShare"), "akshare")
 
     @patch("downloader._download_single")
     @patch("downloader._load_cache")
