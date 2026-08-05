@@ -149,6 +149,7 @@ class ScanResult:
     data_coverage: float = 0.0
     backtest_score: float = np.nan
     backtest_samples: int = 0
+    backtest_effective_samples: float = 0.0
     backtest_win_rate_20d: float = np.nan
     backtest_win_rate_60d: float = np.nan
     backtest_average_return_20d: float = np.nan
@@ -723,6 +724,9 @@ def run_scan(
                     ),
                     backtest_score=_parse_float(row.get("BacktestScore", np.nan)),
                     backtest_samples=_parse_int(row.get("BacktestSamples", 0), 0),
+                    backtest_effective_samples=_parse_float(
+                        row.get("BacktestEffectiveSamples", 0.0), 0.0
+                    ),
                     backtest_win_rate_20d=_parse_float(
                         row.get("BacktestWinRate20D", np.nan)
                     ),
