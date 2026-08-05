@@ -170,6 +170,10 @@ SCORING_VERSION: str = "2026-08-05-v7-industry-integrity"
 # single recent signal from moving a stock ahead of a stronger technical setup.
 BACKTEST_MIN_SAMPLES_FOR_RANKING: Final[int] = 3
 BACKTEST_FULL_WEIGHT_SAMPLES: Final[int] = 10
+# Historical signals are sampled more frequently than their 60-day evaluation
+# window.  Overlap is accounted for through effective sample weights.
+BACKTEST_SIGNAL_COOLDOWN_DAYS: Final[int] = 20
+BACKTEST_OUTCOME_HORIZON_DAYS: Final[int] = 60
 
 FRESHNESS_MULTIPLIERS: Final[tuple[tuple[int, float], ...]] = (
     (0, 1.00),
