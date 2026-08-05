@@ -23,7 +23,17 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from analytics import refresh_research_outcomes, write_research_reports
-from config import OUTPUT_DIR, TOP_N_PARQUET, TOP_N_REPORT
+from config import (
+    INSTITUTIONAL_TIER_A_SCORE,
+    INSTITUTIONAL_TIER_B_SCORE,
+    INSTITUTIONAL_TIER_C_SCORE,
+    INSTITUTIONAL_TIER_TRAP_LABEL,
+    INSTITUTIONAL_TIER_WAIT_LABEL,
+    OUTPUT_DIR,
+    TOP_N_PARQUET,
+    TOP_N_REPORT,
+    VALUE_TRAP_RISK_THRESHOLD,
+)
 from scanner import ScanReport, ScanResult
 from signal_lifecycle import enrich_signal_lifecycle
 
@@ -69,21 +79,32 @@ def _institutional_tier(result: ScanResult) -> str:
         and result.quality_data_available
         and not result.quality_gate
     )
-    if score > 85 and 0 <= result.signal_recency_days <= 20 and volume_confirmed:
+    if (
+        score > INSTITUTIONAL_TIER_A_SCORE
+        and 0 <= result.signal_recency_days <= 20
+        and volume_confirmed
+    ):
         tier = "A级机构启动"
-    elif 75 <= score < 85:
+    elif INSTITUTIONAL_TIER_B_SCORE <= score < INSTITUTIONAL_TIER_A_SCORE:
         tier = "B级观察"
-    elif score >= 65:
+    elif score >= INSTITUTIONAL_TIER_C_SCORE:
         tier = "C级价值观察"
     else:
-        tier = "D级陷阱池"
-    if not quality_failed:
-        return tier
-    return {
-        "A级机构启动": "B级观察",
-        "B级观察": "C级价值观察",
-        "C级价值观察": "C级价值观察",
-    }.get(tier, "D级陷阱池")
+        tier = INSTITUTIONAL_TIER_WAIT_LABEL
+    if quality_failed:
+        tier = {
+            "A级机构启动": "B级观察",
+            "B级观察": "C级价值观察",
+            "C级价值观察": "C级价值观察",
+        }.get(tier, INSTITUTIONAL_TIER_WAIT_LABEL)
+    value_trap_risk = float(result.value_trap_risk)
+    if (
+        not result.is_etf
+        and np.isfinite(value_trap_risk)
+        and value_trap_risk >= VALUE_TRAP_RISK_THRESHOLD
+    ):
+        return INSTITUTIONAL_TIER_TRAP_LABEL
+    return tier
 
 
 def _rankable_results(results: list[ScanResult]) -> list[ScanResult]:
