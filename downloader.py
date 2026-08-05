@@ -17,7 +17,7 @@ import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 from zoneinfo import ZoneInfo
@@ -43,6 +43,7 @@ from config import (
     HISTORY_YEARS,
     LOG_DIR,
     MARKET_CAP_CACHE_TTL_DAYS,
+    UNIVERSE_CACHE_TTL_HOURS,
     setup_logging,
 )
 
@@ -104,6 +105,7 @@ _HTTP.mount("http://", _retry_adapter)
 _EASTMONEY_HOSTS = ("push2delay.eastmoney.com", "push2.eastmoney.com")
 _EASTMONEY_HISTORY_HOSTS = ("push2delay.eastmoney.com", "push2his.eastmoney.com")
 _UNIVERSE_CACHE_PATH = CACHE_DIR / "_a_share_universe.json"
+_ETF_UNIVERSE_CACHE_PATH = CACHE_DIR / "_a_share_etf_universe.json"
 _DOWNLOAD_RATE_LOCK = threading.Lock()
 _LAST_DOWNLOAD_AT = 0.0
 
@@ -359,6 +361,37 @@ def _is_rejected_stock_name(name: str) -> bool:
     return "ST" in normalized or "退" in normalized or "退市" in normalized
 
 
+def _load_universe_cache(
+    path: Path, require_fresh: bool = True
+) -> list[dict[str, Any]]:
+    """Load a saved security universe, optionally requiring a recent snapshot."""
+    try:
+        if not path.exists():
+            return []
+        age_seconds = max(0.0, time.time() - path.stat().st_mtime)
+        if require_fresh and age_seconds > UNIVERSE_CACHE_TTL_HOURS * 3600:
+            return []
+        rows = json.loads(path.read_text(encoding="utf-8"))
+        return rows if isinstance(rows, list) else []
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return []
+
+
+def _save_universe_cache(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Persist a universe snapshot without leaving a partial cache behind."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, delete=False
+    ) as file:
+        temporary = Path(file.name)
+        json.dump(rows, file, ensure_ascii=False)
+    try:
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
 def _fetch_a_share_stocks() -> list[TickerInfo]:
     """Fetch the complete Shanghai, Shenzhen and Beijing A-share universe."""
     params = {
@@ -372,27 +405,24 @@ def _fetch_a_share_stocks() -> list[TickerInfo]:
         "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
         "fields": "f12,f13,f14,f20,f100,f102",
     }
-    rows: list[dict[str, Any]] = []
-    try:
-        response = _eastmoney_get("/api/qt/clist/get", params)
-        data = response.json().get("data") or {}
-        rows = list(data.get("diff") or [])
-        if not rows:
-            raise RuntimeError("东方财富未返回A股证券列表")
-        total = int(data.get("total") or len(rows))
-        for page in range(2, math.ceil(total / params["pz"]) + 1):
-            params["pn"] = page
+    rows = _load_universe_cache(_UNIVERSE_CACHE_PATH)
+    if rows:
+        logger.info("Loaded %d A-share stocks from local universe cache.", len(rows))
+    else:
+        try:
             response = _eastmoney_get("/api/qt/clist/get", params)
-            rows.extend((response.json().get("data") or {}).get("diff") or [])
-        _UNIVERSE_CACHE_PATH.write_text(
-            json.dumps(rows, ensure_ascii=False), encoding="utf-8"
-        )
-    except _DOWNLOAD_ERRORS:
-        if _UNIVERSE_CACHE_PATH.exists():
-            try:
-                rows = json.loads(_UNIVERSE_CACHE_PATH.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                rows = []
+            data = response.json().get("data") or {}
+            rows = list(data.get("diff") or [])
+            if not rows:
+                raise RuntimeError("东方财富未返回A股证券列表")
+            total = int(data.get("total") or len(rows))
+            for page in range(2, math.ceil(total / params["pz"]) + 1):
+                params["pn"] = page
+                response = _eastmoney_get("/api/qt/clist/get", params)
+                rows.extend((response.json().get("data") or {}).get("diff") or [])
+            _save_universe_cache(_UNIVERSE_CACHE_PATH, rows)
+        except _DOWNLOAD_ERRORS:
+            rows = _load_universe_cache(_UNIVERSE_CACHE_PATH, require_fresh=False)
         if rows:
             logger.warning("证券池接口不可用，使用本地缓存的 %d 只A股。", len(rows))
         else:
@@ -436,7 +466,7 @@ def _fetch_a_share_stocks() -> list[TickerInfo]:
         )
     if len(tickers) < 4000:
         raise DownloadError(f"A股证券列表数量异常，仅获取到 {len(tickers)} 只")
-    logger.info("Loaded %d A-share stocks from Eastmoney.", len(tickers))
+    logger.info("Loaded %d A-share stocks.", len(tickers))
     return tickers
 
 
@@ -453,30 +483,39 @@ def _fetch_a_share_etfs() -> list[TickerInfo]:
         "fs": "m:0+t:9,m:1+t:9",
         "fields": "f12,f13,f14,f20,f100,f102",
     }
-    try:
-        response = _eastmoney_get("/api/qt/clist/get", params)
-        data = response.json().get("data") or {}
-        rows = list(data.get("diff") or [])
-        if not rows:
-            raise RuntimeError("东方财富未返回ETF列表")
-        total = int(data.get("total") or len(rows))
-        for page in range(2, math.ceil(total / params["pz"]) + 1):
-            params["pn"] = page
+    rows = _load_universe_cache(_ETF_UNIVERSE_CACHE_PATH)
+    if rows:
+        logger.info("Loaded %d A-share ETFs from local universe cache.", len(rows))
+    else:
+        try:
             response = _eastmoney_get("/api/qt/clist/get", params)
-            rows.extend((response.json().get("data") or {}).get("diff") or [])
-    except _DOWNLOAD_ERRORS:
-        logger.exception("获取全量ETF失败")
-        return [
-            TickerInfo(
-                ticker=symbol,
-                name=name,
-                exchange="SSE/SZSE",
-                is_etf=True,
-                asset_type="etf",
-            )
-            for symbol, name in _STATIC_A_ETFS
-            if not _is_excluded_security_name(name)
-        ]
+            data = response.json().get("data") or {}
+            rows = list(data.get("diff") or [])
+            if not rows:
+                raise RuntimeError("东方财富未返回ETF列表")
+            total = int(data.get("total") or len(rows))
+            for page in range(2, math.ceil(total / params["pz"]) + 1):
+                params["pn"] = page
+                response = _eastmoney_get("/api/qt/clist/get", params)
+                rows.extend((response.json().get("data") or {}).get("diff") or [])
+            _save_universe_cache(_ETF_UNIVERSE_CACHE_PATH, rows)
+        except _DOWNLOAD_ERRORS:
+            rows = _load_universe_cache(_ETF_UNIVERSE_CACHE_PATH, require_fresh=False)
+            if rows:
+                logger.warning("ETF证券池接口不可用，使用本地缓存的 %d 只ETF。", len(rows))
+            else:
+                logger.exception("获取全量ETF失败")
+                return [
+                    TickerInfo(
+                        ticker=symbol,
+                        name=name,
+                        exchange="SSE/SZSE",
+                        is_etf=True,
+                        asset_type="etf",
+                    )
+                    for symbol, name in _STATIC_A_ETFS
+                    if not _is_excluded_security_name(name)
+                ]
 
     etfs: list[TickerInfo] = []
     allowed_prefixes = ("15", "16", "50", "51", "56", "58")
@@ -509,7 +548,7 @@ def _fetch_a_share_etfs() -> list[TickerInfo]:
         )
     unique = {item.ticker: item for item in etfs}
     result = sorted(unique.values(), key=lambda item: item.ticker)
-    logger.info("Loaded %d A-share ETFs from Eastmoney.", len(result))
+    logger.info("Loaded %d A-share ETFs.", len(result))
     return result
 
 
@@ -595,6 +634,32 @@ def _is_a_share_market_closed(now: datetime | None = None) -> bool:
         return True
     minutes = current.hour * 60 + current.minute
     return minutes >= 15 * 60
+
+
+def _latest_completed_trading_day(now: datetime | None = None) -> date:
+    """Return the most recent trading date whose daily bar should be complete."""
+    current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
+    candidate = current.date()
+    if current.weekday() < 5 and current.hour * 60 + current.minute >= 15 * 60:
+        return candidate
+    while candidate.weekday() >= 5 or candidate == current.date():
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def _cache_has_completed_daily_bar(
+    df: pd.DataFrame, now: datetime | None = None
+) -> bool:
+    """Whether a cache already covers the latest completed trading session."""
+    if df is None or df.empty:
+        return False
+    index = pd.DatetimeIndex(df.index).dropna()
+    if index.empty:
+        return False
+    latest = pd.Timestamp(index.max())
+    if latest.tzinfo is not None:
+        latest = latest.tz_localize(None)
+    return latest.date() >= _latest_completed_trading_day(now)
 
 
 def _validate_ohlcv(df: pd.DataFrame) -> pd.DataFrame | None:
@@ -941,6 +1006,68 @@ def _fetch_eastmoney_realtime_price(ticker: str) -> float | None:
     return None
 
 
+def _fetch_eastmoney_realtime_prices(tickers: list[str] | set[str]) -> dict[str, float]:
+    """Fetch current prices for many symbols with a few paginated requests."""
+    requested = {normalize_ticker(ticker) for ticker in tickers if ticker}
+    if not requested:
+        return {}
+    prices: dict[str, float] = {}
+    groups = (
+        (
+            {ticker for ticker in requested if not is_etf_ticker(ticker)},
+            "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
+        ),
+        (
+            {ticker for ticker in requested if is_etf_ticker(ticker)},
+            "m:0+t:9,m:1+t:9",
+        ),
+    )
+    for group_tickers, market_filter in groups:
+        if not group_tickers:
+            continue
+        params = {
+            "pn": 1,
+            "pz": 5000,
+            "po": 1,
+            "np": 1,
+            "fltt": 2,
+            "invt": 2,
+            "fid": "f3",
+            "fs": market_filter,
+            "fields": "f12,f13,f43,f60",
+        }
+        try:
+            response = _eastmoney_get("/api/qt/clist/get", params)
+            data = response.json().get("data") or {}
+            rows = list(data.get("diff") or [])
+            total = int(data.get("total") or len(rows))
+            for page in range(2, math.ceil(total / params["pz"]) + 1):
+                params["pn"] = page
+                response = _eastmoney_get("/api/qt/clist/get", params)
+                rows.extend((response.json().get("data") or {}).get("diff") or [])
+        except _DOWNLOAD_ERRORS as exc:
+            logger.debug("批量实时行情获取失败：%s", exc)
+            continue
+        for row in rows:
+            code = str(row.get("f12") or "").zfill(6)
+            try:
+                market = int(row.get("f13") or 0)
+            except (TypeError, ValueError):
+                continue
+            suffix = (
+                "SH" if market == 1 else "BJ" if code.startswith(("4", "8", "92")) else "SZ"
+            )
+            ticker = f"{code}.{suffix}"
+            if ticker not in group_tickers:
+                continue
+            for field_name in ("f43", "f60"):
+                value = _to_float(row.get(field_name))
+                if value is not None and value > 0:
+                    prices[ticker] = value / 100
+                    break
+    return prices
+
+
 def _download_from_eastmoney(
     ticker: str, start_date: datetime | None = None
 ) -> pd.DataFrame | None:
@@ -1147,7 +1274,7 @@ def download_ticker(
             _save_cache(ticker, df, selected)
         return df
 
-    if cache_first:
+    if cache_first or _cache_has_completed_daily_bar(cached):
         return cached
 
     cached_index = pd.DatetimeIndex(cached.index).dropna()
