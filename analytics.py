@@ -14,7 +14,19 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from config import ENABLE_VOLUME_PROFILE, OUTPUT_DIR, SCAN_THREADS
+from config import (
+    BACKTEST_FULL_WEIGHT_SAMPLES,
+    BACKTEST_MIN_SAMPLES_FOR_RANKING,
+    ENABLE_VOLUME_PROFILE,
+    INSTITUTIONAL_TIER_A_SCORE,
+    INSTITUTIONAL_TIER_B_SCORE,
+    INSTITUTIONAL_TIER_C_SCORE,
+    INSTITUTIONAL_TIER_TRAP_LABEL,
+    INSTITUTIONAL_TIER_WAIT_LABEL,
+    OUTPUT_DIR,
+    SCAN_THREADS,
+    VALUE_TRAP_RISK_THRESHOLD,
+)
 from downloader import (
     _fetch_eastmoney_realtime_price,
     _is_a_share_market_closed,
@@ -482,7 +494,8 @@ def write_research_reports(history: pd.DataFrame) -> tuple[Path, Path]:
             "A级机构启动": 0,
             "B级观察": 1,
             "C级价值观察": 2,
-            "D级陷阱池": 3,
+            INSTITUTIONAL_TIER_WAIT_LABEL: 3,
+            INSTITUTIONAL_TIER_TRAP_LABEL: 4,
         }
         tiers = sorted(
             history["InstitutionalTier"].dropna().unique(),
@@ -824,7 +837,7 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "FailureAdjustedScore",
         "SignalRecencyDays",
         "SignalRecencyFactor",
-        "BreakoutQualityFactor",
+        "BacktestReliability",
         "InstitutionalTier",
         "InstitutionalScore",
     }
@@ -858,14 +871,25 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         objective_rank = objective_values.rank(pct=True, ascending=True) * 100.0
     else:
         objective_rank = objective_values.rank(pct=True) * 100.0
-    sample_factor = np.clip(observed / 10.0, 0.0, 1.0)
+    minimum_samples = max(1, int(BACKTEST_MIN_SAMPLES_FOR_RANKING))
+    full_weight_samples = max(minimum_samples, int(BACKTEST_FULL_WEIGHT_SAMPLES))
+    eligible_backtest = observed.ge(minimum_samples)
+    denominator = max(1, full_weight_samples - minimum_samples + 1)
+    sample_factor = np.clip(
+        (observed - minimum_samples + 1.0) / denominator,
+        0.0,
+        1.0,
+    )
+    frame["BacktestReliability"] = sample_factor.where(
+        eligible_backtest, 0.0
+    ).round(4)
     backtest_score = frame["BacktestScore"].where(
         np.isfinite(frame["BacktestScore"])
     )
     backtest_component = backtest_score * 0.5 + objective_rank * 0.5
     blended_backtest = (
         backtest_component * sample_factor + 50.0 * (1.0 - sample_factor)
-    ).where(observed.gt(0))
+    ).where(eligible_backtest)
     final_score = pd.to_numeric(
         frame.get("FinalScore", pd.Series(np.nan, index=frame.index)),
         errors="coerce",
@@ -945,9 +969,19 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     volume_confirmed = frame.get(
         "VolAccum", pd.Series(False, index=frame.index)
     ).astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y", "是"}) | volume_score.ge(15.0)
-    frame["InstitutionalTier"] = "D级陷阱池"
-    frame.loc[frame["InstitutionalScore"].ge(65.0), "InstitutionalTier"] = "C级价值观察"
-    frame.loc[frame["InstitutionalScore"].between(75.0, 85.0, inclusive="left"), "InstitutionalTier"] = "B级观察"
+    frame["InstitutionalTier"] = INSTITUTIONAL_TIER_WAIT_LABEL
+    frame.loc[
+        frame["InstitutionalScore"].ge(INSTITUTIONAL_TIER_C_SCORE),
+        "InstitutionalTier",
+    ] = "C级价值观察"
+    frame.loc[
+        frame["InstitutionalScore"].between(
+            INSTITUTIONAL_TIER_B_SCORE,
+            INSTITUTIONAL_TIER_A_SCORE,
+            inclusive="left",
+        ),
+        "InstitutionalTier",
+    ] = "B级观察"
     quality_tier_map = {
         "A级机构启动": "B级观察",
         "B级观察": "C级价值观察",
@@ -955,14 +989,22 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     }
     frame.loc[quality_failed, "InstitutionalTier"] = frame.loc[
         quality_failed, "InstitutionalTier"
-    ].map(quality_tier_map).fillna("D级陷阱池")
+    ].map(quality_tier_map).fillna(INSTITUTIONAL_TIER_WAIT_LABEL)
     frame.loc[
-        frame["InstitutionalScore"].gt(85.0)
+        frame["InstitutionalScore"].gt(INSTITUTIONAL_TIER_A_SCORE)
         & frame["SignalRecencyDays"].le(20)
         & volume_confirmed
         & ~quality_failed,
         "InstitutionalTier",
     ] = "A级机构启动"
+    value_trap_risk = pd.to_numeric(
+        frame.get("ValueTrapRisk", pd.Series(0.0, index=frame.index)),
+        errors="coerce",
+    ).fillna(0.0)
+    frame.loc[
+        ~is_etf & value_trap_risk.ge(VALUE_TRAP_RISK_THRESHOLD),
+        "InstitutionalTier",
+    ] = INSTITUTIONAL_TIER_TRAP_LABEL
     frame = frame.sort_values(
         ["PassedFilters", "InstitutionalScore", "FailureAdjustedScore", "Score", "SignalCount"],
         ascending=[False, False, False, False, False],
