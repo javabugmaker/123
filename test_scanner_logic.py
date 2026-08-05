@@ -323,27 +323,13 @@ class ScannerLogicTests(TestCase):
         self.assertEqual(frame.iloc[-1]["Close"], 12.0)
         self.assertEqual(akshare.stock_zh_a_hist.call_args.kwargs["symbol"], "000001")
         self.assertEqual(akshare.stock_zh_a_hist.call_args.kwargs["adjust"], "qfq")
+        self.assertEqual(
+            akshare.stock_zh_a_hist.call_args.kwargs["timeout"],
+            downloader.DOWNLOAD_TIMEOUT,
+        )
 
     @patch("downloader.ak")
-    def test_akshare_etf_history_uses_sina_endpoint(self, akshare):
-        akshare.fund_etf_hist_sina.return_value = pd.DataFrame({
-            "date": ["2026-07-21"],
-            "open": [4.0],
-            "high": [4.2],
-            "low": [3.9],
-            "close": [4.1],
-            "volume": [10000.0],
-        })
-
-        frame = _download_from_akshare("510300.SH")
-
-        assert frame is not None
-        self.assertEqual(frame.iloc[-1]["Close"], 4.1)
-        akshare.fund_etf_hist_sina.assert_called_once_with(symbol="sh510300")
-
-    @patch("downloader.ak")
-    def test_akshare_etf_history_falls_back_to_eastmoney_endpoint(self, akshare):
-        akshare.fund_etf_hist_sina.side_effect = RuntimeError("Sina unavailable")
+    def test_akshare_etf_history_uses_timed_eastmoney_endpoint(self, akshare):
         akshare.fund_etf_hist_em.return_value = pd.DataFrame({
             "日期": ["2026-07-21"],
             "开盘": [4.0],
@@ -357,7 +343,46 @@ class ScannerLogicTests(TestCase):
 
         assert frame is not None
         self.assertEqual(frame.iloc[-1]["Close"], 4.1)
+        self.assertEqual(akshare.fund_etf_hist_em.call_args.kwargs["symbol"], "510300")
+        self.assertEqual(akshare.fund_etf_hist_em.call_args.kwargs["adjust"], "qfq")
+
+    @patch("downloader.ak")
+    def test_akshare_etf_history_returns_none_when_timed_endpoint_fails(self, akshare):
+        akshare.fund_etf_hist_em.side_effect = RuntimeError("Eastmoney unavailable")
+
+        frame = _download_from_akshare("510300.SH")
+
+        self.assertIsNone(frame)
         self.assertTrue(akshare.fund_etf_hist_em.called)
+
+    def test_empty_download_batch_returns_without_creating_a_worker_pool(self):
+        with patch("downloader._log_download_progress") as progress:
+            result = downloader.download_batch([], source="akshare")
+
+        self.assertEqual(result, {})
+        progress.assert_called_once_with(0, 0, 0, 0)
+
+    def test_download_batch_emits_initial_progress_before_first_request(self):
+        frame = pd.DataFrame(
+            {
+                "Open": [10.0],
+                "High": [11.0],
+                "Low": [9.0],
+                "Close": [10.5],
+                "Volume": [1000.0],
+            },
+            index=pd.to_datetime(["2026-08-05"]),
+        )
+        with patch("downloader.download_ticker", return_value=frame), patch(
+            "downloader._log_download_progress"
+        ) as progress:
+            result = downloader.download_batch(
+                [TickerInfo(ticker="000001.SZ")], source="akshare"
+            )
+
+        self.assertEqual(list(result), ["000001.SZ"])
+        self.assertEqual(progress.call_args_list[0].args, (0, 1, 0, 0))
+        self.assertEqual(progress.call_args_list[-1].args, (1, 1, 1, 0))
 
     @patch("downloader._download_from_eastmoney")
     @patch("downloader._download_from_akshare", return_value=None)
