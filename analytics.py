@@ -17,6 +17,8 @@ import pandas as pd
 from config import (
     BACKTEST_FULL_WEIGHT_SAMPLES,
     BACKTEST_MIN_SAMPLES_FOR_RANKING,
+    BACKTEST_OUTCOME_HORIZON_DAYS,
+    BACKTEST_SIGNAL_COOLDOWN_DAYS,
     ENABLE_VOLUME_PROFILE,
     INSTITUTIONAL_TIER_A_SCORE,
     INSTITUTIONAL_TIER_B_SCORE,
@@ -567,9 +569,12 @@ def write_research_reports(history: pd.DataFrame) -> tuple[Path, Path]:
     return tier_path, ic_path
 
 
-def _signal_points(enriched: pd.DataFrame, cooldown: int = 60) -> list[int]:
+def _signal_points(
+    enriched: pd.DataFrame, cooldown: int = BACKTEST_SIGNAL_COOLDOWN_DAYS
+) -> list[int]:
     if len(enriched) < 252:
         return []
+    cooldown = max(1, int(cooldown))
     volume = enriched.get("VolMA20", pd.Series(index=enriched.index, dtype=float))
     baseline = enriched.get("VolMA120", pd.Series(index=enriched.index, dtype=float))
     cmf = enriched.get("CMF", pd.Series(index=enriched.index, dtype=float))
@@ -580,7 +585,10 @@ def _signal_points(enriched: pd.DataFrame, cooldown: int = 60) -> list[int]:
     last_signal = -cooldown
     points: list[int] = []
     for index in candidates:
-        if index >= len(enriched) - 60 or index - last_signal < cooldown:
+        if (
+            index >= len(enriched) - BACKTEST_OUTCOME_HORIZON_DAYS
+            or index - last_signal < cooldown
+        ):
             continue
         points.append(int(index))
         last_signal = int(index)
@@ -617,6 +625,7 @@ def _backtest_one_ticker(
     highs = (
         enriched["High"].to_numpy(dtype=float) if "High" in enriched else closes.copy()
     )
+    outcome_horizon = max(60, int(BACKTEST_OUTCOME_HORIZON_DAYS))
     valid_points = []
     for index in signal_points:
         entry_index = index + 1
@@ -625,17 +634,21 @@ def _backtest_one_ticker(
         if not np.isfinite(opens[entry_index]) or opens[entry_index] <= 0:
             continue
         if (
-            entry_index + 60 >= len(enriched)
+            entry_index + outcome_horizon >= len(enriched)
             or not np.isfinite(closes[entry_index + 20])
-            or not np.isfinite(closes[entry_index + 60])
+            or not np.isfinite(closes[entry_index + outcome_horizon])
         ):
             continue
-        if np.any(~np.isfinite(highs[entry_index : entry_index + 61])) or np.any(
-            highs[entry_index : entry_index + 61] <= 0
+        if np.any(
+            ~np.isfinite(highs[entry_index : entry_index + outcome_horizon + 1])
+        ) or np.any(
+            highs[entry_index : entry_index + outcome_horizon + 1] <= 0
         ):
             continue
-        if np.any(~np.isfinite(lows[entry_index : entry_index + 61])) or np.any(
-            lows[entry_index : entry_index + 61] <= 0
+        if np.any(
+            ~np.isfinite(lows[entry_index : entry_index + outcome_horizon + 1])
+        ) or np.any(
+            lows[entry_index : entry_index + outcome_horizon + 1] <= 0
         ):
             continue
         valid_points.append(index)
@@ -663,13 +676,14 @@ def _backtest_one_ticker(
         benchmark_close = benchmark_frame["Close"].astype(float).sort_index()
     validation_end, test_start = split_dates
     samples: list[dict[str, Any]] = []
+    previous_sample_index: int | None = None
     for index in valid_points:
         signal_date = pd.Timestamp(enriched.index[index])
         entry_index = index + 1
         entry_date = pd.Timestamp(enriched.index[entry_index])
         entry_price = opens[entry_index]
         future20 = closes[entry_index + 20]
-        future60 = closes[entry_index + 60]
+        future60 = closes[entry_index + outcome_horizon]
         benchmark_returns: dict[int, float] = {20: np.nan, 60: np.nan}
         if benchmark_close is not None:
             start_date = benchmark_close.index.asof(entry_date)
@@ -693,10 +707,12 @@ def _backtest_one_ticker(
             ([entry_price], closes[entry_index : entry_index + 21])
         )
         prices60 = np.concatenate(
-            ([entry_price], closes[entry_index : entry_index + 61])
+            ([entry_price], closes[entry_index : entry_index + outcome_horizon + 1])
         )
         lows20 = np.concatenate(([entry_price], lows[entry_index : entry_index + 21]))
-        lows60 = np.concatenate(([entry_price], lows[entry_index : entry_index + 61]))
+        lows60 = np.concatenate(
+            ([entry_price], lows[entry_index : entry_index + outcome_horizon + 1])
+        )
         drawdown20 = float(((lows20 / np.maximum.accumulate(prices20) - 1).min()) * 100)
         drawdown60 = float(((lows60 / np.maximum.accumulate(prices60) - 1).min()) * 100)
         if test_start is not None and entry_date >= test_start:
@@ -705,6 +721,12 @@ def _backtest_one_ticker(
             split = "validation"
         else:
             split = "train"
+        spacing = (
+            outcome_horizon
+            if previous_sample_index is None
+            else max(1, index - previous_sample_index)
+        )
+        sample_weight = min(1.0, spacing / float(outcome_horizon))
         samples.append(
             {
                 "ticker": ticker,
@@ -721,8 +743,10 @@ def _backtest_one_ticker(
                 "drawdown60": drawdown60,
                 "score": score_cache[index + 1],
                 "split": split,
+                "sample_weight": round(sample_weight, 4),
             }
         )
+        previous_sample_index = index
     return samples
 
 
@@ -742,6 +766,12 @@ def _ticker_backtest_rows(
     if objective not in target_map:
         raise ValueError(f"unsupported objective: {objective}")
     sample_frame = sample_frame.copy()
+    sample_weights = sample_frame.get("sample_weight")
+    if sample_weights is None:
+        sample_weights = pd.Series(1.0, index=sample_frame.index)
+    sample_frame["sample_weight"] = pd.to_numeric(
+        sample_weights, errors="coerce"
+    ).replace([np.inf, -np.inf], np.nan).fillna(1.0).clip(0.0, 1.0)
     for column in ("benchmark_return20", "benchmark_return60"):
         if column not in sample_frame:
             sample_frame[column] = np.nan
@@ -755,6 +785,7 @@ def _ticker_backtest_rows(
     )
     sample_frame["risk_adjusted"] = sample_frame["net_return20"] / sample_frame["drawdown20"].abs().replace(0, np.nan)
     rows: list[dict[str, Any]] = []
+    full_weight_samples = max(1, int(BACKTEST_FULL_WEIGHT_SAMPLES))
     for ticker, group in sample_frame.groupby("ticker", sort=False):
         win20 = float((group["return20"] > 0).mean())
         win60 = float((group["return60"] > 0).mean())
@@ -773,14 +804,24 @@ def _ticker_backtest_rows(
         )
         downside_score = _bounded_score(downside60, -25.0, 0.0) * 0.20
         raw_score = (win_score + return_score + downside_score) * 100.0
-        sample_confidence = min(1.0, len(group) / 10.0)
+        effective_samples = float(group["sample_weight"].sum())
+        sample_confidence = min(1.0, effective_samples / full_weight_samples)
         backtest_score = 50.0 + (raw_score - 50.0) * sample_confidence
-        objective_series = pd.to_numeric(
-            group[target_map[objective]], errors="coerce"
-        ).dropna()
+        objective_frame = group[[target_map[objective], "sample_weight"]].copy()
+        objective_frame[target_map[objective]] = pd.to_numeric(
+            objective_frame[target_map[objective]], errors="coerce"
+        )
+        objective_frame = objective_frame.replace([np.inf, -np.inf], np.nan).dropna(
+            subset=[target_map[objective]]
+        )
+        objective_series = objective_frame[target_map[objective]]
         raw_objective_value = _robust_mean(objective_series)
         objective_value = (
-            raw_objective_value * min(1.0, len(objective_series) / 10.0)
+            raw_objective_value
+            * min(
+                1.0,
+                float(objective_frame["sample_weight"].sum()) / full_weight_samples,
+            )
             if np.isfinite(raw_objective_value)
             else np.nan
         )
@@ -789,12 +830,12 @@ def _ticker_backtest_rows(
             loss20 = 1.0 - _bounded_score(avg20, -30.0, 0.0)
             loss60 = 1.0 - _bounded_score(avg60, -50.0, 0.0)
             failure_strength = loss20 * 0.3 + loss60 * 0.7
-            sample_confidence = min(1.0, len(group) / 10.0)
             failure_signal_factor = 1.0 - failure_strength * sample_confidence * 0.7
         rows.append(
             {
                 "ticker": str(ticker),
                 "samples": len(group),
+                "effective_samples": round(effective_samples, 4),
                 "win_rate_20d": round(win20, 4),
                 "win_rate_60d": round(win60, 4),
                 "average_return_20d": round(avg20, 4),
@@ -824,6 +865,7 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     frame = pd.read_csv(path, encoding="utf-8-sig")
     metric_columns = {
         "samples": "BacktestSamples",
+        "effective_samples": "BacktestEffectiveSamples",
         "win_rate_20d": "BacktestWinRate20D",
         "win_rate_60d": "BacktestWinRate60D",
         "average_return_20d": "BacktestAverageReturn20D",
@@ -846,6 +888,7 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "BacktestScore",
         "CompositeScore",
         "BacktestSamples",
+        "BacktestEffectiveSamples",
         "BacktestWinRate20D",
         "BacktestWinRate60D",
         "BacktestAverageReturn20D",
@@ -874,6 +917,7 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     frame = frame.merge(metrics, on="Ticker", how="left", validate="one_to_one")
     for column in (
         "BacktestSamples",
+        "BacktestEffectiveSamples",
         "BacktestScore",
         "BacktestObjectiveValue",
         "FailureSignalFactor",
@@ -881,6 +925,12 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         if column not in frame:
             frame[column] = np.nan
     observed = pd.to_numeric(frame["BacktestSamples"], errors="coerce").fillna(0.0)
+    effective_observed = pd.to_numeric(
+        frame["BacktestEffectiveSamples"], errors="coerce"
+    ).replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(lower=0.0)
+    effective_observed = effective_observed.where(
+        effective_observed.gt(0.0), observed
+    ).clip(upper=observed)
     frame["BacktestScore"] = pd.to_numeric(
         frame["BacktestScore"], errors="coerce"
     )
@@ -896,13 +946,17 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         objective_rank = objective_values.rank(pct=True) * 100.0
     minimum_samples = max(1, int(BACKTEST_MIN_SAMPLES_FOR_RANKING))
     full_weight_samples = max(minimum_samples, int(BACKTEST_FULL_WEIGHT_SAMPLES))
-    eligible_backtest = observed.ge(minimum_samples)
+    eligible_backtest = observed.ge(minimum_samples) & effective_observed.gt(0.0)
     denominator = max(1, full_weight_samples - minimum_samples + 1)
-    sample_factor = np.clip(
+    raw_sample_factor = np.clip(
         (observed - minimum_samples + 1.0) / denominator,
         0.0,
         1.0,
     )
+    independence_factor = np.sqrt(
+        (effective_observed / observed.where(observed.gt(0.0), 1.0)).clip(0.0, 1.0)
+    )
+    sample_factor = raw_sample_factor * independence_factor
     frame["BacktestReliability"] = sample_factor.where(
         eligible_backtest, 0.0
     ).round(4)
