@@ -441,7 +441,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scan_p.add_argument(
         "--data-source",
-        choices=("eastmoney", "sina", "tencent"),
+        choices=("akshare", "eastmoney", "sina", "tencent"),
         default="eastmoney",
         help="历史行情数据源",
     )
@@ -479,7 +479,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=TOP_N_PARQUET,
     )
     report_p.add_argument(
-        "--data-source", choices=("eastmoney", "sina", "tencent"), default="eastmoney"
+        "--data-source", choices=("akshare", "eastmoney", "sina", "tencent"), default="eastmoney"
     )
     report_p.add_argument(
         "--refresh-fundamentals",
@@ -495,7 +495,7 @@ def build_parser() -> argparse.ArgumentParser:
     dl_scope.add_argument("--etfs-only", action="store_true")
     dl_p.add_argument("--tickers", type=str, default=None)
     dl_p.add_argument(
-        "--data-source", choices=("eastmoney", "sina", "tencent"), default="eastmoney"
+        "--data-source", choices=("akshare", "eastmoney", "sina", "tencent"), default="eastmoney"
     )
     dl_p.add_argument("--verbose", "-v", action="store_true")
 
@@ -527,7 +527,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum local worker threads for backtest calculation",
     )
     backtest_p.add_argument(
-        "--data-source", choices=("eastmoney", "sina", "tencent"), default="eastmoney"
+        "--data-source", choices=("akshare", "eastmoney", "sina", "tencent"), default="eastmoney"
     )
     backtest_p.add_argument(
         "--objective",
