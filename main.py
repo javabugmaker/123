@@ -33,6 +33,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 from analytics import apply_backtest_ranking, enrich_results, run_historical_backtest
 from config import (
     CACHE_DIR,
+    FUNDAMENTAL_REFRESH_FORCE,
     LOG_DIR,
     OUTPUT_DIR,
     TOP_N_PARQUET,
@@ -128,6 +129,17 @@ def cmd_scan(args: argparse.Namespace) -> int:
             len(stock_universe) + len(etf_universe),
         )
 
+    if getattr(args, "refresh_fundamentals", False) and stock_universe:
+        try:
+            fundamental_path = refresh_fundamental_data(
+                [ticker.ticker for ticker in stock_universe],
+                force=FUNDAMENTAL_REFRESH_FORCE,
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("基本面刷新失败，继续使用现有数据：%s", exc)
+        else:
+            logger.info("基本面数据路径: %s", fundamental_data_path() or fundamental_path)
+
     # Run the scan
     report = run_scan(
         stock_universe=stock_universe,
@@ -186,7 +198,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         try:
             fundamental_path = refresh_fundamental_data(
                 [ticker.ticker for ticker in stock_universe],
-                force=False,
+                force=FUNDAMENTAL_REFRESH_FORCE,
             )
         except (OSError, ValueError, TypeError) as exc:
             logger.warning("基本面刷新失败，继续使用现有数据：%s", exc)
@@ -411,6 +423,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--cache-first",
         action="store_true",
         help="Prefer cached data and skip re-downloading unchanged tickers",
+    )
+    scan_p.add_argument(
+        "--refresh-fundamentals",
+        action="store_true",
+        help="扫描前刷新基本面缓存",
     )
     scan_p.add_argument(
         "--data-source",
