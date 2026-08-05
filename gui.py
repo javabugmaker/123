@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
 MAIN_FILE = PROJECT_ROOT / "main.py"
 DISPLAY_VALUE_NAMES = {
+    "akshare": "AkShare",
     "ACCUMULATION": "吸筹阶段",
     "BREAKOUT": "启动阶段",
     "DISTRIBUTION": "派发阶段",
@@ -445,7 +446,7 @@ class ScannerGUI:
         self.source_box = ttk.Combobox(
             controls,
             textvariable=self.data_source,
-            values=("东方财富", "新浪财经", "腾讯财经"),
+            values=("AkShare", "东方财富", "新浪财经", "腾讯财经"),
             state="readonly",
             width=12,
         )
@@ -587,7 +588,12 @@ class ScannerGUI:
         refresh_fundamentals = getattr(self, "refresh_fundamentals", None)
         if refresh_fundamentals is not None and refresh_fundamentals.get():
             command.append("--refresh-fundamentals")
-        source_codes = {"东方财富": "eastmoney", "新浪财经": "sina", "腾讯财经": "tencent"}
+        source_codes = {
+            "AkShare": "akshare",
+            "东方财富": "eastmoney",
+            "新浪财经": "sina",
+            "腾讯财经": "tencent",
+        }
         command += ["--data-source", source_codes.get(self.data_source.get(), "eastmoney")]
         return command
 
@@ -702,7 +708,12 @@ class ScannerGUI:
             str(MAIN_FILE),
             "backtest",
             "--data-source",
-            {"东方财富": "eastmoney", "新浪财经": "sina", "腾讯财经": "tencent"}.get(
+            {
+                "AkShare": "akshare",
+                "东方财富": "eastmoney",
+                "新浪财经": "sina",
+                "腾讯财经": "tencent",
+            }.get(
                 self.data_source.get(), "eastmoney"
             ),
             "--tickers-file",
