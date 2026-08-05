@@ -820,6 +820,9 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     legacy_columns = {
         "backtest_score",
         "composite_score",
+        "raw_objective_value",
+        "raw_objective_value_x",
+        "raw_objective_value_y",
         "samples",
         "win_rate_20d",
         "win_rate_60d",
@@ -833,6 +836,9 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "BacktestAverageReturn20D",
         "BacktestAverageReturn60D",
         "BacktestObjectiveValue",
+        "BacktestRawObjectiveValue",
+        "BacktestRawObjectiveValue_x",
+        "BacktestRawObjectiveValue_y",
         "FailureSignalFactor",
         "FailureAdjustedScore",
         "SignalRecencyDays",
@@ -845,8 +851,10 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         columns=[column for column in frame.columns if column in legacy_columns],
         errors="ignore",
     )
-    metrics = pd.DataFrame(summary.by_ticker).rename(
-        columns={"ticker": "Ticker", **metric_columns}
+    metrics = (
+        pd.DataFrame(summary.by_ticker)
+        .rename(columns={"ticker": "Ticker", **metric_columns})
+        .reindex(columns=["Ticker", *metric_columns.values()])
     )
     frame = frame.merge(metrics, on="Ticker", how="left", validate="one_to_one")
     for column in (
