@@ -279,6 +279,9 @@ MAX_RENDERED_ROWS = 500
 DOWNLOAD_PROGRESS_RE = re.compile(
     r"DOWNLOAD progress: (\d+)/(\d+) \((\d+) succeeded, (\d+) no-data/failed\)\."
 )
+FUNDAMENTAL_PROGRESS_RE = re.compile(
+    r"FUNDAMENTAL progress: (\d+)/(\d+) \((\d+) updated, (\d+) unavailable\)\."
+)
 ANALYSE_PROGRESS_RE = re.compile(
     r"ANALYSE progress: (\d+)/(\d+) \((\d+) successful, (\d+) failed\)\."
 )
@@ -852,16 +855,21 @@ class ScannerGUI:
             except queue.Empty:
                 break
         if lines:
+            latest_fundamental_progress = None
             latest_download_progress = None
             latest_analyse_progress = None
             rendered_lines: list[str] = []
             for line in lines:
-                if DOWNLOAD_PROGRESS_RE.search(line):
+                if FUNDAMENTAL_PROGRESS_RE.search(line):
+                    latest_fundamental_progress = line
+                elif DOWNLOAD_PROGRESS_RE.search(line):
                     latest_download_progress = line
                 elif ANALYSE_PROGRESS_RE.search(line):
                     latest_analyse_progress = line
                 else:
                     rendered_lines.append(line)
+            if latest_fundamental_progress:
+                rendered_lines.append(latest_fundamental_progress)
             if latest_download_progress:
                 rendered_lines.append(latest_download_progress)
             if latest_analyse_progress:
@@ -997,9 +1005,21 @@ class ScannerGUI:
         self.log_text.insert(tk.END, text)
         self.log_text.see(tk.END)
         self.log_text.configure(state=tk.DISABLED)
+        fundamental_progress = FUNDAMENTAL_PROGRESS_RE.search(text)
         progress = DOWNLOAD_PROGRESS_RE.search(text)
         analyse_progress = ANALYSE_PROGRESS_RE.search(text)
-        if progress:
+        if fundamental_progress:
+            completed, total, updated, unavailable = (
+                int(value) for value in fundamental_progress.groups()
+            )
+            self.progress.stop()
+            self.progress.configure(
+                mode="determinate", maximum=max(total, 1), value=completed
+            )
+            self.status.set(
+                f"基本面进度 {completed}/{total} · 已更新 {updated} · 暂不可用 {unavailable}"
+            )
+        elif progress:
             completed, total, successful, skipped = (
                 int(value) for value in progress.groups()
             )
