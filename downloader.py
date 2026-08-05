@@ -1171,7 +1171,7 @@ _DATA_SOURCE_CANDIDATES = {
 # Some upstream adapters are less tolerant of a wide concurrent fan-out.
 # DOWNLOAD_THREADS remains the global ceiling configured by the user.
 _SOURCE_DOWNLOAD_WORKER_CAPS = {
-    "auto": 8,
+    "auto": 4,
     "akshare": 4,
     "sina": 8,
     "tencent": 8,
@@ -1215,6 +1215,8 @@ def _download_single(
     for candidate in _DATA_SOURCE_CANDIDATES[selected]:
         loader = loaders[candidate]
         try:
+            # 仅在真正请求数据源时限流；命中本地缓存的扫描无需排队等待。
+            _wait_for_download_slot()
             frame = loader(ticker, start_date=start_date)
         except _DOWNLOAD_ERRORS as exc:
             logger.debug(
@@ -1226,13 +1228,13 @@ def _download_single(
             continue
         if frame is not None and not frame.empty:
             if selected == "auto":
-                logger.info(
+                logger.debug(
                     "自动优选已使用%s获取 %s 的数据。",
                     get_data_source_label(candidate),
                     ticker,
                 )
             elif candidate != selected:
-                logger.info(
+                logger.debug(
                     "%s未返回 %s 的数据，已回退至%s并获取成功。",
                     get_data_source_label(selected),
                     ticker,
@@ -1372,7 +1374,6 @@ def download_batch(
             start=1,
         ):
             try:
-                _wait_for_download_slot()
                 df = download_ticker(
                     sym, force=force, source=selected_source, cache_first=cache_first
                 )
@@ -1391,7 +1392,6 @@ def download_batch(
             futures: dict[Any, str] = {}
 
             def download_scheduled(sym: str) -> pd.DataFrame | None:
-                _wait_for_download_slot()
                 return download_ticker(sym, force, selected_source, cache_first)
 
             def submit_next() -> bool:
