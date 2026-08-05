@@ -807,6 +807,43 @@ class RegressionTests(TestCase):
         self.assertEqual(download_batch.call_args.kwargs["skip_tickers"], set())
         self.assertEqual([item.ticker for item in report.results], ["000001.SZ"])
 
+    def test_scan_skips_previous_report_when_there_is_no_checkpoint(self):
+        ticker = TickerInfo(ticker="000001.SZ")
+        frame = pd.DataFrame(
+            {
+                "Open": [10.0],
+                "High": [11.0],
+                "Low": [9.0],
+                "Close": [10.0],
+                "Volume": [1000.0],
+            },
+            index=pd.to_datetime(["2026-07-21"]),
+        )
+        result = ScanResult(ticker="000001.SZ")
+        with TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            (output_dir / "AllResults.parquet").touch()
+            with (
+                patch.object(scanner, "OUTPUT_DIR", output_dir),
+                patch.object(scanner, "_CHECKPOINT_PATH", output_dir / "_checkpoint.json"),
+                patch.object(scanner, "load_checkpoint", return_value=set()),
+                patch.object(scanner, "_load_previous_tickers") as previous_tickers,
+                patch.object(scanner, "download_batch", return_value={"000001.SZ": frame}),
+                patch.object(
+                    scanner, "_analyse_one_ticker_from_df", return_value=(result, frame)
+                ),
+                patch.object(scanner, "enrich_results"),
+                patch.object(scanner, "save_checkpoint"),
+                patch.object(scanner, "clear_checkpoint"),
+                patch.object(scanner.pd, "read_parquet") as read_parquet,
+            ):
+                scanner.run_scan(
+                    stock_universe=[ticker], etf_universe=[], data_source="eastmoney"
+                )
+
+        previous_tickers.assert_not_called()
+        read_parquet.assert_not_called()
+
     def test_load_checkpoint_ignores_legacy_completed_scan(self):
         with TemporaryDirectory() as temp_dir:
             checkpoint_path = Path(temp_dir) / "_checkpoint.json"
@@ -1639,11 +1676,12 @@ class RegressionTests(TestCase):
             (pd.Timestamp.now(tz="Asia/Shanghai").normalize() - pd.offsets.BDay(1)).tz_localize(None)
         ]))
 
-        with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")), patch.object(analytics, "_is_a_share_market_closed", return_value=True), patch.object(analytics, "_fetch_eastmoney_realtime_price", return_value=78.0):
+        with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")), patch.object(analytics, "_is_a_share_market_closed", return_value=True), patch.object(analytics, "_fetch_eastmoney_realtime_prices", return_value={"000858.SZ": 78.0}) as batch_prices:
             analytics.enrich_results([result], "eastmoney", frames={"000858.SZ": frame})
 
         self.assertEqual(result.close, 78.0)
         self.assertEqual(result.data_asof, pd.Timestamp.now(tz="Asia/Shanghai").strftime("%Y-%m-%d"))
+        batch_prices.assert_called_once_with(["000858.SZ"])
 
     def test_enrichment_keeps_daily_close_when_realtime_close_is_unavailable(self):
         result = ScanResult(ticker="000858.SZ", close=78.56)
@@ -1655,7 +1693,7 @@ class RegressionTests(TestCase):
             "Volume": [1000.0],
         }, index=pd.to_datetime(["2026-07-30"]))
 
-        with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")), patch.object(analytics, "_is_a_share_market_closed", return_value=True), patch.object(analytics, "_fetch_eastmoney_realtime_price", return_value=None):
+        with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")), patch.object(analytics, "_is_a_share_market_closed", return_value=True), patch.object(analytics, "_fetch_eastmoney_realtime_prices", return_value={}):
             analytics.enrich_results([result], "eastmoney", frames={"000858.SZ": frame})
 
         self.assertEqual(result.close, 78.56)
