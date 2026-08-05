@@ -55,6 +55,7 @@ DOWNLOAD_TIMEOUT: int = (
     10  # seconds per ticker (lower = less accumulated delay on dead URLs)
 )
 MARKET_CAP_CACHE_TTL_DAYS: int = 1
+UNIVERSE_CACHE_TTL_HOURS: int = 12
 MAX_DOWNLOAD_ERRORS: int = 2000  # abort if this many consecutive errors (harmless 404s from delisted tickers are common)
 
 # Ticker list sources (free, no API key required)
