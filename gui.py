@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
 MAIN_FILE = PROJECT_ROOT / "main.py"
 DISPLAY_VALUE_NAMES = {
+    "auto": "自动优选",
     "akshare": "AkShare",
     "ACCUMULATION": "吸筹阶段",
     "BREAKOUT": "启动阶段",
@@ -32,6 +33,22 @@ DISPLAY_VALUE_NAMES = {
     "sina": "新浪财经",
     "tencent": "腾讯财经",
     "current_survivor_pool": "当前结果股票池",
+}
+
+DATA_SOURCE_CODES = {
+    "自动优选": "auto",
+    "AkShare": "akshare",
+    "东方财富": "eastmoney",
+    "新浪财经": "sina",
+    "腾讯财经": "tencent",
+}
+
+DATA_SOURCE_HINTS = {
+    "自动优选": "AkShare 优先，自动回退",
+    "AkShare": "失败时自动回退",
+    "东方财富": "失败时自动回退",
+    "新浪财经": "失败时自动回退",
+    "腾讯财经": "失败时自动回退",
 }
 
 COLUMN_NAMES = {
@@ -289,8 +306,10 @@ class ScannerGUI:
         self.no_resume = tk.BooleanVar(value=False)
         self.force_download = tk.BooleanVar(value=False)
         self.refresh_fundamentals = tk.BooleanVar(value=False)
-        self.data_source = tk.StringVar(value="东方财富")
-        self.data_source_label = tk.StringVar(value="当前：东方财富")
+        self.data_source = tk.StringVar(value="自动优选")
+        self.data_source_label = tk.StringVar(
+            value="当前：自动优选 · AkShare 优先，自动回退"
+        )
         self.status = tk.StringVar(value="就绪")
         self.result_summary = tk.StringVar(value="等待加载结果")
         self._row_details: dict[str, dict[str, str]] = {}
@@ -422,7 +441,7 @@ class ScannerGUI:
         controls.pack(fill=tk.X, padx=18, pady=(14, 8))
         controls.columnconfigure(3, weight=1)
         controls.columnconfigure(4, weight=1)
-        controls.columnconfigure(6, weight=1)
+        controls.columnconfigure(7, weight=1)
         ttk.Label(controls, text="扫描范围").grid(
             row=0, column=0, padx=(0, 6), sticky=tk.W
         )
@@ -443,18 +462,21 @@ class ScannerGUI:
         ttk.Label(controls, text="例：588000.SH,000001.SZ", foreground="#708399").grid(
             row=0, column=4, sticky=tk.W
         )
+        ttk.Label(controls, text="数据源").grid(
+            row=0, column=5, padx=(12, 4), sticky=tk.W
+        )
         self.source_box = ttk.Combobox(
             controls,
             textvariable=self.data_source,
-            values=("AkShare", "东方财富", "新浪财经", "腾讯财经"),
+            values=tuple(DATA_SOURCE_CODES),
             state="readonly",
             width=12,
         )
-        self.source_box.grid(row=0, column=5, padx=(12, 4), sticky=tk.W)
+        self.source_box.grid(row=0, column=6, sticky=tk.W)
         self.source_box.bind("<<ComboboxSelected>>", self._data_source_changed)
         ttk.Label(
             controls, textvariable=self.data_source_label, foreground="#55708a"
-        ).grid(row=0, column=6, padx=(4, 0), sticky=tk.W)
+        ).grid(row=0, column=7, padx=(8, 0), sticky=tk.W)
         ttk.Checkbutton(controls, text="不使用断点", variable=self.no_resume).grid(
             row=1, column=0, columnspan=2, pady=(12, 0), sticky=tk.W
         )
@@ -588,14 +610,11 @@ class ScannerGUI:
         refresh_fundamentals = getattr(self, "refresh_fundamentals", None)
         if refresh_fundamentals is not None and refresh_fundamentals.get():
             command.append("--refresh-fundamentals")
-        source_codes = {
-            "AkShare": "akshare",
-            "东方财富": "eastmoney",
-            "新浪财经": "sina",
-            "腾讯财经": "tencent",
-        }
-        command += ["--data-source", source_codes.get(self.data_source.get(), "eastmoney")]
+        command += ["--data-source", self._selected_data_source()]
         return command
+
+    def _selected_data_source(self) -> str:
+        return DATA_SOURCE_CODES.get(self.data_source.get(), "auto")
 
     def _top50_tickers(self) -> list[str]:
         path = OUTPUT_DIR / "Top50.csv"
@@ -708,14 +727,7 @@ class ScannerGUI:
             str(MAIN_FILE),
             "backtest",
             "--data-source",
-            {
-                "AkShare": "akshare",
-                "东方财富": "eastmoney",
-                "新浪财经": "sina",
-                "腾讯财经": "tencent",
-            }.get(
-                self.data_source.get(), "eastmoney"
-            ),
+            self._selected_data_source(),
             "--tickers-file",
             str(ticker_file),
         ]
@@ -1180,8 +1192,9 @@ class ScannerGUI:
         self._render_cached_rows()
 
     def _data_source_changed(self, _event=None) -> None:
-        label = self.data_source.get() or "未知"
-        self.data_source_label.set(f"当前：{label}")
+        label = self.data_source.get() or "自动优选"
+        hint = DATA_SOURCE_HINTS.get(label, "自动回退")
+        self.data_source_label.set(f"当前：{label} · {hint}")
         self.status.set(f"已切换数据源：{label}")
 
     def _sector_changed(self, _event=None) -> None:
