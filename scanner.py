@@ -584,7 +584,7 @@ def run_scan(
     universe_symbols = {_normalize_ticker(ti.ticker) for ti in all_tickers}
     processed_set = load_checkpoint(data_source) if resume else set()
     processed_set.intersection_update(universe_symbols)
-    previous_tickers = _load_previous_tickers() if resume else set()
+    previous_tickers = _load_previous_tickers() if resume and processed_set else set()
     skip_processed = processed_set.intersection(previous_tickers)
     if skip_processed:
         logger.info("Resuming interrupted scan: %d tickers already analysed.", len(skip_processed))
@@ -639,7 +639,7 @@ def run_scan(
     prev_results: dict[str, ScanResult] = {}
     universe_symbols = {_normalize_ticker(ti.ticker) for ti in all_tickers}
     previous_report_source = ""
-    if prev_parquet.exists():
+    if skip_processed and prev_parquet.exists():
         try:
             metadata = pd.read_parquet(prev_parquet, columns=["DataSource"])
             if not metadata.empty:
@@ -649,7 +649,7 @@ def run_scan(
         except (OSError, ImportError, KeyError, ValueError):
             previous_report_source = ""
 
-    if resume and prev_parquet.exists() and previous_report_source in ("", data_source):
+    if skip_processed and prev_parquet.exists() and previous_report_source in ("", data_source):
         try:
             prev_df = pd.read_parquet(prev_parquet)
             for _, row in prev_df.iterrows():
