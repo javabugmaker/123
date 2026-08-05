@@ -13,15 +13,17 @@ from typing import Any, Callable, Mapping
 
 import numpy as np
 import pandas as pd
-import requests
+
+try:
+    import akshare as ak
+except ImportError:
+    ak = None
 
 from config import (
     CACHE_DIR,
     DOWNLOAD_RATE_LIMIT_PAUSE,
     FUNDAMENTAL_DATA_PATH,
-    FUNDAMENTAL_DOWNLOAD_RETRIES,
     FUNDAMENTAL_DOWNLOAD_THREADS,
-    FUNDAMENTAL_DOWNLOAD_TIMEOUT,
     FUNDAMENTAL_PROGRESS_HEARTBEAT_SECONDS,
 )
 from downloader import normalize_ticker
@@ -43,21 +45,16 @@ FUNDAMENTAL_COLUMNS = (
 
 _CACHE_PATH = CACHE_DIR / "fundamental_data.csv"
 _META_PATH = CACHE_DIR / "fundamental_data_meta.json"
-_EASTMONEY_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
-_HTTP = requests.Session()
-_HTTP.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
-_LAST_REQUEST_AT = 0.0
-_REQUEST_RATE_LOCK = threading.Lock()
+
+# Module-level batch data cache — populated once per refresh run
+_batch_finance_cache: dict[str, dict[str, Any]] = {}
+_batch_holders_cache: dict[str, dict[str, Any]] = {}
+_batch_cache_lock = threading.Lock()
 
 
 def _wait_for_slot() -> None:
-    global _LAST_REQUEST_AT
-    with _REQUEST_RATE_LOCK:
-        now = time.monotonic()
-        delay = DOWNLOAD_RATE_LIMIT_PAUSE - (now - _LAST_REQUEST_AT)
-        if delay > 0:
-            time.sleep(delay)
-        _LAST_REQUEST_AT = time.monotonic()
+    """Rate-limit helper — preserved for compatibility."""
+    time.sleep(DOWNLOAD_RATE_LIMIT_PAUSE)
 
 
 def _log_fundamental_progress(
@@ -91,100 +88,149 @@ def _number(value: Any) -> float:
     return number if np.isfinite(number) else np.nan
 
 
-def _value(row: dict[str, Any], *names: str) -> Any:
-    lowered = {str(key).lower(): value for key, value in row.items()}
-    for name in names:
-        if name in row and pd.notna(row[name]):
-            return row[name]
-        value = lowered.get(name.lower())
-        if value is not None and pd.notna(value):
-            return value
-    return None
+def _code_to_ticker(code: str) -> str:
+    """Convert a 6-digit stock code to a normalized ticker with exchange suffix."""
+    code = str(code).strip().zfill(6)
+    if not code.isdigit() or len(code) != 6:
+        return ""
+    if code.startswith(("5", "6", "688")):
+        return f"{code}.SH"
+    elif code.startswith(("4", "8", "92")):
+        return f"{code}.BJ"
+    else:
+        return f"{code}.SZ"
 
 
-def _periods_from_trend(value: Any) -> float:
-    text = str(value or "").strip()
-    for token in ("连续", "季度", "期"):
-        text = text.replace(token, "")
-    try:
-        return max(0.0, float(text))
-    except ValueError:
-        return np.nan
+# ---------------------------------------------------------------------------
+# Batch data fetching via AKShare
+# ---------------------------------------------------------------------------
 
+def _batch_fetch_financial_data() -> dict[str, dict[str, Any]]:
+    """Fetch financial indicators for all A-shares in one batch via AKShare.
 
-def _request_report(report_name: str, secucode: str, columns: str, request: Callable[..., Any] | None = None) -> list[dict[str, Any]]:
-    requester = request or _HTTP.get
-    params = {
-        "reportName": report_name,
-        "columns": columns,
-        "filter": f'(SECUCODE="{secucode}")',
-        "pageNumber": 1,
-        "pageSize": 20,
-        "sortColumns": "REPORT_DATE",
-        "sortTypes": "-1",
-        "source": "HSF10",
-        "client": "WEB",
-    }
-    last_error: Exception | None = None
-    for attempt in range(FUNDAMENTAL_DOWNLOAD_RETRIES + 1):
+    Returns a dict keyed by normalized ticker (e.g. '000001.SZ') with:
+        ROE, GrossMargin, NetProfit, Industry
+    """
+    if ak is None:
+        logger.warning("AKShare 未安装，无法批量获取财务数据。")
+        return {}
+
+    # Try the latest reporting period: 2026-Q1 (20260331)
+    for report_date in ("20260331", "20251231", "20250930"):
         try:
-            _wait_for_slot()
-            response = requester(
-                _EASTMONEY_URL,
-                params=params,
-                timeout=FUNDAMENTAL_DOWNLOAD_TIMEOUT,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            result = payload.get("result") if isinstance(payload, dict) else None
-            data = result.get("data", []) if isinstance(result, dict) else []
-            return data if isinstance(data, list) else []
-        except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError) as exc:
-            last_error = exc
-            if attempt < FUNDAMENTAL_DOWNLOAD_RETRIES:
-                time.sleep(2**attempt)
-    if last_error is not None:
-        raise last_error
-    return []
+            logger.info("正在通过 AKShare 批量获取 %s 财务数据...", report_date)
+            df = ak.stock_yjbb_em(date=report_date)
+            if df is None or df.empty:
+                continue
+            result: dict[str, dict[str, Any]] = {}
+            for _, row in df.iterrows():
+                code = str(row.get("股票代码", "")).strip()
+                ticker = _code_to_ticker(code)
+                if not ticker:
+                    continue
+                industry = row.get("所处行业")
+                result[ticker] = {
+                    "ROE": _number(row.get("净资产收益率")),
+                    "GrossMargin": _number(row.get("销售毛利率")),
+                    "NetProfit": _number(row.get("净利润-净利润")),
+                    "Industry": str(industry).strip() if pd.notna(industry) and str(industry).strip() != "None" else "",
+                }
+            logger.info("AKShare 财务数据批量获取完成：%d 只股票。", len(result))
+            return result
+        except Exception as exc:
+            logger.warning("AKShare 批量获取 %s 财务数据失败：%s", report_date, exc)
+            continue
+    return {}
 
 
-def _fetch_ticker(ticker: str, request: Callable[..., Any] | None = None) -> dict[str, Any] | None:
+def _batch_fetch_institutional_data() -> dict[str, dict[str, Any]]:
+    """Fetch institutional holdings for all A-shares in one batch via AKShare.
+
+    Returns a dict keyed by normalized ticker with:
+        OrgNum, OrgNumChange
+    """
+    if ak is None:
+        return {}
+
+    try:
+        logger.info("正在通过 AKShare 批量获取机构持股数据...")
+        df = ak.stock_institute_hold()
+        if df is None or df.empty:
+            logger.warning("AKShare 机构持股数据为空。")
+            return {}
+        result: dict[str, dict[str, Any]] = {}
+        for _, row in df.iterrows():
+            code = str(row.get("证券代码", "")).strip()
+            ticker = _code_to_ticker(code)
+            if not ticker:
+                continue
+            result[ticker] = {
+                "OrgNum": _number(row.get("机构数")),
+                "OrgNumChange": _number(row.get("机构数变化")),
+            }
+        logger.info("AKShare 机构持股数据批量获取完成：%d 只股票。", len(result))
+        return result
+    except Exception as exc:
+        logger.warning("AKShare 批量获取机构持股数据失败：%s", exc)
+        return {}
+
+
+def _prefetch_batch_data() -> None:
+    """Populate the module-level batch data caches."""
+    global _batch_finance_cache, _batch_holders_cache
+    with _batch_cache_lock:
+        if not _batch_finance_cache:
+            _batch_finance_cache = _batch_fetch_financial_data()
+        if not _batch_holders_cache:
+            _batch_holders_cache = _batch_fetch_institutional_data()
+
+
+def _clear_batch_cache() -> None:
+    """Clear the module-level batch data caches."""
+    global _batch_finance_cache, _batch_holders_cache
+    with _batch_cache_lock:
+        _batch_finance_cache = {}
+        _batch_holders_cache = {}
+
+
+# ---------------------------------------------------------------------------
+# Per-ticker data lookup (from batch cache)
+# ---------------------------------------------------------------------------
+
+def _fetch_ticker_from_batch(ticker: str) -> dict[str, Any] | None:
+    """Look up fundamental data for a single ticker from the batch cache.
+
+    This replaces the old _fetch_ticker which made individual API calls to
+    Eastmoney's deprecated RPT_F10_FINANCE_MAINFIN_INDEX and RPT_F10_EH_HOLDERS.
+    """
     normalized = normalize_ticker(ticker)
-    finance = _request_report(
-        "RPT_F10_FINANCE_MAINFIN_INDEX",
-        normalized,
-        "SECUCODE,REPORT_DATE,ROEJQ,XSMLL,NETPROFIT,NETPROFIT_YOY",
-        request,
-    )
-    holders = _request_report(
-        "RPT_F10_EH_HOLDERS",
-        normalized,
-        "SECUCODE,REPORT_DATE,ORG_NUM,ORG_NUM_CHANGE",
-        request,
-    )
+    finance = _batch_finance_cache.get(normalized, {})
+    holders = _batch_holders_cache.get(normalized, {})
+
     if not finance and not holders:
         return None
-    latest = finance[0] if finance else {}
-    recent_finance = finance[:3]
-    profits = [_number(_value(row, "NETPROFIT", "NET_PROFIT", "netprofit")) for row in recent_finance]
-    profits += [np.nan] * (3 - len(profits))
-    holding_numbers = [_number(_value(row, "ORG_NUM", "ORGNUM", "INSTITUTION_NUM")) for row in holders[:4]]
-    finite_holdings = [value for value in holding_numbers if np.isfinite(value)]
-    increasing = len(finite_holdings) >= 2 and finite_holdings[0] > finite_holdings[-1]
-    periods = 0.0
-    if increasing:
-        periods = float(sum(current > following for current, following in zip(finite_holdings, finite_holdings[1:])))
-    trend = "increasing" if increasing else "not_increasing"
+
+    org_change = holders.get("OrgNumChange", np.nan)
+    org_num = holders.get("OrgNum", np.nan)
+
+    # Determine institutional holding trend
+    if np.isfinite(org_change) and org_change > 0:
+        trend = "increasing"
+        periods = float(org_change)
+    else:
+        trend = "not_increasing"
+        periods = 0.0
+
     return {
         "Ticker": normalized,
-        "Industry": np.nan,
-        "ROE": _number(_value(latest, "ROEJQ", "ROE", "ROE_AVG")),
-        "GrossMargin": _number(_value(latest, "XSMLL", "GROSS_MARGIN", "GROSSPROFIT_MARGIN")),
+        "Industry": finance.get("Industry", ""),
+        "ROE": finance.get("ROE", np.nan),
+        "GrossMargin": finance.get("GrossMargin", np.nan),
         "InstitutionHoldingTrend": trend,
-        "InstitutionHoldingPeriods": periods if periods else _periods_from_trend(_value(holders[0], "ORG_NUM_CHANGE") if holders else None),
-        "NetProfitY1": profits[0],
-        "NetProfitY2": profits[1],
-        "NetProfitY3": profits[2],
+        "InstitutionHoldingPeriods": periods,
+        "NetProfitY1": finance.get("NetProfit", np.nan),
+        "NetProfitY2": np.nan,
+        "NetProfitY3": np.nan,
         "IndustryGrossMarginPercentile": np.nan,
     }
 
@@ -260,13 +306,18 @@ def _fetch_fundamental_row(
     request: Callable[..., Any] | None,
     industries: Mapping[str, str],
 ) -> dict[str, Any] | None:
+    """Fetch fundamental data for a single ticker from the batch cache."""
     try:
-        row = _fetch_ticker(ticker, request)
-    except (OSError, ValueError, TypeError, KeyError, requests.RequestException) as exc:
+        row = _fetch_ticker_from_batch(ticker)
+    except Exception as exc:
         logger.debug("基本面获取失败 %s: %s", ticker, exc)
         return None
     if row is not None:
-        row["Industry"] = industries.get(ticker, "")
+        # Industry from the AKShare batch data takes priority;
+        # fall back to the industry_by_ticker mapping provided by downloader.
+        industry_from_batch = row.get("Industry", "")
+        if not industry_from_batch or str(industry_from_batch).strip() == "":
+            row["Industry"] = industries.get(ticker, "")
     return row
 
 
@@ -277,6 +328,12 @@ def refresh_fundamental_data(
     industry_by_ticker: Mapping[str, str] | None = None,
     workers: int | None = None,
 ) -> Path:
+    """Refresh fundamental data for all tickers.
+
+    Uses AKShare batch APIs (stock_yjbb_em + stock_institute_hold) to fetch
+    financial indicators and institutional holdings in just 2 API calls instead
+    of making individual requests per ticker.
+    """
     existing = _read_frame(_CACHE_PATH)
     fallback = _configured_frame()
     industries = {
@@ -302,6 +359,11 @@ def refresh_fundamental_data(
         if not ticker.split(".", 1)[0].startswith(("15", "16", "50", "51", "56", "58"))
     ]
     total = len(symbols)
+
+    # Prefetch batch data via AKShare (2 API calls total, regardless of ticker count)
+    _clear_batch_cache()
+    _prefetch_batch_data()
+
     worker_count = min(
         total,
         max(1, int(workers if workers is not None else FUNDAMENTAL_DOWNLOAD_THREADS)),
@@ -362,7 +424,7 @@ def refresh_fundamental_data(
                     completed += 1
                     try:
                         row = future.result()
-                    except (OSError, ValueError, TypeError, KeyError, requests.RequestException) as exc:
+                    except Exception as exc:
                         logger.debug("基本面工作线程失败：%s", exc)
                         row = None
                     if row is None:
@@ -373,6 +435,9 @@ def refresh_fundamental_data(
                         completed, total, len(rows), unavailable
                     )
                     submit_next()
+
+    _clear_batch_cache()
+
     downloaded = pd.DataFrame(rows, columns=FUNDAMENTAL_COLUMNS)
     combined = pd.concat([fallback, existing], ignore_index=True)
     if not downloaded.empty:

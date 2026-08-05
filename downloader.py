@@ -84,7 +84,7 @@ def _log_download_progress(
 
 
 _HTTP = requests.Session()
-_HTTP.trust_env = True
+_HTTP.trust_env = False  # 绕过系统代理，避免代理拦截东方财富 API 请求
 _HTTP.headers.update({"User-Agent": "Mozilla/5.0"})
 
 # 使用带重试机制的 HTTPAdapter，自动处理网络波动导致的连接失败
@@ -896,7 +896,7 @@ def _download_from_tencent(
         oldest_date = pd.Timestamp(str(batch[0][0])).date()
         if oldest_date <= start_limit.date() or oldest_date >= end_date.date():
             break
-        end_date = datetime.combine(oldest_date, datetime.min.time(), timezone.utc) - timedelta(days=1)
+        end_date = datetime.combine(oldest_date, datetime.min.time()) - timedelta(days=1)
         if len(batch) < 640:
             break
     if not rows:
@@ -1157,21 +1157,21 @@ _DATA_SOURCE_LABELS = {
 }
 
 # Keep provider selection and fallback order in one place so the CLI, cache,
-# and download paths share identical semantics.  AkShare is intentionally
-# first for the automatic route, with the direct providers available when a
-# third-party endpoint is temporarily unavailable.
+# and download paths share identical semantics.  Sina and Tencent are
+# preferred as primary sources since they are more reliably accessible from
+# outside mainland China; AkShare/Eastmoney serve as fallbacks.
 _DATA_SOURCE_CANDIDATES = {
-    "auto": ("akshare", "eastmoney", "sina", "tencent"),
-    "akshare": ("akshare", "eastmoney", "sina", "tencent"),
-    "eastmoney": ("eastmoney", "akshare", "sina", "tencent"),
-    "sina": ("sina", "akshare", "eastmoney", "tencent"),
-    "tencent": ("tencent", "akshare", "eastmoney", "sina"),
+    "auto": ("sina", "tencent", "akshare", "eastmoney"),
+    "akshare": ("akshare", "sina", "tencent", "eastmoney"),
+    "eastmoney": ("eastmoney", "sina", "tencent", "akshare"),
+    "sina": ("sina", "tencent", "akshare", "eastmoney"),
+    "tencent": ("tencent", "sina", "akshare", "eastmoney"),
 }
 
 # Some upstream adapters are less tolerant of a wide concurrent fan-out.
 # DOWNLOAD_THREADS remains the global ceiling configured by the user.
 _SOURCE_DOWNLOAD_WORKER_CAPS = {
-    "auto": 4,
+    "auto": 8,
     "akshare": 4,
     "sina": 8,
     "tencent": 8,
