@@ -4,7 +4,9 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -16,9 +18,11 @@ import requests
 from config import (
     CACHE_DIR,
     DOWNLOAD_RATE_LIMIT_PAUSE,
-    DOWNLOAD_RETRIES,
-    DOWNLOAD_TIMEOUT,
     FUNDAMENTAL_DATA_PATH,
+    FUNDAMENTAL_DOWNLOAD_RETRIES,
+    FUNDAMENTAL_DOWNLOAD_THREADS,
+    FUNDAMENTAL_DOWNLOAD_TIMEOUT,
+    FUNDAMENTAL_PROGRESS_HEARTBEAT_SECONDS,
 )
 from downloader import normalize_ticker
 
@@ -43,15 +47,40 @@ _EASTMONEY_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 _HTTP = requests.Session()
 _HTTP.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
 _LAST_REQUEST_AT = 0.0
+_REQUEST_RATE_LOCK = threading.Lock()
 
 
 def _wait_for_slot() -> None:
     global _LAST_REQUEST_AT
-    now = time.monotonic()
-    delay = DOWNLOAD_RATE_LIMIT_PAUSE - (now - _LAST_REQUEST_AT)
-    if delay > 0:
-        time.sleep(delay)
-    _LAST_REQUEST_AT = time.monotonic()
+    with _REQUEST_RATE_LOCK:
+        now = time.monotonic()
+        delay = DOWNLOAD_RATE_LIMIT_PAUSE - (now - _LAST_REQUEST_AT)
+        if delay > 0:
+            time.sleep(delay)
+        _LAST_REQUEST_AT = time.monotonic()
+
+
+def _log_fundamental_progress(
+    completed: int,
+    total: int,
+    updated: int,
+    unavailable: int,
+    force: bool = False,
+) -> None:
+    interval = max(1, total // 100)
+    if (
+        force
+        or completed == 0
+        or completed == total
+        or completed % interval == 0
+    ):
+        logger.info(
+            "FUNDAMENTAL progress: %d/%d (%d updated, %d unavailable).",
+            completed,
+            total,
+            updated,
+            unavailable,
+        )
 
 
 def _number(value: Any) -> float:
@@ -97,10 +126,14 @@ def _request_report(report_name: str, secucode: str, columns: str, request: Call
         "client": "WEB",
     }
     last_error: Exception | None = None
-    for attempt in range(DOWNLOAD_RETRIES + 1):
+    for attempt in range(FUNDAMENTAL_DOWNLOAD_RETRIES + 1):
         try:
             _wait_for_slot()
-            response = requester(_EASTMONEY_URL, params=params, timeout=DOWNLOAD_TIMEOUT)
+            response = requester(
+                _EASTMONEY_URL,
+                params=params,
+                timeout=FUNDAMENTAL_DOWNLOAD_TIMEOUT,
+            )
             response.raise_for_status()
             payload = response.json()
             result = payload.get("result") if isinstance(payload, dict) else None
@@ -108,7 +141,7 @@ def _request_report(report_name: str, secucode: str, columns: str, request: Call
             return data if isinstance(data, list) else []
         except (requests.RequestException, ValueError, TypeError, KeyError, AttributeError) as exc:
             last_error = exc
-            if attempt < DOWNLOAD_RETRIES:
+            if attempt < FUNDAMENTAL_DOWNLOAD_RETRIES:
                 time.sleep(2**attempt)
     if last_error is not None:
         raise last_error
@@ -222,11 +255,27 @@ def _industry_margin_percentiles(frame: pd.DataFrame) -> pd.Series:
     ).where(margins.notna())
 
 
+def _fetch_fundamental_row(
+    ticker: str,
+    request: Callable[..., Any] | None,
+    industries: Mapping[str, str],
+) -> dict[str, Any] | None:
+    try:
+        row = _fetch_ticker(ticker, request)
+    except (OSError, ValueError, TypeError, KeyError, requests.RequestException) as exc:
+        logger.debug("基本面获取失败 %s: %s", ticker, exc)
+        return None
+    if row is not None:
+        row["Industry"] = industries.get(ticker, "")
+    return row
+
+
 def refresh_fundamental_data(
     tickers: list[str],
     force: bool = False,
     request: Callable[..., Any] | None = None,
     industry_by_ticker: Mapping[str, str] | None = None,
+    workers: int | None = None,
 ) -> Path:
     existing = _read_frame(_CACHE_PATH)
     fallback = _configured_frame()
@@ -244,19 +293,86 @@ def refresh_fundamental_data(
         and not existing.empty
         and (not industries or set(industries).issubset(known_industries))
     ):
+        logger.info("基本面缓存已是本季度版本，跳过刷新。")
         return _CACHE_PATH
+
+    symbols = [
+        ticker
+        for ticker in dict.fromkeys(normalize_ticker(value) for value in tickers)
+        if not ticker.split(".", 1)[0].startswith(("15", "16", "50", "51", "56", "58"))
+    ]
+    total = len(symbols)
+    worker_count = min(
+        total,
+        max(1, int(workers if workers is not None else FUNDAMENTAL_DOWNLOAD_THREADS)),
+    ) if total else 0
+    logger.info(
+        "开始刷新基本面数据：%d 只股票，%d 个并发请求。",
+        total,
+        worker_count,
+    )
     rows: list[dict[str, Any]] = []
-    for ticker in dict.fromkeys(normalize_ticker(value) for value in tickers):
-        if ticker.split(".", 1)[0].startswith(("15", "16", "50", "51", "56", "58")):
-            continue
-        try:
-            row = _fetch_ticker(ticker, request)
-        except (OSError, ValueError, TypeError, KeyError, requests.RequestException) as exc:
-            logger.warning("基本面获取失败 %s: %s", ticker, exc)
-            row = None
-        if row is not None:
-            row["Industry"] = industries.get(ticker, "")
-            rows.append(row)
+    unavailable = 0
+    completed = 0
+    _log_fundamental_progress(completed, total, len(rows), unavailable)
+
+    if worker_count <= 1:
+        for ticker in symbols:
+            row = _fetch_fundamental_row(ticker, request, industries)
+            completed += 1
+            if row is None:
+                unavailable += 1
+            else:
+                rows.append(row)
+            _log_fundamental_progress(completed, total, len(rows), unavailable)
+    elif symbols:
+        max_pending = max(worker_count * 2, worker_count)
+        ticker_iter = iter(symbols)
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            futures: dict[Any, str] = {}
+
+            def submit_next() -> bool:
+                try:
+                    ticker = next(ticker_iter)
+                except StopIteration:
+                    return False
+                futures[pool.submit(_fetch_fundamental_row, ticker, request, industries)] = ticker
+                return True
+
+            for _ in range(min(max_pending, total)):
+                submit_next()
+
+            while futures:
+                done, _ = wait(
+                    futures,
+                    timeout=FUNDAMENTAL_PROGRESS_HEARTBEAT_SECONDS,
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    _log_fundamental_progress(
+                        completed,
+                        total,
+                        len(rows),
+                        unavailable,
+                        force=True,
+                    )
+                    continue
+                for future in done:
+                    futures.pop(future)
+                    completed += 1
+                    try:
+                        row = future.result()
+                    except (OSError, ValueError, TypeError, KeyError, requests.RequestException) as exc:
+                        logger.debug("基本面工作线程失败：%s", exc)
+                        row = None
+                    if row is None:
+                        unavailable += 1
+                    else:
+                        rows.append(row)
+                    _log_fundamental_progress(
+                        completed, total, len(rows), unavailable
+                    )
+                    submit_next()
     downloaded = pd.DataFrame(rows, columns=FUNDAMENTAL_COLUMNS)
     combined = pd.concat([fallback, existing], ignore_index=True)
     if not downloaded.empty:
@@ -275,6 +391,12 @@ def refresh_fundamental_data(
         combined
     )
     _write_frame(combined)
+    logger.info(
+        "基本面刷新完成：%d/%d 只股票已更新，%d 只暂不可用。",
+        len(rows),
+        total,
+        unavailable,
+    )
     return _CACHE_PATH
 
 
