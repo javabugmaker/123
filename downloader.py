@@ -1029,10 +1029,32 @@ def _download_from_eastmoney(
 
 
 _DATA_SOURCE_LABELS = {
+    "auto": "自动优选",
     "akshare": "AkShare",
     "eastmoney": "东方财富",
     "sina": "新浪",
     "tencent": "腾讯",
+}
+
+# Keep provider selection and fallback order in one place so the CLI, cache,
+# and download paths share identical semantics.  AkShare is intentionally
+# first for the automatic route, with the direct providers available when a
+# third-party endpoint is temporarily unavailable.
+_DATA_SOURCE_CANDIDATES = {
+    "auto": ("akshare", "eastmoney", "sina", "tencent"),
+    "akshare": ("akshare", "eastmoney", "sina", "tencent"),
+    "eastmoney": ("eastmoney", "akshare", "sina", "tencent"),
+    "sina": ("sina", "akshare", "eastmoney", "tencent"),
+    "tencent": ("tencent", "akshare", "eastmoney", "sina"),
+}
+
+# Some upstream adapters are less tolerant of a wide concurrent fan-out.
+# DOWNLOAD_THREADS remains the global ceiling configured by the user.
+_SOURCE_DOWNLOAD_WORKER_CAPS = {
+    "auto": 4,
+    "akshare": 4,
+    "sina": 8,
+    "tencent": 8,
 }
 
 
@@ -1045,6 +1067,16 @@ def normalize_data_source(source: str) -> str:
 
 def get_data_source_label(source: str) -> str:
     return _DATA_SOURCE_LABELS[normalize_data_source(source)]
+
+
+def _download_worker_count(source: str, total: int) -> int:
+    """Return a safe, source-aware worker count for a batch download."""
+    if total <= 0:
+        return 0
+    selected = normalize_data_source(source)
+    configured = max(1, int(DOWNLOAD_THREADS))
+    source_cap = _SOURCE_DOWNLOAD_WORKER_CAPS.get(selected, configured)
+    return min(total, configured, source_cap)
 
 
 def _download_single(
@@ -1060,13 +1092,7 @@ def _download_single(
         "sina": _download_from_sina,
         "tencent": _download_from_tencent,
     }
-    fallback_sources = {
-        "akshare": ("eastmoney", "sina", "tencent"),
-        "eastmoney": ("akshare", "sina", "tencent"),
-        "sina": ("akshare", "eastmoney", "tencent"),
-        "tencent": ("akshare", "eastmoney", "sina"),
-    }
-    for candidate in (selected, *fallback_sources[selected]):
+    for candidate in _DATA_SOURCE_CANDIDATES[selected]:
         loader = loaders[candidate]
         try:
             frame = loader(ticker, start_date=start_date)
@@ -1079,7 +1105,13 @@ def _download_single(
             )
             continue
         if frame is not None and not frame.empty:
-            if candidate != selected:
+            if selected == "auto":
+                logger.info(
+                    "自动优选已使用%s获取 %s 的数据。",
+                    get_data_source_label(candidate),
+                    ticker,
+                )
+            elif candidate != selected:
                 logger.info(
                     "%s未返回 %s 的数据，已回退至%s并获取成功。",
                     get_data_source_label(selected),
@@ -1177,8 +1209,8 @@ def download_batch(
     """
     Download data for a list of tickers using ThreadPoolExecutor.
 
-    All tickers are submitted at once — the pool's max_workers threads
-    pull continuously from the queue with no gaps between batches.
+    A bounded queue keeps memory stable while workers pull continuously.
+    The active source determines a conservative concurrency ceiling.
 
     Args:
         tickers: List of TickerInfo.
@@ -1201,10 +1233,12 @@ def download_batch(
 
     total = len(symbols)
     skipped_delisted = 0
+    selected_source = normalize_data_source(source)
+    worker_count = _download_worker_count(selected_source, total)
 
     if not total:
         _log_download_progress(0, 0, 0, 0)
-    elif DOWNLOAD_THREADS <= 1:
+    elif worker_count <= 1:
         for completed, sym in enumerate(
             tqdm(symbols, desc=desc, unit="ticker", disable=not sys.stderr.isatty()),
             start=1,
@@ -1212,7 +1246,7 @@ def download_batch(
             try:
                 _wait_for_download_slot()
                 df = download_ticker(
-                    sym, force=force, source=source, cache_first=cache_first
+                    sym, force=force, source=selected_source, cache_first=cache_first
                 )
                 if df is not None and not df.empty:
                     results[sym] = df
@@ -1222,14 +1256,14 @@ def download_batch(
                 skipped_delisted += 1
             _log_download_progress(completed, total, len(results), skipped_delisted)
     else:
-        max_pending = max(DOWNLOAD_THREADS * 2, DOWNLOAD_THREADS)
+        max_pending = max(worker_count * 2, worker_count)
         symbol_iter = iter(symbols)
-        with ThreadPoolExecutor(max_workers=DOWNLOAD_THREADS) as pool:
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
             futures: dict[Any, str] = {}
 
             def download_scheduled(sym: str) -> pd.DataFrame | None:
                 _wait_for_download_slot()
-                return download_ticker(sym, force, source, cache_first)
+                return download_ticker(sym, force, selected_source, cache_first)
 
             def submit_next() -> bool:
                 try:
@@ -1270,7 +1304,9 @@ def download_batch(
                         submit_next()
 
     logger.info(
-        "Download batch complete: %d/%d tickers succeeded, %d delisted/no-data skipped.",
+        "Download batch complete (%s, %d workers): %d/%d tickers succeeded, %d delisted/no-data skipped.",
+        get_data_source_label(selected_source),
+        worker_count,
         len(results),
         total,
         skipped_delisted,
