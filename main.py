@@ -80,6 +80,14 @@ def _configure_logging(verbose: bool = False) -> None:
     root.info("Logging to %s", LOG_DIR)
 
 
+def _fundamental_industry_map(tickers: list[TickerInfo]) -> dict[str, str]:
+    return {
+        normalize_ticker(item.ticker): str(item.industry).strip()
+        for item in tickers
+        if item.ticker and str(item.industry).strip()
+    }
+
+
 # ======================================================================
 # CLI Commands
 # ======================================================================
@@ -134,6 +142,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
             fundamental_path = refresh_fundamental_data(
                 [ticker.ticker for ticker in stock_universe],
                 force=FUNDAMENTAL_REFRESH_FORCE,
+                industry_by_ticker=_fundamental_industry_map(stock_universe),
             )
         except (OSError, ValueError, TypeError) as exc:
             logger.warning("基本面刷新失败，继续使用现有数据：%s", exc)
@@ -199,6 +208,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             fundamental_path = refresh_fundamental_data(
                 [ticker.ticker for ticker in stock_universe],
                 force=FUNDAMENTAL_REFRESH_FORCE,
+                industry_by_ticker=_fundamental_industry_map(stock_universe),
             )
         except (OSError, ValueError, TypeError) as exc:
             logger.warning("基本面刷新失败，继续使用现有数据：%s", exc)
