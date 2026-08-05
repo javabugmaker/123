@@ -110,7 +110,14 @@ class ScannerLogicTests(TestCase):
             "data": {
                 "total": 4001,
                 "diff": [
-                    {"f12": f"{index:06d}", "f13": 0, "f14": f"股票{index}", "f20": 1e9}
+                    {
+                        "f12": f"{index:06d}",
+                        "f13": 0,
+                        "f14": f"股票{index}",
+                        "f20": 1e9,
+                        "f100": "软件服务",
+                        "f102": "北京板块",
+                    }
                     for index in range(100)
                 ],
             }
@@ -139,6 +146,8 @@ class ScannerLogicTests(TestCase):
 
         self.assertGreaterEqual(len(stocks), 4000)
         self.assertEqual(request_get.call_count, 41)
+        self.assertEqual(stocks[0].industry, "软件服务")
+        self.assertEqual(stocks[0].sector, "北京板块")
 
     @patch("downloader._eastmoney_get", side_effect=RuntimeError("接口不可用"))
     def test_static_stock_fallback_sets_stock_metadata(self, request_get):
