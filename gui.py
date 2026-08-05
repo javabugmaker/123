@@ -34,6 +34,7 @@ DISPLAY_VALUE_NAMES = {
     "tencent": "腾讯财经",
     "current_survivor_pool": "当前结果股票池",
 }
+DISPLAY_VALUE_CODES = {label: value for value, label in DISPLAY_VALUE_NAMES.items()}
 
 DATA_SOURCE_CODES = {
     "自动优选": "auto",
@@ -44,7 +45,7 @@ DATA_SOURCE_CODES = {
 }
 
 DATA_SOURCE_HINTS = {
-    "自动优选": "AkShare 优先，自动回退",
+    "自动优选": "新浪优先，自动回退",
     "AkShare": "失败时自动回退",
     "东方财富": "失败时自动回退",
     "新浪财经": "失败时自动回退",
@@ -314,10 +315,11 @@ class ScannerGUI:
         self.entry_filter = tk.StringVar(value="全部买点")
         self.no_resume = tk.BooleanVar(value=False)
         self.force_download = tk.BooleanVar(value=False)
+        self.cache_first = tk.BooleanVar(value=False)
         self.refresh_fundamentals = tk.BooleanVar(value=False)
         self.data_source = tk.StringVar(value="自动优选")
         self.data_source_label = tk.StringVar(
-            value="当前：自动优选 · AkShare 优先，自动回退"
+            value="当前：自动优选 · 新浪优先，自动回退"
         )
         self.status = tk.StringVar(value="就绪")
         self.result_summary = tk.StringVar(value="等待加载结果")
@@ -325,6 +327,11 @@ class ScannerGUI:
         self.filtered_tickers: list[str] = []
         self._csv_headers: list[str] = []
         self._csv_rows: list[list[str]] = []
+        self._csv_indexes: dict[str, int] = {}
+        self._csv_search_text: list[str] = []
+        self._display_headers: list[str] = []
+        self._display_indexes: list[int] = []
+        self._table_headers: tuple[str, ...] = ()
         self._csv_path: Path | None = None
         self._csv_mtime: tuple[int, int] | None = None
         self._filter_job: str | None = None
@@ -493,16 +500,19 @@ class ScannerGUI:
             controls, text="强制重新下载", variable=self.force_download
         ).grid(row=1, column=2, columnspan=2, pady=(12, 0), sticky=tk.W)
         ttk.Checkbutton(
-            controls, text="刷新基本面数据", variable=self.refresh_fundamentals
+            controls, text="快速扫描（优先缓存）", variable=self.cache_first
         ).grid(row=1, column=4, pady=(12, 0), sticky=tk.W)
+        ttk.Checkbutton(
+            controls, text="刷新基本面数据", variable=self.refresh_fundamentals
+        ).grid(row=1, column=5, pady=(12, 0), sticky=tk.W)
         self.start_button = ttk.Button(
             controls, text="▶ 开始扫描", style="Accent.TButton", command=self.start_scan
         )
-        self.start_button.grid(row=1, column=5, pady=(10, 0), sticky=tk.E)
+        self.start_button.grid(row=1, column=6, pady=(10, 0), sticky=tk.E)
         self.cancel_button = ttk.Button(
             controls, text="取消运行", command=self.cancel_running_task, state=tk.DISABLED
         )
-        self.cancel_button.grid(row=1, column=6, padx=(8, 0), pady=(10, 0), sticky=tk.W)
+        self.cancel_button.grid(row=1, column=7, padx=(8, 0), pady=(10, 0), sticky=tk.W)
 
         actions = ttk.Frame(self.root, style="Toolbar.TFrame", padding=(14, 8))
         actions.pack(fill=tk.X, padx=18, pady=(0, 2))
@@ -616,6 +626,9 @@ class ScannerGUI:
             command.append("--no-resume")
         if self.force_download.get():
             command.append("--force-download")
+        cache_first = getattr(self, "cache_first", None)
+        if cache_first is not None and cache_first.get() and not self.force_download.get():
+            command.append("--cache-first")
         refresh_fundamentals = getattr(self, "refresh_fundamentals", None)
         if refresh_fundamentals is not None and refresh_fundamentals.get():
             command.append("--refresh-fundamentals")
@@ -1304,6 +1317,11 @@ class ScannerGUI:
     def _clear_result_view(self) -> None:
         self._csv_headers = []
         self._csv_rows = []
+        self._csv_indexes = {}
+        self._csv_search_text = []
+        self._display_headers = []
+        self._display_indexes = []
+        self._table_headers = ()
         self._csv_path = None
         self._csv_mtime = None
         self.filtered_tickers = []
@@ -1325,38 +1343,58 @@ class ScannerGUI:
             self.result_summary.set("等待加载结果")
 
     def _row_matches_filters(
-        self, indexes: dict[str, int], row: list[str], query: str
+        self,
+        indexes: dict[str, int],
+        row: list[str],
+        query: str,
+        search_text: str | None = None,
+        filter_values: tuple[str, str, str, str, str] | None = None,
     ) -> bool:
-        values = row + [""] * max(0, len(self._csv_headers) - len(row))
+        values = (
+            row
+            if len(row) >= len(self._csv_headers)
+            else row + [""] * (len(self._csv_headers) - len(row))
+        )
 
         def value_for(column: str) -> str:
             index = indexes.get(column)
             return self._cell_text(values[index]) if index is not None and index < len(values) else ""
 
-        stage_value = self.stage_filter.get() if hasattr(self, "stage_filter") else "全部阶段"
-        entry_value = self.entry_filter.get() if hasattr(self, "entry_filter") else "全部买点"
-        reverse_display_names = {label: value for value, label in DISPLAY_VALUE_NAMES.items()}
+        if filter_values is None:
+            filter_values = (
+                self.sector_filter.get(),
+                self.industry_filter.get(),
+                self.quality_filter.get(),
+                self.stage_filter.get() if hasattr(self, "stage_filter") else "全部阶段",
+                self.entry_filter.get() if hasattr(self, "entry_filter") else "全部买点",
+            )
+        sector_value, industry_value, quality_value, stage_value, entry_value = filter_values
+        searchable = (
+            search_text
+            if search_text is not None
+            else " ".join(map(self._cell_text, values)).casefold()
+        )
         return (
-            (not query or query in " ".join(map(self._cell_text, values)).casefold())
+            (not query or query in searchable)
             and (
-                self.sector_filter.get() == "全部板块"
-                or value_for("Sector") == self.sector_filter.get()
+                sector_value == "全部板块" or value_for("Sector") == sector_value
             )
             and (
-                self.industry_filter.get() == "全部行业"
-                or value_for("Industry") == self.industry_filter.get()
+                industry_value == "全部行业"
+                or value_for("Industry") == industry_value
             )
             and (
-                self.quality_filter.get() == "全部质量"
-                or value_for("Quality") == self.quality_filter.get()
+                quality_value == "全部质量" or value_for("Quality") == quality_value
             )
             and (
                 stage_value == "全部阶段"
-                or value_for("SmartMoneyStage") == reverse_display_names.get(stage_value, stage_value)
+                or value_for("SmartMoneyStage")
+                == DISPLAY_VALUE_CODES.get(stage_value, stage_value)
             )
             and (
                 entry_value == "全部买点"
-                or value_for("EntrySignal") == reverse_display_names.get(entry_value, entry_value)
+                or value_for("EntrySignal")
+                == DISPLAY_VALUE_CODES.get(entry_value, entry_value)
             )
         )
 
@@ -1419,10 +1457,25 @@ class ScannerGUI:
             return
         indexes = {header: index for index, header in enumerate(self._csv_headers)}
         query = self.search.get().strip().casefold()
+        filter_values = (
+            self.sector_filter.get(),
+            self.industry_filter.get(),
+            self.quality_filter.get(),
+            self.stage_filter.get() if hasattr(self, "stage_filter") else "全部阶段",
+            self.entry_filter.get() if hasattr(self, "entry_filter") else "全部买点",
+        )
+        search_texts = getattr(self, "_csv_search_text", [])
+        if len(search_texts) != len(self._csv_rows):
+            search_texts = [
+                " ".join(map(self._cell_text, row)).casefold()
+                for row in self._csv_rows
+            ]
         rows = [
             row
-            for row in self._csv_rows
-            if self._row_matches_filters(indexes, row, query)
+            for row, search_text in zip(self._csv_rows, search_texts)
+            if self._row_matches_filters(
+                indexes, row, query, search_text, filter_values
+            )
         ]
         total, active, confirmed, breakout, actionable, average = self._market_overview_values(rows, indexes)
         dialog = tk.Toplevel(self.root)
@@ -1532,23 +1585,48 @@ class ScannerGUI:
         data_rows = self._csv_rows
         if not headers:
             return False
-        indexes = {header: index for index, header in enumerate(headers)}
+        indexes = getattr(self, "_csv_indexes", {})
+        if len(indexes) != len(headers) or any(
+            indexes.get(header) != index for index, header in enumerate(headers)
+        ):
+            indexes = {header: index for index, header in enumerate(headers)}
+        self._csv_indexes = indexes
         query = self.search.get().strip().casefold()
+        filter_values = (
+            self.sector_filter.get(),
+            self.industry_filter.get(),
+            self.quality_filter.get(),
+            self.stage_filter.get() if hasattr(self, "stage_filter") else "全部阶段",
+            self.entry_filter.get() if hasattr(self, "entry_filter") else "全部买点",
+        )
+        search_texts = getattr(self, "_csv_search_text", [])
+        if len(search_texts) != len(data_rows):
+            search_texts = [
+                " ".join(map(self._cell_text, row)).casefold() for row in data_rows
+            ]
+        self._csv_search_text = search_texts
         filtered = [
-            row for row in data_rows if self._row_matches_filters(indexes, row, query)
+            row
+            for row, search_text in zip(data_rows, search_texts)
+            if self._row_matches_filters(
+                indexes, row, query, search_text, filter_values
+            )
         ]
         ticker_index = indexes.get("Ticker", -1)
-        display_headers = [column for column in DISPLAY_COLUMNS if column in headers]
+        display_headers = getattr(self, "_display_headers", [])
+        if not display_headers or any(column not in headers for column in display_headers):
+            display_headers = [column for column in DISPLAY_COLUMNS if column in headers]
+        self._display_headers = display_headers
         sort_column = getattr(self, "_sort_column", None)
         sort_descending = getattr(self, "_sort_descending", True)
         if sort_column in indexes:
-            filtered.sort(
-                key=lambda row: self._sort_value(sort_column, row, indexes),
-                reverse=sort_descending,
-            )
-            filtered.sort(
-                key=lambda row: self._sort_value(sort_column, row, indexes)[0]
-            )
+            sortable_rows = [
+                (self._sort_value(sort_column, row, indexes), position, row)
+                for position, row in enumerate(filtered)
+            ]
+            sortable_rows.sort(key=lambda item: item[0][1], reverse=sort_descending)
+            sortable_rows.sort(key=lambda item: item[0][0])
+            filtered = [item[2] for item in sortable_rows]
         self.filtered_tickers = [
             self._cell_text(row[ticker_index]).upper()
             for row in filtered
@@ -1560,6 +1638,8 @@ class ScannerGUI:
         self.table.delete(*self.table.get_children())
         self._row_details.clear()
         self.table["columns"] = display_headers
+        table_headers = tuple(display_headers)
+        headers_changed = getattr(self, "_table_headers", ()) != table_headers
         for header in display_headers:
             anchor = (
                 tk.E
@@ -1580,14 +1660,30 @@ class ScannerGUI:
                 text=f"{COLUMN_NAMES.get(header, header)}{arrow}",
                 command=lambda column=header: self._sort_by_column(column),
             )
-            self.table.column(
-                header,
-                width=COLUMN_WIDTHS.get(header, 90),
-                anchor=anchor,
-                stretch=False,
-            )
-        header_indexes = [indexes[column] for column in display_headers]
+            if headers_changed:
+                self.table.column(
+                    header,
+                    width=COLUMN_WIDTHS.get(header, 90),
+                    anchor=anchor,
+                    stretch=False,
+                )
+        self._table_headers = table_headers
+        header_indexes = getattr(self, "_display_indexes", [])
+        if len(header_indexes) != len(display_headers) or any(
+            index != indexes[column]
+            for column, index in zip(display_headers, header_indexes)
+        ):
+            header_indexes = [indexes[column] for column in display_headers]
+        self._display_indexes = header_indexes
         quality_index = indexes.get("Quality")
+        asset_type_display_index = (
+            display_headers.index("AssetType") if "AssetType" in display_headers else None
+        )
+        passed_filters_display_index = (
+            display_headers.index("PassedFilters")
+            if "PassedFilters" in display_headers
+            else None
+        )
         page_count = max(1, (len(filtered) + MAX_RENDERED_ROWS - 1) // MAX_RENDERED_ROWS)
         self._current_page = min(self._current_page, page_count - 1)
         start_index = self._current_page * MAX_RENDERED_ROWS
@@ -1599,18 +1695,16 @@ class ScannerGUI:
                 self._format_table_value(header, values[index])
                 for header, index in zip(display_headers, header_indexes)
             ]
-            if "AssetType" in display_headers:
-                type_index = display_headers.index("AssetType")
-                display_values[type_index] = (
+            if asset_type_display_index is not None:
+                display_values[asset_type_display_index] = (
                     "ETF"
-                    if str(display_values[type_index]).strip().lower() == "etf"
+                    if str(display_values[asset_type_display_index]).strip().lower() == "etf"
                     else "股票"
                 )
-            if "PassedFilters" in display_headers:
-                passed_index = display_headers.index("PassedFilters")
-                display_values[passed_index] = (
+            if passed_filters_display_index is not None:
+                display_values[passed_filters_display_index] = (
                     "通过"
-                    if str(display_values[passed_index]).strip().lower()
+                    if str(display_values[passed_filters_display_index]).strip().lower()
                     in {"true", "1", "yes", "是"}
                     else "未通过"
                 )
@@ -1660,6 +1754,20 @@ class ScannerGUI:
                     return False
                 self._csv_headers = headers
                 self._csv_rows = rows[1:]
+                self._csv_indexes = {
+                    header: index for index, header in enumerate(self._csv_headers)
+                }
+                self._csv_search_text = [
+                    " ".join(map(self._cell_text, row)).casefold()
+                    for row in self._csv_rows
+                ]
+                self._display_headers = [
+                    column for column in DISPLAY_COLUMNS if column in self._csv_headers
+                ]
+                self._display_indexes = [
+                    self._csv_indexes[column] for column in self._display_headers
+                ]
+                self._table_headers = ()
                 self._csv_path = path
                 self._csv_mtime = modified_at
                 self._update_filter_values(self._csv_headers, self._csv_rows)
