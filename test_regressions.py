@@ -1382,6 +1382,27 @@ class RegressionTests(TestCase):
         self.assertTrue(pd.isna(missing_backtest["BacktestObjectiveValue"]))
         self.assertEqual(missing_backtest["CompositeScore"], 60.0)
 
+    def test_composite_score_ignores_one_or_two_backtest_samples(self):
+        with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
+            pd.DataFrame({
+                "Ticker": ["000001.SZ"],
+                "Score": [40.0],
+                "PassedFilters": [True],
+                "SignalCount": [4],
+            }).to_csv(Path(temp_dir) / "AllResults.csv", index=False, encoding="utf-8-sig")
+            summary = BacktestSummary(by_ticker=[{
+                "ticker": "000001.SZ",
+                "samples": 2,
+                "backtest_score": 100.0,
+                "objective_value": 10.0,
+            }])
+
+            apply_backtest_ranking(summary)
+            result = pd.read_csv(Path(temp_dir) / "AllResults.csv", encoding="utf-8-sig")
+
+        self.assertEqual(result.loc[0, "BacktestReliability"], 0.0)
+        self.assertEqual(result.loc[0, "CompositeScore"], 40.0)
+
     def test_institutional_score_uses_tempered_confirmation_multipliers(self):
         with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
             pd.DataFrame({
@@ -1432,6 +1453,28 @@ class RegressionTests(TestCase):
         self.assertEqual(result.loc[0, "InstitutionalScore"], 91.8)
         self.assertEqual(result.loc[0, "InstitutionalTier"], "A级机构启动")
 
+    def test_backtest_ranking_preserves_breakout_quality_factor(self):
+        with TemporaryDirectory() as temp_dir, patch("analytics.OUTPUT_DIR", Path(temp_dir)), patch("pandas.DataFrame.to_parquet"):
+            pd.DataFrame({
+                "Ticker": ["000001.SZ"],
+                "Score": [80.0],
+                "BreakoutQualityFactor": [0.2],
+                "PassedFilters": [True],
+                "SignalCount": [4],
+            }).to_csv(Path(temp_dir) / "AllResults.csv", index=False, encoding="utf-8-sig")
+            summary = BacktestSummary(by_ticker=[{
+                "ticker": "000001.SZ",
+                "samples": 10,
+                "backtest_score": 100.0,
+                "objective_value": 10.0,
+            }])
+
+            apply_backtest_ranking(summary)
+            result = pd.read_csv(Path(temp_dir) / "AllResults.csv", encoding="utf-8-sig")
+
+        self.assertEqual(result.loc[0, "BreakoutQualityFactor"], 0.2)
+        self.assertEqual(result.loc[0, "InstitutionalScore"], 71.4)
+
     def test_breakout_quality_rewards_confirmed_platform_breakout(self):
         frame = pd.DataFrame({
             "Close": [10.0] * 20 + [12.0],
@@ -1479,9 +1522,14 @@ class RegressionTests(TestCase):
         self.assertEqual(tier_report.loc[0, "InstitutionalTier"], "A级机构启动")
         self.assertIn("InstitutionalScore", ic_report["Factor"].tolist())
 
-    def test_institutional_tier_uses_trap_pool_below_65(self):
+    def test_institutional_tier_distinguishes_waiting_from_value_trap(self):
         result = ScanResult(ticker="000001.SZ", score=ScoreBreakdown(total=60.0))
 
+        frame = __import__("report")._results_to_dataframe([result])
+
+        self.assertEqual(frame.loc[0, "InstitutionalTier"], "D级等待确认")
+
+        result.value_trap_risk = 60.0
         frame = __import__("report")._results_to_dataframe([result])
 
         self.assertEqual(frame.loc[0, "InstitutionalTier"], "D级陷阱池")
