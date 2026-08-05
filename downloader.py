@@ -28,6 +28,11 @@ import requests
 from requests.adapters import HTTPAdapter
 from tqdm import tqdm
 
+try:
+    import akshare as ak
+except ImportError:  # Optional at import time so existing cache-only runs still work.
+    ak = None
+
 from config import (
     CACHE_DIR,
     DOWNLOAD_RATE_LIMIT_PAUSE,
@@ -847,6 +852,80 @@ def _download_from_tencent(
     )
 
 
+def _download_from_akshare(
+    ticker: str, start_date: datetime | None = None
+) -> pd.DataFrame | None:
+    """Download adjusted A-share or exchange-traded fund history via AkShare."""
+    if ak is None:
+        logger.debug("AkShare is not installed; skipping %s.", ticker)
+        return None
+    ticker = normalize_ticker(ticker)
+    code, suffix = ticker.split(".", 1)
+    end_date = datetime.now(timezone.utc).replace(tzinfo=None)
+    request_start = start_date or end_date - timedelta(days=HISTORY_YEARS * 365 + 30)
+    try:
+        if is_etf_ticker(ticker):
+            prefix = "sh" if suffix == "SH" else "sz"
+            try:
+                frame = ak.fund_etf_hist_sina(symbol=f"{prefix}{code}")
+            except Exception as exc:
+                logger.debug(
+                    "AkShare ETF Sina endpoint failed for %s: %s; trying Eastmoney.",
+                    ticker,
+                    exc,
+                )
+                frame = ak.fund_etf_hist_em(
+                    symbol=code,
+                    period="daily",
+                    start_date=request_start.strftime("%Y%m%d"),
+                    end_date=end_date.strftime("%Y%m%d"),
+                    adjust="qfq",
+                )
+        else:
+            frame = ak.stock_zh_a_hist(
+                symbol=code,
+                period="daily",
+                start_date=request_start.strftime("%Y%m%d"),
+                end_date=end_date.strftime("%Y%m%d"),
+                adjust="qfq",
+            )
+    except Exception as exc:  # Third-party providers raise several transport-specific errors.
+        logger.debug("AkShare failed for %s: %s", ticker, exc)
+        return None
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return None
+    normalized = frame.rename(
+        columns={
+            "日期": "Date",
+            "date": "Date",
+            "开盘": "Open",
+            "open": "Open",
+            "最高": "High",
+            "high": "High",
+            "最低": "Low",
+            "low": "Low",
+            "收盘": "Close",
+            "close": "Close",
+            "成交量": "Volume",
+            "volume": "Volume",
+        }
+    )
+    required = ["Date", "Open", "High", "Low", "Close", "Volume"]
+    if any(column not in normalized for column in required):
+        return None
+    normalized = normalized.loc[:, required].copy()
+    normalized["Date"] = pd.to_datetime(normalized["Date"], errors="coerce")
+    normalized = normalized.set_index("Date")
+    validated = _validate_ohlcv(normalized)
+    if validated is None:
+        return None
+    return (
+        validated.loc[validated.index >= pd.Timestamp(start_date)]
+        if start_date is not None
+        else validated
+    )
+
+
 def _fetch_eastmoney_realtime_price(ticker: str) -> float | None:
     code, suffix = ticker.upper().split(".", 1)
     market = "1" if suffix == "SH" else "0"
@@ -950,6 +1029,7 @@ def _download_from_eastmoney(
 
 
 _DATA_SOURCE_LABELS = {
+    "akshare": "AkShare",
     "eastmoney": "东方财富",
     "sina": "新浪",
     "tencent": "腾讯",
@@ -974,43 +1054,40 @@ def _download_single(
 ) -> pd.DataFrame | None:
     ticker = normalize_ticker(ticker)
     selected = normalize_data_source(source)
-    if selected == "eastmoney":
-        frame = _download_from_eastmoney(ticker, start_date=start_date)
-        if frame is not None and not frame.empty:
-            return frame
-        for fallback_source, loader in (
-            ("sina", _download_from_sina),
-            ("tencent", _download_from_tencent),
-        ):
-            try:
-                frame = loader(ticker, start_date=start_date)
-            except _DOWNLOAD_ERRORS as exc:
-                logger.debug(
-                    "数据源 %s 获取 %s 失败：%s",
-                    get_data_source_label(fallback_source),
-                    ticker,
-                    exc,
-                )
-                continue
-            if frame is not None and not frame.empty:
-                logger.info(
-                    "东方财富未返回 %s 的数据，已回退至%s并获取成功。",
-                    ticker,
-                    get_data_source_label(fallback_source),
-                )
-                return frame
-        return None
     loaders = {
+        "akshare": _download_from_akshare,
+        "eastmoney": _download_from_eastmoney,
         "sina": _download_from_sina,
         "tencent": _download_from_tencent,
     }
-    try:
-        return loaders[selected](ticker, start_date=start_date)
-    except _DOWNLOAD_ERRORS as exc:
-        logger.debug(
-            "数据源 %s 获取 %s 失败：%s", get_data_source_label(selected), ticker, exc
-        )
-        return None
+    fallback_sources = {
+        "akshare": ("eastmoney", "sina", "tencent"),
+        "eastmoney": ("akshare", "sina", "tencent"),
+        "sina": ("akshare", "eastmoney", "tencent"),
+        "tencent": ("akshare", "eastmoney", "sina"),
+    }
+    for candidate in (selected, *fallback_sources[selected]):
+        loader = loaders[candidate]
+        try:
+            frame = loader(ticker, start_date=start_date)
+        except _DOWNLOAD_ERRORS as exc:
+            logger.debug(
+                "数据源 %s 获取 %s 失败：%s",
+                get_data_source_label(candidate),
+                ticker,
+                exc,
+            )
+            continue
+        if frame is not None and not frame.empty:
+            if candidate != selected:
+                logger.info(
+                    "%s未返回 %s 的数据，已回退至%s并获取成功。",
+                    get_data_source_label(selected),
+                    ticker,
+                    get_data_source_label(candidate),
+                )
+            return frame
+    return None
 
 
 def download_ticker(
