@@ -144,7 +144,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
         try:
             fundamental_path = refresh_fundamental_data(
                 [ticker.ticker for ticker in stock_universe],
-                force=FUNDAMENTAL_REFRESH_FORCE,
+                force=bool(
+                    getattr(args, "refresh_fundamentals", False)
+                    or FUNDAMENTAL_REFRESH_FORCE
+                ),
                 industry_by_ticker=_fundamental_industry_map(stock_universe),
             )
         except (OSError, ValueError, TypeError) as exc:
@@ -210,7 +213,10 @@ def cmd_report(args: argparse.Namespace) -> int:
         try:
             fundamental_path = refresh_fundamental_data(
                 [ticker.ticker for ticker in stock_universe],
-                force=FUNDAMENTAL_REFRESH_FORCE,
+                force=bool(
+                    getattr(args, "refresh_fundamentals", False)
+                    or FUNDAMENTAL_REFRESH_FORCE
+                ),
                 industry_by_ticker=_fundamental_industry_map(stock_universe),
             )
         except (OSError, ValueError, TypeError) as exc:
