@@ -20,6 +20,10 @@ OUTPUT_DIR: Final[Path] = BASE_DIR / "output"
 LOG_DIR: Final[Path] = BASE_DIR / "logs"
 FUNDAMENTAL_DATA_PATH: str = ""
 FUNDAMENTAL_REFRESH_FORCE: bool = False
+FUNDAMENTAL_DOWNLOAD_THREADS: int = 8
+FUNDAMENTAL_DOWNLOAD_TIMEOUT: int = 8
+FUNDAMENTAL_DOWNLOAD_RETRIES: int = 1
+FUNDAMENTAL_PROGRESS_HEARTBEAT_SECONDS: float = 10.0
 
 # Ensure directories exist
 for _d in (CACHE_DIR, OUTPUT_DIR, LOG_DIR):
@@ -54,6 +58,7 @@ DOWNLOAD_RETRIES: int = 2  # retries on transient errors (401s, 429s, timeouts) 
 DOWNLOAD_TIMEOUT: int = (
     10  # seconds per ticker (lower = less accumulated delay on dead URLs)
 )
+DOWNLOAD_PROGRESS_HEARTBEAT_SECONDS: float = 15.0
 MARKET_CAP_CACHE_TTL_DAYS: int = 1
 UNIVERSE_CACHE_TTL_HOURS: int = 12
 MAX_DOWNLOAD_ERRORS: int = 2000  # abort if this many consecutive errors (harmless 404s from delisted tickers are common)
