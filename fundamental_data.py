@@ -7,7 +7,7 @@ import tempfile
 import time
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -26,6 +26,7 @@ logger = logging.getLogger("institution_scanner.fundamental_data")
 
 FUNDAMENTAL_COLUMNS = (
     "Ticker",
+    "Industry",
     "ROE",
     "GrossMargin",
     "InstitutionHoldingTrend",
@@ -143,6 +144,7 @@ def _fetch_ticker(ticker: str, request: Callable[..., Any] | None = None) -> dic
     trend = "increasing" if increasing else "not_increasing"
     return {
         "Ticker": normalized,
+        "Industry": np.nan,
         "ROE": _number(_value(latest, "ROEJQ", "ROE", "ROE_AVG")),
         "GrossMargin": _number(_value(latest, "XSMLL", "GROSS_MARGIN", "GROSSPROFIT_MARGIN")),
         "InstitutionHoldingTrend": trend,
@@ -161,9 +163,10 @@ def _read_frame(path: Path) -> pd.DataFrame:
         return pd.DataFrame(columns=FUNDAMENTAL_COLUMNS)
     for column in FUNDAMENTAL_COLUMNS:
         if column not in frame:
-            frame[column] = np.nan
+            frame[column] = "" if column == "Industry" else np.nan
     frame = frame.loc[:, FUNDAMENTAL_COLUMNS].copy()
     frame["Ticker"] = frame["Ticker"].map(normalize_ticker)
+    frame["Industry"] = frame["Industry"].fillna("").astype(str).str.strip()
     return frame.drop_duplicates("Ticker", keep="last")
 
 
@@ -195,10 +198,52 @@ def _write_frame(frame: pd.DataFrame) -> None:
         temp_path.unlink(missing_ok=True)
 
 
-def refresh_fundamental_data(tickers: list[str], force: bool = False, request: Callable[..., Any] | None = None) -> Path:
+def _industry_margin_percentiles(frame: pd.DataFrame) -> pd.Series:
+    margins = pd.to_numeric(
+        frame.get("GrossMargin", pd.Series(np.nan, index=frame.index)),
+        errors="coerce",
+    )
+    industries = (
+        frame.get("Industry", pd.Series("", index=frame.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    global_rank = margins.rank(method="min", ascending=False)
+    global_count = max(1, int(margins.notna().sum()) - 1)
+    global_percentile = (global_rank - 1.0) / global_count
+    peer_rank = margins.groupby(industries, dropna=False).rank(
+        method="min", ascending=False
+    )
+    peer_count = margins.groupby(industries, dropna=False).transform("count")
+    peer_percentile = (peer_rank - 1.0) / (peer_count - 1.0).clip(lower=1.0)
+    return peer_percentile.where(
+        industries.ne("") & peer_count.ge(3), global_percentile
+    ).where(margins.notna())
+
+
+def refresh_fundamental_data(
+    tickers: list[str],
+    force: bool = False,
+    request: Callable[..., Any] | None = None,
+    industry_by_ticker: Mapping[str, str] | None = None,
+) -> Path:
     existing = _read_frame(_CACHE_PATH)
     fallback = _configured_frame()
-    if not force and _is_current_quarter() and not existing.empty:
+    industries = {
+        normalize_ticker(ticker): str(industry).strip()
+        for ticker, industry in (industry_by_ticker or {}).items()
+        if str(industry).strip()
+    }
+    known_industries = set(
+        existing.loc[existing["Industry"].ne(""), "Ticker"].tolist()
+    )
+    if (
+        not force
+        and _is_current_quarter()
+        and not existing.empty
+        and (not industries or set(industries).issubset(known_industries))
+    ):
         return _CACHE_PATH
     rows: list[dict[str, Any]] = []
     for ticker in dict.fromkeys(normalize_ticker(value) for value in tickers):
@@ -210,6 +255,7 @@ def refresh_fundamental_data(tickers: list[str], force: bool = False, request: C
             logger.warning("基本面获取失败 %s: %s", ticker, exc)
             row = None
         if row is not None:
+            row["Industry"] = industries.get(ticker, "")
             rows.append(row)
     downloaded = pd.DataFrame(rows, columns=FUNDAMENTAL_COLUMNS)
     combined = pd.concat([fallback, existing], ignore_index=True)
@@ -220,8 +266,14 @@ def refresh_fundamental_data(tickers: list[str], force: bool = False, request: C
     if combined.empty:
         return _CACHE_PATH
     combined = combined.drop_duplicates("Ticker", keep="last")
-    margins = pd.to_numeric(combined["GrossMargin"], errors="coerce")
-    combined["IndustryGrossMarginPercentile"] = margins.rank(pct=True, ascending=False, method="average")
+    if industries:
+        combined["Industry"] = combined["Ticker"].map(industries).fillna(
+            combined["Industry"]
+        )
+    combined["Industry"] = combined["Industry"].fillna("").astype(str).str.strip()
+    combined["IndustryGrossMarginPercentile"] = _industry_margin_percentiles(
+        combined
+    )
     _write_frame(combined)
     return _CACHE_PATH
 
