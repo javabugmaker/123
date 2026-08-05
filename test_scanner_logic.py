@@ -145,7 +145,10 @@ class ScannerLogicTests(TestCase):
             pages.append(response)
         request_get.side_effect = [first] + pages
 
-        stocks = _fetch_a_share_stocks()
+        with patch("downloader._load_universe_cache", return_value=[]), patch(
+            "downloader._save_universe_cache"
+        ):
+            stocks = _fetch_a_share_stocks()
 
         self.assertGreaterEqual(len(stocks), 4000)
         self.assertEqual(request_get.call_count, 41)
@@ -182,7 +185,10 @@ class ScannerLogicTests(TestCase):
             }
         }
         request_get.return_value = response
-        etfs = _fetch_a_share_etfs()
+        with patch("downloader._load_universe_cache", return_value=[]), patch(
+            "downloader._save_universe_cache"
+        ):
+            etfs = _fetch_a_share_etfs()
         self.assertEqual([item.ticker for item in etfs], ["159915.SZ", "588000.SH"])
         self.assertTrue(all(item.is_etf for item in etfs))
 
@@ -221,7 +227,10 @@ class ScannerLogicTests(TestCase):
         }
         request_get.return_value = response
 
-        etfs = _fetch_a_share_etfs()
+        with patch("downloader._load_universe_cache", return_value=[]), patch(
+            "downloader._save_universe_cache"
+        ):
+            etfs = _fetch_a_share_etfs()
 
         self.assertEqual([item.name for item in etfs], ["沪深300 ETF"])
         self.assertEqual(etfs[0].asset_type, "etf")
@@ -234,7 +243,8 @@ class ScannerLogicTests(TestCase):
             ("511010.SH", "国债ETF"),
         ]
         try:
-            etfs = _fetch_a_share_etfs()
+            with patch("downloader._load_universe_cache", return_value=[]):
+                etfs = _fetch_a_share_etfs()
         finally:
             downloader._STATIC_A_ETFS = original
 
@@ -423,6 +433,64 @@ class ScannerLogicTests(TestCase):
             "2026-07-14",
         )
         save_cache.assert_called_once()
+
+    @patch("downloader._download_single")
+    @patch("downloader._load_cache")
+    @patch("downloader._cache_has_completed_daily_bar", return_value=True)
+    def test_completed_cache_skips_incremental_download(
+        self, cache_is_current, load_cache, download_single
+    ):
+        cached = pd.DataFrame(
+            {
+                "Open": [10.0],
+                "High": [10.5],
+                "Low": [9.5],
+                "Close": [10.0],
+                "Volume": [1000.0],
+            },
+            index=pd.to_datetime(["2026-08-05"]),
+        )
+        load_cache.return_value = cached
+
+        frame = downloader.download_ticker("000001.SZ")
+
+        self.assertIs(frame, cached)
+        cache_is_current.assert_called_once_with(cached)
+        download_single.assert_not_called()
+
+    @patch("downloader._eastmoney_get")
+    def test_batch_realtime_prices_cover_stocks_and_etfs(self, request_get):
+        response = Mock()
+        response.json.return_value = {
+            "data": {
+                "total": 2,
+                "diff": [
+                    {"f12": "000858", "f13": 0, "f43": 1280, "f60": 1275},
+                    {"f12": "510300", "f13": 1, "f43": 401, "f60": 400},
+                ],
+            }
+        }
+        request_get.return_value = response
+
+        prices = downloader._fetch_eastmoney_realtime_prices(
+            ["000858.SZ", "510300.SH"]
+        )
+
+        self.assertEqual(prices, {"000858.SZ": 12.8, "510300.SH": 4.01})
+        self.assertEqual(request_get.call_count, 2)
+
+    def test_etf_universe_reuses_fresh_local_snapshot(self):
+        rows = [{"f12": "510300", "f13": 1, "f14": "沪深300ETF", "f20": 1e9}]
+        with TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "etfs.json"
+            downloader._save_universe_cache(cache_path, rows)
+            with patch.object(downloader, "_ETF_UNIVERSE_CACHE_PATH", cache_path), patch(
+                "downloader._eastmoney_get"
+            ) as request_get:
+                etfs = _fetch_a_share_etfs()
+
+        self.assertEqual([item.ticker for item in etfs], ["510300.SH"])
+        request_get.assert_not_called()
 
     def test_save_cache_writes_parquet(self):
         frame = pd.DataFrame(
