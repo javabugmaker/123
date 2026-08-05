@@ -421,8 +421,8 @@ def _fetch_a_share_stocks() -> list[TickerInfo]:
                 ticker=f"{code}.{suffix}",
                 name=name,
                 exchange={"SH": "SSE", "SZ": "SZSE", "BJ": "BSE"}[suffix],
-                sector=str(row.get("f100") or ""),
-                industry=str(row.get("f102") or ""),
+                sector=str(row.get("f102") or ""),
+                industry=str(row.get("f100") or ""),
                 asset_type="stock",
                 market_cap=float(market_cap)
                 if isinstance(market_cap, (int, float)) and market_cap > 0
