@@ -60,6 +60,7 @@ COLUMN_NAMES = {
     "BacktestScore": "回测评分",
     "CompositeScore": "综合回测评分",
     "BacktestSamples": "回测样本数",
+    "BacktestReliability": "回测可靠度",
     "BacktestWinRate20D": "20日胜率",
     "BacktestWinRate60D": "60日胜率",
     "BacktestAverageReturn20D": "20日平均收益",
@@ -200,6 +201,7 @@ NUMBER_COLUMNS = {
     "ScoreConfidence",
     "ScoreMissingIndicators",
     "BacktestSamples",
+    "BacktestReliability",
     "Close",
     "DistToLow52W",
     "VolAccumDays",
@@ -245,12 +247,14 @@ PERCENTAGE_COLUMNS = {
     "ScoreConfidencePct",
     "BacktestWinRate20D",
     "BacktestWinRate60D",
+    "BacktestReliability",
 }
 FRACTION_PERCENTAGE_COLUMNS = {
     "ScoreCoverage",
     "ScoreConfidence",
     "BacktestWinRate20D",
     "BacktestWinRate60D",
+    "BacktestReliability",
 }
 FOUR_DECIMAL_COLUMNS = {"BacktestObjectiveValue"}
 MAX_RENDERED_ROWS = 500
@@ -1081,6 +1085,7 @@ class ScannerGUI:
             "CompositeScore",
             "BacktestObjectiveValue",
             "BacktestSamples",
+            "BacktestReliability",
             "BacktestWinRate20D",
             "BacktestWinRate60D",
             "BacktestAverageReturn20D",
