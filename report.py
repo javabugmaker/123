@@ -435,6 +435,7 @@ def export_all(
             f"Top{top_n_csv}Opportunity.csv",
             f"Top{top_n_csv}BreakoutCandidates.csv",
             f"Top{top_n_csv}EntryCandidates.csv",
+            f"Top{top_n_csv}TradeReady.csv",
             f"Top{top_n_csv}ValueTrapRisk.csv",
             f"Top{top_n_csv}SustainedSignals.csv",
         ):
@@ -460,6 +461,19 @@ def export_all(
     _atomic_write_csv(rankable.head(top_n_csv), csv_path)
     logger.info("Exported Top %d (%d rows) to %s", top_n_csv, len(rankable.head(top_n_csv)), csv_path)
 
+    trade_ready_path = OUTPUT_DIR / f"Top{top_n_csv}TradeReady.csv"
+    trade_ready = rankable.loc[
+        rankable.get(
+            "RankingEligibility", pd.Series("观察", index=rankable.index)
+        ).eq("推荐")
+    ]
+    _atomic_write_csv(trade_ready.head(top_n_csv), trade_ready_path)
+    logger.info(
+        "Exported %d trade-ready candidates to %s",
+        len(trade_ready.head(top_n_csv)),
+        trade_ready_path,
+    )
+
     parquet_path = OUTPUT_DIR / f"Top{top_n_parquet}.parquet"
     _atomic_write_parquet(rankable.head(top_n_parquet), parquet_path)
     logger.info("Exported Top %d to %s", top_n_parquet, parquet_path)
@@ -481,6 +495,23 @@ def export_all(
         int(rankable.get("BacktestConfidenceTier", pd.Series("", index=rankable.index)).isin(["样本不足", "低可信度"]).sum()),
         int(rankable.get("InstitutionHoldingStatus", pd.Series("", index=rankable.index)).eq("UNKNOWN").sum()),
         int(rankable.get("RankingEligibility", pd.Series("", index=rankable.index)).eq("风险过滤").sum()),
+    )
+    logger.info(
+        "交易状态：就绪=%d，观察=%d，行情过期=%d，质量未通过=%d。",
+        int(rankable.get("RankingEligibility", pd.Series("", index=rankable.index)).eq("推荐").sum()),
+        int(rankable.get("RankingEligibility", pd.Series("", index=rankable.index)).eq("观察").sum()),
+        int(rankable.get("DataFreshnessStatus", pd.Series("", index=rankable.index)).eq("过期").sum()),
+        int(
+            (
+                ~rankable.get(
+                    "QualityGate", pd.Series(True, index=rankable.index)
+                )
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .isin({"true", "1", "yes", "y", "是"})
+            ).sum()
+        ),
     )
 
     opportunity_path = OUTPUT_DIR / f"Top{top_n_csv}Opportunity.csv"
