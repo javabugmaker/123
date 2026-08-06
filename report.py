@@ -35,7 +35,7 @@ from config import (
     VALUE_TRAP_RISK_THRESHOLD,
 )
 from scanner import ScanReport, ScanResult
-from signal_lifecycle import enrich_signal_lifecycle
+from signal_lifecycle import enrich_signal_lifecycle, finalize_signal_ranking
 
 logger = logging.getLogger("institution_scanner.report")
 
@@ -147,6 +147,13 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "Style": r.style,
                 "Quality": _quality_label(r),
                 "InstitutionalTier": _institutional_tier(r),
+                "InstitutionalPercentile": round(r.institutional_percentile, 2) if np.isfinite(r.institutional_percentile) else None,
+                "InstitutionalRank": r.institutional_rank or None,
+                "InstitutionalTierReason": r.institutional_tier_reason,
+                "OverallRank": r.overall_rank or None,
+                "RankingScore": round(r.ranking_score, 4) if np.isfinite(r.ranking_score) else None,
+                "RankingEligibility": r.ranking_eligibility,
+                "RankingReason": r.ranking_reason,
                 "Close": r.close,
                 "Score": round(r.score.total, 2),
                 "BaseScore": round(r.base_score, 2) if np.isfinite(r.base_score) else None,
@@ -158,6 +165,10 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "EntrySignal": r.entry_signal,
                 "EntryZone": r.entry_zone,
                 "BreakoutBuyPrice": round(r.breakout_buy_price, 2) if np.isfinite(r.breakout_buy_price) else None,
+                "BreakoutVolumeRatio": round(r.breakout_volume_ratio, 4) if np.isfinite(r.breakout_volume_ratio) else None,
+                "BreakoutVolumeConfirmed": r.breakout_volume_confirmed,
+                "BreakoutFlowConfirmed": r.breakout_flow_confirmed,
+                "PriceBreakout": r.price_breakout,
                 "StopLoss": round(r.stop_loss, 2) if np.isfinite(r.stop_loss) else None,
                 "ValueTrapRisk": round(r.value_trap_risk, 2) if np.isfinite(r.value_trap_risk) else None,
                 "RiskWarning": r.risk_warning,
@@ -165,6 +176,11 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "BacktestScore": round(r.backtest_score, 2)
                 if np.isfinite(r.backtest_score)
                 else None,
+                "BacktestAdjustedScore": round(r.backtest_adjusted_score, 4)
+                if np.isfinite(r.backtest_adjusted_score)
+                else None,
+                "BacktestEffectiveWeight": round(r.backtest_effective_weight, 4),
+                "BacktestConfidenceTier": r.backtest_confidence_tier,
                 "CompositeScore": round(r.composite_score, 2)
                 if np.isfinite(r.composite_score)
                 else None,
@@ -197,6 +213,10 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "QualityGate": r.quality_gate,
                 "QualityReason": r.quality_reason,
                 "QualityDataAvailable": r.quality_data_available,
+                "InstitutionHoldingStatus": r.quality_institution_holding_status,
+                "QualityDataCompleteness": round(r.quality_data_completeness, 4),
+                "QualityGateReason": r.quality_gate_reason,
+                "QualityMultiplier": round(r.quality_multiplier, 4),
                 "BacktestSamples": r.backtest_samples,
                 "BacktestEffectiveSamples": round(r.backtest_effective_samples, 4),
                 "BacktestWinRate20D": round(r.backtest_win_rate_20d, 4)
@@ -210,6 +230,25 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 else None,
                 "BacktestAverageReturn60D": round(r.backtest_average_return_60d, 4)
                 if np.isfinite(r.backtest_average_return_60d)
+                else None,
+                "BacktestMedianReturn20D": round(r.backtest_median_return_20d, 4)
+                if np.isfinite(r.backtest_median_return_20d)
+                else None,
+                "BacktestMedianReturn60D": round(r.backtest_median_return_60d, 4)
+                if np.isfinite(r.backtest_median_return_60d)
+                else None,
+                "BacktestMaxDrawdown20D": round(r.backtest_max_drawdown_20d, 4)
+                if np.isfinite(r.backtest_max_drawdown_20d)
+                else None,
+                "BacktestMaxDrawdown60D": round(r.backtest_max_drawdown_60d, 4)
+                if np.isfinite(r.backtest_max_drawdown_60d)
+                else None,
+                "BacktestProfitFactor": round(r.backtest_profit_factor, 4)
+                if np.isfinite(r.backtest_profit_factor)
+                else None,
+                "BacktestSignalSpanDays": r.backtest_signal_span_days,
+                "BacktestReturnStd20D": round(r.backtest_return_std_20d, 4)
+                if np.isfinite(r.backtest_return_std_20d)
                 else None,
                 "BacktestObjectiveValue": round(r.backtest_objective_value, 4)
                 if np.isfinite(r.backtest_objective_value)
@@ -247,9 +286,17 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "DistToLow52W": round(r.dist_to_low_52w, 2)
                 if not np.isnan(r.dist_to_low_52w)
                 else None,
+                "DistToMA20": round(r.dist_to_ma20, 4) if np.isfinite(r.dist_to_ma20) else None,
+                "DistToMA50": round(r.dist_to_ma50, 4) if np.isfinite(r.dist_to_ma50) else None,
+                "RecentReturn20D": round(r.recent_return_20d, 4) if np.isfinite(r.recent_return_20d) else None,
+                "ATRExpansion": round(r.atr_expansion, 4) if np.isfinite(r.atr_expansion) else None,
                 "WyckoffPhase": r.wyckoff_phase,
                 "Stage": r.stage,
                 "MarketRegime": r.market_regime,
+                "MarketRegimeFast": r.market_regime_fast,
+                "MarketRegimeSlow": r.market_regime_slow,
+                "MarketRegimeConfidence": round(r.market_regime_confidence, 4),
+                "MarketRegimeReason": r.market_regime_reason,
                 "IndustryRelativeStrength": round(r.industry_relative_strength, 2)
                 if not np.isnan(r.industry_relative_strength)
                 else None,
@@ -273,6 +320,15 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "Consolidation": r.filter_details.get("consolidation", False),
                 "VolAccum": r.filter_details.get("volume_accumulation", False),
                 "VolContract": r.filter_details.get("volatility_contraction", False),
+                "ChaseRiskScore": round(r.chase_risk_score, 2),
+                "ChaseRiskLevel": r.chase_risk_level,
+                "ChaseRiskReason": r.chase_risk_reason,
+                "HardRiskFlag": r.hard_risk_flag,
+                "HardRiskPenalty": round(r.hard_risk_penalty, 4),
+                "HardRiskReason": r.hard_risk_reason,
+                "RankingPenaltyReason": r.ranking_penalty_reason,
+                "SignalAdjustmentReason": r.signal_adjustment_reason,
+                "OpportunityStage": r.opportunity_stage,
                 "Error": r.error if r.error else "",
             }
         )
@@ -281,18 +337,7 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
     if df.empty:
         return df
 
-    rank_score = pd.to_numeric(df["InstitutionalScore"], errors="coerce")
-    rank_score = rank_score.where(
-        np.isfinite(rank_score),
-        pd.to_numeric(df["FinalScore"], errors="coerce"),
-    )
-    rank_score = rank_score.fillna(pd.to_numeric(df["Score"], errors="coerce"))
-    df = df.assign(_RankScore=rank_score).sort_values(
-        ["PassedFilters", "_RankScore", "Score", "SignalCount"],
-        ascending=[False, False, False, False],
-        kind="mergesort",
-    ).drop(columns="_RankScore").reset_index(drop=True)
-    return df
+    return finalize_signal_ranking(df)
 
 
 # ======================================================================
@@ -396,32 +441,20 @@ def export_all(
             _atomic_write_csv(df, OUTPUT_DIR / name)
         return csv_path, parquet_path, full_csv, full_parquet_path
 
-    rankable_tickers = _results_to_dataframe(_rankable_results(results)).get(
-        "Ticker", pd.Series(dtype=str)
-    )
-    rankable = df.set_index("Ticker").reindex(rankable_tickers).reset_index()
-    if not rankable.empty:
-        rankable = rankable.assign(
-            _RankScore=pd.to_numeric(
-                rankable.get("InstitutionalScore", pd.Series(np.nan, index=rankable.index)),
-                errors="coerce",
-            )
-        )
-        rankable["_RankScore"] = rankable["_RankScore"].where(
-            np.isfinite(rankable["_RankScore"]),
-            pd.to_numeric(
-                rankable.get("FinalScore", pd.Series(np.nan, index=rankable.index)),
-                errors="coerce",
-            ),
-        )
-        rankable["_RankScore"] = rankable["_RankScore"].fillna(
-            pd.to_numeric(rankable.get("Score", pd.Series(0.0, index=rankable.index)), errors="coerce").fillna(0.0)
-        )
-        rankable = rankable.sort_values(
-            ["_RankScore", "TriggerScore", "BaseScore", "Score"],
-            ascending=False,
-            kind="mergesort",
-        ).drop(columns="_RankScore")
+    valid = df.loc[df.get("Error", pd.Series("", index=df.index)).fillna("").eq("")].copy()
+    passed = valid.loc[
+        valid.get("PassedFilters", pd.Series(False, index=valid.index)).astype(str).str.lower().isin({"true", "1", "yes", "y", "是"})
+    ]
+    rankable = passed if not passed.empty else valid
+    eligibility_order = rankable.get("RankingEligibility", pd.Series("观察", index=rankable.index)).map(
+        {"推荐": 2, "观察": 1, "风险过滤": 0}
+    ).fillna(0)
+    rankable = rankable.assign(_EligibilityOrder=eligibility_order).sort_values(
+        ["_EligibilityOrder", "RankingScore", "InstitutionalScore", "FinalScore", "Score"],
+        ascending=[False, False, False, False, False],
+        kind="mergesort",
+    ).drop(columns="_EligibilityOrder").reset_index(drop=True)
+    rankable["OverallRank"] = np.arange(1, len(rankable) + 1)
 
     csv_path = OUTPUT_DIR / f"Top{top_n_csv}.csv"
     _atomic_write_csv(rankable.head(top_n_csv), csv_path)
@@ -438,10 +471,21 @@ def export_all(
     full_parquet_path = OUTPUT_DIR / "AllResults.parquet"
     _atomic_write_parquet(df, full_parquet_path)
     logger.info("Exported all %d results to %s", len(df), full_parquet_path)
+    signal_counts = rankable.get("EntrySignal", pd.Series(dtype=str)).value_counts()
+    logger.info(
+        "最终候选：BUY_NOW=%d，BREAKOUT_CONFIRM=%d，WAIT_PULLBACK=%d，AVOID=%d；回测低可信度=%d，Quality UNKNOWN=%d，HardRisk过滤=%d。",
+        int(signal_counts.get("BUY_NOW", 0)),
+        int(signal_counts.get("BREAKOUT_CONFIRM", 0)),
+        int(signal_counts.get("WAIT_PULLBACK", 0)),
+        int(signal_counts.get("AVOID", 0)),
+        int(rankable.get("BacktestConfidenceTier", pd.Series("", index=rankable.index)).isin(["样本不足", "低可信度"]).sum()),
+        int(rankable.get("InstitutionHoldingStatus", pd.Series("", index=rankable.index)).eq("UNKNOWN").sum()),
+        int(rankable.get("RankingEligibility", pd.Series("", index=rankable.index)).eq("风险过滤").sum()),
+    )
 
     opportunity_path = OUTPUT_DIR / f"Top{top_n_csv}Opportunity.csv"
-    opportunity = df.sort_values(
-        ["FinalScore", "TriggerScore", "BaseScore"],
+    opportunity = rankable.sort_values(
+        ["RankingScore", "FinalScore", "TriggerScore"],
         ascending=False,
         kind="mergesort",
     ) if "FinalScore" in df.columns else df.sort_values(
@@ -461,7 +505,7 @@ def export_all(
         & df.get(
             "SmartMoneyStage", pd.Series("NONE", index=df.index)
         ).isin(["ACCUMULATION", "BREAKOUT"])
-    ].sort_values(["BreakoutScore", "FinalScore"], ascending=False, kind="mergesort")
+    ].sort_values(["RankingScore", "BreakoutScore"], ascending=False, kind="mergesort")
     _atomic_write_csv(trigger.head(top_n_csv), trigger_path)
     logger.info("Exported Top %d breakout candidates to %s", top_n_csv, trigger_path)
 
@@ -470,7 +514,7 @@ def export_all(
         df.get("EntrySignal", pd.Series("AVOID", index=df.index)).isin(
             ["BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"]
         )
-    ].sort_values(["EntryScore", "FinalScore"], ascending=False, kind="mergesort")
+    ].sort_values(["RankingScore", "EntryScore"], ascending=False, kind="mergesort")
     _atomic_write_csv(entry.head(top_n_csv), entry_path)
     logger.info("Exported Top %d entry candidates to %s", top_n_csv, entry_path)
 
