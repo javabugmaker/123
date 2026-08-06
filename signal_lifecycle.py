@@ -40,6 +40,9 @@ from config import (
     INSTITUTIONAL_TIER_TRAP_LABEL,
     INSTITUTIONAL_TIER_WAIT_LABEL,
     OUTPUT_DIR,
+    QUALITY_MULTIPLIER_FAIL,
+    QUALITY_MULTIPLIER_PASS,
+    QUALITY_MULTIPLIER_UNKNOWN,
     QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE,
     TRADE_READY_MIN_INSTITUTIONAL_SCORE,
     VALUE_TRAP_HARD_RISK_THRESHOLD,
@@ -187,6 +190,10 @@ def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
     trap = _number(result.get("ValueTrapRisk", pd.Series(0.0, index=result.index)))
     lifecycle = _text_series(result, "LifecycleStage", "未知")
     rsi = _number(result.get("RSI14", pd.Series(np.nan, index=result.index)), np.nan)
+    chase_risk = _number(
+        result.get("ChaseRiskScore", pd.Series(np.nan, index=result.index)),
+        np.nan,
+    )
     is_etf = _bool_series(result, "IsETF") | _text_series(
         result, "AssetType", ""
     ).str.lower().eq("etf")
@@ -256,6 +263,11 @@ def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
     rsi_block = rsi.ge(CHASE_RISK_RSI_HARD) & signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
     signal.loc[rsi_block] = "HOLD_WAIT"
     adjustments = _append_reason(adjustments, rsi_block, "RSI高位过热，停止追涨")
+    chase_block = chase_risk.ge(CHASE_RISK_HIGH_THRESHOLD) & signal.isin(
+        {"BUY_NOW", "BREAKOUT_CONFIRM"}
+    )
+    signal.loc[chase_block] = "HOLD_WAIT"
+    adjustments = _append_reason(adjustments, chase_block, "追高风险过高，停止追涨")
     quality_buy_block = quality_action_block & signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
     signal.loc[quality_buy_block & signal.eq("BUY_NOW")] = "WAIT_PULLBACK"
     signal.loc[quality_buy_block & signal.eq("BREAKOUT_CONFIRM")] = "PRICE_BREAKOUT"
@@ -267,11 +279,19 @@ def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
     adjustments = _append_reason(
         adjustments, stale_signal_block, "行情数据已过期，停止使用即时买点"
     )
+    operation_advice = _text_series(result, "OperationAdvice", "")
+    operation_advice.loc[signal.isin({"PRICE_BREAKOUT", "WAIT_VOLUME_CONFIRM"})] = (
+        "价格已突破，等待成交量确认，暂不追高。"
+    )
+    operation_advice.loc[signal.eq("HOLD_WAIT")] = "暂缓操作，等待风险或趋势条件改善。"
+    operation_advice.loc[signal.eq("AVOID")] = "暂不参与，等待风险解除。"
+    operation_advice.loc[stale_data] = "行情数据已过期，请刷新后再判断。"
     result["EntrySignal"] = signal
     result["BreakoutVolumeConfirmed"] = volume_confirmed
     result["BreakoutFlowConfirmed"] = flow_confirmed
     result["PriceBreakout"] = result.get("PriceBreakout", signal.isin({"PRICE_BREAKOUT", "BREAKOUT_CONFIRM"})).fillna(False)
     result["SignalAdjustmentReason"] = adjustments
+    result["OperationAdvice"] = operation_advice
     return result
 
 
@@ -279,7 +299,9 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     """Build compatible, risk-aware ranking fields without re-scoring factors."""
     if frame.empty:
         return frame
-    result = validate_signal_consistency(frame)
+    # Derive quality and chase-risk fields before the single validation pass so
+    # legacy/cache values cannot leave an otherwise invalid entry signal active.
+    result = frame.copy()
     if "Score" not in result:
         result["Score"] = 0.0
     if "FinalScore" not in result:
@@ -314,7 +336,9 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     any_unknown = status.eq("UNKNOWN") | ~(roe_available & margin_available & profit_available)
     result["QualityGate"] = ~known_fail
     result["QualityMultiplier"] = np.select(
-        [known_fail, any_unknown], [0.85, 0.95], default=1.0
+        [known_fail, any_unknown],
+        [QUALITY_MULTIPLIER_FAIL, QUALITY_MULTIPLIER_UNKNOWN],
+        default=QUALITY_MULTIPLIER_PASS,
     )
     quality_reason = _text_series(result, "QualityGateReason", "")
     quality_reason = quality_reason.where(~known_fail, "存在已确认质量未通过项")
@@ -379,6 +403,7 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     chase_reason.loc[lifecycle.isin({"派发", "DISTRIBUTION"})] = "派发风险"
     result["ChaseRiskReason"] = chase_reason
 
+    result = validate_signal_consistency(result)
     signal = _text_series(result, "EntrySignal", "AVOID").str.upper()
     trap = _number(result.get("ValueTrapRisk", pd.Series(0.0, index=result.index)))
     score_coverage = _number(result.get("ScoreCoverage", pd.Series(1.0, index=result.index)), 1.0)
