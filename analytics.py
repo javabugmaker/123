@@ -1188,10 +1188,11 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     ).mul(frame["QualityMultiplier"], axis=0).round(4)
     frame = finalize_signal_ranking(frame)
     frame.to_csv(path, index=False, encoding="utf-8-sig")
-    frame.head(top_n).to_csv(
-        OUTPUT_DIR / f"Top{top_n}.csv", index=False, encoding="utf-8-sig"
-    )
-    frame.head(200).to_parquet(OUTPUT_DIR / "Top200.parquet", index=False)
+    # Keep every GUI-facing candidate file in sync after a backtest recalculates
+    # scores.  The import is local to avoid the report/analytics import cycle.
+    from report import refresh_candidate_exports
+
+    refresh_candidate_exports(frame, top_n_csv=top_n, output_dir=OUTPUT_DIR)
     frame.to_parquet(OUTPUT_DIR / "AllResults.parquet", index=False)
 
 
