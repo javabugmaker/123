@@ -401,6 +401,8 @@ class RegressionTests(TestCase):
         self.assertEqual(scanner._format_table_value("BacktestWinRate60D", "0.625"), "62%")
         self.assertEqual(scanner._format_table_value("Score", "nan"), "—")
         self.assertEqual(scanner._format_table_value("QualityGate", "nan"), "未知")
+        self.assertEqual(scanner._format_table_value("PassedFilters", "True"), "通过")
+        self.assertEqual(scanner._format_table_value("PassedFilters", "None"), "未知")
         self.assertEqual(scanner._format_table_value("HardRiskFlag", "None"), "未知")
         self.assertEqual(scanner._quality_tag("强候选"), "quality-strong")
         self.assertEqual(scanner._quality_tag("候选"), "quality-candidate")
@@ -949,6 +951,88 @@ class RegressionTests(TestCase):
                 self.assertNotIn("samples", result.columns)
                 self.assertFalse(any(column.startswith("raw_objective_value") for column in result.columns))
                 self.assertEqual(int(result.loc[result["Ticker"] == "000001.SZ", "BacktestSamples"].iloc[0]), 4)
+
+    def test_apply_backtest_ranking_refreshes_all_gui_candidate_exports(self):
+        with TemporaryDirectory() as temp_dir, patch(
+            "analytics.OUTPUT_DIR", Path(temp_dir)
+        ), patch("pandas.DataFrame.to_parquet"), patch(
+            "report._atomic_write_parquet"
+        ):
+            pd.DataFrame({
+                "Ticker": ["000001.SZ", "000002.SZ"],
+                "Score": [100.0, 60.0],
+                "InstitutionalScore": [100.0, 60.0],
+                "PassedFilters": [True, False],
+                "IsETF": [True, True],
+                "EntrySignal": ["WAIT_PULLBACK", "BREAKOUT_CONFIRM"],
+                "BreakoutVolumeConfirmed": [False, True],
+                "BreakoutFlowConfirmed": [False, True],
+            }).to_csv(
+                Path(temp_dir) / "AllResults.csv", index=False, encoding="utf-8-sig"
+            )
+            (Path(temp_dir) / "Top50TradeReady.csv").write_text(
+                "Ticker\nSTALE.SZ\n", encoding="utf-8-sig"
+            )
+            summary = BacktestSummary(by_ticker=[{
+                "ticker": "000002.SZ", "samples": 1, "backtest_score": 0.0,
+            }])
+
+            apply_backtest_ranking(summary)
+
+            top = pd.read_csv(Path(temp_dir) / "Top50.csv", encoding="utf-8-sig")
+            trade_ready = pd.read_csv(
+                Path(temp_dir) / "Top50TradeReady.csv", encoding="utf-8-sig"
+            )
+            entry = pd.read_csv(
+                Path(temp_dir) / "Top50EntryCandidates.csv", encoding="utf-8-sig"
+            )
+
+        self.assertEqual(top["Ticker"].tolist(), ["000002.SZ", "000001.SZ"])
+        self.assertEqual(top["OverallRank"].tolist(), [1, 2])
+        self.assertEqual(trade_ready["Ticker"].tolist(), ["000002.SZ"])
+        self.assertIn("000002.SZ", entry["Ticker"].tolist())
+
+    def test_final_ranking_revalidates_newly_derived_quality_gate(self):
+        frame = pd.DataFrame({
+            "Ticker": ["000001.SZ"],
+            "Score": [90.0],
+            "InstitutionalScore": [90.0],
+            "EntrySignal": ["BUY_NOW"],
+            "QualityGate": [True],
+            "InstitutionHoldingPeriods": [2],
+            "InstitutionHoldingTrend": ["not_increasing"],
+        })
+
+        result = signal_lifecycle.finalize_signal_ranking(frame)
+
+        self.assertFalse(result.loc[0, "QualityGate"])
+        self.assertEqual(result.loc[0, "EntrySignal"], "WAIT_PULLBACK")
+        self.assertIn("质量门槛", result.loc[0, "SignalAdjustmentReason"])
+
+    def test_final_ranking_downgrades_high_chase_risk_breakout(self):
+        frame = pd.DataFrame({
+            "Ticker": ["000001.SZ"],
+            "Score": [90.0],
+            "InstitutionalScore": [90.0],
+            "EntrySignal": ["BREAKOUT_CONFIRM"],
+            "IsETF": [True],
+            "BreakoutVolumeConfirmed": [True],
+            "BreakoutFlowConfirmed": [True],
+            "RSI14": [77.9],
+            "DistToLow52W": [85.0],
+            "DistToMA20": [20.0],
+            "RecentReturn20D": [30.0],
+            "ATRExpansion": [2.0],
+            "LifecycleStage": ["趋势确认"],
+            "OperationAdvice": ["放量突破确认，可考虑跟随。"],
+        })
+
+        result = signal_lifecycle.finalize_signal_ranking(frame)
+
+        self.assertGreaterEqual(result.loc[0, "ChaseRiskScore"], 60.0)
+        self.assertEqual(result.loc[0, "EntrySignal"], "HOLD_WAIT")
+        self.assertIn("追高风险", result.loc[0, "SignalAdjustmentReason"])
+        self.assertEqual(result.loc[0, "OperationAdvice"], "暂缓操作，等待风险或趋势条件改善。")
     def test_resume_scan_restores_previous_results_with_missing_metrics(self):
         ticker = TickerInfo(ticker="000001.SZ")
         frame = pd.DataFrame({
@@ -2340,6 +2424,7 @@ class RegressionTests(TestCase):
         self.assertEqual(result.loc["STALE", "RankingEligibility"], "风险过滤")
         self.assertTrue(result.loc["STALE", "HardRiskFlag"])
         self.assertLessEqual(result.loc["STALE", "DataFreshnessFactor"], 0.5)
+        self.assertEqual(result.loc["STALE", "OperationAdvice"], "行情数据已过期，请刷新后再判断。")
 
     def test_quality_failure_cannot_keep_buy_now_as_trade_ready(self):
         frame = pd.DataFrame({
