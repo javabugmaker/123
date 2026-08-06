@@ -109,10 +109,10 @@ def _institutional_tier(result: ScanResult) -> str:
 
 def _rankable_results(results: list[ScanResult]) -> list[ScanResult]:
     valid = [r for r in results if not r.error]
-    passed = [r for r in valid if r.passed_filters]
-    candidates = passed if passed else valid
+
     def rank_score(result: ScanResult) -> float:
         for value in (
+            result.ranking_score,
             result.institutional_score,
             result.final_score,
             result.score.total,
@@ -121,11 +121,12 @@ def _rankable_results(results: list[ScanResult]) -> list[ScanResult]:
                 return float(value)
         return 0.0
 
+    eligibility_order = {"推荐": 2, "观察": 1, "风险过滤": 0}
     return sorted(
-        candidates,
+        valid,
         key=lambda r: (
+            eligibility_order.get(r.ranking_eligibility, 0),
             rank_score(r),
-            int(r.passed_filters),
             int(r.filter_details.get("signal_count", 0)),
         ),
         reverse=True,
@@ -367,6 +368,161 @@ def _atomic_write_parquet(df: pd.DataFrame, path: Path) -> None:
             temporary_path.unlink()
 
 
+def _rank_valid_candidates(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return valid results in the same order used by every candidate export."""
+    if frame.empty:
+        return frame.copy()
+    valid = frame.loc[
+        frame.get("Error", pd.Series("", index=frame.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .eq("")
+    ].copy()
+    if valid.empty:
+        return valid.reset_index(drop=True)
+
+    def sort_metric(column: str) -> pd.Series:
+        return (
+            pd.to_numeric(
+                valid.get(column, pd.Series(np.nan, index=valid.index)),
+                errors="coerce",
+            )
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(-np.inf)
+        )
+
+    eligibility = valid.get(
+        "RankingEligibility", pd.Series("观察", index=valid.index)
+    ).map({"推荐": 2, "观察": 1, "风险过滤": 0}).fillna(0)
+    ranked = valid.assign(
+        _EligibilityOrder=eligibility,
+        _RankingScore=sort_metric("RankingScore"),
+        _InstitutionalScore=sort_metric("InstitutionalScore"),
+        _FinalScore=sort_metric("FinalScore"),
+        _Score=sort_metric("Score"),
+    ).sort_values(
+        [
+            "_EligibilityOrder",
+            "_RankingScore",
+            "_InstitutionalScore",
+            "_FinalScore",
+            "_Score",
+        ],
+        ascending=False,
+        kind="mergesort",
+    ).drop(
+        columns=[
+            "_EligibilityOrder",
+            "_RankingScore",
+            "_InstitutionalScore",
+            "_FinalScore",
+            "_Score",
+        ]
+    ).reset_index(drop=True)
+    ranked["OverallRank"] = np.arange(1, len(ranked) + 1)
+    return ranked
+
+
+def _sort_export_rows(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
+    """Sort an export defensively so legacy CSVs with missing fields still load."""
+    available = [column for column in columns if column in frame.columns]
+    if not available:
+        return frame.copy()
+    return frame.sort_values(available, ascending=False, kind="mergesort")
+
+
+def refresh_candidate_exports(
+    frame: pd.DataFrame,
+    top_n_csv: int = TOP_N_REPORT,
+    top_n_parquet: int = TOP_N_PARQUET,
+    output_dir: Path | None = None,
+) -> tuple[Path, Path, pd.DataFrame]:
+    """Refresh every GUI-facing candidate export from one ranked result frame."""
+    destination = output_dir if output_dir is not None else OUTPUT_DIR
+    ranked = _rank_valid_candidates(frame)
+
+    csv_path = destination / f"Top{top_n_csv}.csv"
+    _atomic_write_csv(ranked.head(top_n_csv), csv_path)
+    logger.info(
+        "Exported Top %d (%d rows) to %s",
+        top_n_csv,
+        len(ranked.head(top_n_csv)),
+        csv_path,
+    )
+
+    trade_ready_path = destination / f"Top{top_n_csv}TradeReady.csv"
+    trade_ready = ranked.loc[
+        ranked.get(
+            "RankingEligibility", pd.Series("观察", index=ranked.index)
+        ).eq("推荐")
+    ]
+    _atomic_write_csv(trade_ready.head(top_n_csv), trade_ready_path)
+    logger.info(
+        "Exported %d trade-ready candidates to %s",
+        len(trade_ready.head(top_n_csv)),
+        trade_ready_path,
+    )
+
+    parquet_path = destination / f"Top{top_n_parquet}.parquet"
+    _atomic_write_parquet(ranked.head(top_n_parquet), parquet_path)
+    logger.info("Exported Top %d to %s", top_n_parquet, parquet_path)
+
+    opportunity_path = destination / f"Top{top_n_csv}Opportunity.csv"
+    opportunity = _sort_export_rows(
+        ranked,
+        ("RankingScore", "FinalScore", "TriggerScore")
+        if "FinalScore" in ranked.columns
+        else ("OpportunityScore", "Score"),
+    )
+    _atomic_write_csv(opportunity.head(top_n_csv), opportunity_path)
+
+    trigger_path = destination / f"Top{top_n_csv}BreakoutCandidates.csv"
+    trigger = ranked.loc[
+        (
+            pd.to_numeric(
+                ranked.get("BreakoutScore", pd.Series(0.0, index=ranked.index)),
+                errors="coerce",
+            ).fillna(0) >= 55
+        )
+        & ranked.get(
+            "SmartMoneyStage", pd.Series("NONE", index=ranked.index)
+        ).isin(["ACCUMULATION", "BREAKOUT"])
+    ]
+    trigger = _sort_export_rows(trigger, ("RankingScore", "BreakoutScore"))
+    _atomic_write_csv(trigger.head(top_n_csv), trigger_path)
+
+    entry_path = destination / f"Top{top_n_csv}EntryCandidates.csv"
+    entry = ranked.loc[
+        ranked.get("EntrySignal", pd.Series("AVOID", index=ranked.index)).isin(
+            ["BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"]
+        )
+    ]
+    entry = _sort_export_rows(entry, ("RankingScore", "EntryScore"))
+    _atomic_write_csv(entry.head(top_n_csv), entry_path)
+
+    trap_path = destination / f"Top{top_n_csv}ValueTrapRisk.csv"
+    trap = ranked.loc[
+        pd.to_numeric(
+            ranked.get("ValueTrapRisk", pd.Series(0.0, index=ranked.index)),
+            errors="coerce",
+        ).fillna(0) >= 60
+    ]
+    trap = _sort_export_rows(trap, ("ValueTrapRisk", "RankingScore"))
+    _atomic_write_csv(trap.head(top_n_csv), trap_path)
+
+    sustained_path = destination / f"Top{top_n_csv}SustainedSignals.csv"
+    sustained = ranked.loc[
+        pd.to_numeric(
+            ranked.get("SignalDays", pd.Series(0.0, index=ranked.index)),
+            errors="coerce",
+        ).fillna(0).gt(0)
+    ]
+    sustained = _sort_export_rows(sustained, ("SignalDays", "OpportunityScore"))
+    _atomic_write_csv(sustained.head(top_n_csv), sustained_path)
+    return csv_path, parquet_path, ranked
+
+
 def export_top_csv(results: list[ScanResult], n: int = TOP_N_REPORT) -> Path:
     """
     Export the top *n* tickers to TopN.csv.
@@ -442,42 +598,6 @@ def export_all(
             _atomic_write_csv(df, OUTPUT_DIR / name)
         return csv_path, parquet_path, full_csv, full_parquet_path
 
-    valid = df.loc[df.get("Error", pd.Series("", index=df.index)).fillna("").eq("")].copy()
-    passed = valid.loc[
-        valid.get("PassedFilters", pd.Series(False, index=valid.index)).astype(str).str.lower().isin({"true", "1", "yes", "y", "是"})
-    ]
-    rankable = passed if not passed.empty else valid
-    eligibility_order = rankable.get("RankingEligibility", pd.Series("观察", index=rankable.index)).map(
-        {"推荐": 2, "观察": 1, "风险过滤": 0}
-    ).fillna(0)
-    rankable = rankable.assign(_EligibilityOrder=eligibility_order).sort_values(
-        ["_EligibilityOrder", "RankingScore", "InstitutionalScore", "FinalScore", "Score"],
-        ascending=[False, False, False, False, False],
-        kind="mergesort",
-    ).drop(columns="_EligibilityOrder").reset_index(drop=True)
-    rankable["OverallRank"] = np.arange(1, len(rankable) + 1)
-
-    csv_path = OUTPUT_DIR / f"Top{top_n_csv}.csv"
-    _atomic_write_csv(rankable.head(top_n_csv), csv_path)
-    logger.info("Exported Top %d (%d rows) to %s", top_n_csv, len(rankable.head(top_n_csv)), csv_path)
-
-    trade_ready_path = OUTPUT_DIR / f"Top{top_n_csv}TradeReady.csv"
-    trade_ready = rankable.loc[
-        rankable.get(
-            "RankingEligibility", pd.Series("观察", index=rankable.index)
-        ).eq("推荐")
-    ]
-    _atomic_write_csv(trade_ready.head(top_n_csv), trade_ready_path)
-    logger.info(
-        "Exported %d trade-ready candidates to %s",
-        len(trade_ready.head(top_n_csv)),
-        trade_ready_path,
-    )
-
-    parquet_path = OUTPUT_DIR / f"Top{top_n_parquet}.parquet"
-    _atomic_write_parquet(rankable.head(top_n_parquet), parquet_path)
-    logger.info("Exported Top %d to %s", top_n_parquet, parquet_path)
-
     full_csv = OUTPUT_DIR / "AllResults.csv"
     _atomic_write_csv(df, full_csv)
     logger.info("Exported all %d results to %s", len(df), full_csv)
@@ -485,6 +605,12 @@ def export_all(
     full_parquet_path = OUTPUT_DIR / "AllResults.parquet"
     _atomic_write_parquet(df, full_parquet_path)
     logger.info("Exported all %d results to %s", len(df), full_parquet_path)
+    csv_path, parquet_path, rankable = refresh_candidate_exports(
+        df,
+        top_n_csv=top_n_csv,
+        top_n_parquet=top_n_parquet,
+        output_dir=OUTPUT_DIR,
+    )
     signal_counts = rankable.get("EntrySignal", pd.Series(dtype=str)).value_counts()
     logger.info(
         "最终候选：BUY_NOW=%d，BREAKOUT_CONFIRM=%d，WAIT_PULLBACK=%d，AVOID=%d；回测低可信度=%d，Quality UNKNOWN=%d，HardRisk过滤=%d。",
@@ -513,58 +639,6 @@ def export_all(
             ).sum()
         ),
     )
-
-    opportunity_path = OUTPUT_DIR / f"Top{top_n_csv}Opportunity.csv"
-    opportunity = rankable.sort_values(
-        ["RankingScore", "FinalScore", "TriggerScore"],
-        ascending=False,
-        kind="mergesort",
-    ) if "FinalScore" in df.columns else df.sort_values(
-        ["OpportunityScore", "Score"], ascending=False, kind="mergesort"
-    )
-    _atomic_write_csv(opportunity.head(top_n_csv), opportunity_path)
-    logger.info("Exported Top %d opportunities to %s", top_n_csv, opportunity_path)
-
-    trigger_path = OUTPUT_DIR / f"Top{top_n_csv}BreakoutCandidates.csv"
-    trigger = df.loc[
-        (
-            pd.to_numeric(
-                df.get("BreakoutScore", pd.Series(0.0, index=df.index)),
-                errors="coerce",
-            ).fillna(0) >= 55
-        )
-        & df.get(
-            "SmartMoneyStage", pd.Series("NONE", index=df.index)
-        ).isin(["ACCUMULATION", "BREAKOUT"])
-    ].sort_values(["RankingScore", "BreakoutScore"], ascending=False, kind="mergesort")
-    _atomic_write_csv(trigger.head(top_n_csv), trigger_path)
-    logger.info("Exported Top %d breakout candidates to %s", top_n_csv, trigger_path)
-
-    entry_path = OUTPUT_DIR / f"Top{top_n_csv}EntryCandidates.csv"
-    entry = df.loc[
-        df.get("EntrySignal", pd.Series("AVOID", index=df.index)).isin(
-            ["BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"]
-        )
-    ].sort_values(["RankingScore", "EntryScore"], ascending=False, kind="mergesort")
-    _atomic_write_csv(entry.head(top_n_csv), entry_path)
-    logger.info("Exported Top %d entry candidates to %s", top_n_csv, entry_path)
-
-    trap_path = OUTPUT_DIR / f"Top{top_n_csv}ValueTrapRisk.csv"
-    trap = df.loc[
-        pd.to_numeric(
-            df.get("ValueTrapRisk", pd.Series(0.0, index=df.index)),
-            errors="coerce",
-        ).fillna(0) >= 60
-    ].sort_values("ValueTrapRisk", ascending=False, kind="mergesort")
-    _atomic_write_csv(trap.head(top_n_csv), trap_path)
-    logger.info("Exported Top %d value trap risks to %s", top_n_csv, trap_path)
-
-    sustained_path = OUTPUT_DIR / f"Top{top_n_csv}SustainedSignals.csv"
-    sustained = df.loc[df["SignalDays"] > 0].sort_values(
-        ["SignalDays", "OpportunityScore"], ascending=False, kind="mergesort"
-    )
-    _atomic_write_csv(sustained.head(top_n_csv), sustained_path)
-    logger.info("Exported Top %d sustained signals to %s", top_n_csv, sustained_path)
 
     return csv_path, parquet_path, full_csv, full_parquet_path
 
