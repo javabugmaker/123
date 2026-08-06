@@ -118,11 +118,13 @@ class RegressionTests(TestCase):
             ), patch.object(
                 fundamental_data, "_prefetch_batch_data"
             ), patch.object(fundamental_data.logger, "info") as info:
-                result_path = fundamental_data.refresh_fundamental_data(
-                    ["000001.SZ", "000002.SZ"],
-                    industry_by_ticker={"000001.SZ": "银行"},
-                    workers=2,
-                )
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", FutureWarning)
+                    result_path = fundamental_data.refresh_fundamental_data(
+                        ["000001.SZ", "000002.SZ"],
+                        industry_by_ticker={"000001.SZ": "银行"},
+                        workers=2,
+                    )
 
             progress_calls = [
                 call.args[1:]
@@ -204,10 +206,12 @@ class RegressionTests(TestCase):
             ), patch.object(
                 fundamental_data, "_fetch_ticker", return_value=refreshed
             ) as fetch:
-                result_path = fundamental_data.refresh_fundamental_data(
-                    ["000001.SZ"],
-                    industry_by_ticker={"000001.SZ": "银行"},
-                )
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", FutureWarning)
+                    result_path = fundamental_data.refresh_fundamental_data(
+                        ["000001.SZ"],
+                        industry_by_ticker={"000001.SZ": "银行"},
+                    )
 
             result = pd.read_csv(result_path, dtype={"Ticker": str})
 
@@ -395,6 +399,9 @@ class RegressionTests(TestCase):
         self.assertEqual(scanner._format_table_value("ScoreConfidencePct", "87"), "87%")
         self.assertEqual(scanner._format_table_value("BacktestWinRate20D", "0.75"), "75%")
         self.assertEqual(scanner._format_table_value("BacktestWinRate60D", "0.625"), "62%")
+        self.assertEqual(scanner._format_table_value("Score", "nan"), "—")
+        self.assertEqual(scanner._format_table_value("QualityGate", "nan"), "未知")
+        self.assertEqual(scanner._format_table_value("HardRiskFlag", "None"), "未知")
         self.assertEqual(scanner._quality_tag("强候选"), "quality-strong")
         self.assertEqual(scanner._quality_tag("候选"), "quality-candidate")
         self.assertEqual(scanner._quality_tag("观察"), "quality-watch")
@@ -410,6 +417,20 @@ class RegressionTests(TestCase):
 
         scanner.market_overview.set.assert_called_once_with(
             "市场概览：2 只 · 启动 0 · 可交易 0 · 最终均分 60.0"
+        )
+
+    def test_gui_market_regime_confidence_uses_dominant_regime_only(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        indexes = {"MarketRegime": 0, "MarketRegimeConfidence": 1}
+        rows = [
+            ["Risk Off", "0.2"],
+            ["Risk Off", "0.4"],
+            ["Risk On", "0.9"],
+            ["Risk On", "nan"],
+        ]
+
+        self.assertEqual(
+            scanner._market_regime_summary(rows, indexes), "市场 Risk Off（30%）"
         )
 
     def test_gui_page_navigation_updates_current_page(self):
@@ -444,6 +465,13 @@ class RegressionTests(TestCase):
         self.assertEqual(scanner._cell_text(True), "True")
         self.assertEqual(scanner._cell_text(12.5), "12.5")
         self.assertEqual(scanner._sort_value("Score", [12.5], indexes), (False, 12.5))
+
+    def test_gui_non_finite_numeric_values_sort_as_missing(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        indexes = {"Score": 0}
+
+        self.assertEqual(scanner._sort_value("Score", ["nan"], indexes), (True, 0.0))
+        self.assertEqual(scanner._sort_value("Score", ["inf"], indexes), (True, 0.0))
 
     def test_gui_load_csv_reloads_when_same_file_is_updated(self):
         scanner = object.__new__(gui.ScannerGUI)
@@ -1982,6 +2010,7 @@ class RegressionTests(TestCase):
 
         self.assertFalse(result.error)
         self.assertIsNotNone(returned_frame)
+        assert returned_frame is not None
         self.assertEqual(
             list(returned_frame.columns),
             ["Open", "High", "Low", "Close", "Volume"],
@@ -2191,6 +2220,8 @@ class RegressionTests(TestCase):
             for call in calls:
                 disable = next((keyword.value for keyword in call.keywords if keyword.arg == "disable"), None)
                 self.assertIsNotNone(disable)
+                if disable is None:
+                    self.fail("tqdm 调用缺少 disable 参数")
                 self.assertEqual(ast.unparse(disable), "not sys.stderr.isatty()")
 
     def test_quality_unknown_holding_history_is_neutral(self):
