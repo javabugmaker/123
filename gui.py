@@ -25,6 +25,8 @@ DISPLAY_VALUE_NAMES = {
     "BUY_NOW": "回调可买",
     "WAIT_PULLBACK": "等待回调",
     "BREAKOUT_CONFIRM": "突破确认买入",
+    "PRICE_BREAKOUT": "价格突破待放量",
+    "WAIT_VOLUME_CONFIRM": "等待量能确认",
     "HOLD_WAIT": "继续观察",
     "AVOID": "回避",
     "ETF": "ETF",
@@ -33,6 +35,9 @@ DISPLAY_VALUE_NAMES = {
     "sina": "新浪财经",
     "tencent": "腾讯财经",
     "current_survivor_pool": "当前结果股票池",
+    "PASS": "通过",
+    "FAIL": "未通过",
+    "UNKNOWN": "数据未知（中性）",
 }
 DISPLAY_VALUE_CODES = {label: value for value, label in DISPLAY_VALUE_NAMES.items()}
 
@@ -61,6 +66,15 @@ COLUMN_NAMES = {
     "AssetType": "类型",
     "Style": "风格",
     "Quality": "质量",
+    "OverallRank": "综合排名",
+    "RankingScore": "交易排序分",
+    "RankingEligibility": "排序资格",
+    "RankingReason": "排序原因",
+    "InstitutionalScore": "机构评分",
+    "InstitutionalTier": "机构等级",
+    "InstitutionalPercentile": "机构分位",
+    "InstitutionalRank": "机构排名",
+    "InstitutionalTierReason": "等级原因",
     "Close": "收盘价",
     "Score": "基础评分",
     "BaseScore": "基础质量分",
@@ -72,8 +86,19 @@ COLUMN_NAMES = {
     "EntrySignal": "买点信号",
     "EntryZone": "买入区间",
     "BreakoutBuyPrice": "突破买入价",
+    "BreakoutVolumeRatio": "突破量比",
+    "BreakoutVolumeConfirmed": "突破量能确认",
+    "BreakoutFlowConfirmed": "突破资金确认",
+    "PriceBreakout": "价格突破",
     "StopLoss": "止损位",
     "ValueTrapRisk": "价值陷阱风险",
+    "ChaseRiskScore": "追高风险",
+    "ChaseRiskLevel": "追高风险等级",
+    "ChaseRiskReason": "追高风险原因",
+    "HardRiskFlag": "硬风险标记",
+    "HardRiskPenalty": "硬风险系数",
+    "HardRiskReason": "硬风险原因",
+    "RankingPenaltyReason": "排序降权原因",
     "RiskWarning": "风险提示",
     "OperationAdvice": "操作建议",
     "BacktestScore": "回测评分",
@@ -81,6 +106,9 @@ COLUMN_NAMES = {
     "BacktestSamples": "回测样本数",
     "BacktestEffectiveSamples": "有效回测样本",
     "BacktestReliability": "回测可靠度",
+    "BacktestEffectiveWeight": "回测有效权重",
+    "BacktestConfidenceTier": "回测可信度等级",
+    "BacktestAdjustedScore": "回测收缩评分",
     "BacktestWinRate20D": "20日胜率",
     "BacktestWinRate60D": "60日胜率",
     "BacktestAverageReturn20D": "20日平均收益",
@@ -105,11 +133,21 @@ COLUMN_NAMES = {
     "WyckoffPhase": "威科夫阶段",
     "Stage": "阶段",
     "MarketRegime": "市场环境",
+    "MarketRegimeFast": "快线市场环境",
+    "MarketRegimeSlow": "慢线市场环境",
+    "MarketRegimeConfidence": "市场环境置信度",
+    "MarketRegimeReason": "市场环境原因",
     "IndustryRelativeStrength": "行业强度",
     "DataAsOf": "数据日期",
     "DataAgeDays": "自然日延迟",
     "DataTradingAgeDays": "交易日延迟",
     "DataCoverage": "数据覆盖率",
+    "InstitutionHoldingStatus": "机构持仓状态",
+    "QualityDataCompleteness": "质量数据完整度",
+    "QualityGateReason": "质量门槛原因",
+    "QualityMultiplier": "质量系数",
+    "SignalAdjustmentReason": "信号调整原因",
+    "OpportunityStage": "机会阶段",
     "VolAccumDays": "放量天数",
     "ShortTermScore": "短期机会分",
     "MediumTermScore": "中期机会分",
@@ -145,12 +183,17 @@ COLUMN_NAMES = {
     "Error": "错误",
 }
 DISPLAY_COLUMNS = (
+    "OverallRank",
+    "RankingScore",
+    "RankingEligibility",
     "Ticker",
     "Name",
     "AssetType",
     "Sector",
     "Industry",
     "Quality",
+    "InstitutionalTier",
+    "InstitutionalScore",
     "FinalScore",
     "BaseScore",
     "TriggerScore",
@@ -160,13 +203,16 @@ DISPLAY_COLUMNS = (
     "EntryZone",
     "StopLoss",
     "ValueTrapRisk",
+    "ChaseRiskScore",
     "OpportunityScore",
     "LifecycleStage",
     "SignalTrend",
     "SignalDays",
     "CompositeScore",
     "BacktestScore",
+    "BacktestSamples",
     "BacktestReliability",
+    "BacktestConfidenceTier",
     "BacktestEffectiveSamples",
     "Close",
     "DistToLow52W",
@@ -174,6 +220,9 @@ DISPLAY_COLUMNS = (
     "Stage",
     "SignalCount",
     "PassedFilters",
+    "QualityGate",
+    "QualityDataCompleteness",
+    "SignalAdjustmentReason",
 )
 COLUMN_WIDTHS = {
     "Ticker": 96,
@@ -182,6 +231,11 @@ COLUMN_WIDTHS = {
     "Sector": 86,
     "Industry": 98,
     "Quality": 72,
+    "OverallRank": 72,
+    "RankingScore": 88,
+    "RankingEligibility": 82,
+    "InstitutionalTier": 96,
+    "InstitutionalScore": 86,
     "Score": 72,
     "BaseScore": 78,
     "TriggerScore": 92,
@@ -192,6 +246,7 @@ COLUMN_WIDTHS = {
     "EntryZone": 112,
     "StopLoss": 78,
     "ValueTrapRisk": 92,
+    "ChaseRiskScore": 82,
     "OpportunityScore": 82,
     "LifecycleStage": 96,
     "SignalTrend": 86,
@@ -199,6 +254,8 @@ COLUMN_WIDTHS = {
     "BacktestScore": 82,
     "CompositeScore": 94,
     "BacktestReliability": 82,
+    "BacktestSamples": 82,
+    "BacktestConfidenceTier": 96,
     "BacktestEffectiveSamples": 96,
     "Close": 72,
     "DistToLow52W": 92,
@@ -206,9 +263,17 @@ COLUMN_WIDTHS = {
     "Stage": 88,
     "SignalCount": 68,
     "PassedFilters": 70,
+    "QualityGate": 78,
+    "QualityDataCompleteness": 96,
+    "SignalAdjustmentReason": 220,
 }
 NUMBER_COLUMNS = {
     "Score",
+    "OverallRank",
+    "RankingScore",
+    "InstitutionalScore",
+    "InstitutionalPercentile",
+    "InstitutionalRank",
     "BaseScore",
     "TriggerScore",
     "FinalScore",
@@ -216,6 +281,10 @@ NUMBER_COLUMNS = {
     "EntryScore",
     "StopLoss",
     "ValueTrapRisk",
+    "ChaseRiskScore",
+    "HardRiskPenalty",
+    "QualityDataCompleteness",
+    "QualityMultiplier",
     "BreakoutBuyPrice",
     "BacktestScore",
     "CompositeScore",
@@ -227,6 +296,8 @@ NUMBER_COLUMNS = {
     "BacktestSamples",
     "BacktestEffectiveSamples",
     "BacktestReliability",
+    "BacktestEffectiveWeight",
+    "BacktestAdjustedScore",
     "Close",
     "DistToLow52W",
     "VolAccumDays",
@@ -243,6 +314,7 @@ NUMBER_COLUMNS = {
     "ScoreContributionAccumulation",
     "ScoreContributionCompression",
     "ScoreContributionStructure",
+    "MarketRegimeConfidence",
 }
 TEXT_COLUMNS = {
     "Name",
@@ -257,10 +329,24 @@ TEXT_COLUMNS = {
     "EntryZone",
     "RiskWarning",
     "OperationAdvice",
+    "RankingEligibility",
+    "RankingReason",
+    "InstitutionalTier",
+    "InstitutionalTierReason",
+    "InstitutionHoldingStatus",
+    "QualityGateReason",
+    "SignalAdjustmentReason",
+    "BacktestConfidenceTier",
+    "ChaseRiskLevel",
+    "ChaseRiskReason",
+    "HardRiskReason",
+    "RankingPenaltyReason",
 }
 INTEGER_COLUMNS = {
     "ScoreMissingIndicators",
     "BacktestSamples",
+    "OverallRank",
+    "InstitutionalRank",
     "VolAccumDays",
     "SignalCount",
     "SignalDays",
@@ -273,6 +359,9 @@ PERCENTAGE_COLUMNS = {
     "BacktestWinRate20D",
     "BacktestWinRate60D",
     "BacktestReliability",
+    "BacktestEffectiveWeight",
+    "QualityDataCompleteness",
+    "MarketRegimeConfidence",
 }
 FRACTION_PERCENTAGE_COLUMNS = {
     "ScoreCoverage",
@@ -280,6 +369,9 @@ FRACTION_PERCENTAGE_COLUMNS = {
     "BacktestWinRate20D",
     "BacktestWinRate60D",
     "BacktestReliability",
+    "BacktestEffectiveWeight",
+    "QualityDataCompleteness",
+    "MarketRegimeConfidence",
 }
 FOUR_DECIMAL_COLUMNS = {"BacktestObjectiveValue"}
 MAX_RENDERED_ROWS = 500
@@ -335,7 +427,7 @@ class ScannerGUI:
         self._csv_path: Path | None = None
         self._csv_mtime: tuple[int, int] | None = None
         self._filter_job: str | None = None
-        self._sort_column: str | None = None
+        self._sort_column: str | None = "RankingScore"
         self._sort_descending = True
         self._current_page = 0
         self.page_summary = tk.StringVar(value="")
@@ -580,6 +672,12 @@ class ScannerGUI:
         self.table.tag_configure("quality-candidate", background="#eef6ff", foreground="#1f5f9c")
         self.table.tag_configure("quality-watch", background="#fff8e6", foreground="#8a5a00")
         self.table.tag_configure("quality-normal", background="#f5f6f8", foreground="#596575")
+        self.table.tag_configure("entry-buy", background="#e3f7e8", foreground="#12623a")
+        self.table.tag_configure("entry-breakout", background="#e4f1ff", foreground="#165d9b")
+        self.table.tag_configure("entry-pullback", background="#f4efff", foreground="#6541a5")
+        self.table.tag_configure("entry-price", background="#fff7df", foreground="#8a5a00")
+        self.table.tag_configure("entry-hold", background="#f5f6f8", foreground="#596575")
+        self.table.tag_configure("entry-avoid", background="#ffe8e8", foreground="#a22222")
         ybar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.table.yview)
         xbar = ttk.Scrollbar(
             table_frame, orient=tk.HORIZONTAL, command=self.table.xview
@@ -1115,7 +1213,20 @@ class ScannerGUI:
         text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
         detail_keys = [
+            "OverallRank",
+            "RankingScore",
+            "RankingEligibility",
+            "RankingReason",
+            "InstitutionalTier",
+            "InstitutionalScore",
+            "InstitutionalPercentile",
+            "InstitutionalRank",
+            "InstitutionalTierReason",
             "Quality",
+            "QualityGate",
+            "QualityDataCompleteness",
+            "QualityGateReason",
+            "InstitutionHoldingStatus",
             "Score",
             "OpportunityScore",
             "ShortTermScore",
@@ -1146,6 +1257,10 @@ class ScannerGUI:
             "EntrySignal",
             "EntryZone",
             "BreakoutBuyPrice",
+            "BreakoutVolumeRatio",
+            "BreakoutVolumeConfirmed",
+            "BreakoutFlowConfirmed",
+            "PriceBreakout",
             "StopLoss",
             "ValueTrapRisk",
             "RiskWarning",
@@ -1156,10 +1271,19 @@ class ScannerGUI:
             "BacktestSamples",
             "BacktestEffectiveSamples",
             "BacktestReliability",
+            "BacktestEffectiveWeight",
+            "BacktestConfidenceTier",
+            "BacktestAdjustedScore",
             "BacktestWinRate20D",
             "BacktestWinRate60D",
             "BacktestAverageReturn20D",
             "BacktestAverageReturn60D",
+            "BacktestMedianReturn20D",
+            "BacktestMedianReturn60D",
+            "BacktestMaxDrawdown20D",
+            "BacktestMaxDrawdown60D",
+            "BacktestProfitFactor",
+            "BacktestSignalSpanDays",
             "UniverseType",
             "SurvivorshipBiasWarning",
             "TrendScore",
@@ -1174,6 +1298,18 @@ class ScannerGUI:
             "DataAgeDays",
             "DataTradingAgeDays",
             "DataCoverage",
+            "MarketRegime",
+            "MarketRegimeFast",
+            "MarketRegimeSlow",
+            "MarketRegimeConfidence",
+            "MarketRegimeReason",
+            "ChaseRiskScore",
+            "ChaseRiskLevel",
+            "ChaseRiskReason",
+            "HardRiskFlag",
+            "HardRiskPenalty",
+            "HardRiskReason",
+            "SignalAdjustmentReason",
             "SignalCount",
             "FilterCount",
             "PassedFilters",
@@ -1559,6 +1695,20 @@ class ScannerGUI:
         }
         return tags.get(quality.strip(), "quality-normal")
 
+    def _entry_tag(self, signal: str) -> str:
+        signal = signal.strip().upper()
+        if signal == "BUY_NOW":
+            return "entry-buy"
+        if signal == "BREAKOUT_CONFIRM":
+            return "entry-breakout"
+        if signal == "WAIT_PULLBACK":
+            return "entry-pullback"
+        if signal in {"PRICE_BREAKOUT", "WAIT_VOLUME_CONFIRM"}:
+            return "entry-price"
+        if signal == "AVOID":
+            return "entry-avoid"
+        return "entry-hold"
+
     def _sort_by_column(self, column: str) -> None:
         if self._sort_column == column:
             self._sort_descending = not self._sort_descending
@@ -1676,6 +1826,7 @@ class ScannerGUI:
             header_indexes = [indexes[column] for column in display_headers]
         self._display_indexes = header_indexes
         quality_index = indexes.get("Quality")
+        entry_signal_index = indexes.get("EntrySignal")
         asset_type_display_index = (
             display_headers.index("AssetType") if "AssetType" in display_headers else None
         )
@@ -1709,8 +1860,10 @@ class ScannerGUI:
                     else "未通过"
                 )
             quality = values[quality_index] if quality_index is not None else ""
+            entry_signal = values[entry_signal_index] if entry_signal_index is not None else ""
             item_id = self.table.insert(
-                "", tk.END, values=display_values, tags=(self._quality_tag(quality),)
+                "", tk.END, values=display_values,
+                tags=(self._quality_tag(quality), self._entry_tag(entry_signal)),
             )
             self._row_details[item_id] = dict(zip(headers, values))
         if hasattr(self, "page_summary"):
