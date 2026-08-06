@@ -687,9 +687,11 @@ class RegressionTests(TestCase):
             all_results = pd.read_csv(Path(temp_dir) / "AllResults.csv", encoding="utf-8-sig")
             opportunity = pd.read_csv(Path(temp_dir) / "Top2Opportunity.csv", encoding="utf-8-sig")
             sustained = pd.read_csv(Path(temp_dir) / "Top2SustainedSignals.csv", encoding="utf-8-sig")
+            trade_ready = pd.read_csv(Path(temp_dir) / "Top2TradeReady.csv", encoding="utf-8-sig")
 
         self.assertIn("OpportunityScore", all_results)
         self.assertIn("SignalDays", all_results)
+        self.assertIn("RankingEligibility", trade_ready)
         self.assertEqual(opportunity["Ticker"].tolist(), ["000001.SZ", "000002.SZ"])
         self.assertEqual(sustained["Ticker"].tolist(), ["000001.SZ", "000002.SZ"])
 
@@ -2253,6 +2255,22 @@ class RegressionTests(TestCase):
         self.assertEqual(entry_point(weak, 80.0, volume_score=0.0)["signal"], "PRICE_BREAKOUT")
         self.assertEqual(entry_point(strong, 80.0, volume_score=15.0)["signal"], "BREAKOUT_CONFIRM")
 
+    def test_saved_breakout_flags_cannot_override_missing_metric_confirmation(self):
+        frame = pd.DataFrame({
+            "Ticker": ["WEAK_BREAKOUT"], "Score": [80.0],
+            "InstitutionalScore": [80.0], "EntrySignal": ["BREAKOUT_CONFIRM"],
+            "BreakoutVolumeConfirmed": [True], "BreakoutFlowConfirmed": [True],
+            "BreakoutVolumeRatio": [0.8], "VolumeScore": [0.0],
+            "CMF_Pos": [False], "AD_SlopePos": [False], "OBV_Div": [False],
+            "QualityGate": [True], "QualityDataCompleteness": [1.0],
+        })
+
+        result = signal_lifecycle.finalize_signal_ranking(frame).set_index("Ticker")
+
+        self.assertEqual(result.loc["WEAK_BREAKOUT", "EntrySignal"], "PRICE_BREAKOUT")
+        self.assertFalse(result.loc["WEAK_BREAKOUT", "BreakoutVolumeConfirmed"])
+        self.assertFalse(result.loc["WEAK_BREAKOUT", "BreakoutFlowConfirmed"])
+
     def test_value_trap_and_legacy_frame_are_compatible(self):
         frame = pd.DataFrame({
             "Ticker": ["000001.SZ"], "Score": [80.0], "InstitutionalScore": [80.0],
@@ -2274,6 +2292,77 @@ class RegressionTests(TestCase):
         })
         tiers = set(signal_lifecycle.finalize_signal_ranking(frame)["InstitutionalTier"])
         self.assertTrue({"A级机构启动", "B级观察", "C级价值观察", "D级等待确认"}.issubset(tiers))
+
+    def test_stale_quote_is_not_promoted_as_breakout(self):
+        frame = pd.DataFrame({
+            "Ticker": ["STALE"], "Score": [80.0], "FinalScore": [80.0],
+            "InstitutionalScore": [80.0], "EntrySignal": ["BREAKOUT_CONFIRM"],
+            "BreakoutVolumeConfirmed": [True], "BreakoutFlowConfirmed": [True],
+            "QualityGate": [True], "QualityDataCompleteness": [1.0],
+            "DataAgeDays": [18], "DataTradingAgeDays": [12],
+        })
+
+        result = signal_lifecycle.finalize_signal_ranking(frame).set_index("Ticker")
+
+        self.assertEqual(result.loc["STALE", "DataFreshnessStatus"], "过期")
+        self.assertEqual(result.loc["STALE", "EntrySignal"], "HOLD_WAIT")
+        self.assertEqual(result.loc["STALE", "RankingEligibility"], "风险过滤")
+        self.assertTrue(result.loc["STALE", "HardRiskFlag"])
+        self.assertLessEqual(result.loc["STALE", "DataFreshnessFactor"], 0.5)
+
+    def test_quality_failure_cannot_keep_buy_now_as_trade_ready(self):
+        frame = pd.DataFrame({
+            "Ticker": ["QUALITY_FAIL"], "Score": [80.0], "FinalScore": [80.0],
+            "InstitutionalScore": [80.0], "EntrySignal": ["BUY_NOW"],
+            "QualityDataAvailable": [True], "QualityGate": [False],
+            "QualityDataCompleteness": [0.75], "DataTradingAgeDays": [0],
+        })
+
+        result = signal_lifecycle.finalize_signal_ranking(frame).set_index("Ticker")
+
+        self.assertFalse(result.loc["QUALITY_FAIL", "QualityGate"])
+        self.assertEqual(result.loc["QUALITY_FAIL", "EntrySignal"], "WAIT_PULLBACK")
+        self.assertEqual(result.loc["QUALITY_FAIL", "RankingEligibility"], "观察")
+        self.assertIn("质量门槛", result.loc["QUALITY_FAIL", "SignalAdjustmentReason"])
+
+    def test_wait_pullback_remains_observation_not_trade_ready(self):
+        frame = pd.DataFrame({
+            "Ticker": ["WAIT"], "Score": [80.0], "FinalScore": [80.0],
+            "InstitutionalScore": [80.0], "EntrySignal": ["WAIT_PULLBACK"],
+            "QualityGate": [True], "QualityDataCompleteness": [1.0],
+            "DataTradingAgeDays": [0],
+        })
+
+        result = signal_lifecycle.finalize_signal_ranking(frame)
+
+        self.assertEqual(result.loc[0, "RankingEligibility"], "观察")
+
+    def test_freshness_columns_export_and_gui_formatting(self):
+        frame = _results_to_dataframe([
+            ScanResult(ticker="000001.SZ", data_age_days=1, data_trading_age_days=1)
+        ])
+
+        self.assertIn("DataFreshnessStatus", frame)
+        self.assertIn("DataFreshnessFactor", frame)
+        self.assertEqual(gui.ScannerGUI._format_table_value(object.__new__(gui.ScannerGUI), "DataFreshnessFactor", "0.94"), "94%")
+
+    def test_gui_eligibility_filter_and_risk_tag(self):
+        scanner = object.__new__(gui.ScannerGUI)
+        scanner.sector_filter = Mock(); scanner.sector_filter.get.return_value = "全部板块"
+        scanner.industry_filter = Mock(); scanner.industry_filter.get.return_value = "全部行业"
+        scanner.quality_filter = Mock(); scanner.quality_filter.get.return_value = "全部质量"
+        scanner.stage_filter = Mock(); scanner.stage_filter.get.return_value = "全部阶段"
+        scanner.entry_filter = Mock(); scanner.entry_filter.get.return_value = "全部买点"
+        scanner.eligibility_filter = Mock(); scanner.eligibility_filter.get.return_value = "推荐"
+        scanner._csv_headers = ["Ticker", "RankingEligibility", "DataFreshnessStatus", "QualityGate"]
+        indexes = {name: index for index, name in enumerate(scanner._csv_headers)}
+        row = ["000001.SZ", "推荐", "新鲜", "True"]
+
+        self.assertTrue(scanner._row_matches_filters(indexes, row, ""))
+        self.assertEqual(
+            scanner._risk_tag(["000002.SZ", "风险过滤", "过期", "False"], indexes),
+            "risk-filter",
+        )
 
 
 if __name__ == "__main__":
