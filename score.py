@@ -24,6 +24,8 @@ import pandas as pd
 from config import (
     AD_SLOPE_LOOKBACK,
     BB_WIDTH_COMPRESSION_LOOKBACK,
+    BREAKOUT_CONFIRM_MIN_VOLUME_RATIO,
+    BREAKOUT_CONFIRM_MIN_VOLUME_SCORE,
     CONSOLIDATION_DAYS,
     CONSOLIDATION_MAX_RANGE_PCT,
     LOG_DIR,
@@ -608,15 +610,79 @@ def smart_money_stage(df: pd.DataFrame, breakout: float | None = None, trap: flo
     return "NONE"
 
 
-def entry_point(df: pd.DataFrame, breakout: float | None = None) -> dict[str, Any]:
+def entry_point(
+    df: pd.DataFrame,
+    breakout: float | None = None,
+    volume_score: float | None = None,
+    value_trap_risk_value: float | None = None,
+) -> dict[str, Any]:
+    """Return a trade-ready entry classification.
+
+    A price crossing a platform is deliberately kept separate from a confirmed
+    breakout.  The latter requires both volume and at least one money-flow
+    confirmation, so an otherwise strong price bar cannot be labelled as a
+    followable breakout when the underlying participation is absent.
+    """
     breakout = breakout_score(df) if breakout is None else breakout
     close, high, low = _series(df, "Close"), _series(df, "High"), _series(df, "Low")
     price, atr = _latest(df, "Close"), _latest(df, "ATR14")
     ma20, ma50 = _latest(df, "MA20"), _latest(df, "MA50")
+    rsi = _latest(df, "RSI14")
     resistance = float(high.iloc[-21:-1].max()) if len(high.dropna()) >= 21 else price
     support = float(low.iloc[-20:].min()) if len(low.dropna()) >= 20 else price
+    volume = _series(df, "Volume")
+    vol20 = _rolling_mean(df, "Volume", 20)
+    volume_now = _latest(df, "Volume")
+    volume_ratio = (
+        float(volume_now / vol20)
+        if _is_finite(volume_now) and _is_finite(vol20) and vol20 > 0
+        else np.nan
+    )
+    derived_volume_score = 0.0
+    if _is_finite(volume_ratio):
+        derived_volume_score = _clamp((volume_ratio - 0.8) / 0.8) * 25.0
+    effective_volume_score = (
+        float(volume_score)
+        if _is_finite(volume_score)
+        else derived_volume_score
+    )
+    cmf = _latest(df, "CMF")
+    ad_slope = _latest(df, "AD_Slope")
+    obv = _series(df, "OBV")
+    obv_up = bool(len(obv.dropna()) >= 6 and obv.iloc[-1] > obv.iloc[-6])
+    flow_confirmed = bool(
+        (_is_finite(cmf) and cmf > 0)
+        or (_is_finite(ad_slope) and ad_slope > 0)
+        or obv_up
+    )
+    volume_confirmed = bool(
+        (_is_finite(volume_ratio) and volume_ratio >= BREAKOUT_CONFIRM_MIN_VOLUME_RATIO)
+        or effective_volume_score >= BREAKOUT_CONFIRM_MIN_VOLUME_SCORE
+    )
+    price_breakout = bool(
+        breakout >= 75.0
+        and _is_finite(price)
+        and _is_finite(resistance)
+        and price > resistance
+    )
+    trap = (
+        float(value_trap_risk_value)
+        if _is_finite(value_trap_risk_value)
+        else value_trap_risk(df)
+    )
     if not _is_finite(price):
-        return {"score": 0.0, "signal": "AVOID", "low": np.nan, "high": np.nan, "breakout": np.nan, "stop": np.nan}
+        return {
+            "score": 0.0,
+            "signal": "AVOID",
+            "low": np.nan,
+            "high": np.nan,
+            "breakout": np.nan,
+            "stop": np.nan,
+            "volume_ratio": np.nan,
+            "volume_confirmed": False,
+            "flow_confirmed": False,
+            "price_breakout": False,
+        }
     atr = atr if _is_finite(atr) and atr > 0 else price * 0.03
     low_zone = max(support, price - atr * 1.2)
     high_zone = min(price + atr * 0.3, resistance)
@@ -637,8 +703,14 @@ def entry_point(df: pd.DataFrame, breakout: float | None = None) -> dict[str, An
     if len(close) >= 6 and close.iloc[-1] >= close.iloc[-6]:
         score += 15.0
     score = _clamp(score, 0.0, 100.0)
-    if breakout >= 75.0 and price > resistance:
+    if trap >= 70.0:
+        signal = "AVOID"
+    elif _is_finite(rsi) and rsi >= 78.0:
+        signal = "HOLD_WAIT"
+    elif price_breakout and volume_confirmed and flow_confirmed:
         signal = "BREAKOUT_CONFIRM"
+    elif price_breakout:
+        signal = "PRICE_BREAKOUT"
     elif score >= 70.0 and price <= support + atr * 1.5:
         signal = "BUY_NOW"
     elif _is_finite(ma20) and score >= 50.0 and price > ma20:
@@ -647,7 +719,18 @@ def entry_point(df: pd.DataFrame, breakout: float | None = None) -> dict[str, An
         signal = "HOLD_WAIT"
     else:
         signal = "AVOID"
-    return {"score": score, "signal": signal, "low": low_zone, "high": high_zone, "breakout": resistance, "stop": max(support - atr, 0.0)}
+    return {
+        "score": score,
+        "signal": signal,
+        "low": low_zone,
+        "high": high_zone,
+        "breakout": resistance,
+        "stop": max(support - atr, 0.0),
+        "volume_ratio": volume_ratio,
+        "volume_confirmed": volume_confirmed,
+        "flow_confirmed": flow_confirmed,
+        "price_breakout": price_breakout,
+    }
 
 
 def value_trap_risk_score(df: pd.DataFrame) -> float:
