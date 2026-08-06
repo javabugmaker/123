@@ -399,6 +399,25 @@ def _configured_frame() -> pd.DataFrame:
     return _read_frame(path) if path.is_file() else pd.DataFrame(columns=FUNDAMENTAL_COLUMNS)
 
 
+def _fundamental_index(frame: pd.DataFrame) -> pd.DataFrame:
+    """Normalize a fundamental-data frame for safe ticker-level merging."""
+    normalized = frame.reindex(columns=FUNDAMENTAL_COLUMNS).copy()
+    normalized["Ticker"] = normalized["Ticker"].map(normalize_ticker)
+    normalized = normalized.loc[normalized["Ticker"].ne("")]
+    return normalized.drop_duplicates("Ticker", keep="last").set_index("Ticker")
+
+
+def _replace_fundamental_rows(
+    base: pd.DataFrame, replacement: pd.DataFrame
+) -> pd.DataFrame:
+    """Replace whole ticker rows without pandas concat dtype coercion."""
+    if replacement.empty:
+        return base
+    merged = base.reindex(base.index.union(replacement.index, sort=False)).copy()
+    merged.loc[replacement.index, replacement.columns] = replacement
+    return merged
+
+
 def _is_current_quarter() -> bool:
     try:
         metadata = json.loads(_META_PATH.read_text(encoding="utf-8"))
@@ -554,11 +573,12 @@ def refresh_fundamental_data(
     _clear_batch_cache()
 
     downloaded = pd.DataFrame(rows, columns=FUNDAMENTAL_COLUMNS)
-    combined = pd.concat([fallback, existing], ignore_index=True)
+    combined = _replace_fundamental_rows(
+        _fundamental_index(fallback), _fundamental_index(existing)
+    )
     if not downloaded.empty:
-        combined = pd.concat([combined.set_index("Ticker"), downloaded.set_index("Ticker")], axis=0)
-        combined = combined.groupby(level=0, sort=False).last()
-        combined = downloaded.set_index("Ticker").combine_first(combined).reset_index()
+        combined = _fundamental_index(downloaded).combine_first(combined)
+    combined = combined.reset_index()
     if combined.empty:
         return _CACHE_PATH
     combined = combined.drop_duplicates("Ticker", keep="last")
