@@ -163,7 +163,7 @@ SCORING_WEIGHTS: Final[ScoringWeights] = ScoringWeights()
 TOP_N_REPORT: int = 50
 TOP_N_PARQUET: int = 200
 
-SCORING_VERSION: str = "2026-08-06-v8-consistency-reliability"
+SCORING_VERSION: str = "2026-08-06-v9-readiness-freshness"
 
 # Per-ticker historical evidence is only allowed to influence the composite
 # rank after more than a couple of independent observations.  This prevents a
@@ -195,6 +195,11 @@ INSTITUTIONAL_TIER_MIN_DATA_CONFIDENCE: Final[float] = 0.65
 INSTITUTIONAL_TIER_WAIT_LABEL: Final[str] = "D级等待确认"
 INSTITUTIONAL_TIER_TRAP_LABEL: Final[str] = "D级陷阱池"
 VALUE_TRAP_RISK_THRESHOLD: Final[float] = 60.0
+# Reaching the trap threshold blocks a ticker from the trade-ready list.  A
+# higher threshold is reserved for the hard risk gate so medium-risk names can
+# remain visible as research candidates without looking immediately tradable.
+VALUE_TRAP_HARD_RISK_THRESHOLD: Final[float] = 70.0
+QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE: Final[float] = 0.50
 INSTITUTIONAL_SCORE_TIERS: Final[tuple[tuple[str, float], ...]] = (
     ("A级机构启动", INSTITUTIONAL_TIER_A_SCORE),
     ("B级观察", INSTITUTIONAL_TIER_B_SCORE),
@@ -239,6 +244,12 @@ HARD_RISK_AVOID_PENALTY: Final[float] = 0.55
 HARD_RISK_STAGE_PENALTY: Final[float] = 0.65
 HARD_RISK_VALUE_TRAP_PENALTY: Final[float] = 0.60
 HARD_RISK_DATA_PENALTY: Final[float] = 0.75
+# Cached price data may be temporarily delayed around holidays, but stale data
+# must never keep a breakout or BUY_NOW signal in the trade-ready group.
+DATA_FRESHNESS_DELAYED_TRADING_DAYS: Final[int] = 3
+DATA_FRESHNESS_STALE_TRADING_DAYS: Final[int] = 10
+DATA_FRESHNESS_DELAYED_FACTOR: Final[float] = 0.94
+DATA_FRESHNESS_STALE_FACTOR: Final[float] = 0.50
 CHASE_RISK_MAX_PENALTY: Final[float] = 0.45
 CHASE_RISK_HIGH_THRESHOLD: Final[float] = 60.0
 CHASE_RISK_RSI_START: Final[float] = 70.0
