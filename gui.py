@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import os
 import queue
 import re
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -57,6 +59,11 @@ DATA_SOURCE_HINTS = {
     "新浪财经": "失败时自动回退",
     "腾讯财经": "失败时自动回退",
 }
+
+CsvCacheToken = tuple[int, int] | tuple[int, int, str]
+MISSING_VALUE_TEXTS = frozenset(
+    {"", "-", "--", "na", "n/a", "nan", "none", "null", "inf", "+inf", "-inf"}
+)
 
 COLUMN_NAMES = {
     "Ticker": "代码",
@@ -428,7 +435,10 @@ class ScannerGUI:
         self._display_indexes: list[int] = []
         self._table_headers: tuple[str, ...] = ()
         self._csv_path: Path | None = None
-        self._csv_mtime: tuple[int, int, str] | None = None
+        # A two-part token is retained as a supported legacy state for old
+        # sessions/tests.  Freshly loaded files always use the three-part
+        # token, which also carries a content hash.
+        self._csv_mtime: CsvCacheToken | None = None
         self._filter_job: str | None = None
         self._sort_column: str | None = "RankingScore"
         self._sort_descending = True
@@ -783,6 +793,21 @@ class ScannerGUI:
     @staticmethod
     def _cell_text(value: object) -> str:
         return "" if value is None else str(value).strip()
+
+    @classmethod
+    def _numeric_value(cls, value: object) -> float | None:
+        text = cls._cell_text(value).replace(",", "").rstrip("%")
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
+
+    @classmethod
+    def _is_missing_text(cls, value: object) -> bool:
+        return cls._cell_text(value).casefold() in MISSING_VALUE_TEXTS
 
     def _write_top50_csv(self, tickers: list[str]) -> Path:
         path = OUTPUT_DIR / "Top50.csv"
@@ -1589,10 +1614,7 @@ class ScannerGUI:
             index = indexes.get(column)
             if index is None or index >= len(row):
                 return 0.0
-            try:
-                return float(self._cell_text(row[index]).replace(",", "").rstrip("%"))
-            except ValueError:
-                return 0.0
+            return self._numeric_value(row[index]) or 0.0
 
         total = len(rows)
         active = sum(number_for(row, "SignalDays") > 0 for row in rows)
@@ -1664,17 +1686,18 @@ class ScannerGUI:
         counts: dict[str, int] = {}
         for value in values:
             counts[value] = counts.get(value, 0) + 1
-        regime = max(counts, key=counts.get)
+        regime = max(counts, key=lambda value: counts[value])
         confidence_index = indexes.get("MarketRegimeConfidence")
         confidences: list[float] = []
         if confidence_index is not None:
             for row in rows:
-                if confidence_index >= len(row):
+                if regime_index >= len(row) or confidence_index >= len(row):
                     continue
-                try:
-                    confidences.append(float(self._cell_text(row[confidence_index]).rstrip("%")))
-                except ValueError:
+                if self._cell_text(row[regime_index]) != regime:
                     continue
+                confidence = self._numeric_value(row[confidence_index])
+                if confidence is not None:
+                    confidences.append(confidence)
         if confidences:
             average_confidence = sum(confidences) / len(confidences)
             if average_confidence <= 1.0:
@@ -1756,19 +1779,22 @@ class ScannerGUI:
         messagebox.showinfo("连续信号榜", "请先完成扫描，生成连续信号榜后再查看。")
 
     def _format_table_value(self, column: str, value: str) -> str:
-        text = str(value).strip()
+        text = self._cell_text(value)
         if column in {"SmartMoneyStage", "EntrySignal", "AssetType", "DataSource", "UniverseType"}:
             return DISPLAY_VALUE_NAMES.get(text, text)
         if column in {"QualityGate", "PassedFilters"}:
+            if self._is_missing_text(text):
+                return "未知"
             return "通过" if text.lower() in {"true", "1", "yes", "y", "是"} else "未通过"
         if column == "HardRiskFlag":
+            if self._is_missing_text(text):
+                return "未知"
             return "是" if text.lower() in {"true", "1", "yes", "y", "是"} else "否"
         if column not in NUMBER_COLUMNS or not text:
             return text
-        try:
-            number = float(text.replace(",", "").rstrip("%"))
-        except ValueError:
-            return text
+        number = self._numeric_value(text)
+        if number is None:
+            return "—" if self._is_missing_text(text) else text
         if column in INTEGER_COLUMNS:
             return f"{number:,.0f}"
         if column in PERCENTAGE_COLUMNS:
@@ -1777,16 +1803,14 @@ class ScannerGUI:
         return f"{number:,.2f}"
 
     def _sort_value(
-        self, column: str, row: list[str], indexes: dict[str, int]
+        self, column: str, row: Sequence[object], indexes: Mapping[str, int]
     ) -> tuple[bool, str | float]:
         index = indexes[column]
         value = self._cell_text(row[index]) if len(row) > index else ""
         if column not in NUMBER_COLUMNS:
             return (not value, value.casefold())
-        try:
-            return (False, float(value.replace(",", "").rstrip("%")))
-        except ValueError:
-            return (not value, 0.0)
+        number = self._numeric_value(value)
+        return (number is None, number if number is not None else 0.0)
 
     def _quality_tag(self, quality: str) -> str:
         tags = {
@@ -1884,7 +1908,7 @@ class ScannerGUI:
         self._display_headers = display_headers
         sort_column = getattr(self, "_sort_column", None)
         sort_descending = getattr(self, "_sort_descending", True)
-        if sort_column in indexes:
+        if isinstance(sort_column, str) and sort_column in indexes:
             sortable_rows = [
                 (self._sort_value(sort_column, row, indexes), position, row)
                 for position, row in enumerate(filtered)
@@ -2035,21 +2059,31 @@ class ScannerGUI:
         try:
             stat = path.stat()
             modified_at = (stat.st_mtime_ns, stat.st_size)
-            previous_token = getattr(self, "_csv_mtime", None)
-            content_hash = ""
-            needs_reload = (
-                self._csv_path != path
-                or previous_token is None
-                or previous_token[:2] != modified_at
+            raw_previous_token = getattr(self, "_csv_mtime", None)
+            previous_token = (
+                raw_previous_token
+                if isinstance(raw_previous_token, tuple)
+                and len(raw_previous_token) == 3
+                and isinstance(raw_previous_token[0], int)
+                and isinstance(raw_previous_token[1], int)
+                and isinstance(raw_previous_token[2], str)
+                else None
             )
-            if not needs_reload:
+            content_hash = ""
+            if (
+                previous_token is not None
+                and self._csv_path == path
+                and previous_token[:2] == modified_at
+            ):
                 # Some filesystems can retain an identical timestamp and size
                 # for a rapid in-place CSV update.  Hash only this rare
                 # collision path so the GUI never displays stale result rows.
                 content_hash = hashlib.blake2b(
                     path.read_bytes(), digest_size=12
                 ).hexdigest()
-                needs_reload = len(previous_token) < 3 or previous_token[2] != content_hash
+                needs_reload = previous_token[2] != content_hash
+            else:
+                needs_reload = True
             if needs_reload:
                 with path.open("r", encoding="utf-8-sig", newline="") as file:
                     rows = list(csv.reader(file))
