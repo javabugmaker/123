@@ -2337,6 +2337,34 @@ class RegressionTests(TestCase):
 
         self.assertEqual(result.loc[0, "RankingEligibility"], "观察")
 
+    def test_trade_ready_requires_complete_technical_data_and_minimum_institutional_score(self):
+        frame = pd.DataFrame({
+            "Ticker": ["LOW_COVERAGE", "LOW_SCORE", "VALID"],
+            "Score": [60.0, 24.9, 30.0],
+            "FinalScore": [60.0, 24.9, 30.0],
+            "InstitutionalScore": [60.0, 24.9, 30.0],
+            "EntrySignal": ["BREAKOUT_CONFIRM", "BUY_NOW", "BUY_NOW"],
+            "BreakoutVolumeConfirmed": [True, False, False],
+            "BreakoutFlowConfirmed": [True, False, False],
+            "QualityGate": [True, True, True],
+            "QualityDataCompleteness": [1.0, 1.0, 1.0],
+            "ScoreCoverage": [0.40, 1.0, 1.0],
+            "DataTradingAgeDays": [0, 0, 0],
+        })
+
+        result = signal_lifecycle.finalize_signal_ranking(frame).set_index("Ticker")
+
+        self.assertTrue(result.loc["LOW_COVERAGE", "HardRiskFlag"])
+        self.assertEqual(result.loc["LOW_COVERAGE", "RankingEligibility"], "观察")
+        self.assertIn("技术数据覆盖不足", result.loc["LOW_COVERAGE", "TradeReadinessReason"])
+        self.assertEqual(result.loc["LOW_SCORE", "RankingEligibility"], "观察")
+        self.assertIn("综合评分未达交易门槛", result.loc["LOW_SCORE", "TradeReadinessReason"])
+        self.assertEqual(result.loc["VALID", "RankingEligibility"], "推荐")
+        self.assertIn("TradeReadinessReason", result)
+        self.assertIn("TradeReadinessReason", gui.DISPLAY_COLUMNS)
+        self.assertIn("HardRiskFlag", gui.DISPLAY_COLUMNS)
+        self.assertIn("MarketRegime", gui.DISPLAY_COLUMNS)
+
     def test_freshness_columns_export_and_gui_formatting(self):
         frame = _results_to_dataframe([
             ScanResult(ticker="000001.SZ", data_age_days=1, data_trading_age_days=1)
