@@ -142,6 +142,9 @@ COLUMN_NAMES = {
     "DataAgeDays": "自然日延迟",
     "DataTradingAgeDays": "交易日延迟",
     "DataCoverage": "数据覆盖率",
+    "DataFreshnessStatus": "行情时效",
+    "DataFreshnessFactor": "行情时效系数",
+    "DataFreshnessReason": "行情时效说明",
     "InstitutionHoldingStatus": "机构持仓状态",
     "QualityDataCompleteness": "质量数据完整度",
     "QualityGateReason": "质量门槛原因",
@@ -184,45 +187,25 @@ COLUMN_NAMES = {
 }
 DISPLAY_COLUMNS = (
     "OverallRank",
-    "RankingScore",
-    "RankingEligibility",
     "Ticker",
     "Name",
     "AssetType",
-    "Sector",
-    "Industry",
-    "Quality",
+    "EntrySignal",
+    "BreakoutVolumeRatio",
+    "RankingEligibility",
+    "RankingScore",
     "InstitutionalTier",
     "InstitutionalScore",
     "FinalScore",
-    "BaseScore",
-    "TriggerScore",
-    "BreakoutScore",
-    "SmartMoneyStage",
-    "EntrySignal",
-    "EntryZone",
-    "StopLoss",
-    "ValueTrapRisk",
-    "ChaseRiskScore",
-    "OpportunityScore",
-    "LifecycleStage",
-    "SignalTrend",
-    "SignalDays",
-    "CompositeScore",
-    "BacktestScore",
-    "BacktestSamples",
-    "BacktestReliability",
-    "BacktestConfidenceTier",
-    "BacktestEffectiveSamples",
-    "Close",
-    "DistToLow52W",
-    "WyckoffPhase",
-    "Stage",
-    "SignalCount",
-    "PassedFilters",
     "QualityGate",
     "QualityDataCompleteness",
-    "SignalAdjustmentReason",
+    "BacktestSamples",
+    "BacktestConfidenceTier",
+    "ValueTrapRisk",
+    "ChaseRiskScore",
+    "DataFreshnessStatus",
+    "DataAsOf",
+    "RankingReason",
 )
 COLUMN_WIDTHS = {
     "Ticker": 96,
@@ -243,6 +226,7 @@ COLUMN_WIDTHS = {
     "BreakoutScore": 78,
     "SmartMoneyStage": 92,
     "EntrySignal": 112,
+    "BreakoutVolumeRatio": 82,
     "EntryZone": 112,
     "StopLoss": 78,
     "ValueTrapRisk": 92,
@@ -265,6 +249,11 @@ COLUMN_WIDTHS = {
     "PassedFilters": 70,
     "QualityGate": 78,
     "QualityDataCompleteness": 96,
+    "DataFreshnessStatus": 82,
+    "DataFreshnessFactor": 96,
+    "DataFreshnessReason": 190,
+    "DataAsOf": 92,
+    "RankingReason": 220,
     "SignalAdjustmentReason": 220,
 }
 NUMBER_COLUMNS = {
@@ -279,6 +268,7 @@ NUMBER_COLUMNS = {
     "FinalScore",
     "BreakoutScore",
     "EntryScore",
+    "BreakoutVolumeRatio",
     "StopLoss",
     "ValueTrapRisk",
     "ChaseRiskScore",
@@ -315,6 +305,7 @@ NUMBER_COLUMNS = {
     "ScoreContributionCompression",
     "ScoreContributionStructure",
     "MarketRegimeConfidence",
+    "DataFreshnessFactor",
 }
 TEXT_COLUMNS = {
     "Name",
@@ -362,6 +353,7 @@ PERCENTAGE_COLUMNS = {
     "BacktestEffectiveWeight",
     "QualityDataCompleteness",
     "MarketRegimeConfidence",
+    "DataFreshnessFactor",
 }
 FRACTION_PERCENTAGE_COLUMNS = {
     "ScoreCoverage",
@@ -372,6 +364,7 @@ FRACTION_PERCENTAGE_COLUMNS = {
     "BacktestEffectiveWeight",
     "QualityDataCompleteness",
     "MarketRegimeConfidence",
+    "DataFreshnessFactor",
 }
 FOUR_DECIMAL_COLUMNS = {"BacktestObjectiveValue"}
 MAX_RENDERED_ROWS = 500
@@ -405,6 +398,7 @@ class ScannerGUI:
         self.quality_filter = tk.StringVar(value="全部质量")
         self.stage_filter = tk.StringVar(value="全部阶段")
         self.entry_filter = tk.StringVar(value="全部买点")
+        self.eligibility_filter = tk.StringVar(value="全部资格")
         self.no_resume = tk.BooleanVar(value=False)
         self.force_download = tk.BooleanVar(value=False)
         self.cache_first = tk.BooleanVar(value=False)
@@ -442,6 +436,7 @@ class ScannerGUI:
         self.quality_filter.trace_add("write", self._schedule_filter_refresh)
         self.stage_filter.trace_add("write", self._schedule_filter_refresh)
         self.entry_filter.trace_add("write", self._schedule_filter_refresh)
+        self.eligibility_filter.trace_add("write", self._schedule_filter_refresh)
         self.root.bind("<Control-f>", lambda _event: self._focus_search())
         self.root.bind("<Escape>", lambda _event: self.clear_filters())
         self.root.bind("<F5>", lambda _event: self.refresh_results())
@@ -609,7 +604,8 @@ class ScannerGUI:
         actions = ttk.Frame(self.root, style="Toolbar.TFrame", padding=(14, 8))
         actions.pack(fill=tk.X, padx=18, pady=(0, 2))
         for text, command in (
-            ("生成前50名", self._load_top50), ("启动候选", lambda: self.load_csv("Top50BreakoutCandidates.csv")),
+            ("生成前50名", self._load_top50), ("交易就绪", self._load_trade_ready),
+            ("启动候选", lambda: self.load_csv("Top50BreakoutCandidates.csv")),
             ("买点候选", lambda: self.load_csv("Top50EntryCandidates.csv")),
             ("风险榜", lambda: self.load_csv("Top50ValueTrapRisk.csv")),
             ("市场概览", self.show_market_overview),
@@ -638,6 +634,15 @@ class ScannerGUI:
         ttk.Label(filters, text="买点", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
         self.entry_box = ttk.Combobox(filters, textvariable=self.entry_filter, state="readonly", width=15)
         self.entry_box.pack(side=tk.LEFT)
+        ttk.Label(filters, text="资格", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
+        self.eligibility_box = ttk.Combobox(
+            filters,
+            textvariable=self.eligibility_filter,
+            values=("全部资格", "推荐", "观察", "风险过滤"),
+            state="readonly",
+            width=9,
+        )
+        self.eligibility_box.pack(side=tk.LEFT)
         ttk.Label(filters, text="搜索", padding=(12, 0, 4, 0)).pack(side=tk.LEFT)
         self.search_entry = ttk.Entry(filters, textvariable=self.search, width=24)
         self.search_entry.pack(side=tk.LEFT)
@@ -678,6 +683,9 @@ class ScannerGUI:
         self.table.tag_configure("entry-price", background="#fff7df", foreground="#8a5a00")
         self.table.tag_configure("entry-hold", background="#f5f6f8", foreground="#596575")
         self.table.tag_configure("entry-avoid", background="#ffe8e8", foreground="#a22222")
+        self.table.tag_configure("risk-filter", background="#ffe8e8", foreground="#a22222")
+        self.table.tag_configure("data-stale", background="#fff2df", foreground="#9a5300")
+        self.table.tag_configure("quality-fail", background="#fff5e8", foreground="#8a5a00")
         ybar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.table.yview)
         xbar = ttk.Scrollbar(
             table_frame, orient=tk.HORIZONTAL, command=self.table.xview
@@ -817,6 +825,13 @@ class ScannerGUI:
             messagebox.showerror("生成 Top50 失败", str(exc))
             return
         self.append_log(f"已从当前筛选结果生成 Top50.csv：{len(tickers)} 只\n")
+
+    def _load_trade_ready(self) -> None:
+        filename = "Top50TradeReady.csv"
+        if self._csv_has_results(filename):
+            self.load_csv(filename)
+            return
+        messagebox.showinfo("交易就绪", "当前结果中没有满足即时交易条件的标的。")
 
     def start_backtest(self) -> None:
         if self.scan_running:
@@ -1217,6 +1232,7 @@ class ScannerGUI:
             "RankingScore",
             "RankingEligibility",
             "RankingReason",
+            "RankingPenaltyReason",
             "InstitutionalTier",
             "InstitutionalScore",
             "InstitutionalPercentile",
@@ -1298,6 +1314,9 @@ class ScannerGUI:
             "DataAgeDays",
             "DataTradingAgeDays",
             "DataCoverage",
+            "DataFreshnessStatus",
+            "DataFreshnessFactor",
+            "DataFreshnessReason",
             "MarketRegime",
             "MarketRegimeFast",
             "MarketRegimeSlow",
@@ -1361,6 +1380,8 @@ class ScannerGUI:
             self.stage_filter.set("全部阶段")
         if hasattr(self, "entry_filter"):
             self.entry_filter.set("全部买点")
+        if hasattr(self, "eligibility_filter"):
+            self.eligibility_filter.set("全部资格")
         self._current_page = 0
         if self._filter_job is not None:
             self.root.after_cancel(self._filter_job)
@@ -1405,6 +1426,11 @@ class ScannerGUI:
             self.entry_box["values"] = ["全部买点", *entries]
             if self.entry_filter.get() not in self.entry_box["values"]:
                 self.entry_filter.set("全部买点")
+        if hasattr(self, "eligibility_box"):
+            eligibility = values_for("RankingEligibility")
+            self.eligibility_box["values"] = ["全部资格", *eligibility]
+            if self.eligibility_filter.get() not in self.eligibility_box["values"]:
+                self.eligibility_filter.set("全部资格")
 
         industries = values_for("Industry")
         if self.sector_filter.get() != "全部板块" and "Sector" in headers:
@@ -1484,7 +1510,7 @@ class ScannerGUI:
         row: list[str],
         query: str,
         search_text: str | None = None,
-        filter_values: tuple[str, str, str, str, str] | None = None,
+        filter_values: tuple[str, str, str, str, str, str] | None = None,
     ) -> bool:
         values = (
             row
@@ -1503,8 +1529,16 @@ class ScannerGUI:
                 self.quality_filter.get(),
                 self.stage_filter.get() if hasattr(self, "stage_filter") else "全部阶段",
                 self.entry_filter.get() if hasattr(self, "entry_filter") else "全部买点",
+                self.eligibility_filter.get() if hasattr(self, "eligibility_filter") else "全部资格",
             )
-        sector_value, industry_value, quality_value, stage_value, entry_value = filter_values
+        (
+            sector_value,
+            industry_value,
+            quality_value,
+            stage_value,
+            entry_value,
+            eligibility_value,
+        ) = filter_values
         searchable = (
             search_text
             if search_text is not None
@@ -1531,6 +1565,10 @@ class ScannerGUI:
                 entry_value == "全部买点"
                 or value_for("EntrySignal")
                 == DISPLAY_VALUE_CODES.get(entry_value, entry_value)
+            )
+            and (
+                eligibility_value == "全部资格"
+                or value_for("RankingEligibility") == eligibility_value
             )
         )
 
@@ -1562,12 +1600,20 @@ class ScannerGUI:
             for row in rows
             if breakout_index is not None and len(row) > breakout_index
         )
-        actionable = sum(
-            self._cell_text(row[entry_index])
-            in {"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"}
-            for row in rows
-            if entry_index is not None and len(row) > entry_index
-        )
+        eligibility_index = indexes.get("RankingEligibility")
+        if eligibility_index is not None:
+            actionable = sum(
+                len(row) > eligibility_index
+                and self._cell_text(row[eligibility_index]) == "推荐"
+                for row in rows
+            )
+        else:
+            actionable = sum(
+                self._cell_text(row[entry_index])
+                in {"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"}
+                for row in rows
+                if entry_index is not None and len(row) > entry_index
+            )
         average = (
             sum(number_for(row, "FinalScore") for row in rows) / total
             if total and "FinalScore" in indexes
@@ -1599,6 +1645,7 @@ class ScannerGUI:
             self.quality_filter.get(),
             self.stage_filter.get() if hasattr(self, "stage_filter") else "全部阶段",
             self.entry_filter.get() if hasattr(self, "entry_filter") else "全部买点",
+            self.eligibility_filter.get() if hasattr(self, "eligibility_filter") else "全部资格",
         )
         search_texts = getattr(self, "_csv_search_text", [])
         if len(search_texts) != len(self._csv_rows):
@@ -1662,6 +1709,10 @@ class ScannerGUI:
         text = str(value).strip()
         if column in {"SmartMoneyStage", "EntrySignal", "AssetType", "DataSource", "UniverseType"}:
             return DISPLAY_VALUE_NAMES.get(text, text)
+        if column in {"QualityGate", "PassedFilters"}:
+            return "通过" if text.lower() in {"true", "1", "yes", "y", "是"} else "未通过"
+        if column == "HardRiskFlag":
+            return "是" if text.lower() in {"true", "1", "yes", "y", "是"} else "否"
         if column not in NUMBER_COLUMNS or not text:
             return text
         try:
@@ -1709,6 +1760,19 @@ class ScannerGUI:
             return "entry-avoid"
         return "entry-hold"
 
+    def _risk_tag(self, values: list[str], indexes: dict[str, int]) -> str:
+        def value_for(column: str) -> str:
+            index = indexes.get(column)
+            return self._cell_text(values[index]) if index is not None and index < len(values) else ""
+
+        if value_for("RankingEligibility") == "风险过滤":
+            return "risk-filter"
+        if value_for("DataFreshnessStatus") == "过期":
+            return "data-stale"
+        if value_for("QualityGate").strip().lower() in {"false", "0", "no", "否"}:
+            return "quality-fail"
+        return ""
+
     def _sort_by_column(self, column: str) -> None:
         if self._sort_column == column:
             self._sort_descending = not self._sort_descending
@@ -1748,6 +1812,7 @@ class ScannerGUI:
             self.quality_filter.get(),
             self.stage_filter.get() if hasattr(self, "stage_filter") else "全部阶段",
             self.entry_filter.get() if hasattr(self, "entry_filter") else "全部买点",
+            self.eligibility_filter.get() if hasattr(self, "eligibility_filter") else "全部资格",
         )
         search_texts = getattr(self, "_csv_search_text", [])
         if len(search_texts) != len(data_rows):
@@ -1861,9 +1926,18 @@ class ScannerGUI:
                 )
             quality = values[quality_index] if quality_index is not None else ""
             entry_signal = values[entry_signal_index] if entry_signal_index is not None else ""
+            risk_tag = self._risk_tag(values, indexes)
             item_id = self.table.insert(
                 "", tk.END, values=display_values,
-                tags=(self._quality_tag(quality), self._entry_tag(entry_signal)),
+                tags=tuple(
+                    tag
+                    for tag in (
+                        risk_tag,
+                        self._entry_tag(entry_signal),
+                        self._quality_tag(quality),
+                    )
+                    if tag
+                ),
             )
             self._row_details[item_id] = dict(zip(headers, values))
         if hasattr(self, "page_summary"):
@@ -1879,8 +1953,22 @@ class ScannerGUI:
                 state=tk.NORMAL if self._current_page + 1 < page_count else tk.DISABLED
             )
         if hasattr(self, "result_summary"):
+            eligibility_index = indexes.get("RankingEligibility")
+            freshness_index = indexes.get("DataFreshnessStatus")
+            recommended = sum(
+                len(row) > eligibility_index
+                and self._cell_text(row[eligibility_index]) == "推荐"
+                for row in filtered
+            ) if eligibility_index is not None else 0
+            stale = sum(
+                len(row) > freshness_index
+                and self._cell_text(row[freshness_index]) == "过期"
+                for row in filtered
+            ) if freshness_index is not None else 0
+            readiness = f" · 就绪 {recommended}" if eligibility_index is not None else ""
+            freshness = f" · 过期 {stale}" if freshness_index is not None and stale else ""
             self.result_summary.set(
-                f"当前文件：{self.current_file} · 命中 {len(filtered):,} / {len(data_rows):,} 条"
+                f"当前文件：{self.current_file} · 命中 {len(filtered):,} / {len(data_rows):,} 条{readiness}{freshness}"
             )
         self.status.set(
             f"{self.current_file} · 命中 {len(filtered)} / {len(data_rows)} 条 · 第 {self._current_page + 1} / {page_count} 页 · 双击查看详情"
