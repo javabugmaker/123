@@ -163,13 +163,16 @@ SCORING_WEIGHTS: Final[ScoringWeights] = ScoringWeights()
 TOP_N_REPORT: int = 50
 TOP_N_PARQUET: int = 200
 
-SCORING_VERSION: str = "2026-08-05-v7-industry-integrity"
+SCORING_VERSION: str = "2026-08-06-v8-consistency-reliability"
 
 # Per-ticker historical evidence is only allowed to influence the composite
 # rank after more than a couple of independent observations.  This prevents a
 # single recent signal from moving a stock ahead of a stronger technical setup.
-BACKTEST_MIN_SAMPLES_FOR_RANKING: Final[int] = 3
-BACKTEST_FULL_WEIGHT_SAMPLES: Final[int] = 10
+BACKTEST_MIN_SAMPLES_FOR_RANKING: Final[int] = 10
+BACKTEST_LOW_CONFIDENCE_MAX_SAMPLES: Final[int] = 20
+BACKTEST_FULL_WEIGHT_SAMPLES: Final[int] = 50
+BACKTEST_NORMAL_WEIGHT: Final[float] = 0.25
+BACKTEST_NEUTRAL_SCORE: Final[float] = 50.0
 # Historical signals are sampled more frequently than their 60-day evaluation
 # window.  Overlap is accounted for through effective sample weights.
 BACKTEST_SIGNAL_COOLDOWN_DAYS: Final[int] = 20
@@ -182,9 +185,13 @@ FRESHNESS_MULTIPLIERS: Final[tuple[tuple[int, float], ...]] = (
     (5, 0.90),
     (999_999, 0.80),
 )
-INSTITUTIONAL_TIER_A_SCORE: Final[float] = 85.0
-INSTITUTIONAL_TIER_B_SCORE: Final[float] = 75.0
-INSTITUTIONAL_TIER_C_SCORE: Final[float] = 65.0
+INSTITUTIONAL_TIER_A_SCORE: Final[float] = 35.0
+INSTITUTIONAL_TIER_B_SCORE: Final[float] = 30.0
+INSTITUTIONAL_TIER_C_SCORE: Final[float] = 25.0
+INSTITUTIONAL_TIER_A_PERCENTILE: Final[float] = 90.0
+INSTITUTIONAL_TIER_B_PERCENTILE: Final[float] = 75.0
+INSTITUTIONAL_TIER_C_PERCENTILE: Final[float] = 50.0
+INSTITUTIONAL_TIER_MIN_DATA_CONFIDENCE: Final[float] = 0.65
 INSTITUTIONAL_TIER_WAIT_LABEL: Final[str] = "D级等待确认"
 INSTITUTIONAL_TIER_TRAP_LABEL: Final[str] = "D级陷阱池"
 VALUE_TRAP_RISK_THRESHOLD: Final[float] = 60.0
@@ -193,6 +200,51 @@ INSTITUTIONAL_SCORE_TIERS: Final[tuple[tuple[str, float], ...]] = (
     ("B级观察", INSTITUTIONAL_TIER_B_SCORE),
     ("C级价值观察", INSTITUTIONAL_TIER_C_SCORE),
 )
+
+# Fundamental quality is tri-state: a missing institution-holding history is
+# neutral evidence, while an observed negative trend is a genuine failure.
+INSTITUTION_HOLDING_MIN_PERIODS: Final[int] = 2
+QUALITY_MULTIPLIER_PASS: Final[float] = 1.00
+QUALITY_MULTIPLIER_UNKNOWN: Final[float] = 0.95
+QUALITY_MULTIPLIER_FAIL: Final[float] = 0.85
+
+# A price breakout is only promoted to BREAKOUT_CONFIRM after both volume and
+# money-flow confirmation.  These thresholds intentionally live in config so
+# they can be tuned without changing the signal engine.
+BREAKOUT_CONFIRM_MIN_VOLUME_RATIO: Final[float] = 1.20
+BREAKOUT_CONFIRM_MIN_VOLUME_SCORE: Final[float] = 8.0
+
+# Ranking uses technical quality once, then applies only distinct readiness
+# gates.  Keep penalties bounded so incomplete free data never dominates a
+# valid price/volume setup.
+ENTRY_SIGNAL_MULTIPLIERS: Final[dict[str, float]] = {
+    "BUY_NOW": 1.00,
+    "BREAKOUT_CONFIRM": 0.95,
+    "WAIT_PULLBACK": 0.88,
+    "PRICE_BREAKOUT": 0.76,
+    "WAIT_VOLUME_CONFIRM": 0.72,
+    "HOLD_WAIT": 0.64,
+    "AVOID": 0.50,
+}
+ENTRY_SIGNAL_PRIORITIES: Final[dict[str, float]] = {
+    "BUY_NOW": 5.0,
+    "BREAKOUT_CONFIRM": 4.0,
+    "WAIT_PULLBACK": 3.0,
+    "PRICE_BREAKOUT": 2.5,
+    "WAIT_VOLUME_CONFIRM": 2.5,
+    "HOLD_WAIT": 2.0,
+    "AVOID": 0.0,
+}
+HARD_RISK_AVOID_PENALTY: Final[float] = 0.55
+HARD_RISK_STAGE_PENALTY: Final[float] = 0.65
+HARD_RISK_VALUE_TRAP_PENALTY: Final[float] = 0.60
+HARD_RISK_DATA_PENALTY: Final[float] = 0.75
+CHASE_RISK_MAX_PENALTY: Final[float] = 0.45
+CHASE_RISK_HIGH_THRESHOLD: Final[float] = 60.0
+CHASE_RISK_RSI_START: Final[float] = 70.0
+CHASE_RISK_RSI_HARD: Final[float] = 78.0
+CHASE_RISK_DISTANCE_START: Final[float] = 50.0
+CHASE_RISK_DISTANCE_HIGH: Final[float] = 80.0
 
 # ======================================================================
 # Runtime
