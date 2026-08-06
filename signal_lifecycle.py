@@ -41,6 +41,7 @@ from config import (
     INSTITUTIONAL_TIER_WAIT_LABEL,
     OUTPUT_DIR,
     QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE,
+    TRADE_READY_MIN_INSTITUTIONAL_SCORE,
     VALUE_TRAP_HARD_RISK_THRESHOLD,
     VALUE_TRAP_RISK_THRESHOLD,
 )
@@ -426,13 +427,28 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     ranking_penalty_reason = _append_reason(
         ranking_penalty_reason, freshness_status.eq("延迟"), "行情数据延迟"
     )
+    base_score = _number(
+        result.get(
+            "InstitutionalScore",
+            result.get("FinalScore", result.get("Score", pd.Series(0.0, index=result.index))),
+        ),
+        0.0,
+    )
+    minimum_score_risk = base_score.lt(TRADE_READY_MIN_INSTITUTIONAL_SCORE)
+    ranking_penalty_reason = _append_reason(
+        ranking_penalty_reason,
+        signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"}) & minimum_score_risk,
+        "综合评分未达交易门槛",
+    )
     result["RankingPenaltyReason"] = ranking_penalty_reason
     trade_ready = (
         signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
         & ~stage_risk
         & ~trap_observe
         & ~quality_action_block
+        & ~data_risk
         & ~stale_data
+        & ~minimum_score_risk
     )
     result["RankingEligibility"] = np.select(
         [
@@ -442,11 +458,27 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         ["风险过滤", "推荐"],
         default="观察",
     )
+    readiness_reason = pd.Series("等待趋势、量能或风险条件改善", index=result.index)
+    active_signal = signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
+    hard_filter = avoid | trap_risk | lifecycle.isin({"派发", "DISTRIBUTION"}) | stale_data
+    readiness_reason.loc[hard_filter] = "硬风险过滤，不纳入交易就绪组"
+    readiness_reason.loc[active_signal & data_risk & ~hard_filter] = "技术数据覆盖不足，转为观察"
+    readiness_reason.loc[
+        active_signal & minimum_score_risk & ~data_risk & ~hard_filter
+    ] = "综合评分未达交易门槛，转为观察"
+    readiness_reason.loc[
+        active_signal
+        & ~minimum_score_risk
+        & ~data_risk
+        & ~hard_filter
+        & ~quality_action_block
+        & ~trap_observe
+    ] = "买点、质量、数据与综合评分均满足执行条件"
+    result["TradeReadinessReason"] = readiness_reason
     result["OpportunityStage"] = lifecycle
     result.loc[trap_observe, "OpportunityStage"] = "底部观察"
     result.loc[quality_action_block & ~trap_observe, "OpportunityStage"] = "观察"
 
-    base_score = _number(result.get("InstitutionalScore", result.get("FinalScore", result.get("Score", pd.Series(0.0, index=result.index)))), 0.0)
     entry_factor = signal.map(ENTRY_SIGNAL_MULTIPLIERS).fillna(ENTRY_SIGNAL_MULTIPLIERS["HOLD_WAIT"])
     result["EntrySignalPriority"] = signal.map(ENTRY_SIGNAL_PRIORITIES).fillna(0.0)
     chase_factor = (1.0 - (chase / 100.0) * (1.0 - CHASE_RISK_MAX_PENALTY)).clip(CHASE_RISK_MAX_PENALTY, 1.0)
@@ -499,6 +531,10 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     rank_reason.loc[quality_action_block] = "质量门槛未通过或数据不足，转为观察"
     rank_reason.loc[trap_observe & ~trap_risk] = "价值陷阱风险，转为观察"
     rank_reason.loc[stale_data] = "行情数据已过期，风险过滤"
+    rank_reason.loc[active_signal & data_risk & ~hard_filter] = "技术数据覆盖不足，转为观察"
+    rank_reason.loc[
+        active_signal & minimum_score_risk & ~data_risk & ~hard_filter
+    ] = "买点成立但综合评分不足，转为观察"
     rank_reason.loc[samples.lt(BACKTEST_MIN_SAMPLES_FOR_RANKING) & ~avoid] += "；回测样本不足，不参与校准"
     result["RankingReason"] = rank_reason
     eligibility_order = result["RankingEligibility"].map({"推荐": 2, "观察": 1, "风险过滤": 0}).fillna(0)
