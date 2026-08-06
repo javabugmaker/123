@@ -163,7 +163,7 @@ SCORING_WEIGHTS: Final[ScoringWeights] = ScoringWeights()
 TOP_N_REPORT: int = 50
 TOP_N_PARQUET: int = 200
 
-SCORING_VERSION: str = "2026-08-06-v9-readiness-freshness"
+SCORING_VERSION: str = "2026-08-06-v10-execution-consistency"
 
 # Per-ticker historical evidence is only allowed to influence the composite
 # rank after more than a couple of independent observations.  This prevents a
@@ -188,6 +188,11 @@ FRESHNESS_MULTIPLIERS: Final[tuple[tuple[int, float], ...]] = (
 INSTITUTIONAL_TIER_A_SCORE: Final[float] = 35.0
 INSTITUTIONAL_TIER_B_SCORE: Final[float] = 30.0
 INSTITUTIONAL_TIER_C_SCORE: Final[float] = 25.0
+# A valid technical setup can only enter the trade-ready group when the
+# underlying institutional score has reached the lowest actionable tier.
+# Keeping this explicit prevents a D-tier setup from being promoted solely by
+# a short-term EntrySignal.
+TRADE_READY_MIN_INSTITUTIONAL_SCORE: Final[float] = INSTITUTIONAL_TIER_C_SCORE
 INSTITUTIONAL_TIER_A_PERCENTILE: Final[float] = 90.0
 INSTITUTIONAL_TIER_B_PERCENTILE: Final[float] = 75.0
 INSTITUTIONAL_TIER_C_PERCENTILE: Final[float] = 50.0
