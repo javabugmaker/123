@@ -95,6 +95,10 @@ class ScanResult:
     atr14: float = np.nan
     rsi14: float = np.nan
     dist_to_low_52w: float = np.nan
+    dist_to_ma20: float = np.nan
+    dist_to_ma50: float = np.nan
+    recent_return_20d: float = np.nan
+    atr_expansion: float = np.nan
     wyckoff_phase: str = "Unknown"
     volume_accum_days: int = 0
     base_score: float = np.nan
@@ -104,6 +108,10 @@ class ScanResult:
     entry_signal: str = "AVOID"
     entry_zone: str = ""
     breakout_buy_price: float = np.nan
+    breakout_volume_ratio: float = np.nan
+    breakout_volume_confirmed: bool = False
+    breakout_flow_confirmed: bool = False
+    price_breakout: bool = False
     stop_loss: float = np.nan
     value_trap_risk: float = np.nan
     risk_warning: str = ""
@@ -116,6 +124,9 @@ class ScanResult:
     style: str = "均衡"
     market_regime: str = "未知"
     market_regime_reason: str = ""
+    market_regime_fast: str = "未知"
+    market_regime_slow: str = "未知"
+    market_regime_confidence: float = 0.0
     industry_relative_strength: float = np.nan
     industry_momentum_60d: float = np.nan
     sector_confirmation_factor: float = 1.0
@@ -138,9 +149,13 @@ class ScanResult:
     quality_institution_holding_factor: bool = False
     quality_net_profit_factor: bool = False
     quality_score: float = np.nan
-    quality_gate: bool = False
-    quality_reason: str = "基本面数据缺失"
+    quality_gate: bool = True
+    quality_reason: str = "基本面数据缺失（中性）"
     quality_data_available: bool = False
+    quality_institution_holding_status: str = "UNKNOWN"
+    quality_data_completeness: float = 0.0
+    quality_gate_reason: str = "基本面数据缺失（中性）"
+    quality_multiplier: float = 0.95
     stage: str = "未知"
     data_source: str = ""
     data_asof: str = ""
@@ -155,7 +170,33 @@ class ScanResult:
     backtest_average_return_20d: float = np.nan
     backtest_average_return_60d: float = np.nan
     backtest_objective_value: float = np.nan
+    backtest_effective_weight: float = 0.0
+    backtest_confidence_tier: str = "样本不足"
+    backtest_adjusted_score: float = np.nan
+    backtest_median_return_20d: float = np.nan
+    backtest_median_return_60d: float = np.nan
+    backtest_max_drawdown_20d: float = np.nan
+    backtest_max_drawdown_60d: float = np.nan
+    backtest_profit_factor: float = np.nan
+    backtest_signal_span_days: int = 0
+    backtest_return_std_20d: float = np.nan
     composite_score: float = np.nan
+    chase_risk_score: float = 0.0
+    chase_risk_level: str = "低"
+    chase_risk_reason: str = ""
+    hard_risk_flag: bool = False
+    hard_risk_penalty: float = 1.0
+    hard_risk_reason: str = ""
+    ranking_penalty_reason: str = ""
+    ranking_eligibility: str = "观察"
+    ranking_score: float = np.nan
+    overall_rank: int = 0
+    ranking_reason: str = ""
+    institutional_percentile: float = np.nan
+    institutional_rank: int = 0
+    institutional_tier_reason: str = ""
+    signal_adjustment_reason: str = ""
+    opportunity_stage: str = "未知"
     universe_type: str = "current_survivor_pool"
     survivorship_bias_warning: bool = True
 
@@ -376,6 +417,17 @@ def scan_single_from_df(
         dist_low = (
             df["DistToLow52W"].iloc[-1] if "DistToLow52W" in df.columns else np.nan
         )
+        ma20_value = _parse_float(df["MA20"].iloc[-1], np.nan) if "MA20" in df.columns else np.nan
+        ma50_value = _parse_float(df["MA50"].iloc[-1], np.nan) if "MA50" in df.columns else np.nan
+        dist_ma20 = ((close / ma20_value) - 1.0) * 100.0 if np.isfinite(ma20_value) and ma20_value > 0 else np.nan
+        dist_ma50 = ((close / ma50_value) - 1.0) * 100.0 if np.isfinite(ma50_value) and ma50_value > 0 else np.nan
+        recent_return_20d = (
+            (close / _parse_float(df["Close"].iloc[-21], np.nan) - 1.0) * 100.0
+            if len(df) >= 21 and _parse_float(df["Close"].iloc[-21], np.nan) > 0
+            else np.nan
+        )
+        atr50_value = _parse_float(df["ATR50"].iloc[-1], np.nan) if "ATR50" in df.columns else np.nan
+        atr_expansion = (atr14_val / atr50_value) if np.isfinite(atr14_val) and np.isfinite(atr50_value) and atr50_value > 0 else np.nan
         phase = (
             df["WyckoffPhase"].iloc[-1] if "WyckoffPhase" in df.columns else "Unknown"
         )
@@ -385,7 +437,12 @@ def scan_single_from_df(
         quality = get_quality(ticker, is_etf=ticker_info.is_etf)
         breakout = _parse_float(getattr(sb, "breakout_score", np.nan), 0.0)
         trap = _parse_float(getattr(sb, "value_trap_risk", np.nan), 0.0)
-        entry = entry_point(df, breakout)
+        entry = entry_point(
+            df,
+            breakout,
+            volume_score=_parse_float(getattr(sb, "volume", np.nan)),
+            value_trap_risk_value=trap,
+        )
         smart_stage = smart_money_stage(df, breakout, trap)
         entry_zone = (
             f"{entry['low']:.2f}-{entry['high']:.2f}"
@@ -396,6 +453,8 @@ def scan_single_from_df(
         operation_advice = {
             "BUY_NOW": "回调至买入区间可分批介入",
             "BREAKOUT_CONFIRM": "放量突破确认后跟随，控制仓位",
+            "PRICE_BREAKOUT": "价格已突破，等待成交量确认，暂不追高",
+            "WAIT_VOLUME_CONFIRM": "等待成交量确认，暂不追高",
             "WAIT_PULLBACK": "等待回踩买入区间，不追高",
             "HOLD_WAIT": "保持观察，等待趋势和量能确认",
             "AVOID": "回避，等待结构改善",
@@ -423,6 +482,10 @@ def scan_single_from_df(
             atr14=atr14_val,
             rsi14=rsi14_val,
             dist_to_low_52w=dist_low,
+            dist_to_ma20=dist_ma20,
+            dist_to_ma50=dist_ma50,
+            recent_return_20d=recent_return_20d,
+            atr_expansion=atr_expansion,
             wyckoff_phase=phase,
             volume_accum_days=vol_accum_days,
             base_score=_parse_float(getattr(sb, "base_score", np.nan)),
@@ -432,6 +495,10 @@ def scan_single_from_df(
             entry_signal=entry["signal"],
             entry_zone=entry_zone,
             breakout_buy_price=_parse_float(entry["breakout"]),
+            breakout_volume_ratio=_parse_float(entry.get("volume_ratio")),
+            breakout_volume_confirmed=_parse_bool(entry.get("volume_confirmed")),
+            breakout_flow_confirmed=_parse_bool(entry.get("flow_confirmed")),
+            price_breakout=_parse_bool(entry.get("price_breakout")),
             stop_loss=_parse_float(entry["stop"]),
             value_trap_risk=trap,
             risk_warning=risk_warning,
@@ -457,6 +524,10 @@ def scan_single_from_df(
             quality_gate=quality.quality_gate,
             quality_reason=quality.quality_reason,
             quality_data_available=quality.data_available,
+            quality_institution_holding_status=quality.institution_holding_status,
+            quality_data_completeness=quality.quality_data_completeness,
+            quality_gate_reason=quality.quality_gate_reason,
+            quality_multiplier=quality.quality_multiplier,
         )
 
     except _SCAN_RECOVERABLE_ERRORS as exc:
@@ -742,6 +813,36 @@ def run_scan(
                     backtest_objective_value=_parse_float(
                         row.get("BacktestObjectiveValue", np.nan)
                     ),
+                    backtest_effective_weight=_parse_float(
+                        row.get("BacktestEffectiveWeight", 0.0), 0.0
+                    ),
+                    backtest_confidence_tier=str(
+                        row.get("BacktestConfidenceTier", "样本不足") or "样本不足"
+                    ),
+                    backtest_adjusted_score=_parse_float(
+                        row.get("BacktestAdjustedScore", np.nan)
+                    ),
+                    backtest_median_return_20d=_parse_float(
+                        row.get("BacktestMedianReturn20D", np.nan)
+                    ),
+                    backtest_median_return_60d=_parse_float(
+                        row.get("BacktestMedianReturn60D", np.nan)
+                    ),
+                    backtest_max_drawdown_20d=_parse_float(
+                        row.get("BacktestMaxDrawdown20D", np.nan)
+                    ),
+                    backtest_max_drawdown_60d=_parse_float(
+                        row.get("BacktestMaxDrawdown60D", np.nan)
+                    ),
+                    backtest_profit_factor=_parse_float(
+                        row.get("BacktestProfitFactor", np.nan)
+                    ),
+                    backtest_signal_span_days=_parse_int(
+                        row.get("BacktestSignalSpanDays", 0), 0
+                    ),
+                    backtest_return_std_20d=_parse_float(
+                        row.get("BacktestReturnStd20D", np.nan)
+                    ),
                     composite_score=_parse_float(row.get("CompositeScore", np.nan)),
                     failure_signal_factor=_parse_float(
                         row.get("FailureSignalFactor", 1.0), 1.0
@@ -770,6 +871,10 @@ def run_scan(
                     entry_signal=str(row.get("EntrySignal", "AVOID") or "AVOID"),
                     entry_zone=str(row.get("EntryZone", "") or ""),
                     breakout_buy_price=_parse_float(row.get("BreakoutBuyPrice", np.nan)),
+                    breakout_volume_ratio=_parse_float(row.get("BreakoutVolumeRatio", np.nan)),
+                    breakout_volume_confirmed=_parse_bool(row.get("BreakoutVolumeConfirmed", False)),
+                    breakout_flow_confirmed=_parse_bool(row.get("BreakoutFlowConfirmed", False)),
+                    price_breakout=_parse_bool(row.get("PriceBreakout", False)),
                     stop_loss=_parse_float(row.get("StopLoss", np.nan)),
                     value_trap_risk=_parse_float(row.get("ValueTrapRisk", np.nan)),
                     risk_warning=str(row.get("RiskWarning", "") or ""),
@@ -787,9 +892,22 @@ def run_scan(
                     quality_institution_holding_factor=_parse_bool(row.get("QualityInstitutionHolding", False)),
                     quality_net_profit_factor=_parse_bool(row.get("QualityNetProfit", False)),
                     quality_score=_parse_float(row.get("QualityScore", np.nan)),
-                    quality_gate=_parse_bool(row.get("QualityGate", False)),
-                    quality_reason=str(row.get("QualityReason", "基本面数据缺失") or "基本面数据缺失"),
+                    quality_gate=_parse_bool(row.get("QualityGate", True), True),
+                    quality_reason=str(row.get("QualityReason", "基本面数据缺失（中性）") or "基本面数据缺失（中性）"),
                     quality_data_available=_parse_bool(row.get("QualityDataAvailable", False)),
+                    quality_institution_holding_status=str(
+                        row.get("InstitutionHoldingStatus", "UNKNOWN") or "UNKNOWN"
+                    ),
+                    quality_data_completeness=_parse_float(
+                        row.get("QualityDataCompleteness", 0.0), 0.0
+                    ),
+                    quality_gate_reason=str(
+                        row.get("QualityGateReason", "基本面数据缺失（中性）")
+                        or "基本面数据缺失（中性）"
+                    ),
+                    quality_multiplier=_parse_float(
+                        row.get("QualityMultiplier", 0.95), 0.95
+                    ),
                     sector_confirmation_factor=_parse_float(
                         row.get("SectorConfirmationFactor", 1.0), 1.0
                     ),
@@ -809,6 +927,10 @@ def run_scan(
                     atr14=_parse_float(row.get("ATR14", np.nan)),
                     rsi14=_parse_float(row.get("RSI14", np.nan)),
                     dist_to_low_52w=_parse_float(row.get("DistToLow52W", np.nan)),
+                    dist_to_ma20=_parse_float(row.get("DistToMA20", np.nan)),
+                    dist_to_ma50=_parse_float(row.get("DistToMA50", np.nan)),
+                    recent_return_20d=_parse_float(row.get("RecentReturn20D", np.nan)),
+                    atr_expansion=_parse_float(row.get("ATRExpansion", np.nan)),
                     wyckoff_phase=str(row.get("WyckoffPhase", "Unknown") or "Unknown"),
                     volume_accum_days=_parse_int(row.get("VolAccumDays", 0), 0),
                     passed_filters=_parse_bool(row.get("PassedFilters", False)),
@@ -829,6 +951,12 @@ def run_scan(
                     },
                     error=str(row.get("Error", "") or ""),
                     market_regime=str(row.get("MarketRegime", "未知") or "未知"),
+                    market_regime_fast=str(row.get("MarketRegimeFast", "未知") or "未知"),
+                    market_regime_slow=str(row.get("MarketRegimeSlow", "未知") or "未知"),
+                    market_regime_confidence=_parse_float(
+                        row.get("MarketRegimeConfidence", 0.0), 0.0
+                    ),
+                    market_regime_reason=str(row.get("MarketRegimeReason", "") or ""),
                     industry_relative_strength=_parse_float(
                         row.get("IndustryRelativeStrength", np.nan)
                     ),
@@ -840,6 +968,22 @@ def run_scan(
                         row.get("DataTradingAgeDays", -1), -1
                     ),
                     data_coverage=_parse_float(row.get("DataCoverage", 0.0), 0.0),
+                    chase_risk_score=_parse_float(row.get("ChaseRiskScore", 0.0), 0.0),
+                    chase_risk_level=str(row.get("ChaseRiskLevel", "低") or "低"),
+                    chase_risk_reason=str(row.get("ChaseRiskReason", "") or ""),
+                    hard_risk_flag=_parse_bool(row.get("HardRiskFlag", False)),
+                    hard_risk_penalty=_parse_float(row.get("HardRiskPenalty", 1.0), 1.0),
+                    hard_risk_reason=str(row.get("HardRiskReason", "") or ""),
+                    ranking_penalty_reason=str(row.get("RankingPenaltyReason", "") or ""),
+                    ranking_eligibility=str(row.get("RankingEligibility", "观察") or "观察"),
+                    ranking_score=_parse_float(row.get("RankingScore", np.nan)),
+                    overall_rank=_parse_int(row.get("OverallRank", 0), 0),
+                    ranking_reason=str(row.get("RankingReason", "") or ""),
+                    institutional_percentile=_parse_float(row.get("InstitutionalPercentile", np.nan)),
+                    institutional_rank=_parse_int(row.get("InstitutionalRank", 0), 0),
+                    institutional_tier_reason=str(row.get("InstitutionalTierReason", "") or ""),
+                    signal_adjustment_reason=str(row.get("SignalAdjustmentReason", "") or ""),
+                    opportunity_stage=str(row.get("OpportunityStage", "未知") or "未知"),
                 )
                 if sr.ticker in universe_symbols and sr.ticker in processed_set:
                     prev_results[sr.ticker] = sr
