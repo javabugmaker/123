@@ -12,12 +12,18 @@ from config import (
     BACKTEST_MIN_SAMPLES_FOR_RANKING,
     BACKTEST_NEUTRAL_SCORE,
     BACKTEST_NORMAL_WEIGHT,
+    BREAKOUT_CONFIRM_MIN_VOLUME_RATIO,
+    BREAKOUT_CONFIRM_MIN_VOLUME_SCORE,
     CHASE_RISK_DISTANCE_HIGH,
     CHASE_RISK_DISTANCE_START,
     CHASE_RISK_HIGH_THRESHOLD,
     CHASE_RISK_MAX_PENALTY,
     CHASE_RISK_RSI_HARD,
     CHASE_RISK_RSI_START,
+    DATA_FRESHNESS_DELAYED_FACTOR,
+    DATA_FRESHNESS_DELAYED_TRADING_DAYS,
+    DATA_FRESHNESS_STALE_FACTOR,
+    DATA_FRESHNESS_STALE_TRADING_DAYS,
     ENTRY_SIGNAL_MULTIPLIERS,
     ENTRY_SIGNAL_PRIORITIES,
     HARD_RISK_AVOID_PENALTY,
@@ -34,6 +40,8 @@ from config import (
     INSTITUTIONAL_TIER_TRAP_LABEL,
     INSTITUTIONAL_TIER_WAIT_LABEL,
     OUTPUT_DIR,
+    QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE,
+    VALUE_TRAP_HARD_RISK_THRESHOLD,
     VALUE_TRAP_RISK_THRESHOLD,
 )
 
@@ -109,6 +117,36 @@ def _holding_status(frame: pd.DataFrame) -> pd.Series:
     return existing.where(existing.isin({"PASS", "FAIL", "UNKNOWN"}), inferred)
 
 
+def _data_freshness(
+    frame: pd.DataFrame,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Classify quote age without treating absent legacy fields as stale."""
+    trading_age = _number(
+        frame.get("DataTradingAgeDays", pd.Series(np.nan, index=frame.index)),
+        np.nan,
+    )
+    calendar_age = _number(
+        frame.get("DataAgeDays", pd.Series(np.nan, index=frame.index)), np.nan
+    )
+    effective_age = trading_age.where(trading_age.ge(0.0), calendar_age)
+    known = effective_age.notna() & effective_age.ge(0.0)
+    delayed = known & effective_age.gt(DATA_FRESHNESS_DELAYED_TRADING_DAYS)
+    stale = known & effective_age.gt(DATA_FRESHNESS_STALE_TRADING_DAYS)
+
+    status = pd.Series("未知", index=frame.index)
+    status.loc[known & ~delayed] = "新鲜"
+    status.loc[delayed & ~stale] = "延迟"
+    status.loc[stale] = "过期"
+    factor = pd.Series(1.0, index=frame.index)
+    factor.loc[delayed & ~stale] = DATA_FRESHNESS_DELAYED_FACTOR
+    factor.loc[stale] = DATA_FRESHNESS_STALE_FACTOR
+    reason = pd.Series("未提供可用的行情日期", index=frame.index)
+    reason.loc[known & ~delayed] = "行情日期正常"
+    reason.loc[delayed & ~stale] = "行情数据延迟，建议刷新后确认"
+    reason.loc[stale] = "行情数据已过期，禁止作为即时交易信号"
+    return status, factor.round(4), reason
+
+
 def _backtest_confidence(
     samples: pd.Series,
     effective_samples: pd.Series,
@@ -148,16 +186,66 @@ def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
     trap = _number(result.get("ValueTrapRisk", pd.Series(0.0, index=result.index)))
     lifecycle = _text_series(result, "LifecycleStage", "未知")
     rsi = _number(result.get("RSI14", pd.Series(np.nan, index=result.index)), np.nan)
-    volume_confirmed = _bool_series(result, "BreakoutVolumeConfirmed")
-    if "BreakoutVolumeConfirmed" not in result:
-        volume_confirmed = _number(result.get("BreakoutVolumeRatio", pd.Series(np.nan, index=result.index)), np.nan).ge(1.2) | _number(result.get("VolumeScore", pd.Series(0.0, index=result.index))).ge(8.0)
-    flow_confirmed = _bool_series(result, "BreakoutFlowConfirmed")
-    if "BreakoutFlowConfirmed" not in result:
-        flow_confirmed = _bool_series(result, "CMF_Pos") | _bool_series(result, "AD_SlopePos") | _bool_series(result, "OBV_Div")
+    is_etf = _bool_series(result, "IsETF") | _text_series(
+        result, "AssetType", ""
+    ).str.lower().eq("etf")
+    supplied_completeness = _number(
+        result.get("QualityDataCompleteness", pd.Series(np.nan, index=result.index)),
+        np.nan,
+    )
+    quality_failed = pd.Series(False, index=result.index)
+    if "QualityGate" in result:
+        quality_failed = ~_bool_series(result, "QualityGate", True) & ~is_etf
+    quality_sparse = (
+        supplied_completeness.notna()
+        & supplied_completeness.lt(QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE)
+        & ~is_etf
+    )
+    quality_action_block = quality_failed | quality_sparse
+    freshness_status, _freshness_factor, _freshness_reason = _data_freshness(result)
+    stale_data = freshness_status.eq("过期")
+    volume_ratio = _number(
+        result.get("BreakoutVolumeRatio", pd.Series(np.nan, index=result.index)),
+        np.nan,
+    )
+    volume_score = _number(
+        result.get("VolumeScore", pd.Series(np.nan, index=result.index)), np.nan
+    )
+    observed_volume_confirmation = volume_ratio.ge(
+        BREAKOUT_CONFIRM_MIN_VOLUME_RATIO
+    ) | volume_score.ge(BREAKOUT_CONFIRM_MIN_VOLUME_SCORE)
+    volume_metrics_available = volume_ratio.notna() | volume_score.notna()
+    if "BreakoutVolumeConfirmed" in result:
+        # Preserve legacy flags only when raw volume metrics are absent or
+        # agree with the flag; stale flags must not create a false breakout.
+        volume_confirmed = _bool_series(result, "BreakoutVolumeConfirmed") & (
+            ~volume_metrics_available | observed_volume_confirmation
+        )
+    else:
+        volume_confirmed = observed_volume_confirmation
+    cmf_positive = _bool_series(result, "CMF_Pos") | _number(
+        result.get("CMF", pd.Series(np.nan, index=result.index)), np.nan
+    ).gt(0.0)
+    ad_positive = _bool_series(result, "AD_SlopePos") | _number(
+        result.get("AD_Slope", pd.Series(np.nan, index=result.index)), np.nan
+    ).gt(0.0)
+    observed_flow_confirmation = (
+        cmf_positive | ad_positive | _bool_series(result, "OBV_Div")
+    )
+    flow_metrics_available = any(
+        column in result
+        for column in ("CMF_Pos", "CMF", "AD_SlopePos", "AD_Slope", "OBV_Div")
+    )
+    if "BreakoutFlowConfirmed" in result:
+        flow_confirmed = _bool_series(result, "BreakoutFlowConfirmed") & (
+            (not flow_metrics_available) | observed_flow_confirmation
+        )
+    else:
+        flow_confirmed = observed_flow_confirmation
     weak_breakout = signal.eq("BREAKOUT_CONFIRM") & ~(volume_confirmed & flow_confirmed)
     signal.loc[weak_breakout] = "PRICE_BREAKOUT"
     adjustments = _append_reason(adjustments, weak_breakout, "突破缺少量能或资金确认，降为等待量能")
-    trap_block = trap.ge(70.0) & signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"})
+    trap_block = trap.ge(VALUE_TRAP_HARD_RISK_THRESHOLD) & signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"})
     signal.loc[trap_block] = "AVOID"
     adjustments = _append_reason(adjustments, trap_block, "价值陷阱风险高，禁止积极买点")
     stage_block = lifecycle.isin({"加速风险", "派发"}) & signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"})
@@ -167,6 +255,17 @@ def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
     rsi_block = rsi.ge(CHASE_RISK_RSI_HARD) & signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
     signal.loc[rsi_block] = "HOLD_WAIT"
     adjustments = _append_reason(adjustments, rsi_block, "RSI高位过热，停止追涨")
+    quality_buy_block = quality_action_block & signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
+    signal.loc[quality_buy_block & signal.eq("BUY_NOW")] = "WAIT_PULLBACK"
+    signal.loc[quality_buy_block & signal.eq("BREAKOUT_CONFIRM")] = "PRICE_BREAKOUT"
+    adjustments = _append_reason(
+        adjustments, quality_buy_block, "质量门槛未通过或数据不足，降为观察"
+    )
+    stale_signal_block = stale_data & signal.ne("AVOID")
+    signal.loc[stale_signal_block] = "HOLD_WAIT"
+    adjustments = _append_reason(
+        adjustments, stale_signal_block, "行情数据已过期，停止使用即时买点"
+    )
     result["EntrySignal"] = signal
     result["BreakoutVolumeConfirmed"] = volume_confirmed
     result["BreakoutFlowConfirmed"] = flow_confirmed
@@ -198,11 +297,18 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     completeness = (roe_available.astype(float) + margin_available.astype(float) + profit_available.astype(float) + status.isin({"PASS", "FAIL"}).astype(float)) / 4.0
     supplied_completeness = _number(result.get("QualityDataCompleteness", pd.Series(np.nan, index=result.index)), np.nan)
     result["QualityDataCompleteness"] = supplied_completeness.where(supplied_completeness.notna(), completeness).clip(0.0, 1.0).round(4)
+    supplied_quality_fail = (
+        _bool_series(result, "QualityDataAvailable")
+        & ~_bool_series(result, "QualityGate", True)
+        if "QualityGate" in result
+        else pd.Series(False, index=result.index)
+    )
     known_fail = (
         (roe_available & ~_bool_series(result, "QualityROE", True))
         | (margin_available & ~_bool_series(result, "QualityGrossMargin", True))
         | (profit_available & ~_bool_series(result, "QualityNetProfit", True))
         | status.eq("FAIL")
+        | supplied_quality_fail
     )
     any_unknown = status.eq("UNKNOWN") | ~(roe_available & margin_available & profit_available)
     result["QualityGate"] = ~known_fail
@@ -214,6 +320,15 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     quality_reason = quality_reason.where(~(status.eq("UNKNOWN") & ~known_fail), "机构持仓历史不足，按中性处理")
     quality_reason = quality_reason.where(~(quality_reason.eq("") & ~known_fail & ~any_unknown), "全部可用质量项通过")
     result["QualityGateReason"] = quality_reason
+    freshness_status, freshness_factor, freshness_reason = _data_freshness(result)
+    result["DataFreshnessStatus"] = freshness_status
+    result["DataFreshnessFactor"] = freshness_factor
+    result["DataFreshnessReason"] = freshness_reason
+    stale_advice = freshness_status.eq("过期")
+    if "OperationAdvice" in result:
+        result.loc[stale_advice, "OperationAdvice"] = "行情数据已过期，请刷新后再判断。"
+    if "RiskWarning" in result:
+        result.loc[stale_advice, "RiskWarning"] = "行情数据过期"
     result["MarketRegimeFast"] = _text_series(
         result, "MarketRegimeFast", _text_series(result, "MarketRegime", "未知").iloc[0] if len(result) else "未知"
     )
@@ -270,33 +385,76 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     hard_reason = pd.Series("", index=result.index)
     avoid = signal.eq("AVOID")
     stage_risk = lifecycle.isin({"加速风险", "派发", "DISTRIBUTION"})
-    trap_risk = trap.ge(70.0)
+    trap_observe = trap.ge(VALUE_TRAP_RISK_THRESHOLD)
+    trap_risk = trap.ge(VALUE_TRAP_HARD_RISK_THRESHOLD)
     data_risk = score_coverage.lt(0.45)
+    stale_data = freshness_status.eq("过期")
+    is_etf = _bool_series(result, "IsETF") | _text_series(
+        result, "AssetType", ""
+    ).str.lower().eq("etf")
+    quality_action_block = (
+        ~result["QualityGate"]
+        | (
+            result["QualityDataCompleteness"].lt(
+                QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE
+            )
+            & ~is_etf
+        )
+    )
     hard_penalty.loc[avoid] = np.minimum(hard_penalty.loc[avoid], HARD_RISK_AVOID_PENALTY)
     hard_penalty.loc[stage_risk] = np.minimum(hard_penalty.loc[stage_risk], HARD_RISK_STAGE_PENALTY)
     hard_penalty.loc[trap_risk] = np.minimum(hard_penalty.loc[trap_risk], HARD_RISK_VALUE_TRAP_PENALTY)
     hard_penalty.loc[data_risk] = np.minimum(hard_penalty.loc[data_risk], HARD_RISK_DATA_PENALTY)
+    hard_penalty.loc[stale_data] = np.minimum(
+        hard_penalty.loc[stale_data], DATA_FRESHNESS_STALE_FACTOR
+    )
     hard_reason = _append_reason(hard_reason, avoid, "回避信号")
     hard_reason = _append_reason(hard_reason, stage_risk, "生命周期风险")
     hard_reason = _append_reason(hard_reason, trap_risk, "价值陷阱风险高")
     hard_reason = _append_reason(hard_reason, data_risk, "技术数据覆盖不足")
-    result["HardRiskFlag"] = avoid | stage_risk | trap_risk | data_risk
+    hard_reason = _append_reason(hard_reason, stale_data, "行情数据已过期")
+    result["HardRiskFlag"] = avoid | stage_risk | trap_risk | data_risk | stale_data
     result["HardRiskPenalty"] = hard_penalty.round(4)
     result["HardRiskReason"] = hard_reason
-    result["RankingPenaltyReason"] = hard_reason
+    ranking_penalty_reason = hard_reason.copy()
+    ranking_penalty_reason = _append_reason(
+        ranking_penalty_reason, quality_action_block, "质量门槛未通过或数据不足"
+    )
+    ranking_penalty_reason = _append_reason(
+        ranking_penalty_reason, trap_observe & ~trap_risk, "价值陷阱风险，转观察"
+    )
+    ranking_penalty_reason = _append_reason(
+        ranking_penalty_reason, freshness_status.eq("延迟"), "行情数据延迟"
+    )
+    result["RankingPenaltyReason"] = ranking_penalty_reason
+    trade_ready = (
+        signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
+        & ~stage_risk
+        & ~trap_observe
+        & ~quality_action_block
+        & ~stale_data
+    )
     result["RankingEligibility"] = np.select(
-        [avoid | trap_risk | lifecycle.isin({"派发", "DISTRIBUTION"}), signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"}) & ~stage_risk],
+        [
+            avoid | trap_risk | lifecycle.isin({"派发", "DISTRIBUTION"}) | stale_data,
+            trade_ready,
+        ],
         ["风险过滤", "推荐"],
         default="观察",
     )
     result["OpportunityStage"] = lifecycle
-    result.loc[trap_risk, "OpportunityStage"] = "底部观察"
+    result.loc[trap_observe, "OpportunityStage"] = "底部观察"
+    result.loc[quality_action_block & ~trap_observe, "OpportunityStage"] = "观察"
 
     base_score = _number(result.get("InstitutionalScore", result.get("FinalScore", result.get("Score", pd.Series(0.0, index=result.index)))), 0.0)
     entry_factor = signal.map(ENTRY_SIGNAL_MULTIPLIERS).fillna(ENTRY_SIGNAL_MULTIPLIERS["HOLD_WAIT"])
     result["EntrySignalPriority"] = signal.map(ENTRY_SIGNAL_PRIORITIES).fillna(0.0)
     chase_factor = (1.0 - (chase / 100.0) * (1.0 - CHASE_RISK_MAX_PENALTY)).clip(CHASE_RISK_MAX_PENALTY, 1.0)
-    data_confidence = (0.90 + 0.06 * result["QualityDataCompleteness"] + 0.04 * score_coverage.clip(0.0, 1.0)).clip(0.85, 1.0)
+    data_confidence = (
+        (0.90 + 0.06 * result["QualityDataCompleteness"] + 0.04 * score_coverage.clip(0.0, 1.0))
+        .clip(0.85, 1.0)
+        * freshness_factor
+    ).clip(DATA_FRESHNESS_STALE_FACTOR, 1.0)
     result["DataConfidenceFactor"] = data_confidence.round(4)
     result["ChaseRiskFactor"] = chase_factor.round(4)
     result["RankingScore"] = (base_score * entry_factor * hard_penalty * chase_factor * data_confidence).round(4)
@@ -305,11 +463,22 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     result["InstitutionalRank"] = score.rank(method="min", ascending=False).astype(int)
     result["InstitutionalPercentile"] = (score.rank(method="average", pct=True) * 100.0).round(2)
     percentile = result["InstitutionalPercentile"]
-    no_top_risk = ~result["HardRiskFlag"] & signal.ne("AVOID") & result["QualityGate"]
+    no_top_risk = (
+        ~result["HardRiskFlag"]
+        & signal.ne("AVOID")
+        & result["QualityGate"]
+        & ~quality_action_block
+    )
     tier = pd.Series(INSTITUTIONAL_TIER_WAIT_LABEL, index=result.index)
     tier.loc[(percentile.ge(INSTITUTIONAL_TIER_C_PERCENTILE)) & score.ge(INSTITUTIONAL_TIER_C_SCORE)] = "C级价值观察"
     tier.loc[(percentile.ge(INSTITUTIONAL_TIER_B_PERCENTILE)) & score.ge(INSTITUTIONAL_TIER_B_SCORE)] = "B级观察"
     tier.loc[(percentile.ge(INSTITUTIONAL_TIER_A_PERCENTILE)) & score.ge(INSTITUTIONAL_TIER_A_SCORE) & no_top_risk & result["QualityDataCompleteness"].ge(INSTITUTIONAL_TIER_MIN_DATA_CONFIDENCE)] = "A级机构启动"
+    # Confirmed quality failures may remain visible as value observations, but
+    # must not retain the B tier that is intended for actionable candidates.
+    confirmed_quality_fail = ~result["QualityGate"] & ~is_etf
+    tier.loc[
+        confirmed_quality_fail & tier.eq("B级观察")
+    ] = "C级价值观察"
     tier.loc[trap.ge(VALUE_TRAP_RISK_THRESHOLD)] = INSTITUTIONAL_TIER_TRAP_LABEL
     tier.loc[signal.eq("AVOID") & tier.eq("A级机构启动")] = "B级观察"
     result["InstitutionalTier"] = tier
@@ -327,6 +496,9 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     rank_reason.loc[signal.eq("WAIT_PULLBACK")] = "趋势确认，等待回调"
     rank_reason.loc[avoid] = "风险过滤：回避信号"
     rank_reason.loc[chase.ge(CHASE_RISK_HIGH_THRESHOLD)] = "高位过热，风险降级"
+    rank_reason.loc[quality_action_block] = "质量门槛未通过或数据不足，转为观察"
+    rank_reason.loc[trap_observe & ~trap_risk] = "价值陷阱风险，转为观察"
+    rank_reason.loc[stale_data] = "行情数据已过期，风险过滤"
     rank_reason.loc[samples.lt(BACKTEST_MIN_SAMPLES_FOR_RANKING) & ~avoid] += "；回测样本不足，不参与校准"
     result["RankingReason"] = rank_reason
     eligibility_order = result["RankingEligibility"].map({"推荐": 2, "观察": 1, "风险过滤": 0}).fillna(0)
@@ -685,10 +857,22 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
     # All exports, cache restores and GUI loads pass through the same final
     # validation/ranking layer.  This keeps legacy pre-ranking fields from
     # contradicting the actual trade readiness shown to the user.
+    # The lifecycle API is consumed by resume/cache code that expects row
+    # identity to stay aligned with the supplied frame.  Preserve that order
+    # while retaining the OverallRank produced by the final ranking pass.
+    result["_LifecycleInputOrder"] = np.arange(len(result))
     result = finalize_signal_ranking(result)
+    result = (
+        result.sort_values("_LifecycleInputOrder", kind="mergesort")
+        .drop(columns="_LifecycleInputOrder")
+        .reset_index(drop=True)
+    )
     snapshot = pd.DataFrame(
         {
-            "TradeDate": trade_dates,
+            # finalize_signal_ranking may sort and reset the result index.  Use
+            # the date carried by the sorted result so history never pairs a
+            # ticker with another row's trade date.
+            "TradeDate": _text_series(result, "DataAsOf", ""),
             "Return20D": _number(
                 result.get("Return20D", pd.Series(index=result.index)), np.nan
             ),
