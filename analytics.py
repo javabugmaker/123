@@ -335,12 +335,16 @@ def _enrich_one_result(
         return result, None, 0.0
     today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
     indexed_date = pd.to_datetime(enriched.index[-1], errors="coerce")
-    latest_date = indexed_date.date() if not pd.isna(indexed_date) else today
+    # Do not turn an unparsable cache index into a fresh quote.  Keeping the
+    # age unknown lets the final ranking surface the data-confidence state
+    # instead of promoting a stale or malformed frame as a current setup.
+    latest_date = indexed_date.date() if not pd.isna(indexed_date) else None
     reported_date = latest_date
     result.close = float(enriched["Close"].iloc[-1])
     last_business_day = (pd.Timestamp(today) - pd.offsets.BDay(1)).date()
     if (
         _is_a_share_market_closed()
+        and latest_date is not None
         and latest_date < today
         and latest_date >= last_business_day
         and not is_etf_ticker(result.ticker)
@@ -359,15 +363,19 @@ def _enrich_one_result(
         if np.isfinite(realtime_value):
             result.close = realtime_value
             reported_date = today
-    data_age = max(0, (today - reported_date).days)
-    trading_age = max(0, len(pd.bdate_range(reported_date, today)) - 1)
+    if reported_date is None:
+        data_age = -1
+        trading_age = -1
+    else:
+        data_age = max(0, (today - reported_date).days)
+        trading_age = max(0, len(pd.bdate_range(reported_date, today)) - 1)
     result.market_regime = regime
     result.market_regime_reason = regime_reason
     result.market_regime_fast = regime_fast
     result.market_regime_slow = regime_slow
     result.market_regime_confidence = regime_confidence
     result.data_source = source
-    result.data_asof = reported_date.strftime("%Y-%m-%d")
+    result.data_asof = reported_date.strftime("%Y-%m-%d") if reported_date else ""
     result.data_age_days = data_age
     result.data_trading_age_days = trading_age
     result.data_coverage = round(float(enriched["Close"].notna().mean()), 4)
