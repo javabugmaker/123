@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import queue
@@ -69,6 +70,7 @@ COLUMN_NAMES = {
     "OverallRank": "综合排名",
     "RankingScore": "交易排序分",
     "RankingEligibility": "排序资格",
+    "TradeReadinessReason": "执行资格说明",
     "RankingReason": "排序原因",
     "InstitutionalScore": "机构评分",
     "InstitutionalTier": "机构等级",
@@ -193,6 +195,7 @@ DISPLAY_COLUMNS = (
     "EntrySignal",
     "BreakoutVolumeRatio",
     "RankingEligibility",
+    "TradeReadinessReason",
     "RankingScore",
     "InstitutionalTier",
     "InstitutionalScore",
@@ -203,7 +206,9 @@ DISPLAY_COLUMNS = (
     "BacktestConfidenceTier",
     "ValueTrapRisk",
     "ChaseRiskScore",
+    "HardRiskFlag",
     "DataFreshnessStatus",
+    "MarketRegime",
     "DataAsOf",
     "RankingReason",
 )
@@ -217,6 +222,7 @@ COLUMN_WIDTHS = {
     "OverallRank": 72,
     "RankingScore": 88,
     "RankingEligibility": 82,
+    "TradeReadinessReason": 200,
     "InstitutionalTier": 96,
     "InstitutionalScore": 86,
     "Score": 72,
@@ -231,6 +237,8 @@ COLUMN_WIDTHS = {
     "StopLoss": 78,
     "ValueTrapRisk": 92,
     "ChaseRiskScore": 82,
+    "HardRiskFlag": 82,
+    "MarketRegime": 92,
     "OpportunityScore": 82,
     "LifecycleStage": 96,
     "SignalTrend": 86,
@@ -321,6 +329,7 @@ TEXT_COLUMNS = {
     "RiskWarning",
     "OperationAdvice",
     "RankingEligibility",
+    "TradeReadinessReason",
     "RankingReason",
     "InstitutionalTier",
     "InstitutionalTierReason",
@@ -419,7 +428,7 @@ class ScannerGUI:
         self._display_indexes: list[int] = []
         self._table_headers: tuple[str, ...] = ()
         self._csv_path: Path | None = None
-        self._csv_mtime: tuple[int, int] | None = None
+        self._csv_mtime: tuple[int, int, str] | None = None
         self._filter_job: str | None = None
         self._sort_column: str | None = "RankingScore"
         self._sort_descending = True
@@ -1231,6 +1240,7 @@ class ScannerGUI:
             "OverallRank",
             "RankingScore",
             "RankingEligibility",
+            "TradeReadinessReason",
             "RankingReason",
             "RankingPenaltyReason",
             "InstitutionalTier",
@@ -1629,9 +1639,48 @@ class ScannerGUI:
         if not hasattr(self, "market_overview"):
             return
         total, active, confirmed, breakout, actionable, average = self._market_overview_values(rows, indexes)
-        self.market_overview.set(
-            f"市场概览：{total} 只 · 启动 {breakout} · 可交易 {actionable} · 最终均分 {average:.1f}"
+        regime = (
+            f" · {self._market_regime_summary(rows, indexes)}"
+            if "MarketRegime" in indexes
+            else ""
         )
+        self.market_overview.set(
+            f"市场概览：{total} 只 · 启动 {breakout} · 可交易 {actionable}{regime} · 最终均分 {average:.1f}"
+        )
+
+    def _market_regime_summary(
+        self, rows: list[list[str]], indexes: dict[str, int]
+    ) -> str:
+        regime_index = indexes.get("MarketRegime")
+        if regime_index is None:
+            return "市场环境未知"
+        values = [
+            self._cell_text(row[regime_index])
+            for row in rows
+            if regime_index < len(row) and self._cell_text(row[regime_index])
+        ]
+        if not values:
+            return "市场环境未知"
+        counts: dict[str, int] = {}
+        for value in values:
+            counts[value] = counts.get(value, 0) + 1
+        regime = max(counts, key=counts.get)
+        confidence_index = indexes.get("MarketRegimeConfidence")
+        confidences: list[float] = []
+        if confidence_index is not None:
+            for row in rows:
+                if confidence_index >= len(row):
+                    continue
+                try:
+                    confidences.append(float(self._cell_text(row[confidence_index]).rstrip("%")))
+                except ValueError:
+                    continue
+        if confidences:
+            average_confidence = sum(confidences) / len(confidences)
+            if average_confidence <= 1.0:
+                average_confidence *= 100.0
+            return f"市场 {regime}（{average_confidence:.0f}%）"
+        return f"市场 {regime}"
 
     def show_market_overview(self) -> None:
         if not self._csv_headers:
@@ -1680,6 +1729,7 @@ class ScannerGUI:
             f"趋势确认：{confirmed}",
             f"启动阶段：{breakout}",
             f"可交易信号：{actionable}",
+            self._market_regime_summary(rows, indexes),
             f"平均最终评分：{average:.1f}",
         ]
         text = tk.Text(
@@ -1985,7 +2035,22 @@ class ScannerGUI:
         try:
             stat = path.stat()
             modified_at = (stat.st_mtime_ns, stat.st_size)
-            if self._csv_path != path or self._csv_mtime != modified_at:
+            previous_token = getattr(self, "_csv_mtime", None)
+            content_hash = ""
+            needs_reload = (
+                self._csv_path != path
+                or previous_token is None
+                or previous_token[:2] != modified_at
+            )
+            if not needs_reload:
+                # Some filesystems can retain an identical timestamp and size
+                # for a rapid in-place CSV update.  Hash only this rare
+                # collision path so the GUI never displays stale result rows.
+                content_hash = hashlib.blake2b(
+                    path.read_bytes(), digest_size=12
+                ).hexdigest()
+                needs_reload = len(previous_token) < 3 or previous_token[2] != content_hash
+            if needs_reload:
                 with path.open("r", encoding="utf-8-sig", newline="") as file:
                     rows = list(csv.reader(file))
                 headers = rows[0] if rows else []
@@ -2010,7 +2075,11 @@ class ScannerGUI:
                 ]
                 self._table_headers = ()
                 self._csv_path = path
-                self._csv_mtime = modified_at
+                if not content_hash:
+                    content_hash = hashlib.blake2b(
+                        path.read_bytes(), digest_size=12
+                    ).hexdigest()
+                self._csv_mtime = (*modified_at, content_hash)
                 self._update_filter_values(self._csv_headers, self._csv_rows)
             return self._render_cached_rows()
         except (OSError, UnicodeDecodeError, csv.Error, tk.TclError) as exc:
