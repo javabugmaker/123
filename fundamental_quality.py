@@ -8,6 +8,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from config import (
+    INSTITUTION_HOLDING_MIN_PERIODS,
+    QUALITY_MULTIPLIER_FAIL,
+    QUALITY_MULTIPLIER_PASS,
+    QUALITY_MULTIPLIER_UNKNOWN,
+)
 from fundamental_data import FUNDAMENTAL_COLUMNS, fundamental_data_path
 FUNDAMENTAL_FACTOR_COLUMNS = tuple(
     column for column in FUNDAMENTAL_COLUMNS if column not in {"Ticker", "Industry"}
@@ -30,9 +36,13 @@ class FundamentalQuality:
     institution_holding_factor: bool = False
     net_profit_factor: bool = False
     quality_score: float = np.nan
-    quality_gate: bool = False
-    quality_reason: str = "基本面数据缺失"
+    quality_gate: bool = True
+    quality_reason: str = "基本面数据缺失（中性）"
     data_available: bool = False
+    institution_holding_status: str = "UNKNOWN"
+    quality_data_completeness: float = 0.0
+    quality_gate_reason: str = "基本面数据缺失（中性）"
+    quality_multiplier: float = QUALITY_MULTIPLIER_UNKNOWN
 
     @property
     def valid_score(self) -> bool:
@@ -69,6 +79,33 @@ def _trend_is_increasing(value: Any) -> bool:
     return bool(np.isfinite(number) and number > 0)
 
 
+def _institution_holding_status(trend: Any, periods: float) -> str:
+    """Classify holder evidence without treating unavailable history as a fail."""
+    if not np.isfinite(periods) or periods < INSTITUTION_HOLDING_MIN_PERIODS:
+        return "UNKNOWN"
+    if trend is None or (isinstance(trend, str) and not trend.strip()):
+        return "UNKNOWN"
+    if _trend_is_increasing(trend):
+        return "PASS"
+    if isinstance(trend, str):
+        normalized = trend.strip().lower()
+        if normalized in {
+            "not_increasing",
+            "decreasing",
+            "decrease",
+            "decreased",
+            "down",
+            "减少",
+            "连续减少",
+            "false",
+            "0",
+        }:
+            return "FAIL"
+        return "UNKNOWN"
+    number = _number(trend)
+    return "FAIL" if np.isfinite(number) and number <= 0 else "UNKNOWN"
+
+
 def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> FundamentalQuality:
     values = row.to_dict() if isinstance(row, pd.Series) else row
     normalized_ticker = _ticker(values.get("Ticker", ticker))
@@ -76,43 +113,62 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
         column: _number(values.get(column)) for column in FUNDAMENTAL_FACTOR_COLUMNS
     }
     trend = values.get("InstitutionHoldingTrend")
-    fields_present = all(
-        pd.notna(values.get(column))
-        for column in FUNDAMENTAL_FACTOR_COLUMNS
+    holding_status = _institution_holding_status(
+        trend, numeric["InstitutionHoldingPeriods"]
     )
-    if not fields_present:
-        return FundamentalQuality(
-            ticker=normalized_ticker,
-            roe=numeric["ROE"],
-            gross_margin=numeric["GrossMargin"],
-            institution_holding_trend=trend,
-            institution_holding_periods=numeric["InstitutionHoldingPeriods"],
-            net_profit_y1=numeric["NetProfitY1"],
-            net_profit_y2=numeric["NetProfitY2"],
-            net_profit_y3=numeric["NetProfitY3"],
-            industry_gross_margin_percentile=numeric["IndustryGrossMarginPercentile"],
-        )
-
-    factors = {
-        "ROE>10%": bool(np.isfinite(numeric["ROE"]) and numeric["ROE"] > 10.0),
-        "毛利率行业前30%": bool(
-            np.isfinite(numeric["IndustryGrossMarginPercentile"])
-            and numeric["IndustryGrossMarginPercentile"] <= 0.30
+    roe_available = np.isfinite(numeric["ROE"])
+    gross_margin_available = np.isfinite(
+        numeric["IndustryGrossMarginPercentile"]
+    )
+    profit_available = all(
+        np.isfinite(numeric[column])
+        for column in ("NetProfitY1", "NetProfitY2", "NetProfitY3")
+    )
+    holding_available = holding_status in {"PASS", "FAIL"}
+    factors: dict[str, bool | None] = {
+        "ROE>10%": numeric["ROE"] > 10.0 if roe_available else None,
+        "毛利率行业前30%": (
+            numeric["IndustryGrossMarginPercentile"] <= 0.30
+            if gross_margin_available
+            else None
         ),
-        "机构持仓连续增加": bool(
-            _trend_is_increasing(trend)
-            and np.isfinite(numeric["InstitutionHoldingPeriods"])
-            and numeric["InstitutionHoldingPeriods"] > 0
+        "机构持仓连续增加": (
+            True if holding_status == "PASS" else False if holding_status == "FAIL" else None
         ),
-        "近3年净利润非下降": bool(
-            np.isfinite(numeric["NetProfitY1"])
-            and np.isfinite(numeric["NetProfitY2"])
-            and np.isfinite(numeric["NetProfitY3"])
-            and numeric["NetProfitY1"] >= numeric["NetProfitY2"] >= numeric["NetProfitY3"]
+        "近3年净利润非下降": (
+            numeric["NetProfitY1"] >= numeric["NetProfitY2"] >= numeric["NetProfitY3"]
+            if profit_available
+            else None
         ),
     }
-    passed = [name for name, value in factors.items() if value]
-    failed = [name for name, value in factors.items() if not value]
+    passed = [name for name, value in factors.items() if value is True]
+    failed = [name for name, value in factors.items() if value is False]
+    unknown = [name for name, value in factors.items() if value is None]
+    completeness = (
+        float(roe_available)
+        + float(gross_margin_available)
+        + float(holding_available)
+        + float(profit_available)
+    ) / 4.0
+    data_available = bool(roe_available or gross_margin_available or holding_available or profit_available)
+    quality_gate = not failed
+    if failed:
+        quality_multiplier = QUALITY_MULTIPLIER_FAIL
+    elif unknown:
+        quality_multiplier = QUALITY_MULTIPLIER_UNKNOWN
+    else:
+        quality_multiplier = QUALITY_MULTIPLIER_PASS
+    reason_parts: list[str] = []
+    if failed:
+        reason_parts.append("未通过：" + "、".join(failed))
+    if holding_status == "UNKNOWN":
+        reason_parts.append("机构持仓历史不足（中性）")
+    other_unknown = [name for name in unknown if name != "机构持仓连续增加"]
+    if other_unknown:
+        reason_parts.append("数据不足：" + "、".join(other_unknown))
+    if not reason_parts:
+        reason_parts.append("全部通过")
+    reason = "；".join(reason_parts)
     return FundamentalQuality(
         ticker=normalized_ticker,
         roe=numeric["ROE"],
@@ -123,14 +179,22 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
         net_profit_y2=numeric["NetProfitY2"],
         net_profit_y3=numeric["NetProfitY3"],
         industry_gross_margin_percentile=numeric["IndustryGrossMarginPercentile"],
-        roe_factor=factors["ROE>10%"],
-        gross_margin_factor=factors["毛利率行业前30%"],
-        institution_holding_factor=factors["机构持仓连续增加"],
-        net_profit_factor=factors["近3年净利润非下降"],
-        quality_score=round(len(passed) / 4.0 * 100.0, 4),
-        quality_gate=not failed,
-        quality_reason="全部通过" if not failed else "未通过：" + "、".join(failed),
-        data_available=True,
+        roe_factor=bool(factors["ROE>10%"]),
+        gross_margin_factor=bool(factors["毛利率行业前30%"]),
+        institution_holding_factor=bool(factors["机构持仓连续增加"]),
+        net_profit_factor=bool(factors["近3年净利润非下降"]),
+        quality_score=(
+            round(len(passed) / (len(passed) + len(failed)) * 100.0, 4)
+            if passed or failed
+            else np.nan
+        ),
+        quality_gate=quality_gate,
+        quality_reason=reason,
+        data_available=data_available,
+        institution_holding_status=holding_status,
+        quality_data_completeness=round(completeness, 4),
+        quality_gate_reason=reason,
+        quality_multiplier=quality_multiplier,
     )
 
 
@@ -165,6 +229,11 @@ def get_quality(ticker: str, is_etf: bool = False) -> FundamentalQuality:
             ticker=normalized_ticker,
             quality_gate=True,
             quality_reason="ETF跳过基本面门槛",
+            data_available=True,
+            institution_holding_status="PASS",
+            quality_data_completeness=1.0,
+            quality_gate_reason="ETF跳过基本面门槛",
+            quality_multiplier=QUALITY_MULTIPLIER_PASS,
         )
     path = _path_value()
     if path is None:
