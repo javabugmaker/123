@@ -183,7 +183,7 @@ COLUMN_NAMES = {
     "ScoreContributionStructure": "结构贡献",
     "SignalCount": "信号数",
     "FilterCount": "通过项数",
-    "PassedFilters": "通过筛选",
+    "PassedFilters": "基础筛选",
     "OBV_Div": "OBV背离",
     "CMF_Pos": "CMF为正或改善",
     "CMF_Improving": "CMF改善",
@@ -202,6 +202,7 @@ DISPLAY_COLUMNS = (
     "EntrySignal",
     "BreakoutVolumeRatio",
     "RankingEligibility",
+    "PassedFilters",
     "TradeReadinessReason",
     "RankingScore",
     "InstitutionalTier",
@@ -1783,9 +1784,7 @@ class ScannerGUI:
         if column in {"SmartMoneyStage", "EntrySignal", "AssetType", "DataSource", "UniverseType"}:
             return DISPLAY_VALUE_NAMES.get(text, text)
         if column in {"QualityGate", "PassedFilters"}:
-            if self._is_missing_text(text):
-                return "未知"
-            return "通过" if text.lower() in {"true", "1", "yes", "y", "是"} else "未通过"
+            return self._format_boolean_status(text)
         if column == "HardRiskFlag":
             if self._is_missing_text(text):
                 return "未知"
@@ -1801,6 +1800,12 @@ class ScannerGUI:
             percent = number * 100 if column in FRACTION_PERCENTAGE_COLUMNS else number
             return f"{percent:.2f}%" if column == "DistToLow52W" else f"{percent:.0f}%"
         return f"{number:,.2f}"
+
+    def _format_boolean_status(self, value: object) -> str:
+        text = self._cell_text(value)
+        if self._is_missing_text(text):
+            return "未知"
+        return "通过" if text.lower() in {"true", "1", "yes", "y", "是", "通过"} else "未通过"
 
     def _sort_value(
         self, column: str, row: Sequence[object], indexes: Mapping[str, int]
@@ -1992,11 +1997,8 @@ class ScannerGUI:
                     else "股票"
                 )
             if passed_filters_display_index is not None:
-                display_values[passed_filters_display_index] = (
-                    "通过"
-                    if str(display_values[passed_filters_display_index]).strip().lower()
-                    in {"true", "1", "yes", "是"}
-                    else "未通过"
+                display_values[passed_filters_display_index] = self._format_boolean_status(
+                    values[header_indexes[passed_filters_display_index]]
                 )
             quality = values[quality_index] if quality_index is not None else ""
             entry_signal = values[entry_signal_index] if entry_signal_index is not None else ""
