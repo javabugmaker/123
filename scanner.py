@@ -622,9 +622,10 @@ def run_scan(
     all_tickers = unique
 
     logger.info(
-        "Phase 1/2: downloading data for %d tickers (%d threads)...",
+        "Phase 1/2: preparing TickFlow data for %d tickers (batch workers=%d)...",
         len(all_tickers),
-        )
+        TICKFLOW_MAX_WORKERS,
+    )
     universe_symbols = {_normalize_ticker(ti.ticker) for ti in all_tickers}
     processed_set = load_checkpoint(data_source) if resume else set()
     processed_set.intersection_update(universe_symbols)
