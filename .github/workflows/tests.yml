@@ -33,7 +33,9 @@ jobs:
         run: |
           git fetch origin agent/performance-v2
           git show origin/agent/performance-v2:tools/performance_v2_migration.py > tools/performance_v2_migration.py
+          git show origin/agent/performance-v2:tools/performance_v2_hotfix.py > tools/performance_v2_hotfix.py
           python tools/performance_v2_migration.py
+          python tools/performance_v2_hotfix.py
 
       - name: Compile
         run: python -m compileall -q .
@@ -77,7 +79,7 @@ jobs:
                     MPLBACKEND: Agg
                   run: python -m unittest discover -v
           EOF
-          rm -f tools/performance_v2_migration.py
+          rm -f tools/performance_v2_migration.py tools/performance_v2_hotfix.py
           rm -f .github/workflows/apply-performance-v2-main.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
