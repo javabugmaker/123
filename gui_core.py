@@ -2143,9 +2143,9 @@ class ScannerGUI:
             subprocess.Popen(["explorer", str(OUTPUT_DIR)])
 
 
-def main() -> None:
+def main(gui_class: type[ScannerGUI] = ScannerGUI) -> None:
     root = tk.Tk()
-    ScannerGUI(root)
+    gui_class(root)
     root.mainloop()
 
 

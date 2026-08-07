@@ -35,6 +35,8 @@ from config import (
     BACKTEST_PROGRESS_INTERVAL,
     BACKTEST_INCREMENTAL_TAIL_BARS,
     BACKTEST_CACHE_ENABLED,
+    GLOBAL_CALIBRATION_MAX_WEIGHT,
+    GLOBAL_CALIBRATION_MIN_SAMPLES,
     INDICATOR_CACHE_ENABLED,
     ENABLE_VOLUME_PROFILE,
     INSTITUTIONAL_TIER_TRAP_LABEL,
@@ -53,6 +55,12 @@ from downloader import (
     is_etf_ticker,
 )
 from indicators import compute_all_indicators, compute_volume_profile
+from model_calibration import (
+    build_global_calibration,
+    calibrate_component_weights,
+    calibration_scores_for_frame,
+    walk_forward_stats,
+)
 from performance_cache import (
     backtest_cache_key,
     load_backtest_cache_state,
@@ -61,7 +69,7 @@ from performance_cache import (
     market_prefix_matches,
     save_backtest_cache,
 )
-from score import breakout_score, entry_point, score_ticker, value_trap_risk
+from score import breakout_score, entry_point, model_weight_signature, score_ticker, value_trap_risk
 from signal_lifecycle import finalize_signal_ranking
 
 logger = logging.getLogger("institution_scanner.analytics")
@@ -138,6 +146,9 @@ class BacktestSummary:
     monotonicity_high_low_60d: float = 0.0
     by_score_bucket: list[dict[str, Any]] = field(default_factory=list)
     by_ticker: list[dict[str, Any]] = field(default_factory=list)
+    global_calibration: list[dict[str, Any]] = field(default_factory=list)
+    walk_forward: list[dict[str, Any]] = field(default_factory=list)
+    component_calibration: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         result = dict(self.__dict__)
@@ -874,6 +885,7 @@ def _signal_evaluations(
     *,
     profile: BacktestExecutionProfile | None = None,
     start_index: int | None = None,
+    component_sink: dict[int, tuple[float, float, float]] | None = None,
 ) -> list[tuple[int, float, str]]:
     """Find actionable historical entries with lazy exact scoring.
 
@@ -977,6 +989,13 @@ def _signal_evaluations(
         if not np.isfinite(final_score):
             final_score = _finite_float(getattr(historical_score, "total", np.nan), 0.0)
         evaluations.append((index, float(final_score), signal))
+        if component_sink is not None:
+            component_sink[index] = (
+                _finite_float(getattr(historical_score, "base_score", np.nan), 0.0),
+                _finite_float(getattr(historical_score, "trigger_score", np.nan), 0.0),
+                _finite_float(getattr(historical_score, "execution_score", np.nan),
+                    _finite_float(getattr(historical_score, "entry_score", np.nan), 0.0)),
+            )
         last_signal = index
     return evaluations
 
@@ -984,9 +1003,14 @@ def _signal_evaluations(
 class _SignalPointList(list[int]):
     """List-compatible signal points carrying precomputed real-run evaluations."""
 
-    def __init__(self, evaluations: list[tuple[int, float, str]]) -> None:
+    def __init__(
+        self,
+        evaluations: list[tuple[int, float, str]],
+        components: dict[int, tuple[float, float, float]] | None = None,
+    ) -> None:
         super().__init__(index for index, _score, _signal in evaluations)
         self.evaluations = evaluations
+        self.components = components or {}
 
 
 def _signal_points(
@@ -994,10 +1018,11 @@ def _signal_points(
     cooldown: int = BACKTEST_SIGNAL_COOLDOWN_DAYS,
     is_etf: bool = False,
 ) -> list[int]:
+    components: dict[int, tuple[float, float, float]] = {}
     evaluations = _signal_evaluations(
-        enriched, cooldown=cooldown, is_etf=is_etf
+        enriched, cooldown=cooldown, is_etf=is_etf, component_sink=components
     )
-    return _SignalPointList(evaluations)
+    return _SignalPointList(evaluations, components)
 
 
 def _historical_entry_signal(
@@ -1052,18 +1077,22 @@ def _backtest_one_ticker(
         signal_points = _signal_points(enriched, is_etf=is_etf)
     else:
         active_profile = profile or _resolve_backtest_profile("exact", 1)
+        profile_components: dict[int, tuple[float, float, float]] = {}
         signal_points = _SignalPointList(
             _signal_evaluations(
                 enriched,
                 is_etf=is_etf,
                 profile=active_profile,
                 start_index=signal_start_index,
-            )
+                component_sink=profile_components,
+            ),
+            profile_components,
         )
     if not signal_points:
         return []
 
     attached_evaluations = getattr(signal_points, "evaluations", None)
+    component_map = dict(getattr(signal_points, "components", {}) or {})
     if attached_evaluations is not None:
         evaluation_map = {
             index: (score, signal)
@@ -1084,6 +1113,12 @@ def _backtest_one_ticker(
             evaluation_map[int(index)] = (
                 float(final_score),
                 _historical_entry_signal(historical, historical_score),
+            )
+            component_map[int(index)] = (
+                _finite_float(getattr(historical_score, "base_score", np.nan), 0.0),
+                _finite_float(getattr(historical_score, "trigger_score", np.nan), 0.0),
+                _finite_float(getattr(historical_score, "execution_score", np.nan),
+                    _finite_float(getattr(historical_score, "entry_score", np.nan), 0.0)),
             )
 
     opens = enriched["Open"].to_numpy(dtype=float) if "Open" in enriched else np.full(len(enriched), np.nan)
@@ -1159,9 +1194,13 @@ def _backtest_one_ticker(
         spacing = outcome_horizon if previous_sample_index is None else max(1, index - previous_sample_index)
         sample_weight = min(1.0, spacing / float(outcome_horizon))
         historical_score, historical_signal = evaluation_map[index]
+        setup_component, trigger_component, execution_component = component_map.get(
+            index, (historical_score, 0.0, 0.0)
+        )
         samples.append(
             {
                 "ticker": ticker,
+                "asset_type": "etf" if is_etf else "stock",
                 "entry_signal": historical_signal,
                 "signal_date": signal_date.strftime("%Y-%m-%d"),
                 "entry_date": entry_date.strftime("%Y-%m-%d"),
@@ -1175,6 +1214,9 @@ def _backtest_one_ticker(
                 "drawdown20": drawdown20,
                 "drawdown60": drawdown60,
                 "score": historical_score,
+                "setup_score": float(setup_component),
+                "trigger_score": float(trigger_component),
+                "execution_score": float(execution_component),
                 "split": split,
                 "sample_weight": round(sample_weight, 4),
             }
@@ -1282,6 +1324,7 @@ def _backtest_one_ticker_cached(
             "historical_volume_profile": bool(active_profile.historical_volume_profile),
             "candidate_gap": int(active_profile.candidate_gap),
             "fast_prefilter": bool(active_profile.fast_prefilter),
+            "model_weight_signature": model_weight_signature(),
         }
     )
     current_market = market_cache_state(frame)
@@ -1616,6 +1659,10 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     if not path.exists() or not summary.by_ticker:
         return
     frame = pd.read_csv(path, encoding="utf-8-sig")
+    prior_institutional_score = pd.to_numeric(
+        frame.get("InstitutionalScore", pd.Series(np.nan, index=frame.index)),
+        errors="coerce",
+    )
     metric_columns = {
         "samples": "BacktestSamples",
         "effective_samples": "BacktestEffectiveSamples",
@@ -1678,7 +1725,6 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "BacktestLastEvaluatedDate",
         "BacktestEngine",
         "InstitutionalTier",
-        "InstitutionalScore",
         "InstitutionalPercentile",
         "InstitutionalRank",
         "InstitutionalTierReason",
@@ -1781,9 +1827,13 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     reliability = pd.to_numeric(
         frame["BacktestReliability"], errors="coerce"
     ).fillna(0.0)
+    peer_score, peer_confidence = calibration_scores_for_frame(
+        frame, getattr(summary, "global_calibration", None)
+    )
+    peer_available = peer_confidence.gt(0.0)
+    peer_anchor = peer_score.where(peer_available, BACKTEST_NEUTRAL_SCORE)
     frame["BacktestAdjustedScore"] = (
-        BACKTEST_NEUTRAL_SCORE
-        + (backtest_component - BACKTEST_NEUTRAL_SCORE) * reliability
+        peer_anchor + (backtest_component - peer_anchor) * reliability
     ).round(4)
     final_score = pd.to_numeric(
         frame.get("FinalScore", pd.Series(np.nan, index=frame.index)),
@@ -1795,6 +1845,13 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     effective_weight = pd.to_numeric(
         frame["BacktestEffectiveWeight"], errors="coerce"
     ).fillna(0.0)
+    if peer_available.any():
+        peer_weight = (peer_confidence * float(GLOBAL_CALIBRATION_MAX_WEIGHT)).clip(0.0, GLOBAL_CALIBRATION_MAX_WEIGHT)
+        effective_weight = pd.Series(
+            np.maximum(effective_weight.to_numpy(dtype=float), peer_weight.to_numpy(dtype=float)),
+            index=frame.index,
+        )
+        frame["BacktestEffectiveWeight"] = effective_weight.round(4)
     frame["CompositeScore"] = (
         raw_score * (1.0 - effective_weight)
         + frame["BacktestAdjustedScore"] * effective_weight
@@ -1916,14 +1973,22 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         [QUALITY_MULTIPLIER_FAIL, QUALITY_MULTIPLIER_UNKNOWN],
         default=QUALITY_MULTIPLIER_PASS,
     )
-    frame["InstitutionalScore"] = pd.Series(
+    legacy_institutional = pd.Series(
         np.where(
             quality_eligible,
             institutional_component * 0.7 + quality_score * 0.3,
             institutional_component,
         ),
         index=frame.index,
-    ).mul(frame["QualityMultiplier"], axis=0).round(4)
+    ).mul(frame["QualityMultiplier"], axis=0)
+    raw_reference = raw_score.replace(0.0, np.nan)
+    calibration_ratio = (
+        pd.to_numeric(frame["FailureAdjustedScore"], errors="coerce") / raw_reference
+    ).replace([np.inf, -np.inf], np.nan).fillna(1.0).clip(0.70, 1.30)
+    single_quality_score = prior_institutional_score * calibration_ratio * recency_multiplier
+    frame["InstitutionalScore"] = single_quality_score.where(
+        prior_institutional_score.notna(), legacy_institutional
+    ).round(4)
 
     frame = finalize_signal_ranking(frame)
     frame.to_csv(path, index=False, encoding="utf-8-sig")
@@ -2368,6 +2433,21 @@ def run_historical_backtest(
     else:
         all_frame = pd.concat(sample_batches, ignore_index=True)
         summary.all_samples = len(all_frame)
+        calibration_frame = all_frame.loc[all_frame["split"].isin(["train", "validation"])].copy()
+        summary.global_calibration = build_global_calibration(
+            calibration_frame, min_samples=GLOBAL_CALIBRATION_MIN_SAMPLES
+        )
+        summary.walk_forward = walk_forward_stats(all_frame)
+        component_calibration = calibrate_component_weights(all_frame)
+        summary.component_calibration = component_calibration.to_dict()
+        calibration_path = OUTPUT_DIR / "ScoreCalibration.json"
+        try:
+            calibration_path.write_text(
+                json.dumps(summary.component_calibration, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            logger.warning("无法写入评分权重校准文件 %s", calibration_path)
         test_frame = all_frame[all_frame["split"] == "test"]
         if len(test_frame) < 2:
             summary.insufficient_test_data = True
@@ -2493,6 +2573,7 @@ def run_historical_backtest(
             split: {"samples": len(all_frame[all_frame["split"] == split])}
             for split in ("train", "validation", "test")
         }
+        summary.rolling_oos_stats["walk_forward"] = summary.walk_forward
         for split in ("validation", "test"):
             summary.rolling_oos_stats[split]["entry_date_equal_weight"] = (
                 _entry_date_equal_weight_stats(

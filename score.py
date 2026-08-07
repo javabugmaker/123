@@ -14,6 +14,7 @@ institutional accumulation signals.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -29,6 +30,10 @@ from config import (
     CONSOLIDATION_DAYS,
     CONSOLIDATION_MAX_RANGE_PCT,
     LOG_DIR,
+    MODEL_EXECUTION_WEIGHT,
+    MODEL_SETUP_WEIGHT,
+    MODEL_TRIGGER_WEIGHT,
+    OUTPUT_DIR,
     SCORING_WEIGHTS,
     VOLUME_ACCUM_MIN_DAYS,
     VOLUME_ACCUM_RATIO,
@@ -64,6 +69,7 @@ class ScoreBreakdown:
     base_score: float = 0.0
     breakout_score: float = 0.0
     entry_score: float = 0.0
+    execution_score: float = 0.0
     value_trap_risk: float = 0.0
     trigger_score: float = 0.0
     final_score: float = 0.0
@@ -105,6 +111,37 @@ class ScoreBreakdown:
                 self.contributions.get("structure", self.structure), 2
             ),
         }
+
+
+_MODEL_WEIGHT_CACHE: tuple[float, float, float] | None = None
+
+
+def _model_component_weights() -> tuple[float, float, float]:
+    global _MODEL_WEIGHT_CACHE
+    if _MODEL_WEIGHT_CACHE is not None:
+        return _MODEL_WEIGHT_CACHE
+    defaults = (MODEL_SETUP_WEIGHT, MODEL_TRIGGER_WEIGHT, MODEL_EXECUTION_WEIGHT)
+    path = OUTPUT_DIR / "ScoreCalibration.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if not bool(payload.get("accepted", False)):
+            raise ValueError("calibration not accepted")
+        setup = float(payload.get("setup_weight"))
+        trigger = float(payload.get("trigger_weight"))
+        execution = float(payload.get("execution_weight"))
+        if not (0.45 <= setup <= 0.70 and 0.15 <= trigger <= 0.35 and 0.10 <= execution <= 0.25):
+            raise ValueError("calibration outside guard rails")
+        if abs(setup + trigger + execution - 1.0) > 1e-6:
+            raise ValueError("calibration weights must sum to one")
+        _MODEL_WEIGHT_CACHE = (setup, trigger, execution)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+        _MODEL_WEIGHT_CACHE = defaults
+    return _MODEL_WEIGHT_CACHE
+
+
+def model_weight_signature() -> str:
+    setup, trigger, execution = _model_component_weights()
+    return f"{setup:.4f}:{trigger:.4f}:{execution:.4f}"
 
 
 def _is_finite(value: Any) -> bool:
@@ -461,25 +498,47 @@ def _safe_return(values: pd.Series, periods: int) -> float:
     return (end / start - 1.0) * 100.0 if start > 0 else np.nan
 
 
-def value_trap_risk(df: pd.DataFrame) -> float:
+def value_trap_risk(df: pd.DataFrame, is_etf: bool = False) -> float:
+    """Estimate deterioration risk without treating a low price as a trap by itself.
+
+    Model v2 rewards genuine bottom recovery and penalises *continued* lower lows,
+    failed rebounds and absent money-flow confirmation.  This removes the old
+    contradiction where being below MA200 both helped the setup score and heavily
+    penalised the same ticker as a value trap.
+    """
     close = _series(df, "Close")
     volume = _series(df, "Volume")
-    if len(close.dropna()) < 121:
+    clean_close = close.dropna()
+    if len(clean_close) < 121:
         return 0.0
+
     risk = 0.0
-    close_now = _latest(df, "Close")
-    ma200 = _latest(df, "MA200")
-    if _is_finite(close_now) and _is_finite(ma200) and close_now < ma200:
-        risk += _clamp((ma200 - close_now) / ma200 / 0.35) * 30.0
-    if len(close.dropna()) >= 120:
-        ret120 = close.iloc[-1] / close.iloc[-121] - 1.0
-        if ret120 < 0:
-            risk += _clamp(abs(ret120) / 0.35) * 25.0
-    if len(volume.dropna()) >= 60:
-        vol_now = volume.iloc[-20:].mean()
-        vol_old = volume.iloc[-80:-60].mean()
-        if vol_old > 0 and vol_now < vol_old:
-            risk += _clamp((1.0 - vol_now / vol_old) / 0.6) * 20.0
+    price = _latest(df, "Close")
+    ma20 = _latest(df, "MA20")
+    ma50 = _latest(df, "MA50")
+    ret20 = _safe_return(close, 20)
+    ret60 = _safe_return(close, 60)
+    ret120 = _safe_return(close, 120)
+
+    # Persistent deterioration rather than absolute low-price location.
+    if _is_finite(ret120) and ret120 < 0:
+        risk += _clamp(abs(ret120) / 45.0) * 15.0
+    if _is_finite(ma50) and len(df) >= 25 and "MA50" in df:
+        old_ma50 = _series(df, "MA50").iloc[-25] if len(_series(df, "MA50")) >= 25 else np.nan
+        if _is_finite(old_ma50) and old_ma50 > 0 and ma50 < old_ma50:
+            risk += _clamp((old_ma50 - ma50) / old_ma50 / 0.12) * 12.0
+        if _is_finite(price) and price < ma50 and _is_finite(ret20) and ret20 < 0:
+            risk += 8.0
+
+    recent_low = float(clean_close.iloc[-40:].min())
+    prior_low = float(clean_close.iloc[-80:-40].min()) if len(clean_close) >= 80 else recent_low
+    if prior_low > 0 and recent_low < prior_low * 0.98:
+        risk += _clamp((prior_low - recent_low) / prior_low / 0.12) * 15.0
+
+    if _is_finite(ret20) and _is_finite(ret60) and ret20 < 0 and ret60 < 0:
+        risk += 10.0
+
+    # Money-flow evidence is the key distinction between accumulation and a trap.
     flow_positive = 0
     flow_available = 0
     cmf = _latest(df, "CMF")
@@ -490,13 +549,42 @@ def value_trap_risk(df: pd.DataFrame) -> float:
             flow_available += 1
             flow_positive += int(value > 0)
     if len(obv) >= 20:
-        obv_change = float(obv.iloc[-1] - obv.iloc[-20])
         flow_available += 1
-        flow_positive += int(obv_change > 0)
-    if flow_available and flow_positive == 0:
-        risk += 25.0
-    elif flow_available >= 2 and flow_positive == 1:
-        risk += 10.0
+        flow_positive += int(float(obv.iloc[-1] - obv.iloc[-20]) > 0)
+    if flow_available:
+        if flow_positive == 0:
+            risk += 25.0
+        elif flow_positive == 1:
+            risk += 10.0
+        elif flow_positive >= 2:
+            risk -= 8.0
+
+    if len(volume.dropna()) >= 60:
+        vol20 = float(volume.dropna().iloc[-20:].mean())
+        vol60 = float(volume.dropna().iloc[-60:-20].mean())
+        if vol60 > 0 and vol20 < vol60 * 0.75:
+            if _is_finite(ret20) and ret20 < 0:
+                risk += 10.0
+            elif _is_finite(ret20) and ret20 >= 0:
+                risk -= 3.0
+
+    recovery_confirmed = (
+        _is_finite(price)
+        and _is_finite(ma20)
+        and _is_finite(ma50)
+        and price >= ma20 >= ma50
+        and _is_finite(ret20)
+        and ret20 > 0
+    )
+    if recovery_confirmed:
+        risk -= 15.0
+    elif _is_finite(ret20) and ret20 > 5.0 and flow_positive >= 2:
+        risk -= 8.0
+
+    # ETFs do not carry company-specific value-trap risk; retain only technical
+    # deterioration with a softer scale while keeping the public field name.
+    if is_etf:
+        risk *= 0.80
     return _clamp(risk, 0.0, 100.0)
 
 
@@ -832,8 +920,58 @@ def _score_dimensions_available(
     )
 
 
+def execution_quality_score(
+    df: pd.DataFrame, entry: dict[str, Any] | None = None
+) -> float:
+    """Score execution location only; trend and breakout evidence live elsewhere."""
+    if df is None or df.empty:
+        return 0.0
+    price = _latest(df, "Close")
+    atr = _latest(df, "ATR14")
+    rsi = _latest(df, "RSI14")
+    ma20 = _latest(df, "MA20")
+    high = _series(df, "High")
+    low = _series(df, "Low")
+    if not _is_finite(price) or price <= 0:
+        return 0.0
+    effective_atr = atr if _is_finite(atr) and atr > 0 else price * 0.03
+    support = float(low.dropna().iloc[-20:].min()) if len(low.dropna()) >= 20 else price - effective_atr
+    resistance = float(high.dropna().iloc[-21:-1].max()) if len(high.dropna()) >= 21 else price + effective_atr * 2.0
+    stop = float(entry.get("stop", np.nan)) if entry else np.nan
+    if not _is_finite(stop):
+        stop = max(support - effective_atr, 0.0)
+
+    score = 0.0
+    distance_support_atr = max(0.0, price - support) / max(effective_atr, 1e-9)
+    score += (1.0 - _clamp(distance_support_atr / 3.0)) * 35.0
+
+    if _is_finite(ma20):
+        ma_distance_atr = abs(price - ma20) / max(effective_atr, 1e-9)
+        score += (1.0 - _clamp(ma_distance_atr / 2.5)) * 20.0
+
+    risk_distance = (price - stop) / price if price > 0 and stop >= 0 else np.nan
+    if _is_finite(risk_distance):
+        # A 2%-8% stop distance is practical; extremely wide or zero stops are poor execution.
+        if 0.02 <= risk_distance <= 0.08:
+            score += 20.0
+        elif 0.01 <= risk_distance <= 0.12:
+            score += 10.0
+
+    reward = max(0.0, resistance - price)
+    risk_amount = max(price - stop, effective_atr * 0.25)
+    reward_risk = reward / risk_amount if risk_amount > 0 else 0.0
+    score += _clamp(reward_risk / 2.5) * 15.0
+
+    if _is_finite(rsi):
+        if 40.0 <= rsi <= 68.0:
+            score += 10.0
+        elif 30.0 <= rsi <= 75.0:
+            score += 5.0
+    return _clamp(score, 0.0, 100.0)
+
+
 def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
-    """Compute setup, trigger and execution quality without hiding missing data."""
+    """Compute orthogonal setup, trigger and execution components."""
     available = _score_dimensions_available(df)
     missing_indicators = available.count(False)
     indicator_coverage = sum(available) / len(available)
@@ -890,7 +1028,7 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
         else 0.0
     )
 
-    trap = value_trap_risk(df)
+    trap = value_trap_risk(df, is_etf=is_etf)
     breakout = breakout_score(df)
     entry = entry_point(
         df,
@@ -898,26 +1036,20 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
         volume_score=volume,
         value_trap_risk_value=trap,
     )
+    execution_raw = execution_quality_score(df, entry)
 
-    # Setup = structural quality; trigger = breakout state; execution = today's
-    # entry readiness. Coverage affects every layer and caps the final output.
     setup_coverage = 0.55 + 0.45 * indicator_coverage
     trigger_coverage = 0.75 + 0.25 * indicator_coverage
     execution_coverage = 0.70 + 0.30 * indicator_coverage
-    base_score = total * (1.0 - 0.55 * trap / 100.0) * setup_coverage
+    base_score = _clamp(total * setup_coverage, 0.0, 100.0)
     trigger_score = _clamp(breakout * trigger_coverage, 0.0, 100.0)
-    execution_score = _clamp(
-        float(entry["score"]) * execution_coverage,
-        0.0,
-        100.0,
-    )
-    if trap >= 70.0:
-        trigger_score *= 0.5
-        execution_score *= 0.5
+    execution_score = _clamp(execution_raw * execution_coverage, 0.0, 100.0)
+
+    setup_weight, trigger_weight, execution_weight = _model_component_weights()
     final_score = _clamp(
-        base_score * 0.55
-        + trigger_score * 0.25
-        + execution_score * 0.20,
+        base_score * setup_weight
+        + trigger_score * trigger_weight
+        + execution_score * execution_weight,
         0.0,
         100.0,
     )
@@ -957,6 +1089,7 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
         base_score=base_score,
         breakout_score=breakout,
         entry_score=entry["score"],
+        execution_score=execution_score,
         value_trap_risk=trap,
         trigger_score=trigger_score,
         final_score=final_score,

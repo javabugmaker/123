@@ -18,12 +18,13 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -74,6 +75,32 @@ logger = setup_logging(
 )
 
 _SCAN_RECOVERABLE_ERRORS = (OSError, ValueError, TypeError, KeyError, IndexError)
+
+ScanProgressCallback = Callable[[str, int, int, str], None]
+
+
+class ScanCancelled(RuntimeError):
+    """Raised when an in-process caller requests cooperative cancellation."""
+
+
+def _emit_progress(
+    callback: ScanProgressCallback | None,
+    stage: str,
+    current: int,
+    total: int,
+    message: str,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(stage, int(current), int(total), str(message))
+    except Exception:
+        logger.debug("Scan progress callback failed.", exc_info=True)
+
+
+def _raise_if_cancelled(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ScanCancelled("扫描已取消")
 
 
 @dataclass
@@ -600,8 +627,12 @@ def run_scan(
     resume: bool = True,
     data_source: str = "tickflow",
     cache_first: bool = False,
+    progress_callback: ScanProgressCallback | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> ScanReport:
     start_time = time.perf_counter()
+    _raise_if_cancelled(cancel_event)
+    _emit_progress(progress_callback, "prepare", 0, 0, "准备扫描")
     data_source = normalize_data_source(data_source)
     if force_download:
         resume = False
@@ -632,6 +663,11 @@ def run_scan(
         len(all_tickers),
         TICKFLOW_MAX_WORKERS,
     )
+    _raise_if_cancelled(cancel_event)
+    _emit_progress(
+        progress_callback, "download", 0, len(all_tickers),
+        f"准备 TickFlow 行情：{len(all_tickers)} 个标的",
+    )
     universe_symbols = {_normalize_ticker(ti.ticker) for ti in all_tickers}
     processed_set = load_checkpoint(data_source) if resume else set()
     processed_set.intersection_update(universe_symbols)
@@ -653,6 +689,11 @@ def run_scan(
     )
     download_elapsed = time.perf_counter() - download_started
     logger.info("Download phase complete in %.1f seconds.", download_elapsed)
+    _raise_if_cancelled(cancel_event)
+    _emit_progress(
+        progress_callback, "download", len(all_tickers), len(all_tickers),
+        f"行情准备完成，用时 {download_elapsed:.1f}s",
+    )
 
     processed_set = skip_processed
     downloaded_frames = {
@@ -1087,6 +1128,8 @@ def run_scan(
         futures: dict[Any, TickerInfo] = {}
 
         def submit_next() -> bool:
+            if cancel_event is not None and cancel_event.is_set():
+                return False
             try:
                 ti = next(ticker_iter)
             except StopIteration:
@@ -1113,6 +1156,7 @@ def run_scan(
             disable=not sys.stderr.isatty(),
         ) as progress:
             while futures:
+                _raise_if_cancelled(cancel_event)
                 future = next(as_completed(futures))
                 ti = futures.pop(future)
                 completed += 1
@@ -1154,6 +1198,11 @@ def run_scan(
                         successful,
                         failed,
                     )
+                if completed == len(analyse_queue) or completed % 25 == 0:
+                    _emit_progress(
+                        progress_callback, "analyse", completed, len(analyse_queue),
+                        f"指标分析 {completed}/{len(analyse_queue)} · 成功 {successful} · 失败 {failed}",
+                    )
 
                 if (
                     ENABLE_CHECKPOINT
@@ -1174,7 +1223,9 @@ def run_scan(
 
     clear_checkpoint()
 
+    _raise_if_cancelled(cancel_event)
     logger.info("Enriching %d scan results...", len(results))
+    _emit_progress(progress_callback, "enrich", 0, len(results), "正在增强评分与排序")
     enrichment_started = time.perf_counter()
     try:
         enrich_results(results, data_source, frames=analysed_frames)
@@ -1185,6 +1236,11 @@ def run_scan(
         "Enrichment complete: %d scan results in %.1f seconds.",
         len(results),
         enrichment_elapsed,
+    )
+    _raise_if_cancelled(cancel_event)
+    _emit_progress(
+        progress_callback, "enrich", len(results), len(results),
+        f"评分增强完成，用时 {enrichment_elapsed:.1f}s",
     )
 
     # RankingScore is the single final execution rank. InstitutionalScore and
@@ -1215,6 +1271,10 @@ def run_scan(
         failed,
         passed,
         elapsed,
+    )
+    _emit_progress(
+        progress_callback, "complete", len(all_tickers), len(all_tickers),
+        f"扫描完成：成功 {successful} · 失败 {failed} · 用时 {elapsed:.1f}s",
     )
     return report
 
