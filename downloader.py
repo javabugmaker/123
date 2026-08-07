@@ -30,7 +30,7 @@ from tqdm import tqdm
 
 try:
     import akshare as ak
-except ImportError:  # Optional at import time so existing cache-only runs still work.
+except ImportError:
     ak = None
 
 from config import (
@@ -89,7 +89,7 @@ def _log_download_progress(
 
 
 _HTTP = requests.Session()
-_HTTP.trust_env = False  # 绕过系统代理，避免代理拦截东方财富 API 请求
+_HTTP.trust_env = False
 _HTTP.headers.update({"User-Agent": "Mozilla/5.0"})
 
 _retry_adapter = HTTPAdapter(
@@ -534,36 +534,24 @@ def build_ticker_universe(
 ) -> tuple[list[TickerInfo], list[TickerInfo]]:
     stocks: dict[str, TickerInfo] = {}
     etfs: dict[str, TickerInfo] = {}
-
     if include_stocks:
         for ti in _fetch_a_share_stocks():
             if not ti.is_etf:
-                key = ti.ticker.upper()
-                if key not in stocks:
-                    stocks[key] = ti
-
+                stocks.setdefault(ti.ticker.upper(), ti)
     if include_etfs:
         for ti in _fetch_a_share_etfs():
-            key = ti.ticker.upper()
-            if key not in etfs:
-                etfs[key] = ti
-
+            etfs.setdefault(ti.ticker.upper(), ti)
     stock_list = sorted(stocks.values(), key=lambda x: x.ticker)
     etf_list = sorted(etfs.values(), key=lambda x: x.ticker)
-    logger.info(
-        "Universe built: %d stocks, %d ETFs",
-        len(stock_list),
-        len(etf_list),
-    )
+    logger.info("Universe built: %d stocks, %d ETFs", len(stock_list), len(etf_list))
     return stock_list, etf_list
 
 
 def _safe_cache_stem(ticker: str, source: str | None = None) -> str:
     value = str(ticker).strip()
     if source:
-        normalized_source = normalize_data_source(source)
-        value = f"{value}__{normalized_source}__{_PRICE_CACHE_SCHEMA_VERSION}"
-    safe = re.sub(r'[<>:"/\\\\|?*\x00-\x1f]', "_", value).rstrip(" .")
+        value = f"{value}__{normalize_data_source(source)}"
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).rstrip(" .")
     if not safe:
         safe = "ticker"
     if len(safe) > 100:
@@ -571,12 +559,18 @@ def _safe_cache_stem(ticker: str, source: str | None = None) -> str:
     return safe
 
 
+def _price_cache_root(source: str | None = None) -> Path:
+    # Source-bound histories live in a schema directory. This invalidates old
+    # mixed-provider caches while preserving the public cache filename shape.
+    return CACHE_DIR / _PRICE_CACHE_SCHEMA_VERSION if source else CACHE_DIR
+
+
 def _cache_path(ticker: str, source: str | None = None) -> Path:
-    return CACHE_DIR / f"{_safe_cache_stem(ticker, source)}.parquet"
+    return _price_cache_root(source) / f"{_safe_cache_stem(ticker, source)}.parquet"
 
 
 def _legacy_cache_path(ticker: str, source: str | None = None) -> Path:
-    return CACHE_DIR / f"{_safe_cache_stem(ticker, source)}.csv"
+    return _price_cache_root(source) / f"{_safe_cache_stem(ticker, source)}.csv"
 
 
 def _to_float(value: Any) -> float | None:
@@ -595,8 +589,7 @@ def _is_a_share_market_closed(now: datetime | None = None) -> bool:
     current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
     if current.weekday() >= 5:
         return True
-    minutes = current.hour * 60 + current.minute
-    return minutes >= 15 * 60
+    return current.hour * 60 + current.minute >= 15 * 60
 
 
 def _latest_completed_trading_day(now: datetime | None = None) -> date:
@@ -682,9 +675,7 @@ def _load_cache(ticker: str, source: str | None = None) -> pd.DataFrame | None:
             pd.errors.ParserError,
         ):
             logger.warning(
-                "Corrupted cache for %s at %s — trying next format.",
-                ticker,
-                path.name,
+                "Corrupted cache for %s at %s — trying next format.", ticker, path.name
             )
     return None
 
@@ -728,16 +719,15 @@ def _fetch_market_cap(ticker: str) -> float | None:
         code, suffix = ticker.upper().split(".", 1)
         market = "1" if suffix == "SH" else "0"
         response = _eastmoney_get(
-            "/api/qt/stock/get",
-            {"secid": f"{market}.{code}", "fields": "f20"},
+            "/api/qt/stock/get", {"secid": f"{market}.{code}", "fields": "f20"}
         )
         response.raise_for_status()
         mc = (response.json().get("data") or {}).get("f20")
         if mc is not None and isinstance(mc, (int, float)) and mc > 0:
             return float(mc)
-        return None
     except (DownloadError, ValueError, TypeError, json.JSONDecodeError):
-        return None
+        pass
+    return None
 
 
 def get_market_cap(ticker: str) -> float | None:
@@ -752,15 +742,13 @@ def get_market_cap(ticker: str) -> float | None:
                 return float(meta["marketCap"])
         except (TypeError, ValueError):
             pass
-
     mc = _fetch_market_cap(ticker)
     if mc is not None:
         _save_meta(
             ticker,
             {"marketCap": mc, "fetchedAt": datetime.now(timezone.utc).isoformat()},
         )
-        return mc
-    return None
+    return mc
 
 
 def _download_from_sina(
@@ -801,9 +789,7 @@ def _download_from_sina(
         df.set_index("Date")[["Open", "High", "Low", "Close", "Volume"]],
     )
     df = _drop_missing_close(df).sort_index()
-    return (
-        df.loc[df.index >= pd.Timestamp(start_date)] if start_date is not None else df
-    )
+    return df.loc[df.index >= pd.Timestamp(start_date)] if start_date is not None else df
 
 
 def _download_from_tencent(
@@ -812,8 +798,7 @@ def _download_from_tencent(
     code, suffix = ticker.upper().split(".", 1)
     if suffix == "BJ":
         return None
-    prefix = "sh" if suffix == "SH" else "sz"
-    symbol = f"{prefix}{code}"
+    symbol = ("sh" if suffix == "SH" else "sz") + code
     end_date = datetime.now(timezone.utc).replace(tzinfo=None)
     start_limit = start_date or end_date - timedelta(days=HISTORY_YEARS * 365 + 30)
     rows: list[list[str]] = []
@@ -821,9 +806,7 @@ def _download_from_tencent(
         response = _HTTP.get(
             "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
             params={
-                "param": (
-                    f"{symbol},day,{start_limit:%Y-%m-%d},{end_date:%Y-%m-%d},640,qfq"
-                ),
+                "param": f"{symbol},day,{start_limit:%Y-%m-%d},{end_date:%Y-%m-%d},640,qfq"
             },
             headers={"Referer": "https://gu.qq.com/"},
             timeout=DOWNLOAD_TIMEOUT,
@@ -842,9 +825,8 @@ def _download_from_tencent(
             break
     if not rows:
         return None
-    records = [row[:6] for row in rows]
     df = pd.DataFrame(
-        records,
+        [row[:6] for row in rows],
         columns=cast(Any, ["Date", "Open", "Close", "High", "Low", "Volume"]),
     )
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
@@ -888,7 +870,7 @@ def _download_from_akshare(
                 adjust="qfq",
                 timeout=DOWNLOAD_TIMEOUT,
             )
-    except Exception as exc:  # Provider raises several transport-specific errors.
+    except Exception as exc:
         logger.debug("AkShare failed for %s: %s", ticker, exc)
         return None
     if not isinstance(frame, pd.DataFrame) or frame.empty:
@@ -918,11 +900,7 @@ def _download_from_akshare(
     validated = _validate_ohlcv(normalized)
     if validated is None:
         return None
-    return (
-        validated.loc[validated.index >= pd.Timestamp(start_date)]
-        if start_date is not None
-        else validated
-    )
+    return validated.loc[validated.index >= pd.Timestamp(start_date)] if start_date is not None else validated
 
 
 def _fetch_eastmoney_realtime_price(ticker: str) -> float | None:
@@ -1014,9 +992,7 @@ def _download_from_eastmoney(
     for attempt in range(1, attempts + 1):
         try:
             end_date = datetime.now(timezone.utc).replace(tzinfo=None)
-            request_start = start_date or end_date - timedelta(
-                days=HISTORY_YEARS * 365 + 30
-            )
+            request_start = start_date or end_date - timedelta(days=HISTORY_YEARS * 365 + 30)
             code, suffix = ticker.upper().split(".", 1)
             market = "1" if suffix == "SH" else "0"
             response = _eastmoney_get(
@@ -1034,15 +1010,10 @@ def _download_from_eastmoney(
             )
             klines = (response.json().get("data") or {}).get("klines") or []
             if not klines:
-                logger.debug("Eastmoney returned no K-line data for %s", ticker)
                 return None
-            records = [line.split(",")[:6] for line in klines]
             df = pd.DataFrame(
-                records,
-                columns=cast(
-                    Any,
-                    ["Date", "Open", "Close", "High", "Low", "Volume"],
-                ),
+                [line.split(",")[:6] for line in klines],
+                columns=cast(Any, ["Date", "Open", "Close", "High", "Low", "Volume"]),
             )
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
             for column in ("Open", "High", "Low", "Close", "Volume"):
@@ -1071,23 +1042,8 @@ def _download_from_eastmoney(
             ):
                 return None
             if "401" in msg or "429" in msg or "rate limit" in msg:
-                delay = 5 + attempt * 5
-                logger.debug(
-                    "Rate-limited on %s (attempt %d/%d), backing off %ds...",
-                    ticker,
-                    attempt,
-                    attempts,
-                    delay,
-                )
-                time.sleep(delay)
+                time.sleep(5 + attempt * 5)
                 continue
-            logger.debug(
-                "Attempt %d/%d failed for %s: %s",
-                attempt,
-                attempts,
-                ticker,
-                exc,
-            )
             if attempt < attempts:
                 time.sleep(2**attempt)
     return None
@@ -1101,9 +1057,6 @@ _DATA_SOURCE_LABELS = {
     "tencent": "腾讯",
 }
 
-# Explicit providers are strict: a cache selected as Eastmoney/Sina/etc. must
-# not silently contain another provider's adjustment history. Automatic mode
-# only considers providers whose adapters request explicit qfq daily history.
 _DATA_SOURCE_CANDIDATES = {
     "auto": ("tencent", "akshare", "eastmoney"),
     "akshare": ("akshare",),
@@ -1145,7 +1098,6 @@ def _download_single_with_source(
     source: str = "eastmoney",
     start_date: datetime | None = None,
 ) -> tuple[pd.DataFrame | None, str | None]:
-    """Download one coherent history and return the provider that produced it."""
     ticker = normalize_ticker(ticker)
     selected = normalize_data_source(source)
     loaders = {
@@ -1155,10 +1107,9 @@ def _download_single_with_source(
         "tencent": _download_from_tencent,
     }
     for candidate in _DATA_SOURCE_CANDIDATES[selected]:
-        loader = loaders[candidate]
         try:
             _wait_for_download_slot()
-            frame = loader(ticker, start_date=start_date)
+            frame = loaders[candidate](ticker, start_date=start_date)
         except _DOWNLOAD_ERRORS as exc:
             logger.debug(
                 "数据源 %s 获取 %s 失败：%s",
@@ -1183,22 +1134,21 @@ def _download_single(
     source: str = "eastmoney",
     start_date: datetime | None = None,
 ) -> pd.DataFrame | None:
-    frame, _actual_source = _download_single_with_source(
-        ticker,
-        source=source,
-        start_date=start_date,
-    )
+    frame, _actual_source = _download_single_with_source(ticker, source, start_date)
     return frame
 
 
 def _price_source_meta_path(ticker: str, selected_source: str) -> Path:
-    return CACHE_DIR / f"{_safe_cache_stem(ticker, selected_source)}.source.json"
+    return _price_cache_root(selected_source) / (
+        f"{_safe_cache_stem(ticker, selected_source)}.source.json"
+    )
 
 
 def _save_price_source_meta(
     ticker: str, selected_source: str, actual_source: str
 ) -> None:
     path = _price_source_meta_path(ticker, selected_source)
+    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "selected_source": normalize_data_source(selected_source),
         "actual_source": normalize_data_source(actual_source),
@@ -1207,10 +1157,7 @@ def _save_price_source_meta(
     }
     temporary = path.with_name(f".{path.name}.tmp")
     try:
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -1236,13 +1183,7 @@ def download_ticker(
     source: str = "eastmoney",
     cache_first: bool = False,
 ) -> pd.DataFrame | None:
-    """Return a provider-consistent OHLCV history for one ticker.
-
-    Explicit providers never silently fall back. ``auto`` records the actual
-    provider used for a cache and keeps incremental updates on that provider.
-    If that provider becomes unavailable, the history is rebuilt in full from
-    one alternative provider instead of concatenating incompatible histories.
-    """
+    """Return provider-consistent OHLCV history for one ticker."""
     ticker = normalize_ticker(ticker)
     selected = normalize_data_source(source)
 
@@ -1266,7 +1207,6 @@ def download_ticker(
     if cached is None:
         frame, actual_source = _download_single_with_source(ticker, selected)
         return persist(frame, actual_source)
-
     if cache_first or _cache_has_completed_daily_bar(cached):
         return cached
 
@@ -1282,28 +1222,20 @@ def download_ticker(
     actual_source = metadata.get("actual_source")
     if selected != "auto":
         actual_source = selected
-
     request_start = last_date - timedelta(days=7)
     if actual_source:
         try:
             incremental, provider = _download_single_with_source(
-                ticker,
-                actual_source,
-                start_date=request_start,
+                ticker, actual_source, start_date=request_start
             )
         except _DOWNLOAD_ERRORS as exc:
             logger.debug("Incremental update failed for %s: %s", ticker, exc)
             incremental, provider = None, None
-        if (
-            incremental is not None
-            and not incremental.empty
-            and provider == actual_source
-        ):
+        if incremental is not None and not incremental.empty and provider == actual_source:
             new_df = incremental.loc[incremental.index >= pd.Timestamp(last_date)]
             if not new_df.empty:
                 combined = cast(pd.DataFrame, pd.concat([cached, new_df]))
-                combined = combined.loc[~combined.index.duplicated(keep="last")]
-                combined = combined.sort_index()
+                combined = combined.loc[~combined.index.duplicated(keep="last")].sort_index()
                 validated = _validate_ohlcv(combined)
                 if validated is not None and not validated.equals(cached):
                     return persist(validated, actual_source)
@@ -1313,7 +1245,6 @@ def download_ticker(
         rebuilt, provider = _download_single_with_source(ticker, selected)
         if rebuilt is not None and not rebuilt.empty and provider is not None:
             return persist(rebuilt, provider)
-
     return cached
 
 
@@ -1336,7 +1267,6 @@ def download_batch(
             and normalize_ticker(t.ticker) not in skip_tickers
         )
     )
-
     total = len(symbols)
     skipped_delisted = 0
     selected_source = normalize_data_source(source)
@@ -1354,20 +1284,12 @@ def download_batch(
     elif worker_count <= 1:
         _log_download_progress(0, total, 0, 0)
         for completed, sym in enumerate(
-            tqdm(
-                symbols,
-                desc=desc,
-                unit="ticker",
-                disable=not sys.stderr.isatty(),
-            ),
+            tqdm(symbols, desc=desc, unit="ticker", disable=not sys.stderr.isatty()),
             start=1,
         ):
             try:
                 df = download_ticker(
-                    sym,
-                    force=force,
-                    source=selected_source,
-                    cache_first=cache_first,
+                    sym, force=force, source=selected_source, cache_first=cache_first
                 )
                 if df is not None and not df.empty:
                     results[sym] = df
@@ -1396,7 +1318,6 @@ def download_batch(
 
             for _ in range(min(max_pending, total)):
                 submit_next()
-
             completed = 0
             with tqdm(
                 total=total,
@@ -1432,10 +1353,7 @@ def download_batch(
                             skipped_delisted += 1
                         progress.update(1)
                         _log_download_progress(
-                            completed,
-                            total,
-                            len(results),
-                            skipped_delisted,
+                            completed, total, len(results), skipped_delisted
                         )
                         submit_next()
 
