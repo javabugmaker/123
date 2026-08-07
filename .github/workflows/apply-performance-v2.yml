@@ -1,0 +1,51 @@
+name: Apply performance v2
+
+on:
+  push:
+    branches: [agent/performance-v2]
+    paths:
+      - '.github/workflows/apply-performance-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout optimization branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/performance-v2
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Apply performance v2 migration
+        run: python tools/performance_v2_migration.py
+
+      - name: Compile changed modules
+        run: python -m py_compile performance_cache.py analytics.py main.py gui_core.py config.py test_performance_regressions.py
+
+      - name: Run full regression suite
+        env:
+          PYTHONUTF8: '1'
+          MPLBACKEND: Agg
+        run: python -m unittest discover -v
+
+      - name: Commit validated implementation
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -f tools/performance_v2_migration.py .github/workflows/apply-performance-v2.yml
+          git add -A
+          git commit -m 'perf: add fast exact incremental backtesting'
+          git push origin HEAD:agent/performance-v2
