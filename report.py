@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +30,7 @@ from config import (
     INSTITUTIONAL_TIER_C_SCORE,
     INSTITUTIONAL_TIER_TRAP_LABEL,
     INSTITUTIONAL_TIER_WAIT_LABEL,
+    ETF_THEME_MAX_PER_TOP_LIST,
     OUTPUT_DIR,
     TOP_N_PARQUET,
     TOP_N_REPORT,
@@ -121,11 +123,10 @@ def _rankable_results(results: list[ScanResult]) -> list[ScanResult]:
                 return float(value)
         return 0.0
 
-    eligibility_order = {"推荐": 2, "观察": 1, "风险过滤": 0}
     return sorted(
         valid,
         key=lambda r: (
-            eligibility_order.get(r.ranking_eligibility, 0),
+            r.ranking_eligibility != "风险过滤",
             rank_score(r),
             int(r.filter_details.get("signal_count", 0)),
         ),
@@ -254,6 +255,10 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "BacktestObjectiveValue": round(r.backtest_objective_value, 4)
                 if np.isfinite(r.backtest_objective_value)
                 else None,
+                "BacktestMode": r.backtest_mode,
+                "BacktestCacheHit": r.backtest_cache_hit,
+                "BacktestLastEvaluatedDate": r.backtest_last_evaluated_date,
+                "BacktestEngine": r.backtest_engine,
                 "UniverseType": r.universe_type,
                 "SurvivorshipBiasWarning": r.survivorship_bias_warning,
                 "TrendScore": round(r.score.trend, 2),
@@ -392,36 +397,103 @@ def _rank_valid_candidates(frame: pd.DataFrame) -> pd.DataFrame:
             .fillna(-np.inf)
         )
 
-    eligibility = valid.get(
+    risk_order = valid.get(
         "RankingEligibility", pd.Series("观察", index=valid.index)
-    ).map({"推荐": 2, "观察": 1, "风险过滤": 0}).fillna(0)
+    ).eq("风险过滤").astype(int)
     ranked = valid.assign(
-        _EligibilityOrder=eligibility,
+        _RiskOrder=risk_order,
         _RankingScore=sort_metric("RankingScore"),
         _InstitutionalScore=sort_metric("InstitutionalScore"),
+        _BacktestAdjustedScore=sort_metric("BacktestAdjustedScore"),
+        _EntrySignalPriority=sort_metric("EntrySignalPriority"),
         _FinalScore=sort_metric("FinalScore"),
         _Score=sort_metric("Score"),
     ).sort_values(
         [
-            "_EligibilityOrder",
+            "_RiskOrder",
             "_RankingScore",
             "_InstitutionalScore",
+            "_BacktestAdjustedScore",
+            "_EntrySignalPriority",
             "_FinalScore",
             "_Score",
         ],
-        ascending=False,
+        ascending=[True, False, False, False, False, False, False],
         kind="mergesort",
     ).drop(
         columns=[
-            "_EligibilityOrder",
+            "_RiskOrder",
             "_RankingScore",
             "_InstitutionalScore",
+            "_BacktestAdjustedScore",
+            "_EntrySignalPriority",
             "_FinalScore",
             "_Score",
         ]
     ).reset_index(drop=True)
     ranked["OverallRank"] = np.arange(1, len(ranked) + 1)
     return ranked
+
+
+_ETF_THEME_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("医药医疗", ("创新药", "医疗", "医药", "生物科技", "生物医药", "医疗器械", "医疗设备")),
+    ("半导体芯片", ("半导体", "芯片", "集成电路")),
+    ("人工智能", ("人工智能", "AI", "算力", "数据中心")),
+    ("机器人", ("机器人", "人形机器人")),
+    ("黄金", ("黄金", "金矿")),
+    ("有色金属", ("有色", "铜", "铝", "稀土", "锂")),
+    ("新能源", ("新能源", "光伏", "风电", "储能", "电池")),
+    ("券商", ("证券", "券商")),
+    ("军工", ("军工", "国防")),
+    ("消费", ("消费", "白酒", "食品饮料")),
+    ("传媒游戏", ("传媒", "游戏")),
+    ("港股科技", ("恒生科技", "港股科技", "互联网")),
+    ("红利", ("红利", "高股息")),
+)
+
+
+def _truthy(value: object) -> bool:
+    return str(value).strip().lower() in {"true", "1", "yes", "y", "是"}
+
+
+def _etf_theme_key(row: pd.Series) -> str:
+    if not (_truthy(row.get("IsETF", False)) or str(row.get("AssetType", "")).strip().lower() == "etf"):
+        return ""
+    text = " ".join(
+        str(row.get(column, "") or "")
+        for column in ("Name", "Industry", "Sector")
+    ).upper()
+    for theme, keywords in _ETF_THEME_GROUPS:
+        if any(str(keyword).upper() in text for keyword in keywords):
+            return theme
+    fallback = re.sub(r"ETF|LOF|基金|指数|联接|交易型开放式", "", text, flags=re.IGNORECASE)
+    fallback = re.sub(r"[^0-9A-Z\u4e00-\u9fff]+", "", fallback).strip()
+    return fallback[:24] or str(row.get("Ticker", "")).strip().upper()
+
+
+def _diversify_ranked_candidates(
+    frame: pd.DataFrame,
+    limit: int,
+    max_per_theme: int = ETF_THEME_MAX_PER_TOP_LIST,
+) -> pd.DataFrame:
+    if frame.empty or limit <= 0:
+        return frame.head(0).copy()
+    working = frame.copy()
+    working["ETFTheme"] = working.apply(_etf_theme_key, axis=1)
+    theme_counts: dict[str, int] = {}
+    selected: list[int] = []
+    for index, row in working.iterrows():
+        theme = str(row.get("ETFTheme", "") or "").strip()
+        if theme:
+            if theme_counts.get(theme, 0) >= max(1, int(max_per_theme)):
+                continue
+            theme_counts[theme] = theme_counts.get(theme, 0) + 1
+        selected.append(index)
+        if len(selected) >= int(limit):
+            break
+    result = working.loc[selected].copy().reset_index(drop=True)
+    result["ResearchPoolRank"] = np.arange(1, len(result) + 1)
+    return result
 
 
 def _sort_export_rows(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
@@ -443,11 +515,12 @@ def refresh_candidate_exports(
     ranked = _rank_valid_candidates(frame)
 
     csv_path = destination / f"Top{top_n_csv}.csv"
-    _atomic_write_csv(ranked.head(top_n_csv), csv_path)
+    research_pool = _diversify_ranked_candidates(ranked, top_n_csv)
+    _atomic_write_csv(research_pool, csv_path)
     logger.info(
-        "Exported Top %d (%d rows) to %s",
+        "Exported diversified Top %d (%d rows) to %s",
         top_n_csv,
-        len(ranked.head(top_n_csv)),
+        len(research_pool),
         csv_path,
     )
 
@@ -457,10 +530,11 @@ def refresh_candidate_exports(
             "RankingEligibility", pd.Series("观察", index=ranked.index)
         ).eq("推荐")
     ]
-    _atomic_write_csv(trade_ready.head(top_n_csv), trade_ready_path)
+    trade_ready = _diversify_ranked_candidates(trade_ready, top_n_csv)
+    _atomic_write_csv(trade_ready, trade_ready_path)
     logger.info(
         "Exported %d trade-ready candidates to %s",
-        len(trade_ready.head(top_n_csv)),
+        len(trade_ready),
         trade_ready_path,
     )
 
@@ -475,7 +549,8 @@ def refresh_candidate_exports(
         if "FinalScore" in ranked.columns
         else ("OpportunityScore", "Score"),
     )
-    _atomic_write_csv(opportunity.head(top_n_csv), opportunity_path)
+    opportunity = _diversify_ranked_candidates(opportunity, top_n_csv)
+    _atomic_write_csv(opportunity, opportunity_path)
 
     trigger_path = destination / f"Top{top_n_csv}BreakoutCandidates.csv"
     trigger = ranked.loc[
@@ -490,7 +565,8 @@ def refresh_candidate_exports(
         ).isin(["ACCUMULATION", "BREAKOUT"])
     ]
     trigger = _sort_export_rows(trigger, ("RankingScore", "BreakoutScore"))
-    _atomic_write_csv(trigger.head(top_n_csv), trigger_path)
+    trigger = _diversify_ranked_candidates(trigger, top_n_csv)
+    _atomic_write_csv(trigger, trigger_path)
 
     entry_path = destination / f"Top{top_n_csv}EntryCandidates.csv"
     entry = ranked.loc[
@@ -499,7 +575,8 @@ def refresh_candidate_exports(
         )
     ]
     entry = _sort_export_rows(entry, ("RankingScore", "EntryScore"))
-    _atomic_write_csv(entry.head(top_n_csv), entry_path)
+    entry = _diversify_ranked_candidates(entry, top_n_csv)
+    _atomic_write_csv(entry, entry_path)
 
     trap_path = destination / f"Top{top_n_csv}ValueTrapRisk.csv"
     trap = ranked.loc[

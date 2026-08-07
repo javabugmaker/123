@@ -168,8 +168,9 @@ SCORING_WEIGHTS: Final[ScoringWeights] = ScoringWeights()
 # ======================================================================
 TOP_N_REPORT: int = 50
 TOP_N_PARQUET: int = 200
+ETF_THEME_MAX_PER_TOP_LIST: Final[int] = 2
 
-SCORING_VERSION: str = "2026-08-08-v14-fast-exact-incremental-backtest"
+SCORING_VERSION: str = "2026-08-08-v15-ranking-diversity-metadata"
 
 # Per-ticker historical evidence is only allowed to influence the composite
 # rank after more than a couple of independent observations.  This prevents a

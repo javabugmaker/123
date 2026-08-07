@@ -83,6 +83,7 @@ class BacktestSummary:
     samples: int = 0
     ticker_count: int = 0
     cache_hits: int = 0
+    cache_hit_tickers: list[str] = field(default_factory=list)
     elapsed_seconds: float = 0.0
     worker_count: int = 0
     engine: str = "sequential"
@@ -494,9 +495,9 @@ def enrich_results(
             completed += 1
             if enriched is not None:
                 cached_frames[result.ticker] = enriched
-                if np.isfinite(relative):
-                    industry = result.industry or result.sector or "未分类"
-                    industry_returns.setdefault(industry, {})[result.ticker] = relative
+                classification = str(result.industry or result.sector or "").strip()
+                if classification and np.isfinite(relative):
+                    industry_returns.setdefault(classification, {})[result.ticker] = relative
             if completed == total or completed % 100 == 0:
                 logger.info("Enrichment progress: %d/%d results.", completed, total)
 
@@ -510,8 +511,13 @@ def enrich_results(
         if frame is None:
             continue
         value = _safe_return(frame["Close"], 60)
-        industry = result.industry or result.sector or "未分类"
-        total_return, count = industry_totals.get(industry, (0.0, 0))
+        classification = str(result.industry or result.sector or "").strip()
+        if not classification:
+            result.industry_relative_strength = np.nan
+            result.industry_momentum_60d = np.nan
+            result.sector_confirmation_factor = 1.0
+            continue
+        total_return, count = industry_totals.get(classification, (0.0, 0))
         peer = (
             (total_return - value) / (count - 1)
             if np.isfinite(value) and count >= 2
@@ -1631,6 +1637,10 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "backtest_confidence_tier": "BacktestConfidenceTier",
         "backtest_adjusted_score": "BacktestAdjustedScore",
         "failure_signal_factor": "FailureSignalFactor",
+        "backtest_mode": "BacktestMode",
+        "backtest_cache_hit": "BacktestCacheHit",
+        "backtest_last_evaluated_date": "BacktestLastEvaluatedDate",
+        "backtest_engine": "BacktestEngine",
     }
     legacy_columns = {
         "backtest_score",
@@ -1663,6 +1673,10 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "BacktestEffectiveWeight",
         "BacktestConfidenceTier",
         "BacktestAdjustedScore",
+        "BacktestMode",
+        "BacktestCacheHit",
+        "BacktestLastEvaluatedDate",
+        "BacktestEngine",
         "InstitutionalTier",
         "InstitutionalScore",
         "InstitutionalPercentile",
@@ -1801,6 +1815,15 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         ).fillna(1.0)
     else:
         sector_factor = pd.Series(1.0, index=frame.index)
+    sector_text = frame.get("Sector", pd.Series("", index=frame.index)).fillna("").astype(str).str.strip()
+    industry_text = frame.get("Industry", pd.Series("", index=frame.index)).fillna("").astype(str).str.strip()
+    classified = sector_text.ne("") | industry_text.ne("")
+    sector_factor = sector_factor.where(classified, 1.0).clip(0.0, 1.0)
+    frame["SectorConfirmationFactor"] = sector_factor.round(4)
+    if "IndustryRelativeStrength" in frame:
+        frame.loc[~classified, "IndustryRelativeStrength"] = np.nan
+    if "IndustryMomentum60D" in frame:
+        frame.loc[~classified, "IndustryMomentum60D"] = np.nan
     sector_multiplier = 0.7 + 0.3 * sector_factor
     signal_start = pd.to_datetime(
         frame.get("SignalStartDate", pd.Series(pd.NaT, index=frame.index)),
@@ -2066,10 +2089,11 @@ def _init_backtest_worker(
 
 def _backtest_chunk_worker(
     tickers: list[str],
-) -> tuple[pd.DataFrame, int, list[tuple[str, str]], int]:
+) -> tuple[pd.DataFrame, int, list[str], list[tuple[str, str]], int]:
     context = _BACKTEST_WORKER_CONTEXT
     frames: list[pd.DataFrame] = []
     cache_hits = 0
+    cache_hit_tickers: list[str] = []
     errors: list[tuple[str, str]] = []
     for ticker in tickers:
         try:
@@ -2088,10 +2112,12 @@ def _backtest_chunk_worker(
             if ticker_samples:
                 frames.append(pd.DataFrame.from_records(ticker_samples))
             cache_hits += int(cache_hit)
+            if cache_hit:
+                cache_hit_tickers.append(str(ticker))
         except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
             errors.append((ticker, str(exc)))
     batch = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    return batch, cache_hits, errors, len(tickers)
+    return batch, cache_hits, cache_hit_tickers, errors, len(tickers)
 
 
 def run_historical_backtest(
@@ -2183,6 +2209,7 @@ def run_historical_backtest(
     benchmark_signature = "state-v5"
     completed = 0
     cache_hits = 0
+    cache_hit_tickers: set[str] = set()
     next_progress = max(1, int(BACKTEST_PROGRESS_INTERVAL))
     backtest_started = time.perf_counter()
 
@@ -2204,6 +2231,7 @@ def run_historical_backtest(
         batch_frame: pd.DataFrame,
         batch_completed: int,
         batch_cache_hits: int,
+        batch_cache_hit_tickers: list[str] | None = None,
     ) -> None:
         nonlocal completed, cache_hits, next_progress, sample_count
         if batch_frame is not None and not batch_frame.empty:
@@ -2211,6 +2239,8 @@ def run_historical_backtest(
             sample_count += len(batch_frame)
         completed += int(batch_completed)
         cache_hits += int(batch_cache_hits)
+        if batch_cache_hit_tickers:
+            cache_hit_tickers.update(str(ticker) for ticker in batch_cache_hit_tickers)
         if completed >= next_progress or completed >= total:
             elapsed = max(time.perf_counter() - backtest_started, 1e-9)
             rate = completed / elapsed
@@ -2258,14 +2288,14 @@ def run_historical_backtest(
             for future in as_completed(futures):
                 chunk = futures[future]
                 try:
-                    batch_frame, batch_hits, errors, batch_count = future.result()
+                    batch_frame, batch_hits, batch_hit_tickers, errors, batch_count = future.result()
                 except Exception as exc:
                     logger.exception("Backtest worker chunk failed: %s", exc)
-                    record_progress(pd.DataFrame(), len(chunk), 0)
+                    record_progress(pd.DataFrame(), len(chunk), 0, [])
                     continue
                 for ticker, error in errors:
                     logger.warning("Backtest failed for %s: %s", ticker, error)
-                record_progress(batch_frame, batch_count, batch_hits)
+                record_progress(batch_frame, batch_count, batch_hits, batch_hit_tickers)
     else:
         for ticker in unique_tickers:
             try:
@@ -2289,7 +2319,12 @@ def run_historical_backtest(
                 if ticker_samples
                 else pd.DataFrame()
             )
-            record_progress(batch_frame, 1, int(cache_hit))
+            record_progress(
+                batch_frame,
+                1,
+                int(cache_hit),
+                [str(ticker)] if cache_hit else [],
+            )
 
     split_dates = {
         "global_start": global_start.strftime("%Y-%m-%d")
@@ -2323,6 +2358,7 @@ def run_historical_backtest(
         split_dates=split_dates,
     )
     summary.cache_hits = int(cache_hits)
+    summary.cache_hit_tickers = sorted(cache_hit_tickers)
     summary.elapsed_seconds = float(time.perf_counter() - backtest_started)
     summary.worker_count = int(worker_count)
     summary.engine = engine
@@ -2385,6 +2421,12 @@ def run_historical_backtest(
         summary.rank_ic_20d = _spearman(sample_frame, "return20")
         summary.rank_ic_60d = _spearman(sample_frame, "return60")
         summary.by_ticker = _ticker_backtest_rows(sample_frame, objective)
+        last_evaluated = split_dates.get("global_end") or ""
+        for row in summary.by_ticker:
+            row["backtest_mode"] = profile.name.upper()
+            row["backtest_cache_hit"] = str(row.get("ticker", "")) in cache_hit_tickers
+            row["backtest_last_evaluated_date"] = last_evaluated
+            row["backtest_engine"] = engine
         summary.by_score_bucket = _bucket_rows(sample_frame)
         if summary.by_score_bucket:
             summary.monotonicity_high_low_20d = (

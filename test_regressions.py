@@ -943,7 +943,7 @@ class RegressionTests(TestCase):
                 Path(temp_dir) / "Top50EntryCandidates.csv", encoding="utf-8-sig"
             )
 
-        self.assertEqual(top["Ticker"].tolist(), ["000002.SZ", "000001.SZ"])
+        self.assertEqual(top["Ticker"].tolist(), ["000001.SZ", "000002.SZ"])
         self.assertEqual(top["OverallRank"].tolist(), [1, 2])
         self.assertEqual(trade_ready["Ticker"].tolist(), ["000002.SZ"])
         self.assertIn("000002.SZ", entry["Ticker"].tolist())
@@ -1853,6 +1853,7 @@ class RegressionTests(TestCase):
                 "Score": [95.0],
                 "PassedFilters": [True],
                 "SignalCount": [4],
+                "Sector": ["测试行业"],
                 "SectorConfirmationFactor": [0.5],
             }).to_csv(Path(temp_dir) / "AllResults.csv", index=False, encoding="utf-8-sig")
             summary = BacktestSummary(by_ticker=[{

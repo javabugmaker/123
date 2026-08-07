@@ -182,6 +182,10 @@ class ScanResult:
     backtest_profit_factor: float = np.nan
     backtest_signal_span_days: int = 0
     backtest_return_std_20d: float = np.nan
+    backtest_mode: str = ""
+    backtest_cache_hit: bool = False
+    backtest_last_evaluated_date: str = ""
+    backtest_engine: str = ""
     composite_score: float = np.nan
     chase_risk_score: float = 0.0
     chase_risk_level: str = "低"

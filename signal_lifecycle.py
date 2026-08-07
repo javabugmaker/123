@@ -799,22 +799,22 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         "；回测样本不足，不参与校准"
     )
     result["RankingReason"] = rank_reason
-    eligibility_order = result["RankingEligibility"].map(
-        {"推荐": 2, "观察": 1, "风险过滤": 0}
-    ).fillna(0)
-    result = result.assign(_EligibilityOrder=eligibility_order).sort_values(
+    risk_order = result["RankingEligibility"].eq("风险过滤").astype(int)
+    result = result.assign(_RiskOrder=risk_order).sort_values(
         [
-            "_EligibilityOrder",
+            "_RiskOrder",
             "RankingScore",
             "InstitutionalScore",
+            "BacktestAdjustedScore",
+            "EntrySignalPriority",
             "FinalScore",
             "Score",
         ],
-        ascending=[False, False, False, False, False],
+        ascending=[True, False, False, False, False, False, False],
         kind="mergesort",
     ).reset_index(drop=True)
     result["OverallRank"] = np.arange(1, len(result) + 1)
-    return result.drop(columns="_EligibilityOrder")
+    return result.drop(columns="_RiskOrder")
 
 
 def _atomic_write(df: pd.DataFrame, path: Path) -> None:
