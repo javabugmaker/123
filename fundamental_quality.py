@@ -15,6 +15,7 @@ from config import (
     QUALITY_MULTIPLIER_UNKNOWN,
 )
 from fundamental_data import FUNDAMENTAL_COLUMNS, fundamental_data_path
+
 FUNDAMENTAL_FACTOR_COLUMNS = tuple(
     column for column in FUNDAMENTAL_COLUMNS if column not in {"Ticker", "Industry"}
 )
@@ -80,7 +81,7 @@ def _trend_is_increasing(value: Any) -> bool:
 
 
 def _institution_holding_status(trend: Any, periods: float) -> str:
-    """Classify holder evidence without treating unavailable history as a fail."""
+    """Classify institution-count evidence without treating missing history as failure."""
     if not np.isfinite(periods) or periods < INSTITUTION_HOLDING_MIN_PERIODS:
         return "UNKNOWN"
     if trend is None or (isinstance(trend, str) and not trend.strip()):
@@ -132,7 +133,9 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
             if gross_margin_available
             else None
         ),
-        "机构持仓连续增加": (
+        # AKShare exposes the number of institutions covering/holding the stock,
+        # not the aggregate shares/value held. Keep the label semantically exact.
+        "机构覆盖家数连续增加": (
             True if holding_status == "PASS" else False if holding_status == "FAIL" else None
         ),
         "近3年净利润非下降": (
@@ -158,17 +161,31 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
         quality_multiplier = QUALITY_MULTIPLIER_UNKNOWN
     else:
         quality_multiplier = QUALITY_MULTIPLIER_PASS
+
     reason_parts: list[str] = []
     if failed:
         reason_parts.append("未通过：" + "、".join(failed))
     if holding_status == "UNKNOWN":
-        reason_parts.append("机构持仓历史不足（中性）")
-    other_unknown = [name for name in unknown if name != "机构持仓连续增加"]
+        reason_parts.append("机构覆盖家数历史不足（中性）")
+    other_unknown = [name for name in unknown if name != "机构覆盖家数连续增加"]
     if other_unknown:
         reason_parts.append("数据不足：" + "、".join(other_unknown))
     if not reason_parts:
         reason_parts.append("全部通过")
     reason = "；".join(reason_parts)
+
+    # Unknown factors must not disappear from the denominator and turn one
+    # observed passing factor into a false 100/100 quality score. Shrink the
+    # observed pass-rate toward neutral (50) according to data completeness.
+    if passed or failed:
+        observed_pass_rate = len(passed) / (len(passed) + len(failed)) * 100.0
+        quality_score = round(
+            50.0 + (observed_pass_rate - 50.0) * completeness,
+            4,
+        )
+    else:
+        quality_score = np.nan
+
     return FundamentalQuality(
         ticker=normalized_ticker,
         roe=numeric["ROE"],
@@ -181,13 +198,9 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
         industry_gross_margin_percentile=numeric["IndustryGrossMarginPercentile"],
         roe_factor=bool(factors["ROE>10%"]),
         gross_margin_factor=bool(factors["毛利率行业前30%"]),
-        institution_holding_factor=bool(factors["机构持仓连续增加"]),
+        institution_holding_factor=bool(factors["机构覆盖家数连续增加"]),
         net_profit_factor=bool(factors["近3年净利润非下降"]),
-        quality_score=(
-            round(len(passed) / (len(passed) + len(failed)) * 100.0, 4)
-            if passed or failed
-            else np.nan
-        ),
+        quality_score=quality_score,
         quality_gate=quality_gate,
         quality_reason=reason,
         data_available=data_available,
