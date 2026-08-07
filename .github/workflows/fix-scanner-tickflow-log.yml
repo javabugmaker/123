@@ -1,0 +1,32 @@
+name: Fix scanner TickFlow log
+
+on:
+  push:
+    branches: [agent/tickflow-finalize]
+    paths:
+      - tools/fix_scanner_tickflow_log.py
+      - .github/workflows/fix-scanner-tickflow-log.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/tickflow-finalize
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python tools/fix_scanner_tickflow_log.py
+      - run: python -m compileall -q scanner.py
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: label TickFlow batch download phase"
+          git push origin HEAD:agent/tickflow-finalize
