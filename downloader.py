@@ -21,6 +21,8 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+from network_proxy import configure_akshare_proxy_from_system
+
 try:
     from tickflow import TickFlow
 except ImportError:  # pragma: no cover - runtime error explains installation
