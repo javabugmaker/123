@@ -95,7 +95,11 @@ def _bool(value: object) -> bool:
 
 def _bool_series(frame: pd.DataFrame, column: str, default: bool = False) -> pd.Series:
     values = frame.get(column, pd.Series(default, index=frame.index))
-    return values.map(_bool) if isinstance(values, pd.Series) else pd.Series(default, index=frame.index)
+    return (
+        values.map(_bool)
+        if isinstance(values, pd.Series)
+        else pd.Series(default, index=frame.index)
+    )
 
 
 def _text_series(frame: pd.DataFrame, column: str, default: str = "") -> pd.Series:
@@ -107,24 +111,59 @@ def _text_series(frame: pd.DataFrame, column: str, default: str = "") -> pd.Seri
 
 def _append_reason(current: pd.Series, condition: pd.Series, reason: str) -> pd.Series:
     existing = current.fillna("").astype(str)
-    return existing.where(~condition, np.where(existing.eq(""), reason, existing + "；" + reason))
+    return existing.where(
+        ~condition,
+        np.where(existing.eq(""), reason, existing + "；" + reason),
+    )
 
 
 def _holding_status(frame: pd.DataFrame) -> pd.Series:
     existing = _text_series(frame, "InstitutionHoldingStatus", "").str.upper()
-    periods = _number(frame.get("InstitutionHoldingPeriods", pd.Series(np.nan, index=frame.index)), np.nan)
+    periods = _number(
+        frame.get("InstitutionHoldingPeriods", pd.Series(np.nan, index=frame.index)),
+        np.nan,
+    )
     trend = _text_series(frame, "InstitutionHoldingTrend", "").str.lower()
     inferred = pd.Series("UNKNOWN", index=frame.index)
     enough_history = periods.ge(2)
-    inferred.loc[enough_history & trend.isin({"increasing", "increase", "up", "上涨", "增加", "连续增加", "true", "1", "是"})] = "PASS"
-    inferred.loc[enough_history & trend.isin({"not_increasing", "decreasing", "decrease", "down", "减少", "连续减少", "false", "0", "否"})] = "FAIL"
+    inferred.loc[
+        enough_history
+        & trend.isin(
+            {
+                "increasing",
+                "increase",
+                "up",
+                "上涨",
+                "增加",
+                "连续增加",
+                "true",
+                "1",
+                "是",
+            }
+        )
+    ] = "PASS"
+    inferred.loc[
+        enough_history
+        & trend.isin(
+            {
+                "not_increasing",
+                "decreasing",
+                "decrease",
+                "down",
+                "减少",
+                "连续减少",
+                "false",
+                "0",
+                "否",
+            }
+        )
+    ] = "FAIL"
     return existing.where(existing.isin({"PASS", "FAIL", "UNKNOWN"}), inferred)
 
 
 def _data_freshness(
     frame: pd.DataFrame,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """Classify quote age without treating absent legacy fields as stale."""
     trading_age = _number(
         frame.get("DataTradingAgeDays", pd.Series(np.nan, index=frame.index)),
         np.nan,
@@ -156,19 +195,29 @@ def _backtest_confidence(
     effective_samples: pd.Series,
     return_std: pd.Series,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """Return reliability, effective ranking weight and readable confidence tier."""
     samples = samples.clip(lower=0.0)
     effective_samples = effective_samples.clip(lower=0.0).where(
         effective_samples.gt(0.0), samples
     ).clip(upper=samples.where(samples.gt(0.0), 0.0))
     reliability = pd.Series(0.0, index=samples.index)
     low_start = float(BACKTEST_MIN_SAMPLES_FOR_RANKING)
-    low_end = float(max(BACKTEST_LOW_CONFIDENCE_MAX_SAMPLES, BACKTEST_MIN_SAMPLES_FOR_RANKING + 1))
-    full = float(max(BACKTEST_FULL_WEIGHT_SAMPLES, BACKTEST_LOW_CONFIDENCE_MAX_SAMPLES + 1))
+    low_end = float(
+        max(
+            BACKTEST_LOW_CONFIDENCE_MAX_SAMPLES,
+            BACKTEST_MIN_SAMPLES_FOR_RANKING + 1,
+        )
+    )
+    full = float(
+        max(BACKTEST_FULL_WEIGHT_SAMPLES, BACKTEST_LOW_CONFIDENCE_MAX_SAMPLES + 1)
+    )
     low_mask = samples.ge(low_start) & samples.lt(low_end)
     medium_mask = samples.ge(low_end) & samples.lt(full)
-    reliability.loc[low_mask] = 0.25 * ((samples.loc[low_mask] - low_start + 1.0) / (low_end - low_start + 1.0))
-    reliability.loc[medium_mask] = 0.25 + 0.75 * ((samples.loc[medium_mask] - low_end) / (full - low_end))
+    reliability.loc[low_mask] = 0.25 * (
+        (samples.loc[low_mask] - low_start + 1.0) / (low_end - low_start + 1.0)
+    )
+    reliability.loc[medium_mask] = 0.25 + 0.75 * (
+        (samples.loc[medium_mask] - low_end) / (full - low_end)
+    )
     reliability.loc[samples.ge(full)] = 1.0
     independence = np.sqrt(
         (effective_samples / samples.where(samples.gt(0.0), 1.0)).clip(0.0, 1.0)
@@ -179,17 +228,25 @@ def _backtest_confidence(
     tier.loc[low_mask] = "低可信度"
     tier.loc[medium_mask] = "中可信度"
     tier.loc[samples.ge(full)] = "高可信度"
-    return reliability.round(4), (reliability * BACKTEST_NORMAL_WEIGHT).round(4), tier
+    return (
+        reliability.round(4),
+        (reliability * BACKTEST_NORMAL_WEIGHT).round(4),
+        tier,
+    )
 
 
 def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
-    """Apply cross-field safety rules once before results are ranked or exported."""
+    """Apply signal safety rules once before ranking/export."""
     result = frame.copy()
     signal = _text_series(result, "EntrySignal", "AVOID").str.upper()
     adjustments = _text_series(result, "SignalAdjustmentReason", "")
-    trap = _number(result.get("ValueTrapRisk", pd.Series(0.0, index=result.index)))
+    trap = _number(
+        result.get("ValueTrapRisk", pd.Series(0.0, index=result.index))
+    )
     lifecycle = _text_series(result, "LifecycleStage", "未知")
-    rsi = _number(result.get("RSI14", pd.Series(np.nan, index=result.index)), np.nan)
+    rsi = _number(
+        result.get("RSI14", pd.Series(np.nan, index=result.index)), np.nan
+    )
     chase_risk = _number(
         result.get("ChaseRiskScore", pd.Series(np.nan, index=result.index)),
         np.nan,
@@ -212,6 +269,7 @@ def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
     quality_action_block = quality_failed | quality_sparse
     freshness_status, _freshness_factor, _freshness_reason = _data_freshness(result)
     stale_data = freshness_status.eq("过期")
+
     volume_ratio = _number(
         result.get("BreakoutVolumeRatio", pd.Series(np.nan, index=result.index)),
         np.nan,
@@ -224,13 +282,12 @@ def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
     ) | volume_score.ge(BREAKOUT_CONFIRM_MIN_VOLUME_SCORE)
     volume_metrics_available = volume_ratio.notna() | volume_score.notna()
     if "BreakoutVolumeConfirmed" in result:
-        # Preserve legacy flags only when raw volume metrics are absent or
-        # agree with the flag; stale flags must not create a false breakout.
         volume_confirmed = _bool_series(result, "BreakoutVolumeConfirmed") & (
             ~volume_metrics_available | observed_volume_confirmation
         )
     else:
         volume_confirmed = observed_volume_confirmation
+
     cmf_positive = _bool_series(result, "CMF_Pos") | _number(
         result.get("CMF", pd.Series(np.nan, index=result.index)), np.nan
     ).gt(0.0)
@@ -250,17 +307,30 @@ def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
         )
     else:
         flow_confirmed = observed_flow_confirmation
-    weak_breakout = signal.eq("BREAKOUT_CONFIRM") & ~(volume_confirmed & flow_confirmed)
+
+    weak_breakout = signal.eq("BREAKOUT_CONFIRM") & ~(
+        volume_confirmed & flow_confirmed
+    )
     signal.loc[weak_breakout] = "PRICE_BREAKOUT"
-    adjustments = _append_reason(adjustments, weak_breakout, "突破缺少量能或资金确认，降为等待量能")
-    trap_block = trap.ge(VALUE_TRAP_HARD_RISK_THRESHOLD) & signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"})
+    adjustments = _append_reason(
+        adjustments, weak_breakout, "突破缺少量能或资金确认，降为等待量能"
+    )
+    trap_block = trap.ge(VALUE_TRAP_HARD_RISK_THRESHOLD) & signal.isin(
+        {"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"}
+    )
     signal.loc[trap_block] = "AVOID"
-    adjustments = _append_reason(adjustments, trap_block, "价值陷阱风险高，禁止积极买点")
-    stage_block = lifecycle.isin({"加速风险", "派发"}) & signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"})
+    adjustments = _append_reason(
+        adjustments, trap_block, "价值陷阱风险高，禁止积极买点"
+    )
+    stage_block = lifecycle.isin({"加速风险", "派发"}) & signal.isin(
+        {"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"}
+    )
     signal.loc[stage_block & lifecycle.eq("加速风险")] = "HOLD_WAIT"
     signal.loc[stage_block & lifecycle.eq("派发")] = "AVOID"
     adjustments = _append_reason(adjustments, stage_block, "生命周期风险阶段，买点降级")
-    rsi_block = rsi.ge(CHASE_RISK_RSI_HARD) & signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
+    rsi_block = rsi.ge(CHASE_RISK_RSI_HARD) & signal.isin(
+        {"BUY_NOW", "BREAKOUT_CONFIRM"}
+    )
     signal.loc[rsi_block] = "HOLD_WAIT"
     adjustments = _append_reason(adjustments, rsi_block, "RSI高位过热，停止追涨")
     chase_block = chase_risk.ge(CHASE_RISK_HIGH_THRESHOLD) & signal.isin(
@@ -268,7 +338,9 @@ def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
     )
     signal.loc[chase_block] = "HOLD_WAIT"
     adjustments = _append_reason(adjustments, chase_block, "追高风险过高，停止追涨")
-    quality_buy_block = quality_action_block & signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
+    quality_buy_block = quality_action_block & signal.isin(
+        {"BUY_NOW", "BREAKOUT_CONFIRM"}
+    )
     signal.loc[quality_buy_block & signal.eq("BUY_NOW")] = "WAIT_PULLBACK"
     signal.loc[quality_buy_block & signal.eq("BREAKOUT_CONFIRM")] = "PRICE_BREAKOUT"
     adjustments = _append_reason(
@@ -279,28 +351,30 @@ def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
     adjustments = _append_reason(
         adjustments, stale_signal_block, "行情数据已过期，停止使用即时买点"
     )
+
     operation_advice = _text_series(result, "OperationAdvice", "")
-    operation_advice.loc[signal.isin({"PRICE_BREAKOUT", "WAIT_VOLUME_CONFIRM"})] = (
-        "价格已突破，等待成交量确认，暂不追高。"
-    )
+    operation_advice.loc[
+        signal.isin({"PRICE_BREAKOUT", "WAIT_VOLUME_CONFIRM"})
+    ] = "价格已突破，等待成交量确认，暂不追高。"
     operation_advice.loc[signal.eq("HOLD_WAIT")] = "暂缓操作，等待风险或趋势条件改善。"
     operation_advice.loc[signal.eq("AVOID")] = "暂不参与，等待风险解除。"
     operation_advice.loc[stale_data] = "行情数据已过期，请刷新后再判断。"
     result["EntrySignal"] = signal
     result["BreakoutVolumeConfirmed"] = volume_confirmed
     result["BreakoutFlowConfirmed"] = flow_confirmed
-    result["PriceBreakout"] = result.get("PriceBreakout", signal.isin({"PRICE_BREAKOUT", "BREAKOUT_CONFIRM"})).fillna(False)
+    result["PriceBreakout"] = result.get(
+        "PriceBreakout",
+        signal.isin({"PRICE_BREAKOUT", "BREAKOUT_CONFIRM"}),
+    ).fillna(False)
     result["SignalAdjustmentReason"] = adjustments
     result["OperationAdvice"] = operation_advice
     return result
 
 
 def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
-    """Build compatible, risk-aware ranking fields without re-scoring factors."""
+    """Single authority for quality gates, risk gates, tiers and final ranking."""
     if frame.empty:
         return frame
-    # Derive quality and chase-risk fields before the single validation pass so
-    # legacy/cache values cannot leave an otherwise invalid entry signal active.
     result = frame.copy()
     if "Score" not in result:
         result["Score"] = 0.0
@@ -308,18 +382,47 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         result["FinalScore"] = _number(result["Score"])
     if "InstitutionalScore" not in result:
         result["InstitutionalScore"] = _number(result["FinalScore"])
+
     status = _holding_status(result)
     result["InstitutionHoldingStatus"] = status
-    roe_available = pd.to_numeric(result.get("ROE", pd.Series(np.nan, index=result.index)), errors="coerce").notna()
-    margin_available = pd.to_numeric(result.get("IndustryGrossMarginPercentile", pd.Series(np.nan, index=result.index)), errors="coerce").notna()
+    roe_available = pd.to_numeric(
+        result.get("ROE", pd.Series(np.nan, index=result.index)), errors="coerce"
+    ).notna()
+    margin_available = pd.to_numeric(
+        result.get(
+            "IndustryGrossMarginPercentile", pd.Series(np.nan, index=result.index)
+        ),
+        errors="coerce",
+    ).notna()
     profit_available = (
-        pd.to_numeric(result.get("NetProfitY1", pd.Series(np.nan, index=result.index)), errors="coerce").notna()
-        & pd.to_numeric(result.get("NetProfitY2", pd.Series(np.nan, index=result.index)), errors="coerce").notna()
-        & pd.to_numeric(result.get("NetProfitY3", pd.Series(np.nan, index=result.index)), errors="coerce").notna()
+        pd.to_numeric(
+            result.get("NetProfitY1", pd.Series(np.nan, index=result.index)),
+            errors="coerce",
+        ).notna()
+        & pd.to_numeric(
+            result.get("NetProfitY2", pd.Series(np.nan, index=result.index)),
+            errors="coerce",
+        ).notna()
+        & pd.to_numeric(
+            result.get("NetProfitY3", pd.Series(np.nan, index=result.index)),
+            errors="coerce",
+        ).notna()
     )
-    completeness = (roe_available.astype(float) + margin_available.astype(float) + profit_available.astype(float) + status.isin({"PASS", "FAIL"}).astype(float)) / 4.0
-    supplied_completeness = _number(result.get("QualityDataCompleteness", pd.Series(np.nan, index=result.index)), np.nan)
-    result["QualityDataCompleteness"] = supplied_completeness.where(supplied_completeness.notna(), completeness).clip(0.0, 1.0).round(4)
+    completeness = (
+        roe_available.astype(float)
+        + margin_available.astype(float)
+        + profit_available.astype(float)
+        + status.isin({"PASS", "FAIL"}).astype(float)
+    ) / 4.0
+    supplied_completeness = _number(
+        result.get("QualityDataCompleteness", pd.Series(np.nan, index=result.index)),
+        np.nan,
+    )
+    result["QualityDataCompleteness"] = (
+        supplied_completeness.where(supplied_completeness.notna(), completeness)
+        .clip(0.0, 1.0)
+        .round(4)
+    )
     supplied_quality_fail = (
         _bool_series(result, "QualityDataAvailable")
         & ~_bool_series(result, "QualityGate", True)
@@ -333,7 +436,9 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         | status.eq("FAIL")
         | supplied_quality_fail
     )
-    any_unknown = status.eq("UNKNOWN") | ~(roe_available & margin_available & profit_available)
+    any_unknown = status.eq("UNKNOWN") | ~(
+        roe_available & margin_available & profit_available
+    )
     result["QualityGate"] = ~known_fail
     result["QualityMultiplier"] = np.select(
         [known_fail, any_unknown],
@@ -342,9 +447,16 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     )
     quality_reason = _text_series(result, "QualityGateReason", "")
     quality_reason = quality_reason.where(~known_fail, "存在已确认质量未通过项")
-    quality_reason = quality_reason.where(~(status.eq("UNKNOWN") & ~known_fail), "机构持仓历史不足，按中性处理")
-    quality_reason = quality_reason.where(~(quality_reason.eq("") & ~known_fail & ~any_unknown), "全部可用质量项通过")
+    quality_reason = quality_reason.where(
+        ~(status.eq("UNKNOWN") & ~known_fail),
+        "机构覆盖家数历史不足，按中性处理",
+    )
+    quality_reason = quality_reason.where(
+        ~(quality_reason.eq("") & ~known_fail & ~any_unknown),
+        "全部可用质量项通过",
+    )
     result["QualityGateReason"] = quality_reason
+
     freshness_status, freshness_factor, freshness_reason = _data_freshness(result)
     result["DataFreshnessStatus"] = freshness_status
     result["DataFreshnessFactor"] = freshness_factor
@@ -355,47 +467,104 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     if "RiskWarning" in result:
         result.loc[stale_advice, "RiskWarning"] = "行情数据过期"
     result["MarketRegimeFast"] = _text_series(
-        result, "MarketRegimeFast", _text_series(result, "MarketRegime", "未知").iloc[0] if len(result) else "未知"
+        result,
+        "MarketRegimeFast",
+        _text_series(result, "MarketRegime", "未知").iloc[0]
+        if len(result)
+        else "未知",
     )
     result["MarketRegimeSlow"] = _text_series(
-        result, "MarketRegimeSlow", _text_series(result, "MarketRegime", "未知").iloc[0] if len(result) else "未知"
+        result,
+        "MarketRegimeSlow",
+        _text_series(result, "MarketRegime", "未知").iloc[0]
+        if len(result)
+        else "未知",
     )
     if "MarketRegimeConfidence" not in result:
         result["MarketRegimeConfidence"] = 0.0
     if "MarketRegimeReason" not in result:
         result["MarketRegimeReason"] = "沿用可用市场环境数据"
 
-    samples = _number(result.get("BacktestSamples", pd.Series(0.0, index=result.index)))
-    effective_samples = _number(result.get("BacktestEffectiveSamples", pd.Series(np.nan, index=result.index)), np.nan)
-    return_std = _number(result.get("BacktestReturnStd20D", pd.Series(np.nan, index=result.index)), np.nan)
-    reliability, effective_weight, confidence_tier = _backtest_confidence(samples, effective_samples, return_std)
+    samples = _number(
+        result.get("BacktestSamples", pd.Series(0.0, index=result.index))
+    )
+    effective_samples = _number(
+        result.get("BacktestEffectiveSamples", pd.Series(np.nan, index=result.index)),
+        np.nan,
+    )
+    return_std = _number(
+        result.get("BacktestReturnStd20D", pd.Series(np.nan, index=result.index)),
+        np.nan,
+    )
+    reliability, effective_weight, confidence_tier = _backtest_confidence(
+        samples, effective_samples, return_std
+    )
     result["BacktestReliability"] = reliability
     result["BacktestEffectiveWeight"] = effective_weight
     result["BacktestConfidenceTier"] = confidence_tier
-    backtest_score = _number(result.get("BacktestScore", pd.Series(BACKTEST_NEUTRAL_SCORE, index=result.index)), BACKTEST_NEUTRAL_SCORE)
-    result["BacktestAdjustedScore"] = (BACKTEST_NEUTRAL_SCORE + (backtest_score - BACKTEST_NEUTRAL_SCORE) * reliability).round(4)
-    result.loc[samples.lt(BACKTEST_MIN_SAMPLES_FOR_RANKING), "FailureSignalFactor"] = 1.0
+    backtest_score = _number(
+        result.get(
+            "BacktestScore", pd.Series(BACKTEST_NEUTRAL_SCORE, index=result.index)
+        ),
+        BACKTEST_NEUTRAL_SCORE,
+    )
+    result["BacktestAdjustedScore"] = (
+        BACKTEST_NEUTRAL_SCORE
+        + (backtest_score - BACKTEST_NEUTRAL_SCORE) * reliability
+    ).round(4)
+    result.loc[
+        samples.lt(BACKTEST_MIN_SAMPLES_FOR_RANKING), "FailureSignalFactor"
+    ] = 1.0
 
-    rsi = _number(result.get("RSI14", pd.Series(np.nan, index=result.index)), np.nan)
-    distance = _number(result.get("DistToLow52W", pd.Series(np.nan, index=result.index)), np.nan)
-    dist_ma20 = _number(result.get("DistToMA20", pd.Series(np.nan, index=result.index)), np.nan)
-    return20 = _number(result.get("RecentReturn20D", pd.Series(np.nan, index=result.index)), np.nan)
-    atr_expansion = _number(result.get("ATRExpansion", pd.Series(np.nan, index=result.index)), np.nan)
+    rsi = _number(
+        result.get("RSI14", pd.Series(np.nan, index=result.index)), np.nan
+    )
+    distance = _number(
+        result.get("DistToLow52W", pd.Series(np.nan, index=result.index)), np.nan
+    )
+    dist_ma20 = _number(
+        result.get("DistToMA20", pd.Series(np.nan, index=result.index)), np.nan
+    )
+    return20 = _number(
+        result.get("RecentReturn20D", pd.Series(np.nan, index=result.index)), np.nan
+    )
+    atr_expansion = _number(
+        result.get("ATRExpansion", pd.Series(np.nan, index=result.index)), np.nan
+    )
     lifecycle = _text_series(result, "LifecycleStage", "未知")
     chase = pd.Series(0.0, index=result.index)
-    chase += (rsi.sub(CHASE_RISK_RSI_START).clip(lower=0.0) * 1.5).clip(upper=18.0).fillna(0.0)
+    chase += (
+        rsi.sub(CHASE_RISK_RSI_START).clip(lower=0.0) * 1.5
+    ).clip(upper=18.0).fillna(0.0)
     chase += np.where(rsi.ge(CHASE_RISK_RSI_HARD), 14.0, 0.0)
-    chase += (distance.sub(CHASE_RISK_DISTANCE_START).clip(lower=0.0) * 0.45).clip(upper=15.0).fillna(0.0)
+    chase += (
+        distance.sub(CHASE_RISK_DISTANCE_START).clip(lower=0.0) * 0.45
+    ).clip(upper=15.0).fillna(0.0)
     chase += np.where(distance.ge(CHASE_RISK_DISTANCE_HIGH), 12.0, 0.0)
-    chase += (dist_ma20.sub(6.0).clip(lower=0.0) * 1.2).clip(upper=12.0).fillna(0.0)
-    chase += (return20.sub(12.0).clip(lower=0.0) * 0.65).clip(upper=10.0).fillna(0.0)
-    chase += (atr_expansion.sub(1.25).clip(lower=0.0) * 20.0).clip(upper=8.0).fillna(0.0)
+    chase += (
+        dist_ma20.sub(6.0).clip(lower=0.0) * 1.2
+    ).clip(upper=12.0).fillna(0.0)
+    chase += (
+        return20.sub(12.0).clip(lower=0.0) * 0.65
+    ).clip(upper=10.0).fillna(0.0)
+    chase += (
+        atr_expansion.sub(1.25).clip(lower=0.0) * 20.0
+    ).clip(upper=8.0).fillna(0.0)
     chase += np.where(lifecycle.eq("加速风险"), 25.0, 0.0)
     chase += np.where(lifecycle.isin({"派发", "DISTRIBUTION"}), 35.0, 0.0)
     trend_confirmed = lifecycle.isin({"趋势确认", "初始启动"})
-    chase = (chase - np.where(trend_confirmed & ~lifecycle.eq("加速风险"), 6.0, 0.0)).clip(0.0, 100.0)
+    chase = (
+        chase
+        - np.where(
+            trend_confirmed & ~lifecycle.eq("加速风险"), 6.0, 0.0
+        )
+    ).clip(0.0, 100.0)
     result["ChaseRiskScore"] = chase.round(2)
-    result["ChaseRiskLevel"] = np.select([chase.ge(CHASE_RISK_HIGH_THRESHOLD), chase.ge(30.0)], ["高", "中"], default="低")
+    result["ChaseRiskLevel"] = np.select(
+        [chase.ge(CHASE_RISK_HIGH_THRESHOLD), chase.ge(30.0)],
+        ["高", "中"],
+        default="低",
+    )
     chase_reason = pd.Series("趋势结构正常", index=result.index)
     chase_reason.loc[rsi.ge(CHASE_RISK_RSI_HARD)] = "RSI高位过热"
     chase_reason.loc[distance.ge(CHASE_RISK_DISTANCE_HIGH)] = "远离52周低点且高位运行"
@@ -405,8 +574,12 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
 
     result = validate_signal_consistency(result)
     signal = _text_series(result, "EntrySignal", "AVOID").str.upper()
-    trap = _number(result.get("ValueTrapRisk", pd.Series(0.0, index=result.index)))
-    score_coverage = _number(result.get("ScoreCoverage", pd.Series(1.0, index=result.index)), 1.0)
+    trap = _number(
+        result.get("ValueTrapRisk", pd.Series(0.0, index=result.index))
+    )
+    score_coverage = _number(
+        result.get("ScoreCoverage", pd.Series(1.0, index=result.index)), 1.0
+    )
     hard_penalty = pd.Series(1.0, index=result.index)
     hard_reason = pd.Series("", index=result.index)
     avoid = signal.eq("AVOID")
@@ -418,19 +591,22 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     is_etf = _bool_series(result, "IsETF") | _text_series(
         result, "AssetType", ""
     ).str.lower().eq("etf")
-    quality_action_block = (
-        ~result["QualityGate"]
-        | (
-            result["QualityDataCompleteness"].lt(
-                QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE
-            )
-            & ~is_etf
-        )
+    quality_action_block = ~result["QualityGate"] | (
+        result["QualityDataCompleteness"].lt(QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE)
+        & ~is_etf
     )
-    hard_penalty.loc[avoid] = np.minimum(hard_penalty.loc[avoid], HARD_RISK_AVOID_PENALTY)
-    hard_penalty.loc[stage_risk] = np.minimum(hard_penalty.loc[stage_risk], HARD_RISK_STAGE_PENALTY)
-    hard_penalty.loc[trap_risk] = np.minimum(hard_penalty.loc[trap_risk], HARD_RISK_VALUE_TRAP_PENALTY)
-    hard_penalty.loc[data_risk] = np.minimum(hard_penalty.loc[data_risk], HARD_RISK_DATA_PENALTY)
+    hard_penalty.loc[avoid] = np.minimum(
+        hard_penalty.loc[avoid], HARD_RISK_AVOID_PENALTY
+    )
+    hard_penalty.loc[stage_risk] = np.minimum(
+        hard_penalty.loc[stage_risk], HARD_RISK_STAGE_PENALTY
+    )
+    hard_penalty.loc[trap_risk] = np.minimum(
+        hard_penalty.loc[trap_risk], HARD_RISK_VALUE_TRAP_PENALTY
+    )
+    hard_penalty.loc[data_risk] = np.minimum(
+        hard_penalty.loc[data_risk], HARD_RISK_DATA_PENALTY
+    )
     hard_penalty.loc[stale_data] = np.minimum(
         hard_penalty.loc[stale_data], DATA_FRESHNESS_STALE_FACTOR
     )
@@ -442,6 +618,7 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     result["HardRiskFlag"] = avoid | stage_risk | trap_risk | data_risk | stale_data
     result["HardRiskPenalty"] = hard_penalty.round(4)
     result["HardRiskReason"] = hard_reason
+
     ranking_penalty_reason = hard_reason.copy()
     ranking_penalty_reason = _append_reason(
         ranking_penalty_reason, quality_action_block, "质量门槛未通过或数据不足"
@@ -455,7 +632,9 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     base_score = _number(
         result.get(
             "InstitutionalScore",
-            result.get("FinalScore", result.get("Score", pd.Series(0.0, index=result.index))),
+            result.get(
+                "FinalScore", result.get("Score", pd.Series(0.0, index=result.index))
+            ),
         ),
         0.0,
     )
@@ -466,6 +645,7 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         "综合评分未达交易门槛",
     )
     result["RankingPenaltyReason"] = ranking_penalty_reason
+
     trade_ready = (
         signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
         & ~stage_risk
@@ -477,7 +657,10 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     )
     result["RankingEligibility"] = np.select(
         [
-            avoid | trap_risk | lifecycle.isin({"派发", "DISTRIBUTION"}) | stale_data,
+            avoid
+            | trap_risk
+            | lifecycle.isin({"派发", "DISTRIBUTION"})
+            | stale_data,
             trade_ready,
         ],
         ["风险过滤", "推荐"],
@@ -485,9 +668,16 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     )
     readiness_reason = pd.Series("等待趋势、量能或风险条件改善", index=result.index)
     active_signal = signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
-    hard_filter = avoid | trap_risk | lifecycle.isin({"派发", "DISTRIBUTION"}) | stale_data
+    hard_filter = (
+        avoid
+        | trap_risk
+        | lifecycle.isin({"派发", "DISTRIBUTION"})
+        | stale_data
+    )
     readiness_reason.loc[hard_filter] = "硬风险过滤，不纳入交易就绪组"
-    readiness_reason.loc[active_signal & data_risk & ~hard_filter] = "技术数据覆盖不足，转为观察"
+    readiness_reason.loc[active_signal & data_risk & ~hard_filter] = (
+        "技术数据覆盖不足，转为观察"
+    )
     readiness_reason.loc[
         active_signal & minimum_score_risk & ~data_risk & ~hard_filter
     ] = "综合评分未达交易门槛，转为观察"
@@ -504,67 +694,122 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     result.loc[trap_observe, "OpportunityStage"] = "底部观察"
     result.loc[quality_action_block & ~trap_observe, "OpportunityStage"] = "观察"
 
-    entry_factor = signal.map(ENTRY_SIGNAL_MULTIPLIERS).fillna(ENTRY_SIGNAL_MULTIPLIERS["HOLD_WAIT"])
+    entry_factor = signal.map(ENTRY_SIGNAL_MULTIPLIERS).fillna(
+        ENTRY_SIGNAL_MULTIPLIERS["HOLD_WAIT"]
+    )
     result["EntrySignalPriority"] = signal.map(ENTRY_SIGNAL_PRIORITIES).fillna(0.0)
-    chase_factor = (1.0 - (chase / 100.0) * (1.0 - CHASE_RISK_MAX_PENALTY)).clip(CHASE_RISK_MAX_PENALTY, 1.0)
+    chase_factor = (
+        1.0 - (chase / 100.0) * (1.0 - CHASE_RISK_MAX_PENALTY)
+    ).clip(CHASE_RISK_MAX_PENALTY, 1.0)
     data_confidence = (
-        (0.90 + 0.06 * result["QualityDataCompleteness"] + 0.04 * score_coverage.clip(0.0, 1.0))
-        .clip(0.85, 1.0)
+        (
+            0.90
+            + 0.06 * result["QualityDataCompleteness"]
+            + 0.04 * score_coverage.clip(0.0, 1.0)
+        ).clip(0.85, 1.0)
         * freshness_factor
     ).clip(DATA_FRESHNESS_STALE_FACTOR, 1.0)
+    recency_factor = _number(
+        result.get("SignalRecencyFactor", pd.Series(1.0, index=result.index)), 1.0
+    ).clip(0.7, 1.0)
+    recency_multiplier = 0.8 + 0.2 * recency_factor
     result["DataConfidenceFactor"] = data_confidence.round(4)
     result["ChaseRiskFactor"] = chase_factor.round(4)
-    result["RankingScore"] = (base_score * entry_factor * hard_penalty * chase_factor * data_confidence).round(4)
+    result["RankingScore"] = (
+        base_score
+        * entry_factor
+        * hard_penalty
+        * chase_factor
+        * data_confidence
+        * recency_multiplier
+    ).round(4)
 
     score = _number(result["InstitutionalScore"], 0.0)
     result["InstitutionalRank"] = score.rank(method="min", ascending=False).astype(int)
-    result["InstitutionalPercentile"] = (score.rank(method="average", pct=True) * 100.0).round(2)
+    result["InstitutionalPercentile"] = (
+        score.rank(method="average", pct=True) * 100.0
+    ).round(2)
     percentile = result["InstitutionalPercentile"]
+    signal_recency_days = _number(
+        result.get("SignalRecencyDays", pd.Series(np.nan, index=result.index)), np.nan
+    )
+    recent_signal = signal_recency_days.between(0.0, 20.0)
     no_top_risk = (
         ~result["HardRiskFlag"]
         & signal.ne("AVOID")
         & result["QualityGate"]
         & ~quality_action_block
+        & recent_signal
     )
     tier = pd.Series(INSTITUTIONAL_TIER_WAIT_LABEL, index=result.index)
-    tier.loc[(percentile.ge(INSTITUTIONAL_TIER_C_PERCENTILE)) & score.ge(INSTITUTIONAL_TIER_C_SCORE)] = "C级价值观察"
-    tier.loc[(percentile.ge(INSTITUTIONAL_TIER_B_PERCENTILE)) & score.ge(INSTITUTIONAL_TIER_B_SCORE)] = "B级观察"
-    tier.loc[(percentile.ge(INSTITUTIONAL_TIER_A_PERCENTILE)) & score.ge(INSTITUTIONAL_TIER_A_SCORE) & no_top_risk & result["QualityDataCompleteness"].ge(INSTITUTIONAL_TIER_MIN_DATA_CONFIDENCE)] = "A级机构启动"
-    # Confirmed quality failures may remain visible as value observations, but
-    # must not retain the B tier that is intended for actionable candidates.
-    confirmed_quality_fail = ~result["QualityGate"] & ~is_etf
     tier.loc[
-        confirmed_quality_fail & tier.eq("B级观察")
+        percentile.ge(INSTITUTIONAL_TIER_C_PERCENTILE)
+        & score.ge(INSTITUTIONAL_TIER_C_SCORE)
     ] = "C级价值观察"
+    tier.loc[
+        percentile.ge(INSTITUTIONAL_TIER_B_PERCENTILE)
+        & score.ge(INSTITUTIONAL_TIER_B_SCORE)
+    ] = "B级观察"
+    tier.loc[
+        percentile.ge(INSTITUTIONAL_TIER_A_PERCENTILE)
+        & score.ge(INSTITUTIONAL_TIER_A_SCORE)
+        & no_top_risk
+        & result["QualityDataCompleteness"].ge(
+            INSTITUTIONAL_TIER_MIN_DATA_CONFIDENCE
+        )
+    ] = "A级机构启动"
+    confirmed_quality_fail = ~result["QualityGate"] & ~is_etf
+    tier.loc[confirmed_quality_fail & tier.eq("B级观察")] = "C级价值观察"
     tier.loc[trap.ge(VALUE_TRAP_RISK_THRESHOLD)] = INSTITUTIONAL_TIER_TRAP_LABEL
     tier.loc[signal.eq("AVOID") & tier.eq("A级机构启动")] = "B级观察"
     result["InstitutionalTier"] = tier
-    tier_reason = "分位和绝对分均未达到门槛"
-    result["InstitutionalTierReason"] = tier_reason
-    result.loc[tier.eq("A级机构启动"), "InstitutionalTierReason"] = "市场前10%且满足绝对质量门槛"
-    result.loc[tier.eq("B级观察"), "InstitutionalTierReason"] = "市场前25%且满足绝对分门槛"
-    result.loc[tier.eq("C级价值观察"), "InstitutionalTierReason"] = "市场前50%且满足绝对分门槛"
-    result.loc[tier.eq(INSTITUTIONAL_TIER_TRAP_LABEL), "InstitutionalTierReason"] = "价值陷阱风险限制等级"
+    result["InstitutionalTierReason"] = "分位和绝对分均未达到门槛"
+    result.loc[tier.eq("A级机构启动"), "InstitutionalTierReason"] = (
+        "市场前10%且满足绝对质量、时效与信号门槛"
+    )
+    result.loc[tier.eq("B级观察"), "InstitutionalTierReason"] = (
+        "市场前25%且满足绝对分门槛"
+    )
+    result.loc[tier.eq("C级价值观察"), "InstitutionalTierReason"] = (
+        "市场前50%且满足绝对分门槛"
+    )
+    result.loc[tier.eq(INSTITUTIONAL_TIER_TRAP_LABEL), "InstitutionalTierReason"] = (
+        "价值陷阱风险限制等级"
+    )
 
     rank_reason = pd.Series("等待趋势与量能确认", index=result.index)
     rank_reason.loc[signal.eq("BUY_NOW")] = "回踩结构与趋势满足买点"
     rank_reason.loc[signal.eq("BREAKOUT_CONFIRM")] = "量价与资金确认突破"
-    rank_reason.loc[signal.isin({"PRICE_BREAKOUT", "WAIT_VOLUME_CONFIRM"})] = "价格突破，等待量能确认"
+    rank_reason.loc[
+        signal.isin({"PRICE_BREAKOUT", "WAIT_VOLUME_CONFIRM"})
+    ] = "价格突破，等待量能确认"
     rank_reason.loc[signal.eq("WAIT_PULLBACK")] = "趋势确认，等待回调"
     rank_reason.loc[avoid] = "风险过滤：回避信号"
     rank_reason.loc[chase.ge(CHASE_RISK_HIGH_THRESHOLD)] = "高位过热，风险降级"
     rank_reason.loc[quality_action_block] = "质量门槛未通过或数据不足，转为观察"
     rank_reason.loc[trap_observe & ~trap_risk] = "价值陷阱风险，转为观察"
     rank_reason.loc[stale_data] = "行情数据已过期，风险过滤"
-    rank_reason.loc[active_signal & data_risk & ~hard_filter] = "技术数据覆盖不足，转为观察"
+    rank_reason.loc[active_signal & data_risk & ~hard_filter] = (
+        "技术数据覆盖不足，转为观察"
+    )
     rank_reason.loc[
         active_signal & minimum_score_risk & ~data_risk & ~hard_filter
     ] = "买点成立但综合评分不足，转为观察"
-    rank_reason.loc[samples.lt(BACKTEST_MIN_SAMPLES_FOR_RANKING) & ~avoid] += "；回测样本不足，不参与校准"
+    rank_reason.loc[samples.lt(BACKTEST_MIN_SAMPLES_FOR_RANKING) & ~avoid] += (
+        "；回测样本不足，不参与校准"
+    )
     result["RankingReason"] = rank_reason
-    eligibility_order = result["RankingEligibility"].map({"推荐": 2, "观察": 1, "风险过滤": 0}).fillna(0)
+    eligibility_order = result["RankingEligibility"].map(
+        {"推荐": 2, "观察": 1, "风险过滤": 0}
+    ).fillna(0)
     result = result.assign(_EligibilityOrder=eligibility_order).sort_values(
-        ["_EligibilityOrder", "RankingScore", "InstitutionalScore", "FinalScore", "Score"],
+        [
+            "_EligibilityOrder",
+            "RankingScore",
+            "InstitutionalScore",
+            "FinalScore",
+            "Score",
+        ],
         ascending=[False, False, False, False, False],
         kind="mergesort",
     ).reset_index(drop=True)
@@ -586,7 +831,9 @@ def _load_history() -> pd.DataFrame:
     if not HISTORY_FILE.exists():
         return pd.DataFrame(columns=HISTORY_COLUMNS)
     try:
-        history = pd.read_csv(HISTORY_FILE, encoding="utf-8-sig", dtype={"Ticker": str})
+        history = pd.read_csv(
+            HISTORY_FILE, encoding="utf-8-sig", dtype={"Ticker": str}
+        )
     except (OSError, UnicodeError, pd.errors.ParserError):
         return pd.DataFrame(columns=HISTORY_COLUMNS)
     text_columns = {
@@ -598,7 +845,12 @@ def _load_history() -> pd.DataFrame:
         "SignalStartDate",
         "Stage",
     }
-    outcome_columns = {"Return20D", "MaxDrawdown20D", "Return60D", "MaxDrawdown60D"}
+    outcome_columns = {
+        "Return20D",
+        "MaxDrawdown20D",
+        "Return60D",
+        "MaxDrawdown60D",
+    }
     for column in HISTORY_COLUMNS:
         if column not in history:
             history[column] = (
@@ -665,11 +917,13 @@ def _stage(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.Series]:
     rsi = _number(frame.get("RSI14", pd.Series(index=frame.index)), 50)
     distance = _number(frame.get("DistToLow52W", pd.Series(index=frame.index)))
     score = _number(frame.get("Score", pd.Series(index=frame.index)))
-    accumulation = _number(frame.get("AccumulationScore", pd.Series(index=frame.index)))
-    result = pd.Series("底部观察", index=frame.index)
-    result.loc[stage.eq("正在吸筹") | ((accumulation >= 15) & (score >= 40))] = (
-        "机构吸筹"
+    accumulation = _number(
+        frame.get("AccumulationScore", pd.Series(index=frame.index))
     )
+    result = pd.Series("底部观察", index=frame.index)
+    result.loc[
+        stage.eq("正在吸筹") | ((accumulation >= 15) & (score >= 40))
+    ] = "机构吸筹"
     result.loc[stage.eq("已经启动")] = "初始启动"
     result.loc[stage.eq("趋势确认")] = "趋势确认"
     result.loc[(rsi >= 68) & (distance >= 30)] = "主升浪"
@@ -698,7 +952,9 @@ def _status(
 ) -> str:
     if not active:
         return (
-            "FAILED" if previous is not None and _bool(previous["SignalActive"]) else ""
+            "FAILED"
+            if previous is not None and _bool(previous["SignalActive"])
+            else ""
         )
     if previous is None or not _bool(previous["SignalActive"]):
         return "NEW"
@@ -713,6 +969,7 @@ def _status(
 
 
 def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
+    """Track lifecycle/history only; ranking and tiers are finalized once below."""
     if frame.empty:
         return frame
     result = frame.copy()
@@ -740,12 +997,15 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
         "EntrySignal",
     ] = "HOLD_WAIT"
     result.loc[distribution & entry_signal.ne("AVOID"), "EntrySignal"] = "AVOID"
+
     active = _is_active(result)
     history = _load_history()
     history["Ticker"] = history["Ticker"].astype(str).str.strip().str.upper()
     history["TradeDate"] = history["TradeDate"].astype(str)
     trade_dates = (
-        result.get("DataAsOf", pd.Series("", index=result.index)).fillna("").astype(str)
+        result.get("DataAsOf", pd.Series("", index=result.index))
+        .fillna("")
+        .astype(str)
     )
     prior_history = history.copy()
     prior_history["_TradeDate"] = pd.to_datetime(
@@ -770,6 +1030,7 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
             previous_date_by_trade_date[pd.Timestamp(trade_date)] = pd.Timestamp(
                 historical_dates[position - 1]
             )
+
     signal_days: list[int] = []
     starts: list[str] = []
     statuses: list[str] = []
@@ -813,6 +1074,7 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
         )
         signal_days.append(days)
         starts.append(start)
+
     result["SignalDays"] = signal_days
     result["SignalStartDate"] = starts
     signal_start = pd.to_datetime(result["SignalStartDate"], errors="coerce")
@@ -820,82 +1082,14 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
     recency_days = (data_asof - signal_start).dt.days
     valid_recency = recency_days.notna() & recency_days.ge(0)
     result["SignalRecencyDays"] = recency_days.where(valid_recency)
-    prior_recency_factor = _number(
-        result.get("SignalRecencyFactor", pd.Series(np.nan, index=result.index)),
-        np.nan,
-    )
     result["SignalRecencyFactor"] = np.where(
         valid_recency,
         np.maximum(0.7, 1.0 - recency_days / 100.0),
         1.0,
     )
-    base_institutional = _number(
-        result.get("InstitutionalScore", result["Score"]), default=np.nan
-    )
-    base_institutional = base_institutional.where(
-        base_institutional.notna(), _number(result["Score"])
-    )
     result["BreakoutQualityFactor"] = _number(
         result.get("BreakoutQualityFactor", pd.Series(1.0, index=result.index)), 1.0
     ).clip(0.0, 1.0)
-    recency_multiplier = 0.8 + 0.2 * result["SignalRecencyFactor"]
-    # Historical calibration already writes a non-neutral recency factor into
-    # InstitutionalScore.  Preserve that result instead of applying the same
-    # penalty a second time when reports are regenerated.
-    already_adjusted = prior_recency_factor.notna() & prior_recency_factor.lt(0.9999)
-    result["InstitutionalScore"] = pd.Series(
-        np.where(
-            already_adjusted,
-            base_institutional,
-            base_institutional * recency_multiplier,
-        ),
-        index=result.index,
-    ).round(4)
-    volume_confirmed = _number(
-        result.get("VolumeScore", pd.Series(index=result.index))
-    ).ge(15.0) | result.get(
-        "VolAccum", pd.Series(False, index=result.index)
-    ).map(_bool)
-    result["InstitutionalTier"] = INSTITUTIONAL_TIER_WAIT_LABEL
-    result.loc[
-        result["InstitutionalScore"].ge(INSTITUTIONAL_TIER_C_SCORE),
-        "InstitutionalTier",
-    ] = "C级价值观察"
-    result.loc[
-        result["InstitutionalScore"].between(
-            INSTITUTIONAL_TIER_B_SCORE,
-            INSTITUTIONAL_TIER_A_SCORE,
-            inclusive="left",
-        ),
-        "InstitutionalTier",
-    ] = "B级观察"
-    result.loc[
-        result["InstitutionalScore"].gt(INSTITUTIONAL_TIER_A_SCORE)
-        & result["SignalRecencyDays"].le(20)
-        & volume_confirmed,
-        "InstitutionalTier",
-    ] = "A级机构启动"
-    quality_failed = (
-        ~result.get("IsETF", pd.Series(False, index=result.index)).map(_bool)
-        & result.get("QualityDataAvailable", pd.Series(False, index=result.index)).map(_bool)
-        & ~result.get("QualityGate", pd.Series(False, index=result.index)).map(_bool)
-    )
-    quality_tier_map = {
-        "A级机构启动": "B级观察",
-        "B级观察": "C级价值观察",
-        "C级价值观察": "C级价值观察",
-    }
-    result.loc[quality_failed, "InstitutionalTier"] = result.loc[
-        quality_failed, "InstitutionalTier"
-    ].map(quality_tier_map).fillna(INSTITUTIONAL_TIER_WAIT_LABEL)
-    value_trap_risk = _number(
-        result.get("ValueTrapRisk", pd.Series(0.0, index=result.index)), 0.0
-    )
-    result.loc[
-        ~result.get("IsETF", pd.Series(False, index=result.index)).map(_bool)
-        & value_trap_risk.ge(VALUE_TRAP_RISK_THRESHOLD),
-        "InstitutionalTier",
-    ] = INSTITUTIONAL_TIER_TRAP_LABEL
     result["SignalStatus"] = statuses
     result["SignalStrengthHistory"] = strengths
     result["SignalTrend"] = (
@@ -913,14 +1107,14 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
         .fillna("无信号")
     )
     result["ScoreConfidencePct"] = (
-        _number(result.get("ScoreConfidence", pd.Series(index=result.index)), 0.0) * 100
+        _number(
+            result.get("ScoreConfidence", pd.Series(index=result.index)), 0.0
+        )
+        * 100
     ).round(0)
-    # All exports, cache restores and GUI loads pass through the same final
-    # validation/ranking layer.  This keeps legacy pre-ranking fields from
-    # contradicting the actual trade readiness shown to the user.
-    # The lifecycle API is consumed by resume/cache code that expects row
-    # identity to stay aligned with the supplied frame.  Preserve that order
-    # while retaining the OverallRank produced by the final ranking pass.
+
+    # Keep row identity stable for resume/history consumers while allowing the
+    # single finalizer to calculate all mutable ranking/tier fields once.
     result["_LifecycleInputOrder"] = np.arange(len(result))
     result = finalize_signal_ranking(result)
     result = (
@@ -928,11 +1122,9 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
         .drop(columns="_LifecycleInputOrder")
         .reset_index(drop=True)
     )
+
     snapshot = pd.DataFrame(
         {
-            # finalize_signal_ranking may sort and reset the result index.  Use
-            # the date carried by the sorted result so history never pairs a
-            # ticker with another row's trade date.
             "TradeDate": _text_series(result, "DataAsOf", ""),
             "Return20D": _number(
                 result.get("Return20D", pd.Series(index=result.index)), np.nan
@@ -948,18 +1140,26 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
             ),
             "Ticker": result["Ticker"],
             "Name": result.get("Name", pd.Series("", index=result.index)),
-            "Close": _number(result.get("Close", pd.Series(index=result.index)), np.nan),
+            "Close": _number(
+                result.get("Close", pd.Series(index=result.index)), np.nan
+            ),
             "Score": _number(result["Score"]),
             "OpportunityScore": _number(result["OpportunityScore"]),
             "InstitutionalScore": _number(result["InstitutionalScore"], np.nan),
             "InstitutionalTier": result["InstitutionalTier"],
-            "BreakoutQualityFactor": _number(result["BreakoutQualityFactor"], np.nan),
+            "BreakoutQualityFactor": _number(
+                result["BreakoutQualityFactor"], np.nan
+            ),
             "SignalRecencyFactor": _number(result["SignalRecencyFactor"], np.nan),
             "SectorConfirmationFactor": _number(
-                result.get("SectorConfirmationFactor", pd.Series(index=result.index)), np.nan
+                result.get(
+                    "SectorConfirmationFactor", pd.Series(index=result.index)
+                ),
+                np.nan,
             ),
             "FailureSignalFactor": _number(
-                result.get("FailureSignalFactor", pd.Series(index=result.index)), np.nan
+                result.get("FailureSignalFactor", pd.Series(index=result.index)),
+                np.nan,
             ),
             "ScoreConfidence": _number(
                 result.get("ScoreConfidence", pd.Series(index=result.index))
@@ -976,7 +1176,9 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
                 result.get("AccumulationScore", pd.Series(index=result.index))
             ),
             "IndustryRelativeStrength": _number(
-                result.get("IndustryRelativeStrength", pd.Series(index=result.index))
+                result.get(
+                    "IndustryRelativeStrength", pd.Series(index=result.index)
+                )
             ),
             "SignalCount": _number(
                 result.get("SignalCount", pd.Series(index=result.index))
@@ -1000,11 +1202,13 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
             validate="one_to_one",
         )
     history = (
-        snapshot if history.empty else pd.concat([history, snapshot], ignore_index=True)
+        snapshot
+        if history.empty
+        else pd.concat([history, snapshot], ignore_index=True)
     )
-    history = history.drop_duplicates(["TradeDate", "Ticker"], keep="last").sort_values(
-        ["TradeDate", "Ticker"]
-    )
+    history = history.drop_duplicates(
+        ["TradeDate", "Ticker"], keep="last"
+    ).sort_values(["TradeDate", "Ticker"])
     _atomic_write(history[HISTORY_COLUMNS], HISTORY_FILE)
     active = _is_active(result)
     tracking = result.loc[active].sort_values(
