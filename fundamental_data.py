@@ -26,7 +26,7 @@ from config import (
     FUNDAMENTAL_DATA_PATH,
     FUNDAMENTAL_PROGRESS_HEARTBEAT_SECONDS,
 )
-from downloader import normalize_ticker
+from downloader import configure_akshare_proxy_from_system, normalize_ticker
 
 logger = logging.getLogger("institution_scanner.fundamental_data")
 
@@ -49,6 +49,7 @@ _batch_finance_cache: dict[str, dict[str, Any]] = {}
 _batch_holders_cache: dict[str, dict[str, Any]] = {}
 _batch_cache_lock = threading.Lock()
 _NETWORK_ENV_LOCK = threading.Lock()
+_AKSHARE_CALL_LOCK = threading.Lock()
 _CACHE_COMPLETENESS_THRESHOLD = 0.80
 _FUNDAMENTAL_CACHE_MAX_AGE_DAYS = 7
 _BATCH_FETCH_TIMEOUT_SECONDS = max(
@@ -175,21 +176,15 @@ def _institution_report_symbols(limit: int = 8) -> tuple[str, ...]:
 
 @contextmanager
 def _direct_network_environment():
-    """Scope proxy bypass to one AKShare call and always restore the environment."""
-    with _NETWORK_ENV_LOCK:
-        previous = {key: os.environ.get(key) for key in _PROXY_ENV_KEYS}
-        for key in _PROXY_ENV_KEYS:
-            os.environ.pop(key, None)
-        os.environ["NO_PROXY"] = "*"
-        os.environ["no_proxy"] = "*"
-        try:
-            yield
-        finally:
-            for key in _PROXY_ENV_KEYS:
-                os.environ.pop(key, None)
-            for key, value in previous.items():
-                if value is not None:
-                    os.environ[key] = value
+    """Compatibility wrapper that preserves proxy state for AkShare calls.
+
+    Older code cleared HTTP(S)_PROXY and set NO_PROXY=* here. Because os.environ
+    is process-global, a timed-out daemon request could leave every later AkShare
+    download forced to direct-connect. Keep the context manager API, but never
+    mutate proxy variables; instead mirror the active Windows/Clash system proxy.
+    """
+    configure_akshare_proxy_from_system()
+    yield
 
 
 def _run_akshare_dataframe(
@@ -199,11 +194,19 @@ def _run_akshare_dataframe(
     outcome: dict[str, Any] = {}
 
     def run() -> None:
+        # Do not stack provider threads when a previous AKShare call timed out
+        # but is still alive. This also prevents concurrent code from repeatedly
+        # reconfiguring process proxy state.
+        if not _AKSHARE_CALL_LOCK.acquire(blocking=False):
+            outcome["error"] = RuntimeError("previous AKShare request is still active")
+            return
         try:
             with _direct_network_environment():
                 outcome["frame"] = operation()
         except Exception as exc:
             outcome["error"] = exc
+        finally:
+            _AKSHARE_CALL_LOCK.release()
 
     worker = threading.Thread(target=run, name=f"akshare-{label}", daemon=True)
     worker.start()
