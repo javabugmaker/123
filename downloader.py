@@ -48,7 +48,12 @@ from config import (
     setup_logging,
 )
 
-logger = setup_logging("institution_scanner.downloader", level=logging.DEBUG, log_to_file=True, log_dir=LOG_DIR)
+logger = setup_logging(
+    "institution_scanner.downloader",
+    level=logging.DEBUG,
+    log_to_file=True,
+    log_dir=LOG_DIR,
+)
 
 
 class DownloadError(RuntimeError):
@@ -87,7 +92,6 @@ _HTTP = requests.Session()
 _HTTP.trust_env = False  # 绕过系统代理，避免代理拦截东方财富 API 请求
 _HTTP.headers.update({"User-Agent": "Mozilla/5.0"})
 
-# 使用带重试机制的 HTTPAdapter，自动处理网络波动导致的连接失败
 _retry_adapter = HTTPAdapter(
     pool_connections=max(16, DOWNLOAD_THREADS * 2),
     pool_maxsize=max(16, DOWNLOAD_THREADS * 2),
@@ -109,22 +113,20 @@ _UNIVERSE_CACHE_PATH = CACHE_DIR / "_a_share_universe.json"
 _ETF_UNIVERSE_CACHE_PATH = CACHE_DIR / "_a_share_etf_universe.json"
 _DOWNLOAD_RATE_LOCK = threading.Lock()
 _LAST_DOWNLOAD_AT = 0.0
+_PRICE_CACHE_SCHEMA_VERSION = "v2-provider-consistent"
 
-# 主机级断路器：连续失败超过阈值后临时跳过该主机
 _HOST_FAILURE_COUNTER: dict[str, int] = {}
 _HOST_FAILURE_LOCK = threading.Lock()
-_HOST_CIRCUIT_BREAKER_THRESHOLD = 5  # 连续失败 N 次后熔断
-_HOST_CIRCUIT_BREAKER_RESET_SECONDS = 60  # 熔断后等待 N 秒再尝试
+_HOST_CIRCUIT_BREAKER_THRESHOLD = 5
+_HOST_CIRCUIT_BREAKER_RESET_SECONDS = 60
 _HOST_CIRCUIT_OPEN_UNTIL: dict[str, float] = {}
 
 
 def _is_host_available(host: str) -> bool:
-    """检查主机是否可用（未被断路器熔断）。"""
     with _HOST_FAILURE_LOCK:
         open_until = _HOST_CIRCUIT_OPEN_UNTIL.get(host, 0.0)
         if open_until > time.monotonic():
             return False
-        # 熔断时间已过，重置计数器
         if open_until > 0:
             _HOST_FAILURE_COUNTER.pop(host, None)
             _HOST_CIRCUIT_OPEN_UNTIL.pop(host, None)
@@ -132,17 +134,21 @@ def _is_host_available(host: str) -> bool:
 
 
 def _record_host_failure(host: str) -> None:
-    """记录主机失败，触发熔断条件。"""
     with _HOST_FAILURE_LOCK:
         count = _HOST_FAILURE_COUNTER.get(host, 0) + 1
         _HOST_FAILURE_COUNTER[host] = count
         if count >= _HOST_CIRCUIT_BREAKER_THRESHOLD:
-            _HOST_CIRCUIT_OPEN_UNTIL[host] = time.monotonic() + _HOST_CIRCUIT_BREAKER_RESET_SECONDS
-            logger.warning("主机 %s 已触发断路器，暂停 %ds", host, _HOST_CIRCUIT_BREAKER_RESET_SECONDS)
+            _HOST_CIRCUIT_OPEN_UNTIL[host] = (
+                time.monotonic() + _HOST_CIRCUIT_BREAKER_RESET_SECONDS
+            )
+            logger.warning(
+                "主机 %s 已触发断路器，暂停 %ds",
+                host,
+                _HOST_CIRCUIT_BREAKER_RESET_SECONDS,
+            )
 
 
 def _record_host_success(host: str) -> None:
-    """主机请求成功，重置失败计数器。"""
     with _HOST_FAILURE_LOCK:
         _HOST_FAILURE_COUNTER.pop(host, None)
 
@@ -160,26 +166,14 @@ def _wait_for_download_slot() -> None:
 def _eastmoney_get(
     path: str, params: dict[str, Any], history: bool = False
 ) -> requests.Response:
-    """
-    向东方财富 API 发送 GET 请求，带增强的网络波动处理。
-
-    增强点：
-    - 区分 ConnectionError（网络不通）与 Timeout（超时），分别处理
-    - 连接错误时立即切换 host，不做无效重试
-    - 超时错误时递增 backoff
-    - 主机级断路器：连续失败 N 次后临时跳过该主机 60 秒
-    - 捕获更细粒度的异常类型
-    """
     hosts = _EASTMONEY_HISTORY_HOSTS if history else _EASTMONEY_HOSTS
     last_error: Exception | None = None
     headers = {"Referer": "https://quote.eastmoney.com/"}
     for attempt in range(DOWNLOAD_RETRIES + 1):
         for host in hosts:
-            # 断路器检查：跳过已被熔断的主机
             if not _is_host_available(host):
                 logger.debug("主机 %s 已被断路器熔断，跳过", host)
                 continue
-
             try:
                 response = _HTTP.get(
                     f"https://{host}{path}",
@@ -190,53 +184,55 @@ def _eastmoney_get(
                     ),
                 )
                 response.raise_for_status()
-                # 请求成功，重置该主机的失败计数器
                 _record_host_success(host)
                 return response
             except requests.ConnectionError as exc:
-                # 网络不通（DNS 解析失败、连接被拒绝等）— 立即切换 host，不等待
                 last_error = exc
                 _record_host_failure(host)
                 logger.debug(
-                    "连接失败 %s (attempt %d/%d): %s", host, attempt + 1, DOWNLOAD_RETRIES + 1, exc
+                    "连接失败 %s (attempt %d/%d): %s",
+                    host,
+                    attempt + 1,
+                    DOWNLOAD_RETRIES + 1,
+                    exc,
                 )
-                continue
             except requests.Timeout as exc:
-                # 超时 — 递增 backoff
                 last_error = exc
                 _record_host_failure(host)
                 delay = 3 * (attempt + 1)
                 logger.debug(
                     "超时 %s (attempt %d/%d): 等待 %ds 后重试...",
-                    host, attempt + 1, DOWNLOAD_RETRIES + 1, delay,
+                    host,
+                    attempt + 1,
+                    DOWNLOAD_RETRIES + 1,
+                    delay,
                 )
                 time.sleep(delay)
-                continue
             except requests.RequestException as exc:
                 last_error = exc
                 _record_host_failure(host)
                 logger.debug(
-                    "HTTP 错误 %s (attempt %d/%d): %s", host, attempt + 1, DOWNLOAD_RETRIES + 1, exc
+                    "HTTP 错误 %s (attempt %d/%d): %s",
+                    host,
+                    attempt + 1,
+                    DOWNLOAD_RETRIES + 1,
+                    exc,
                 )
-                continue
         if attempt < DOWNLOAD_RETRIES:
             wait_time = 2 ** (attempt + 1)
-            logger.debug("所有 host 尝试失败，等待 %ds 后进入第 %d 轮重试...", wait_time, attempt + 2)
+            logger.debug(
+                "所有 host 尝试失败，等待 %ds 后进入第 %d 轮重试...",
+                wait_time,
+                attempt + 2,
+            )
             time.sleep(wait_time)
     raise DownloadError(
         f"东方财富接口连接失败 (已重试 {DOWNLOAD_RETRIES + 1} 轮): {last_error}"
     ) from last_error
 
 
-# ---------------------------------------------------------------------------
-# Data containers
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class TickerInfo:
-    """Minimal metadata for a single ticker."""
-
     ticker: str
     name: str = ""
     exchange: str = ""
@@ -253,7 +249,12 @@ def normalize_ticker(ticker: str) -> str:
         return normalized
     if len(normalized) != 6 or not normalized.isdigit():
         return normalized
-    suffix = "SH" if normalized.startswith(("5", "6", "688")) else "SZ"
+    if normalized.startswith(("4", "8", "92")):
+        suffix = "BJ"
+    elif normalized.startswith(("5", "6")):
+        suffix = "SH"
+    else:
+        suffix = "SZ"
     return f"{normalized}.{suffix}"
 
 
@@ -267,12 +268,6 @@ def _is_excluded_security_name(name: str) -> bool:
     return any(keyword.upper() in normalized for keyword in EXCLUDED_SECURITY_KEYWORDS)
 
 
-# ---------------------------------------------------------------------------
-# Ticker universe builders
-# ---------------------------------------------------------------------------
-
-# A-share universe: a curated, free list of major Chinese stocks and ETFs.
-# This preserves the scanner's logic while switching the market focus to A-shares.
 _STATIC_A_STOCKS: list[tuple[str, str, str, str]] = [
     ("000001.SZ", "平安银行", "金融", "银行"),
     ("000002.SZ", "万科A", "地产", "房地产"),
@@ -318,40 +313,16 @@ _STATIC_A_ETFS: list[tuple[str, str]] = [
     ("159997.SZ", "芯片ETF"),
 ]
 
-# ---- Ticker validation (no regex — simple rules) ----
-
-_INVALID_SUFFIXES: set[str] = {
-    "W",
-    "R",
-    "P",
-    "Z",  # warrants, rights, preferred, misc
-}
+_INVALID_SUFFIXES: set[str] = {"W", "R", "P", "Z"}
 _INVALID_CHARS: set[str] = {"=", "$", "^", ".", "+", "-"}
-
-_REJECTED_EXCHANGES: set[str] = {
-    "OTC",
-    "OTC BB",
-    "OTCQB",
-    "PINX",
-    "GREY",
-}
+_REJECTED_EXCHANGES: set[str] = {"OTC", "OTC BB", "OTCQB", "PINX", "GREY"}
 
 
 def _is_viable_ticker(symbol: str, exchange: str = "") -> bool:
-    """Return True if the ticker looks like a vanilla common stock / ETF.
-
-    Rejects anything with:
-    - Special chars: = $ ^ . + -   (AAC=, ALUB+, BRK.B)
-    - Length > 5                       (ESLAW, FACWW, FBYDP — warrants/SPACs)
-    - Trailing W/R/P/Z                 (warrants, rights, preferred)
-      *unless* the whole symbol is ≤3 chars (e.g. CAT — legit names)
-    - OTC / Pink Sheets exchanges
-    """
     if not symbol or len(symbol) > 5:
         return False
-    for ch in symbol:
-        if ch in _INVALID_CHARS:
-            return False
+    if any(ch in _INVALID_CHARS for ch in symbol):
+        return False
     if len(symbol) >= 4 and symbol[-1].upper() in _INVALID_SUFFIXES:
         return False
     return not (exchange and exchange.upper() in _REJECTED_EXCHANGES)
@@ -365,7 +336,6 @@ def _is_rejected_stock_name(name: str) -> bool:
 def _load_universe_cache(
     path: Path, require_fresh: bool = True
 ) -> list[dict[str, Any]]:
-    """Load a saved security universe, optionally requiring a recent snapshot."""
     try:
         if not path.exists():
             return []
@@ -379,7 +349,6 @@ def _load_universe_cache(
 
 
 def _save_universe_cache(path: Path, rows: list[dict[str, Any]]) -> None:
-    """Persist a universe snapshot without leaving a partial cache behind."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", dir=path.parent, delete=False
@@ -394,7 +363,6 @@ def _save_universe_cache(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def _fetch_a_share_stocks() -> list[TickerInfo]:
-    """Fetch the complete Shanghai, Shenzhen and Beijing A-share universe."""
     params = {
         "pn": 1,
         "pz": 100,
@@ -449,7 +417,11 @@ def _fetch_a_share_stocks() -> list[TickerInfo]:
         if _is_rejected_stock_name(name):
             continue
         suffix = (
-            "SH" if market == 1 else "BJ" if code.startswith(("4", "8", "92")) else "SZ"
+            "SH"
+            if market == 1
+            else "BJ"
+            if code.startswith(("4", "8", "92"))
+            else "SZ"
         )
         market_cap = row.get("f20")
         tickers.append(
@@ -460,9 +432,11 @@ def _fetch_a_share_stocks() -> list[TickerInfo]:
                 sector=str(row.get("f102") or ""),
                 industry=str(row.get("f100") or ""),
                 asset_type="stock",
-                market_cap=float(market_cap)
-                if isinstance(market_cap, (int, float)) and market_cap > 0
-                else None,
+                market_cap=(
+                    float(market_cap)
+                    if isinstance(market_cap, (int, float)) and market_cap > 0
+                    else None
+                ),
             )
         )
     if len(tickers) < 4000:
@@ -472,7 +446,6 @@ def _fetch_a_share_stocks() -> list[TickerInfo]:
 
 
 def _fetch_a_share_etfs() -> list[TickerInfo]:
-    """Fetch listed Shanghai and Shenzhen ETFs from Eastmoney."""
     params = {
         "pn": 1,
         "pz": 100,
@@ -542,9 +515,11 @@ def _fetch_a_share_etfs() -> list[TickerInfo]:
                 exchange={"SH": "SSE", "SZ": "SZSE"}[suffix],
                 is_etf=True,
                 asset_type="etf",
-                market_cap=float(row["f20"])
-                if isinstance(row.get("f20"), (int, float)) and row["f20"] > 0
-                else None,
+                market_cap=(
+                    float(row["f20"])
+                    if isinstance(row.get("f20"), (int, float)) and row["f20"] > 0
+                    else None
+                ),
             )
         )
     unique = {item.ticker: item for item in etfs}
@@ -557,13 +532,6 @@ def build_ticker_universe(
     include_stocks: bool = True,
     include_etfs: bool = True,
 ) -> tuple[list[TickerInfo], list[TickerInfo]]:
-    """
-    Build the complete ticker universe.
-
-    Returns:
-        (stocks, etfs) — two lists of TickerInfo.
-        Each ticker is deduplicated by symbol.
-    """
     stocks: dict[str, TickerInfo] = {}
     etfs: dict[str, TickerInfo] = {}
 
@@ -582,7 +550,6 @@ def build_ticker_universe(
 
     stock_list = sorted(stocks.values(), key=lambda x: x.ticker)
     etf_list = sorted(etfs.values(), key=lambda x: x.ticker)
-
     logger.info(
         "Universe built: %d stocks, %d ETFs",
         len(stock_list),
@@ -591,15 +558,11 @@ def build_ticker_universe(
     return stock_list, etf_list
 
 
-# ---------------------------------------------------------------------------
-# Data cache helpers
-# ---------------------------------------------------------------------------
-
-
 def _safe_cache_stem(ticker: str, source: str | None = None) -> str:
     value = str(ticker).strip()
     if source:
-        value = f"{value}__{normalize_data_source(source)}"
+        normalized_source = normalize_data_source(source)
+        value = f"{value}__{normalized_source}__{_PRICE_CACHE_SCHEMA_VERSION}"
     safe = re.sub(r'[<>:"/\\\\|?*\x00-\x1f]', "_", value).rstrip(" .")
     if not safe:
         safe = "ticker"
@@ -609,7 +572,6 @@ def _safe_cache_stem(ticker: str, source: str | None = None) -> str:
 
 
 def _cache_path(ticker: str, source: str | None = None) -> Path:
-    """File path for a ticker's cached Parquet data."""
     return CACHE_DIR / f"{_safe_cache_stem(ticker, source)}.parquet"
 
 
@@ -638,7 +600,6 @@ def _is_a_share_market_closed(now: datetime | None = None) -> bool:
 
 
 def _latest_completed_trading_day(now: datetime | None = None) -> date:
-    """Return the most recent trading date whose daily bar should be complete."""
     current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
     candidate = current.date()
     if current.weekday() < 5 and current.hour * 60 + current.minute >= 15 * 60:
@@ -651,7 +612,6 @@ def _latest_completed_trading_day(now: datetime | None = None) -> date:
 def _cache_has_completed_daily_bar(
     df: pd.DataFrame, now: datetime | None = None
 ) -> bool:
-    """Whether a cache already covers the latest completed trading session."""
     if df is None or df.empty:
         return False
     index = pd.DatetimeIndex(df.index).dropna()
@@ -702,7 +662,6 @@ def _validate_ohlcv(df: pd.DataFrame) -> pd.DataFrame | None:
 
 
 def _load_cache(ticker: str, source: str | None = None) -> pd.DataFrame | None:
-    """Load a validated cached OHLCV frame for a ticker."""
     parquet_path = _cache_path(ticker, source)
     csv_path = _legacy_cache_path(ticker, source)
     readers = (
@@ -723,13 +682,14 @@ def _load_cache(ticker: str, source: str | None = None) -> pd.DataFrame | None:
             pd.errors.ParserError,
         ):
             logger.warning(
-                "Corrupted cache for %s at %s — trying next format.", ticker, path.name
+                "Corrupted cache for %s at %s — trying next format.",
+                ticker,
+                path.name,
             )
     return None
 
 
 def _save_cache(ticker: str, df: pd.DataFrame, source: str | None = None) -> None:
-    """Persist OHLCV data to Parquet."""
     path = _cache_path(ticker, source)
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -744,23 +704,15 @@ def _save_cache(ticker: str, df: pd.DataFrame, source: str | None = None) -> Non
             temporary.unlink()
 
 
-# ---------------------------------------------------------------------------
-# Metadata cache (market cap, etc.)
-# ---------------------------------------------------------------------------
-
-
 def _meta_path(ticker: str) -> Path:
-    """File path for a ticker's cached metadata JSON."""
     return CACHE_DIR / f"{_safe_cache_stem(ticker)}.json"
 
 
 def _save_meta(ticker: str, data: dict) -> None:
-    """Persist metadata (marketCap, etc.) to JSON."""
     _meta_path(ticker).write_text(json.dumps(data, default=str))
 
 
 def _load_meta(ticker: str) -> dict | None:
-    """Load cached metadata, or None."""
     path = _meta_path(ticker)
     if not path.exists():
         return None
@@ -771,11 +723,6 @@ def _load_meta(ticker: str) -> dict | None:
 
 
 def _fetch_market_cap(ticker: str) -> float | None:
-    """
-    Fetch market cap from Eastmoney for a single ticker.
-
-    Returns a float in CNY or None on failure.
-    """
     ticker = normalize_ticker(ticker)
     try:
         code, suffix = ticker.upper().split(".", 1)
@@ -794,12 +741,6 @@ def _fetch_market_cap(ticker: str) -> float | None:
 
 
 def get_market_cap(ticker: str) -> float | None:
-    """
-    Return the cached market cap for *ticker*.
-
-    If no cached metadata exists, attempts a live fetch from Eastmoney,
-    caches the result, and returns it.  Returns None when unavailable.
-    """
     meta = _load_meta(ticker)
     if meta and "marketCap" in meta:
         try:
@@ -812,7 +753,6 @@ def get_market_cap(ticker: str) -> float | None:
         except (TypeError, ValueError):
             pass
 
-    # Try live fetch
     mc = _fetch_market_cap(ticker)
     if mc is not None:
         _save_meta(
@@ -820,7 +760,6 @@ def get_market_cap(ticker: str) -> float | None:
             {"marketCap": mc, "fetchedAt": datetime.now(timezone.utc).isoformat()},
         )
         return mc
-
     return None
 
 
@@ -838,8 +777,7 @@ def _download_from_sina(
         timeout=DOWNLOAD_TIMEOUT,
     )
     response.raise_for_status()
-    text = response.text
-    match = re.search(r"var _data=\((\[.*?\])\);", text, re.DOTALL)
+    match = re.search(r"var _data=\((\[.*?\])\);", response.text, re.DOTALL)
     if not match:
         return None
     rows = json.loads(match.group(1))
@@ -859,7 +797,8 @@ def _download_from_sina(
     for column in ("Open", "High", "Low", "Close", "Volume"):
         df[column] = pd.to_numeric(df[column], errors="coerce")
     df = cast(
-        pd.DataFrame, df.set_index("Date")[["Open", "High", "Low", "Close", "Volume"]]
+        pd.DataFrame,
+        df.set_index("Date")[["Open", "High", "Low", "Close", "Volume"]],
     )
     df = _drop_missing_close(df).sort_index()
     return (
@@ -882,7 +821,9 @@ def _download_from_tencent(
         response = _HTTP.get(
             "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
             params={
-                "param": f"{symbol},day,{start_limit:%Y-%m-%d},{end_date:%Y-%m-%d},640,qfq",
+                "param": (
+                    f"{symbol},day,{start_limit:%Y-%m-%d},{end_date:%Y-%m-%d},640,qfq"
+                ),
             },
             headers={"Referer": "https://gu.qq.com/"},
             timeout=DOWNLOAD_TIMEOUT,
@@ -910,7 +851,8 @@ def _download_from_tencent(
     for column in ("Open", "High", "Low", "Close", "Volume"):
         df[column] = pd.to_numeric(df[column], errors="coerce")
     df = cast(
-        pd.DataFrame, df.set_index("Date")[["Open", "High", "Low", "Close", "Volume"]]
+        pd.DataFrame,
+        df.set_index("Date")[["Open", "High", "Low", "Close", "Volume"]],
     )
     return cast(
         pd.DataFrame,
@@ -921,12 +863,11 @@ def _download_from_tencent(
 def _download_from_akshare(
     ticker: str, start_date: datetime | None = None
 ) -> pd.DataFrame | None:
-    """Download adjusted A-share or exchange-traded fund history via AkShare."""
     if ak is None:
         logger.debug("AkShare is not installed; skipping %s.", ticker)
         return None
     ticker = normalize_ticker(ticker)
-    code, suffix = ticker.split(".", 1)
+    code, _suffix = ticker.split(".", 1)
     end_date = datetime.now(timezone.utc).replace(tzinfo=None)
     request_start = start_date or end_date - timedelta(days=HISTORY_YEARS * 365 + 30)
     try:
@@ -947,7 +888,7 @@ def _download_from_akshare(
                 adjust="qfq",
                 timeout=DOWNLOAD_TIMEOUT,
             )
-    except Exception as exc:  # Third-party providers raise several transport-specific errors.
+    except Exception as exc:  # Provider raises several transport-specific errors.
         logger.debug("AkShare failed for %s: %s", ticker, exc)
         return None
     if not isinstance(frame, pd.DataFrame) or frame.empty:
@@ -999,8 +940,9 @@ def _fetch_eastmoney_realtime_price(ticker: str) -> float | None:
     return None
 
 
-def _fetch_eastmoney_realtime_prices(tickers: list[str] | set[str]) -> dict[str, float]:
-    """Fetch current prices for many symbols with a few paginated requests."""
+def _fetch_eastmoney_realtime_prices(
+    tickers: list[str] | set[str],
+) -> dict[str, float]:
     requested = {normalize_ticker(ticker) for ticker in tickers if ticker}
     if not requested:
         return {}
@@ -1048,7 +990,11 @@ def _fetch_eastmoney_realtime_prices(tickers: list[str] | set[str]) -> dict[str,
             except (TypeError, ValueError):
                 continue
             suffix = (
-                "SH" if market == 1 else "BJ" if code.startswith(("4", "8", "92")) else "SZ"
+                "SH"
+                if market == 1
+                else "BJ"
+                if code.startswith(("4", "8", "92"))
+                else "SZ"
             )
             ticker = f"{code}.{suffix}"
             if ticker not in group_tickers:
@@ -1064,10 +1010,6 @@ def _fetch_eastmoney_realtime_prices(tickers: list[str] | set[str]) -> dict[str,
 def _download_from_eastmoney(
     ticker: str, start_date: datetime | None = None
 ) -> pd.DataFrame | None:
-    """
-    Download full history for *ticker* from Eastmoney.
-    Returns a DataFrame or None on failure.
-    """
     attempts = DOWNLOAD_RETRIES + 1
     for attempt in range(1, attempts + 1):
         try:
@@ -1097,7 +1039,10 @@ def _download_from_eastmoney(
             records = [line.split(",")[:6] for line in klines]
             df = pd.DataFrame(
                 records,
-                columns=cast(Any, ["Date", "Open", "Close", "High", "Low", "Volume"]),
+                columns=cast(
+                    Any,
+                    ["Date", "Open", "Close", "High", "Low", "Volume"],
+                ),
             )
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
             for column in ("Open", "High", "Low", "Close", "Volume"):
@@ -1107,15 +1052,12 @@ def _download_from_eastmoney(
                 df.set_index("Date")[["Open", "High", "Low", "Close", "Volume"]],
             )
             df = _drop_missing_close(df)
-            if df.empty:
-                return None
-            return df
+            return df if not df.empty else None
         except (DownloadError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             msg = str(exc).lower()
-            # 404 / delisted / timeout / curl errors — skip instantly
             if any(
-                kw in msg
-                for kw in (
+                keyword in msg
+                for keyword in (
                     "404",
                     "not found",
                     "delisted",
@@ -1128,9 +1070,8 @@ def _download_from_eastmoney(
                 )
             ):
                 return None
-            # 401 / 429 rate limits — back off harder
             if "401" in msg or "429" in msg or "rate limit" in msg:
-                delay = 5 + (attempt * 5)
+                delay = 5 + attempt * 5
                 logger.debug(
                     "Rate-limited on %s (attempt %d/%d), backing off %ds...",
                     ticker,
@@ -1141,7 +1082,11 @@ def _download_from_eastmoney(
                 time.sleep(delay)
                 continue
             logger.debug(
-                "Attempt %d/%d failed for %s: %s", attempt, attempts, ticker, exc
+                "Attempt %d/%d failed for %s: %s",
+                attempt,
+                attempts,
+                ticker,
+                exc,
             )
             if attempt < attempts:
                 time.sleep(2**attempt)
@@ -1156,20 +1101,17 @@ _DATA_SOURCE_LABELS = {
     "tencent": "腾讯",
 }
 
-# Keep provider selection and fallback order in one place so the CLI, cache,
-# and download paths share identical semantics.  Sina and Tencent are
-# preferred as primary sources since they are more reliably accessible from
-# outside mainland China; AkShare/Eastmoney serve as fallbacks.
+# Explicit providers are strict: a cache selected as Eastmoney/Sina/etc. must
+# not silently contain another provider's adjustment history. Automatic mode
+# only considers providers whose adapters request explicit qfq daily history.
 _DATA_SOURCE_CANDIDATES = {
-    "auto": ("sina", "tencent", "akshare", "eastmoney"),
-    "akshare": ("akshare", "sina", "tencent", "eastmoney"),
-    "eastmoney": ("eastmoney", "sina", "tencent", "akshare"),
-    "sina": ("sina", "tencent", "akshare", "eastmoney"),
-    "tencent": ("tencent", "sina", "akshare", "eastmoney"),
+    "auto": ("tencent", "akshare", "eastmoney"),
+    "akshare": ("akshare",),
+    "eastmoney": ("eastmoney",),
+    "sina": ("sina",),
+    "tencent": ("tencent",),
 }
 
-# Some upstream adapters are less tolerant of a wide concurrent fan-out.
-# DOWNLOAD_THREADS remains the global ceiling configured by the user.
 _SOURCE_DOWNLOAD_WORKER_CAPS = {
     "auto": 4,
     "akshare": 4,
@@ -1190,7 +1132,6 @@ def get_data_source_label(source: str) -> str:
 
 
 def _download_worker_count(source: str, total: int) -> int:
-    """Return a safe, source-aware worker count for a batch download."""
     if total <= 0:
         return 0
     selected = normalize_data_source(source)
@@ -1199,11 +1140,12 @@ def _download_worker_count(source: str, total: int) -> int:
     return min(total, configured, source_cap)
 
 
-def _download_single(
+def _download_single_with_source(
     ticker: str,
     source: str = "eastmoney",
     start_date: datetime | None = None,
-) -> pd.DataFrame | None:
+) -> tuple[pd.DataFrame | None, str | None]:
+    """Download one coherent history and return the provider that produced it."""
     ticker = normalize_ticker(ticker)
     selected = normalize_data_source(source)
     loaders = {
@@ -1215,7 +1157,6 @@ def _download_single(
     for candidate in _DATA_SOURCE_CANDIDATES[selected]:
         loader = loaders[candidate]
         try:
-            # 仅在真正请求数据源时限流；命中本地缓存的扫描无需排队等待。
             _wait_for_download_slot()
             frame = loader(ticker, start_date=start_date)
         except _DOWNLOAD_ERRORS as exc:
@@ -1233,15 +1174,60 @@ def _download_single(
                     get_data_source_label(candidate),
                     ticker,
                 )
-            elif candidate != selected:
-                logger.debug(
-                    "%s未返回 %s 的数据，已回退至%s并获取成功。",
-                    get_data_source_label(selected),
-                    ticker,
-                    get_data_source_label(candidate),
-                )
-            return frame
-    return None
+            return frame, candidate
+    return None, None
+
+
+def _download_single(
+    ticker: str,
+    source: str = "eastmoney",
+    start_date: datetime | None = None,
+) -> pd.DataFrame | None:
+    frame, _actual_source = _download_single_with_source(
+        ticker,
+        source=source,
+        start_date=start_date,
+    )
+    return frame
+
+
+def _price_source_meta_path(ticker: str, selected_source: str) -> Path:
+    return CACHE_DIR / f"{_safe_cache_stem(ticker, selected_source)}.source.json"
+
+
+def _save_price_source_meta(
+    ticker: str, selected_source: str, actual_source: str
+) -> None:
+    path = _price_source_meta_path(ticker, selected_source)
+    payload = {
+        "selected_source": normalize_data_source(selected_source),
+        "actual_source": normalize_data_source(actual_source),
+        "cache_schema": _PRICE_CACHE_SCHEMA_VERSION,
+        "updated": datetime.now(timezone.utc).isoformat(),
+    }
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _load_price_source_meta(ticker: str, selected_source: str) -> dict[str, str]:
+    path = _price_source_meta_path(ticker, selected_source)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        return {}
+    if payload.get("cache_schema") != _PRICE_CACHE_SCHEMA_VERSION:
+        return {}
+    actual = str(payload.get("actual_source", "")).strip().lower()
+    if actual not in _DATA_SOURCE_LABELS or actual == "auto":
+        return {}
+    return {"actual_source": actual}
 
 
 def download_ticker(
@@ -1250,24 +1236,36 @@ def download_ticker(
     source: str = "eastmoney",
     cache_first: bool = False,
 ) -> pd.DataFrame | None:
+    """Return a provider-consistent OHLCV history for one ticker.
+
+    Explicit providers never silently fall back. ``auto`` records the actual
+    provider used for a cache and keeps incremental updates on that provider.
+    If that provider becomes unavailable, the history is rebuilt in full from
+    one alternative provider instead of concatenating incompatible histories.
     """
-    Get OHLCV data for *ticker*.
-    - If cached data exists, refresh its latest daily bar and append new rows.
-    - If *force* is True, re-download everything.
-    """
+    ticker = normalize_ticker(ticker)
     selected = normalize_data_source(source)
+
+    def persist(
+        frame: pd.DataFrame | None, actual_source: str | None
+    ) -> pd.DataFrame | None:
+        if frame is None or frame.empty or actual_source is None:
+            return frame
+        validated = _validate_ohlcv(frame)
+        if validated is None:
+            return None
+        _save_cache(ticker, validated, selected)
+        _save_price_source_meta(ticker, selected, actual_source)
+        return validated
+
     if force:
-        df = _download_single(ticker, selected)
-        if df is not None:
-            _save_cache(ticker, df, selected)
-        return df
+        frame, actual_source = _download_single_with_source(ticker, selected)
+        return persist(frame, actual_source)
 
     cached = _load_cache(ticker, selected)
     if cached is None:
-        df = _download_single(ticker, selected)
-        if df is not None:
-            _save_cache(ticker, df, selected)
-        return df
+        frame, actual_source = _download_single_with_source(ticker, selected)
+        return persist(frame, actual_source)
 
     if cache_first or _cache_has_completed_daily_bar(cached):
         return cached
@@ -1280,42 +1278,41 @@ def download_ticker(
     if last_date.tzinfo is not None:
         last_date = last_date.replace(tzinfo=None)
 
-    try:
-        request_start = last_date - timedelta(days=7)
-        full_df = _download_single(ticker, selected, start_date=request_start)
-        new_df = (
-            full_df.loc[full_df.index >= pd.Timestamp(last_date)]
-            if full_df is not None
-            else None
-        )
-        if new_df is not None and not new_df.empty:
-            new_df = new_df.rename(
-                columns={
-                    "Open": "Open",
-                    "High": "High",
-                    "Low": "Low",
-                    "Close": "Close",
-                    "Volume": "Volume",
-                }
+    metadata = _load_price_source_meta(ticker, selected)
+    actual_source = metadata.get("actual_source")
+    if selected != "auto":
+        actual_source = selected
+
+    request_start = last_date - timedelta(days=7)
+    if actual_source:
+        try:
+            incremental, provider = _download_single_with_source(
+                ticker,
+                actual_source,
+                start_date=request_start,
             )
-            new_df = new_df[["Open", "High", "Low", "Close", "Volume"]]
-            new_df = new_df.dropna(subset=["Close"])
-            idx = pd.DatetimeIndex(new_df.index)
-            if idx.tz is not None:
-                idx = idx.tz_localize(None)
-            new_df.index = idx
+        except _DOWNLOAD_ERRORS as exc:
+            logger.debug("Incremental update failed for %s: %s", ticker, exc)
+            incremental, provider = None, None
+        if (
+            incremental is not None
+            and not incremental.empty
+            and provider == actual_source
+        ):
+            new_df = incremental.loc[incremental.index >= pd.Timestamp(last_date)]
             if not new_df.empty:
                 combined = cast(pd.DataFrame, pd.concat([cached, new_df]))
                 combined = combined.loc[~combined.index.duplicated(keep="last")]
                 combined = combined.sort_index()
-                if combined.equals(cached):
-                    return cached
-                _save_cache(ticker, combined, selected)
-                return combined
-    except (OSError, ValueError, TypeError, KeyError, pd.errors.InvalidIndexError) as exc:
-        logger.debug(
-            "Incremental update failed for %s: %s — using cache as-is.", ticker, exc
-        )
+                validated = _validate_ohlcv(combined)
+                if validated is not None and not validated.equals(cached):
+                    return persist(validated, actual_source)
+            return cached
+
+    if selected == "auto":
+        rebuilt, provider = _download_single_with_source(ticker, selected)
+        if rebuilt is not None and not rebuilt.empty and provider is not None:
+            return persist(rebuilt, provider)
 
     return cached
 
@@ -1328,27 +1325,14 @@ def download_batch(
     cache_first: bool = False,
     skip_tickers: set[str] | None = None,
 ) -> dict[str, pd.DataFrame]:
-    """
-    Download data for a list of tickers using ThreadPoolExecutor.
-
-    A bounded queue keeps memory stable while workers pull continuously.
-    The active source determines a conservative concurrency ceiling.
-
-    Args:
-        tickers: List of TickerInfo.
-        desc: Progress bar label.
-        force: If True, ignore cache and re-download everything.
-
-    Returns:
-        {ticker: DataFrame} mapping (only successful downloads).
-    """
     results: dict[str, pd.DataFrame] = {}
     skip_tickers = {normalize_ticker(ticker) for ticker in (skip_tickers or set())}
     symbols = list(
         dict.fromkeys(
             normalize_ticker(t.ticker)
             for t in tickers
-            if t.ticker and t.ticker.strip()
+            if t.ticker
+            and t.ticker.strip()
             and normalize_ticker(t.ticker) not in skip_tickers
         )
     )
@@ -1370,12 +1354,20 @@ def download_batch(
     elif worker_count <= 1:
         _log_download_progress(0, total, 0, 0)
         for completed, sym in enumerate(
-            tqdm(symbols, desc=desc, unit="ticker", disable=not sys.stderr.isatty()),
+            tqdm(
+                symbols,
+                desc=desc,
+                unit="ticker",
+                disable=not sys.stderr.isatty(),
+            ),
             start=1,
         ):
             try:
                 df = download_ticker(
-                    sym, force=force, source=selected_source, cache_first=cache_first
+                    sym,
+                    force=force,
+                    source=selected_source,
+                    cache_first=cache_first,
                 )
                 if df is not None and not df.empty:
                     results[sym] = df
@@ -1440,7 +1432,10 @@ def download_batch(
                             skipped_delisted += 1
                         progress.update(1)
                         _log_download_progress(
-                            completed, total, len(results), skipped_delisted
+                            completed,
+                            total,
+                            len(results),
+                            skipped_delisted,
                         )
                         submit_next()
 
@@ -1456,13 +1451,4 @@ def download_batch(
 
 
 def get_etf_fund_flows(ticker: str) -> float | None:
-    """
-    Attempt to retrieve ETF fund flow data from free sources.
-
-    The current free data sources do not provide reliable daily ETF fund flows,
-    so this function returns None when unavailable.
-
-    Returns:
-        Estimated net flow (positive = inflow) or None.
-    """
     return None
