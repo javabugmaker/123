@@ -12,6 +12,9 @@ import sys
 
 import gui_core as _core
 
+# Compatibility alias: external callers historically patched gui.OUTPUT_DIR.
+OUTPUT_DIR = _core.OUTPUT_DIR
+
 # Market data is fixed to TickFlow Free; AkShare is fundamentals-only.
 _core.DATA_SOURCE_HINTS.clear()
 _core.DATA_SOURCE_HINTS["TickFlow Free"] = "日K/标的池：TickFlow Free；基本面：AkShare 低频缓存"
@@ -512,11 +515,6 @@ def _format_table_value_v16(self, column: str, value: str) -> str:
     return _original_format_table_value(self, column, value)
 
 
-_core.ScannerGUI._build_ui = _build_ui_v16
-_core.ScannerGUI._update_filter_values = _update_filter_values_v16
-_core.ScannerGUI._row_matches_filters = _row_matches_filters_v16
-_core.ScannerGUI.clear_filters = _clear_filters_v16
-_core.ScannerGUI._format_table_value = _format_table_value_v16
 
 
 # ---------------------------------------------------------------------------
@@ -534,8 +532,6 @@ def _update_market_overview_decision(self, rows, indexes) -> None:
     )
 
 
-_core.ScannerGUI._update_market_overview = _update_market_overview_decision
-
 _original_render_cached_rows = _core.ScannerGUI._render_cached_rows
 
 
@@ -548,10 +544,74 @@ def _render_cached_rows_decision(self) -> bool:
     return rendered
 
 
-_core.ScannerGUI._render_cached_rows = _render_cached_rows_decision
+class DecisionScannerGUI(_core.ScannerGUI):
+    """Decision-oriented GUI implemented through normal inheritance."""
 
-# Preserve the historical import surface used by tests and external launchers.
+    def _call_core_with_legacy_output_dir(self, method, *args, **kwargs):
+        previous = _core.OUTPUT_DIR
+        _core.OUTPUT_DIR = OUTPUT_DIR
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            _core.OUTPUT_DIR = previous
+
+    def load_csv(self, filename: str) -> bool:
+        return self._call_core_with_legacy_output_dir(_core.ScannerGUI.load_csv, filename)
+
+    def _csv_has_results(self, filename: str) -> bool:
+        return self._call_core_with_legacy_output_dir(
+            _core.ScannerGUI._csv_has_results, filename
+        )
+
+    def _load_best_available_results(self) -> bool:
+        return self._call_core_with_legacy_output_dir(
+            _core.ScannerGUI._load_best_available_results
+        )
+
+    def _write_top50_csv(self, tickers: list[str]) -> None:
+        self._call_core_with_legacy_output_dir(
+            _core.ScannerGUI._write_top50_csv, tickers
+        )
+
+    def _build_ui(self) -> None:
+        _build_ui_v16(self)
+
+    def _update_filter_values(self, headers: list[str], rows: list[list[str]]) -> None:
+        _update_filter_values_v16(self, headers, rows)
+
+    def _row_matches_filters(
+        self,
+        indexes: dict[str, int],
+        row: list[str],
+        query: str,
+        search_text: str | None = None,
+        filter_values: tuple[str, ...] | None = None,
+    ) -> bool:
+        return _row_matches_filters_v16(
+            self, indexes, row, query, search_text, filter_values
+        )
+
+    def clear_filters(self) -> None:
+        _clear_filters_v16(self)
+
+    def _format_table_value(self, column: str, value: str) -> str:
+        return _format_table_value_v16(self, column, value)
+
+    def _update_market_overview(self, rows, indexes) -> None:
+        _update_market_overview_decision(self, rows, indexes)
+
+    def _render_cached_rows(self) -> bool:
+        return _render_cached_rows_decision(self)
+
+
+# Preserve the historical import surface without mutating gui_core.ScannerGUI.
+ScannerGUI = DecisionScannerGUI
+
+def main() -> None:
+    _core.main(gui_class=DecisionScannerGUI)
+
+def __getattr__(name: str):
+    return getattr(_core, name)
+
 if __name__ == "__main__":
-    _core.main()
-else:
-    sys.modules[__name__] = _core
+    main()

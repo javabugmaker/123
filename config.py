@@ -170,7 +170,7 @@ TOP_N_REPORT: int = 50
 TOP_N_PARQUET: int = 200
 ETF_THEME_MAX_PER_TOP_LIST: Final[int] = 2
 
-SCORING_VERSION: str = "2026-08-08-v15-ranking-diversity-metadata"
+SCORING_VERSION: str = "2026-08-08-v16-model-v2-oos"
 
 # Per-ticker historical evidence is only allowed to influence the composite
 # rank after more than a couple of independent observations.  This prevents a
@@ -180,6 +180,16 @@ BACKTEST_LOW_CONFIDENCE_MAX_SAMPLES: Final[int] = 20
 BACKTEST_FULL_WEIGHT_SAMPLES: Final[int] = 50
 BACKTEST_NORMAL_WEIGHT: Final[float] = 0.25
 BACKTEST_NEUTRAL_SCORE: Final[float] = 50.0
+
+# Model v2 separates setup, trigger and execution so the same trend/volume
+# evidence is not rewarded repeatedly.  A validated OOS calibration file may
+# override these defaults within the bounded ranges enforced by score.py.
+MODEL_SETUP_WEIGHT: Final[float] = 0.60
+MODEL_TRIGGER_WEIGHT: Final[float] = 0.25
+MODEL_EXECUTION_WEIGHT: Final[float] = 0.15
+MODEL_QUALITY_WEIGHT: Final[float] = 0.30
+GLOBAL_CALIBRATION_MIN_SAMPLES: Final[int] = 30
+GLOBAL_CALIBRATION_MAX_WEIGHT: Final[float] = 0.15
 # Historical signals are sampled more frequently than their 60-day evaluation
 # window.  Overlap is accounted for through effective sample weights.
 BACKTEST_SIGNAL_COOLDOWN_DAYS: Final[int] = 20
