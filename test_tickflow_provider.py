@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from unittest import TestCase
@@ -25,6 +24,8 @@ class TickFlowProviderTests(TestCase):
             "amount": [10200, 12360],
         })
         result = downloader._normalize_tickflow_frame(frame)
+        self.assertIsNotNone(result)
+        assert result is not None
         self.assertEqual(
             result.columns.tolist(),
             ["Open", "High", "Low", "Close", "Volume", "Amount"],
@@ -99,51 +100,80 @@ class TickFlowProviderTests(TestCase):
         batch.assert_called_once_with(["000001.SZ"])
 
     def test_incremental_cache_update_uses_short_batch(self):
-        stale = pd.DataFrame({
-            "Open": [10.0, 10.1], "High": [10.2, 10.3],
-            "Low": [9.9, 10.0], "Close": [10.1, 10.2],
-            "Volume": [1000, 1100],
-        }, index=pd.to_datetime(["2026-08-06", "2026-08-07"]))
-        recent = pd.DataFrame({
-            "Open": [10.1, 10.2], "High": [10.3, 10.4],
-            "Low": [10.0, 10.1], "Close": [10.2, 10.3],
-            "Volume": [1100, 1200],
-        }, index=pd.to_datetime(["2026-08-07", "2026-08-10"]))
-        with (
-            patch.object(downloader, "_load_cache", return_value=stale),
-            patch.object(downloader, "_cache_has_completed_daily_bar", return_value=False),
-            patch.object(downloader, "_batch_fetch", return_value={"600000.SH": recent}) as batch,
-            patch.object(downloader, "_save_cache"),
-        ):
-            result = downloader.download_batch([downloader.TickerInfo("600000.SH")])
-        batch.assert_called_once_with(["600000.SH"], downloader._INCREMENTAL_BARS)
-        self.assertEqual(str(result["600000.SH"].index[-1].date()), "2026-08-10")
-
-    def test_forward_adjustment_change_forces_full_rebuild(self):
-        stale = pd.DataFrame({
-            "Open": [10.0, 10.1], "High": [10.2, 10.3],
-            "Low": [9.9, 10.0], "Close": [10.1, 10.2],
-            "Volume": [1000, 1100],
-        }, index=pd.to_datetime(["2026-08-06", "2026-08-07"]))
-        rebased = stale.copy()
-        rebased[["Open", "High", "Low", "Close"]] *= 0.9
-        full = pd.DataFrame({
-            "Open": [9.0, 9.1, 9.2], "High": [9.2, 9.3, 9.4],
-            "Low": [8.9, 9.0, 9.1], "Close": [9.1, 9.2, 9.3],
-            "Volume": [1000, 1100, 1200],
-        }, index=pd.to_datetime(["2026-08-06", "2026-08-07", "2026-08-10"]))
+        stale = pd.DataFrame(
+            {
+                "Open": [10.0, 10.1],
+                "High": [10.2, 10.3],
+                "Low": [9.9, 10.0],
+                "Close": [10.1, 10.2],
+                "Volume": [1000, 1100],
+            },
+            index=pd.to_datetime(["2026-08-06", "2026-08-07"]),
+        )
+        recent = pd.DataFrame(
+            {
+                "Open": [10.0, 10.1, 10.2],
+                "High": [10.2, 10.3, 10.4],
+                "Low": [9.9, 10.0, 10.1],
+                "Close": [10.1, 10.2, 10.3],
+                "Volume": [1000, 1100, 1200],
+            },
+            index=pd.to_datetime(["2026-08-06", "2026-08-07", "2026-08-10"]),
+        )
         with (
             patch.object(downloader, "_load_cache", return_value=stale),
             patch.object(downloader, "_cache_has_completed_daily_bar", return_value=False),
             patch.object(
-                downloader, "_batch_fetch",
+                downloader,
+                "_batch_fetch",
+                return_value={"600000.SH": recent},
+            ) as batch,
+            patch.object(downloader, "_save_cache"),
+        ):
+            result = downloader.download_batch([downloader.TickerInfo("600000.SH")])
+
+        batch.assert_called_once_with(["600000.SH"], downloader._INCREMENTAL_BARS)
+        self.assertEqual(str(result["600000.SH"].index[-1].date()), "2026-08-10")
+
+    def test_forward_adjustment_change_forces_full_rebuild(self):
+        stale = pd.DataFrame(
+            {
+                "Open": [10.0, 10.1],
+                "High": [10.2, 10.3],
+                "Low": [9.9, 10.0],
+                "Close": [10.1, 10.2],
+                "Volume": [1000, 1100],
+            },
+            index=pd.to_datetime(["2026-08-06", "2026-08-07"]),
+        )
+        rebased = stale.copy()
+        rebased[["Open", "High", "Low", "Close"]] *= 0.9
+        full = pd.DataFrame(
+            {
+                "Open": [9.0, 9.1, 9.2],
+                "High": [9.2, 9.3, 9.4],
+                "Low": [8.9, 9.0, 9.1],
+                "Close": [9.1, 9.2, 9.3],
+                "Volume": [1000, 1100, 1200],
+            },
+            index=pd.to_datetime(["2026-08-06", "2026-08-07", "2026-08-10"]),
+        )
+        with (
+            patch.object(downloader, "_load_cache", return_value=stale),
+            patch.object(downloader, "_cache_has_completed_daily_bar", return_value=False),
+            patch.object(
+                downloader,
+                "_batch_fetch",
                 side_effect=[{"600000.SH": rebased}, {"600000.SH": full}],
             ) as batch,
             patch.object(downloader, "_save_cache"),
         ):
             result = downloader.download_batch([downloader.TickerInfo("600000.SH")])
+
         self.assertEqual(batch.call_count, 2)
-        self.assertEqual(batch.call_args_list[0].args, (["600000.SH"], downloader._INCREMENTAL_BARS))
+        self.assertEqual(
+            batch.call_args_list[0].args,
+            (["600000.SH"], downloader._INCREMENTAL_BARS),
+        )
         self.assertEqual(batch.call_args_list[1].args, (["600000.SH"],))
         self.assertEqual(str(result["600000.SH"].index[-1].date()), "2026-08-10")
-
