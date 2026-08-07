@@ -10,7 +10,7 @@ scipy>=1.10.0
 # TickFlow Free is the sole OHLCV + universe provider.
 tickflow[all]==0.1.24
 # AkShare is retained only for low-frequency fundamental refreshes.
-akshare==1.16.53
+akshare==1.18.83
 
 # Technical indicators
 ta>=0.11.0
