@@ -2,10 +2,9 @@ from __future__ import annotations
 
 """Decision-focused Tkinter GUI entrypoint.
 
-The stable implementation remains in ``gui_core.py``.  This entry module only
-changes presentation defaults, so ranking, freshness checks, hard-risk logic,
-row colouring, exports and the full detail dialog continue to use the existing
-engine unchanged.
+The implementation remains in ``gui_core.py``.  This thin presentation layer
+keeps the first screen execution-focused while the detail dialog and exported
+files retain the complete diagnostics.
 """
 
 import re
@@ -13,12 +12,18 @@ import sys
 
 import gui_core as _core
 
-# ---------------------------------------------------------------------------
-# Main table: trading decision first
-# ---------------------------------------------------------------------------
-# Diagnostic fields such as MarketRegime / DataFreshnessStatus / HardRiskFlag
-# are intentionally not part of the first-screen grid.  They are still kept in
-# the CSV, ranking/risk pipeline and the double-click detail dialog.
+# Strict source semantics after provider-consistent cache hardening.
+_core.DATA_SOURCE_HINTS.update(
+    {
+        "自动优选": "腾讯 / AKShare / 东方财富自动择优（统一前复权）",
+        "AkShare": "仅使用 AkShare，不静默混源",
+        "东方财富": "仅使用东方财富，不静默混源",
+        "新浪财经": "仅使用新浪财经（独立缓存）",
+        "腾讯财经": "仅使用腾讯财经，不静默混源",
+    }
+)
+
+# Main table: trading decision first. Diagnostics remain in CSV/detail view.
 _core.DISPLAY_COLUMNS = (
     "OverallRank",
     "Ticker",
@@ -53,10 +58,11 @@ _core.COLUMN_NAMES.update(
         "StopLoss": "止损位",
         "RankingEligibility": "交易资格",
         "TradeReadinessReason": "执行说明",
+        "BreakoutScore": "突破强度",
+        "InstitutionHoldingStatus": "机构覆盖趋势",
     }
 )
 
-# Keep the most useful decision fields visible within a normal 1440px window.
 _core.COLUMN_WIDTHS.update(
     {
         "OverallRank": 64,
@@ -75,10 +81,7 @@ _core.COLUMN_WIDTHS.update(
     }
 )
 
-# ---------------------------------------------------------------------------
-# Compact overview: remove MarketRegime from the visible GUI strip.
-# The market-regime calculation itself is deliberately retained in the engine.
-# ---------------------------------------------------------------------------
+
 def _update_market_overview_decision(self, rows, indexes) -> None:
     if not hasattr(self, "market_overview"):
         return
@@ -92,8 +95,6 @@ def _update_market_overview_decision(self, rows, indexes) -> None:
 
 _core.ScannerGUI._update_market_overview = _update_market_overview_decision
 
-# The old render summary appended "过期 N".  Keep freshness enforcement and
-# row risk colouring, but remove that diagnostic counter from the visible bar.
 _original_render_cached_rows = _core.ScannerGUI._render_cached_rows
 
 
@@ -108,9 +109,7 @@ def _render_cached_rows_decision(self) -> bool:
 
 _core.ScannerGUI._render_cached_rows = _render_cached_rows_decision
 
-# Make ``import gui`` resolve to the real implementation module after applying
-# the presentation patches.  This keeps existing tests/patches such as
-# patch("gui.OUTPUT_DIR") working exactly as before.
+# Preserve the historical import surface used by tests and external launchers.
 if __name__ == "__main__":
     _core.main()
 else:
