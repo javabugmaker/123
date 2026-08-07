@@ -705,7 +705,10 @@ def _legacy_signal_points(
     candidates = np.flatnonzero(condition.fillna(False).to_numpy(dtype=bool))
     last_signal = -cooldown
     points: list[int] = []
+    outcome_limit = max(0, len(enriched) - BACKTEST_OUTCOME_HORIZON_DAYS)
     for index in candidates:
+        if index >= outcome_limit:
+            continue
         if index - last_signal < cooldown:
             continue
         points.append(int(index))

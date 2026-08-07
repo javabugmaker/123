@@ -38,35 +38,32 @@ class _FakeAkShare:
 
 
 class DataSourceRegressionTests(unittest.TestCase):
-    def test_downloader_session_ignores_environment_proxy(self) -> None:
-        self.assertFalse(downloader._HTTP.trust_env)
+    def test_market_layer_has_only_tickflow_provider(self) -> None:
+        self.assertEqual(downloader.normalize_data_source("tickflow"), "tickflow")
+        self.assertEqual(downloader.get_data_source_label(), "TickFlow Free")
+        self.assertFalse(hasattr(downloader, "_HTTP"))
+        self.assertFalse(hasattr(downloader, "_download_from_eastmoney"))
+        self.assertFalse(hasattr(downloader, "_download_from_sina"))
+        self.assertFalse(hasattr(downloader, "_download_from_tencent"))
+        self.assertFalse(hasattr(downloader, "_download_from_akshare"))
 
-    def test_fundamental_akshare_calls_temporarily_bypass_proxy(self) -> None:
-        original_http = os.environ.get("HTTP_PROXY")
-        original_https = os.environ.get("HTTPS_PROXY")
-        try:
-            os.environ["HTTP_PROXY"] = "http://127.0.0.1:7897"
-            os.environ["HTTPS_PROXY"] = "http://127.0.0.1:7897"
+    def test_fundamental_akshare_preserves_active_proxy(self) -> None:
+        proxy = "http://127.0.0.1:7897"
+        with patch.dict(
+            os.environ,
+            {"HTTP_PROXY": proxy, "HTTPS_PROXY": proxy},
+            clear=False,
+        ), patch.object(
+            fundamental_data,
+            "configure_akshare_proxy_from_system",
+            return_value={"http": proxy, "https": proxy},
+        ):
+            before = (os.environ.get("HTTP_PROXY"), os.environ.get("HTTPS_PROXY"))
             with fundamental_data._direct_network_environment():
-                self.assertNotIn("HTTP_PROXY", os.environ)
-                self.assertNotIn("HTTPS_PROXY", os.environ)
-                self.assertEqual(os.environ.get("NO_PROXY"), "*")
-                self.assertEqual(os.environ.get("no_proxy"), "*")
-            self.assertEqual(
-                os.environ.get("HTTP_PROXY"), "http://127.0.0.1:7897"
-            )
-            self.assertEqual(
-                os.environ.get("HTTPS_PROXY"), "http://127.0.0.1:7897"
-            )
-        finally:
-            if original_http is None:
-                os.environ.pop("HTTP_PROXY", None)
-            else:
-                os.environ["HTTP_PROXY"] = original_http
-            if original_https is None:
-                os.environ.pop("HTTPS_PROXY", None)
-            else:
-                os.environ["HTTPS_PROXY"] = original_https
+                inside = (os.environ.get("HTTP_PROXY"), os.environ.get("HTTPS_PROXY"))
+            after = (os.environ.get("HTTP_PROXY"), os.environ.get("HTTPS_PROXY"))
+        self.assertEqual(inside, before)
+        self.assertEqual(after, before)
 
     def test_institutional_batch_passes_required_report_symbol(self) -> None:
         fake = _FakeAkShare()
@@ -78,7 +75,9 @@ class DataSourceRegressionTests(unittest.TestCase):
             result = fundamental_data._batch_fetch_institutional_data()
 
         self.assertEqual(len(fake.holder_symbols), 2)
-        self.assertTrue(all(symbol.isdigit() and len(symbol) == 5 for symbol in fake.holder_symbols))
+        self.assertTrue(
+            all(symbol.isdigit() and len(symbol) == 5 for symbol in fake.holder_symbols)
+        )
         self.assertEqual(result["000001.SZ"]["OrgNumChange1"], 5.0)
         self.assertEqual(result["000001.SZ"]["OrgNumChange2"], 3.0)
         self.assertEqual(result["600000.SH"]["OrgNumChange1"], -2.0)
@@ -110,7 +109,6 @@ class DataSourceRegressionTests(unittest.TestCase):
                 "000001.SZ": {"OrgNumChange1": 5.0, "OrgNumChange2": 3.0},
                 "600000.SH": {"OrgNumChange1": -2.0, "OrgNumChange2": -1.0},
             }
-
             rising = fundamental_data._fetch_ticker_from_batch("000001.SZ")
             falling = fundamental_data._fetch_ticker_from_batch("600000.SH")
         finally:

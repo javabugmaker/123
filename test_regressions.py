@@ -418,7 +418,7 @@ class RegressionTests(TestCase):
         scanner._update_market_overview(rows, indexes)
 
         scanner.market_overview.set.assert_called_once_with(
-            "市场概览：2 只 · 启动 0 · 可交易 0 · 最终均分 60.0"
+            "概览：2 只 · 启动 0 · 可交易 0 · 最终均分 60.0"
         )
 
     def test_gui_market_regime_confidence_uses_dominant_regime_only(self):
@@ -1019,17 +1019,17 @@ class RegressionTests(TestCase):
             "RSI14": [None],
             "DistToLow52W": [None],
             "IndustryRelativeStrength": [None],
-            "DataSource": ["eastmoney"],
+            "DataSource": ["tickflow"],
         })
-        metadata = pd.DataFrame({"DataSource": ["eastmoney"]})
+        metadata = pd.DataFrame({"DataSource": ["tickflow"]})
         with TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
             report_path = output_dir / "AllResults.parquet"
-            cache_path = output_dir / "000001.SZ__eastmoney.parquet"
+            cache_path = output_dir / "000001.SZ__tickflow.parquet"
             cache_path.touch()
             report_path.touch()
             with patch.object(scanner, "OUTPUT_DIR", output_dir), patch.object(scanner, "_CHECKPOINT_PATH", output_dir / "_checkpoint.json"), patch.object(scanner, "load_checkpoint", return_value={"000001.SZ"}), patch.object(scanner, "_load_previous_tickers", return_value={"000001.SZ"}), patch.object(scanner, "_cache_path_for", return_value=cache_path), patch.object(scanner, "download_batch", return_value={"000001.SZ": frame}) as download_batch, patch.object(scanner, "enrich_results"), patch.object(scanner, "save_checkpoint"), patch.object(scanner, "clear_checkpoint") as clear_checkpoint, patch.object(scanner.pd, "read_parquet", side_effect=[metadata, previous]):
-                report = scanner.run_scan(stock_universe=[ticker], etf_universe=[], data_source="eastmoney")
+                report = scanner.run_scan(stock_universe=[ticker], etf_universe=[], data_source="tickflow")
 
         clear_checkpoint.assert_called_once_with()
         self.assertEqual(download_batch.call_args.kwargs["skip_tickers"], {"000001.SZ"})
@@ -1994,26 +1994,28 @@ class RegressionTests(TestCase):
         self.assertEqual(result.close, 125.82)
         self.assertEqual(result.data_asof, "2026-07-24")
 
-    def test_enrichment_uses_realtime_close_after_market_close(self):
+    def test_tickflow_free_never_promotes_daily_close_to_realtime(self):
         result = ScanResult(ticker="000858.SZ", close=78.56)
+        trade_date = (
+            pd.Timestamp.now(tz="Asia/Shanghai").normalize() - pd.offsets.BDay(1)
+        ).tz_localize(None)
         frame = pd.DataFrame({
             "Open": [78.0],
             "High": [79.0],
             "Low": [77.5],
             "Close": [78.56],
             "Volume": [1000.0],
-        }, index=pd.DatetimeIndex([
-            (pd.Timestamp.now(tz="Asia/Shanghai").normalize() - pd.offsets.BDay(1)).tz_localize(None)
-        ]))
+        }, index=pd.DatetimeIndex([trade_date]))
 
-        with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")), patch.object(analytics, "_is_a_share_market_closed", return_value=True), patch.object(analytics, "_fetch_eastmoney_realtime_prices", return_value={"000858.SZ": 78.0}) as batch_prices:
-            analytics.enrich_results([result], "eastmoney", frames={"000858.SZ": frame})
+        with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(
+            analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")
+        ):
+            analytics.enrich_results([result], "tickflow", frames={"000858.SZ": frame})
 
-        self.assertEqual(result.close, 78.0)
-        self.assertEqual(result.data_asof, pd.Timestamp.now(tz="Asia/Shanghai").strftime("%Y-%m-%d"))
-        batch_prices.assert_called_once_with(["000858.SZ"])
+        self.assertEqual(result.close, 78.56)
+        self.assertEqual(result.data_asof, trade_date.strftime("%Y-%m-%d"))
 
-    def test_enrichment_keeps_daily_close_when_realtime_close_is_unavailable(self):
+    def test_enrichment_keeps_tickflow_daily_close(self):
         result = ScanResult(ticker="000858.SZ", close=78.56)
         frame = pd.DataFrame({
             "Open": [78.0],
@@ -2023,10 +2025,13 @@ class RegressionTests(TestCase):
             "Volume": [1000.0],
         }, index=pd.to_datetime(["2026-07-30"]))
 
-        with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")), patch.object(analytics, "_is_a_share_market_closed", return_value=True), patch.object(analytics, "_fetch_eastmoney_realtime_prices", return_value={}):
-            analytics.enrich_results([result], "eastmoney", frames={"000858.SZ": frame})
+        with patch.object(analytics, "_load_benchmark_frames", return_value={}), patch.object(
+            analytics, "_benchmark_regime", return_value=("震荡", "基准数据不足")
+        ):
+            analytics.enrich_results([result], "tickflow", frames={"000858.SZ": frame})
 
         self.assertEqual(result.close, 78.56)
+        self.assertEqual(result.data_asof, "2026-07-30")
 
     def test_analysis_reuses_indicators_for_scan_and_enrichment(self):
         frame = pd.DataFrame({
@@ -2245,18 +2250,23 @@ class RegressionTests(TestCase):
         )
 
     def test_all_tqdm_calls_disable_non_tty_stderr(self):
-        for filename, expected_calls in (("downloader.py", 2), ("scanner.py", 2)):
+        # TickFlow owns market-data batch progress, so downloader.py no longer
+        # creates a per-ticker tqdm bar. Scanner analysis still uses two bars.
+        for filename, expected_calls in (("downloader.py", 0), ("scanner.py", 2)):
             tree = ast.parse(Path(filename).read_text(encoding="utf-8"))
             calls = [
                 node for node in ast.walk(tree)
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "tqdm"
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "tqdm"
             ]
             self.assertEqual(len(calls), expected_calls)
             for call in calls:
-                disable = next((keyword.value for keyword in call.keywords if keyword.arg == "disable"), None)
+                disable = next(
+                    (keyword.value for keyword in call.keywords if keyword.arg == "disable"),
+                    None,
+                )
                 self.assertIsNotNone(disable)
-                if disable is None:
-                    self.fail("tqdm 调用缺少 disable 参数")
                 self.assertEqual(ast.unparse(disable), "not sys.stderr.isatty()")
 
     def test_quality_unknown_holding_history_is_neutral(self):
@@ -2349,15 +2359,25 @@ class RegressionTests(TestCase):
         self.assertIn("InstitutionHoldingStatus", result)
         self.assertIn("RankingScore", gui.DISPLAY_COLUMNS)
 
-    def test_dynamic_tiers_produce_all_levels(self):
+    def test_dynamic_tiers_keep_ordered_research_levels(self):
         frame = pd.DataFrame({
-            "Ticker": ["A", "B", "C", "D"], "Score": [60, 45, 35, 20],
-            "FinalScore": [60, 45, 35, 20], "InstitutionalScore": [60, 45, 35, 20],
+            "Ticker": ["A", "B", "C", "D"],
+            "Score": [60, 45, 35, 20],
+            "FinalScore": [60, 45, 35, 20],
+            "InstitutionalScore": [60, 45, 35, 20],
             "EntrySignal": ["BUY_NOW", "WAIT_PULLBACK", "HOLD_WAIT", "HOLD_WAIT"],
-            "QualityGate": [True] * 4, "QualityDataCompleteness": [1.0] * 4,
+            "QualityGate": [True] * 4,
+            "QualityDataCompleteness": [1.0] * 4,
         })
-        tiers = set(signal_lifecycle.finalize_signal_ranking(frame)["InstitutionalTier"])
-        self.assertTrue({"A级机构启动", "B级观察", "C级价值观察", "D级等待确认"}.issubset(tiers))
+        result = signal_lifecycle.finalize_signal_ranking(frame).set_index("Ticker")
+        self.assertEqual(result.loc["D", "InstitutionalTier"], "D级等待确认")
+        self.assertIn(
+            result.loc["A", "InstitutionalTier"],
+            {"A级机构启动", "B级观察", "C级价值观察"},
+        )
+        self.assertGreater(
+            result.loc["A", "InstitutionalScore"], result.loc["D", "InstitutionalScore"]
+        )
 
     def test_stale_quote_is_not_promoted_as_breakout(self):
         frame = pd.DataFrame({
@@ -2429,8 +2449,8 @@ class RegressionTests(TestCase):
         self.assertEqual(result.loc["VALID", "RankingEligibility"], "推荐")
         self.assertIn("TradeReadinessReason", result)
         self.assertIn("TradeReadinessReason", gui.DISPLAY_COLUMNS)
-        self.assertIn("HardRiskFlag", gui.DISPLAY_COLUMNS)
-        self.assertIn("MarketRegime", gui.DISPLAY_COLUMNS)
+        self.assertNotIn("HardRiskFlag", gui.DISPLAY_COLUMNS)
+        self.assertNotIn("MarketRegime", gui.DISPLAY_COLUMNS)
 
     def test_freshness_columns_export_and_gui_formatting(self):
         frame = _results_to_dataframe([

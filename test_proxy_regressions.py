@@ -5,8 +5,8 @@ import sys
 from unittest import TestCase
 from unittest.mock import patch
 
-import downloader
 import fundamental_data
+import network_proxy
 
 
 class _FakeRegistryKey:
@@ -35,27 +35,27 @@ class _FakeWinreg:
 
 class ClashAkShareProxyTests(TestCase):
     def tearDown(self):
-        downloader._AKSHARE_MANAGED_PROXY_ENV.clear()
+        network_proxy._AKSHARE_MANAGED_PROXY_ENV.clear()
 
     def test_windows_clash_system_proxy_is_detected(self):
-        with patch.object(downloader.sys, "platform", "win32"), patch.dict(
+        with patch.object(network_proxy.sys, "platform", "win32"), patch.dict(
             sys.modules, {"winreg": _FakeWinreg}
         ):
-            proxies = downloader._windows_system_proxy()
+            proxies = network_proxy._windows_system_proxy()
 
         self.assertEqual(proxies["http"], "http://127.0.0.1:7897")
         self.assertEqual(proxies["https"], "http://127.0.0.1:7897")
 
     def test_akshare_proxy_is_mirrored_to_requests_environment(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(
-            downloader,
+            network_proxy,
             "_windows_system_proxy",
             return_value={
                 "http": "http://127.0.0.1:7897",
                 "https": "http://127.0.0.1:7897",
             },
         ):
-            proxies = downloader.configure_akshare_proxy_from_system()
+            proxies = network_proxy.configure_akshare_proxy_from_system()
             self.assertEqual(proxies["https"], "http://127.0.0.1:7897")
             self.assertEqual(os.environ["HTTP_PROXY"], "http://127.0.0.1:7897")
             self.assertEqual(os.environ["HTTPS_PROXY"], "http://127.0.0.1:7897")

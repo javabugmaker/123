@@ -1,183 +1,115 @@
 # InstitutionScanner
 
-## 机构吸筹扫描器（Institutional Accumulation Scanner）
+A 股 / ETF 日频扫描器：使用 **TickFlow Free** 提供行情与标的池，**AkShare** 仅用于低频基本面补充。
 
-一个基于 Python 的选股工具，用于扫描股票和 ETF 行情数据，通过多维度指标分析市场资金行为，寻找可能处于机构布局阶段的标的。
+## 数据架构
 
-项目目标：
+```text
+TickFlow Free
+├─ CN_Equity_A：A 股股票池
+├─ CN_ETF：ETF 股票池
+└─ 1d K 线：OHLCV / Amount
+        ↓
+    本地 Parquet
+        ↓
+指标 → 筛选 → 评分 → 买点 → 回测 → 排名 → GUI
 
-> 从大量股票池中筛选价格结构、成交量行为和资金特征异常的股票，建立机构吸筹候选池。
-
----
-
-# ✨ 功能特点
-
-## 1. 股票 / ETF 扫描
-
-支持：
-
-- 股票扫描
-- ETF 扫描
-- 自定义股票列表扫描
-
-运行：
-
-```bash
-python gui.py
+AkShare
+└─ ROE / 毛利率 / 净利润 / 机构覆盖等基本面
+        ↓
+ fundamental_data.csv（低频缓存）
+        ↓
+ QualityGate
 ```
 
----
+行情层不再使用东方财富、AkShare 行情、新浪或腾讯，也没有行情源自动回退或混源缓存。
 
-## 2. 多行情数据源
+## TickFlow Free
 
-支持：
+免费服务无需 API Key。本项目固定使用：
 
-- EastMoney
-- Sina
-- Tencent
+- `CN_Equity_A` 获取 A 股池
+- `CN_ETF` 获取 ETF 池
+- `klines.batch()` 批量获取日 K
+- `adjust="forward"` 比例前复权，用于收益率、技术指标和历史回测
 
+首次运行会建立约 10 年历史缓存。之后正常扫描只批量获取最近 90 根日 K 并与本地历史合并；若检测到除权导致前复权基准变化，只重建受影响标的的完整历史。
 
-## 3. 缓存与断点机制
+TickFlow Free 不提供实时行情，因此 GUI 的“当日收盘价”始终对应最新已完成的日 K 交易日，不会用盘中价格冒充收盘价。
 
-支持：
+## AkShare 基本面
 
-- 行情缓存
-- 断点恢复
-- 增量扫描
+AkShare 只负责低频基本面，不参与任何 OHLCV 行情下载。基本面缓存默认 14 天：
 
-强制重新下载：
+- 缓存有效：直接读取，不联网
+- 缓存过期：尝试刷新
+- 刷新失败：保留已有缓存，行情扫描继续运行
+- GUI 勾选“刷新基本面数据”：强制刷新
 
-```
+Windows 开启 Clash 系统代理时，AkShare 基本面请求可读取系统代理；关闭系统代理时恢复直连。代理逻辑与 TickFlow 行情层隔离。
 
----
+## 安装
 
-## 4. 机构吸筹分析
-
-分析维度：
-
-- 趋势结构
-- 成交量变化
-- 价格位置
-- 资金行为
-- 风险因素
-
-通过综合评分筛选潜在机构布局股票。
-
----
-
-## 5. 报告生成
-
-支持生成：
-
-- CSV
-- Parquet
-
-重新生成报告：
-
-
----
-
-## 6. 历史回测
-
-支持：
-
-- 20日收益回测
-- 60日收益回测
-- 超额收益分析
-- 最大回撤分析
-
-```
-
----
-
-# 📁 项目结构
-
-```
-InstitutionScanner/
-
-├── main.py              # 程序入口
-├── downloader.py        # 行情下载模块
-├── scanner.py           # 扫描核心
-├── analytics.py         # 回测分析
-├── filters.py           # 股票过滤
-├── config.py            # 配置
-├── report.py            # 报告输出
-
-├── cache/               # 数据缓存
-├── output/              # 分析结果
-└── logs/                # 日志
-```
-
----
-
-# 🚀 安装
-
-Python >= 3.10
-
-安装依赖：
+Python 3.10+：
 
 ```bash
 pip install -r requirements.txt
 ```
 
+## 运行 GUI
 
-
-# 🧠 设计理念
-
-传统选股：
-
-```
-寻找已经上涨的股票
+```bash
+python gui.py
 ```
 
-本项目：
+GUI 行情源固定显示为 `TickFlow Free`，基本面来源为 `AkShare（低频缓存）`。
 
-```
-寻找资金可能正在布局的股票
+## CLI
 
-价格
-+
-成交量
-+
-趋势
-+
-资金行为
-+
-风险控制
+全市场扫描：
 
-↓
-
-综合评分
-
-↓
-
-候选股票池
+```bash
+python main.py scan
 ```
 
----
+仅股票 / ETF：
 
-# ⚠️ 风险声明
+```bash
+python main.py scan --stocks-only
+python main.py scan --etfs-only
+```
 
-本项目用于：
+指定标的：
 
-- 量化研究
-- 数据分析
-- 策略验证
+```bash
+python main.py scan --tickers 600036.SH,510300.SH
+```
 
-不构成任何投资建议。
+强制重建行情缓存：
 
-市场存在：
+```bash
+python main.py scan --force-download
+```
 
-- 数据误差
-- 策略失效
-- 投资风险
+强制刷新 AkShare 基本面：
 
-请结合自身判断。
+```bash
+python main.py scan --refresh-fundamentals
+```
 
----
+## 输出
 
----
+结果位于 `output/`，主要包括：
 
-# License
+- `AllResults.csv` / `AllResults.parquet`
+- `Top50.csv`
+- `Top50TradeReady.csv`
+- `Top50EntryCandidates.csv`
+- `Top50BreakoutCandidates.csv`
+- 信号生命周期与回测文件
 
-MIT License
+行情缓存位于 `cache/v3-tickflow-forward/`。旧行情源缓存不会被 TickFlow 行情层读取。
+
+## 风险声明
+
+本项目用于量化研究、数据分析和策略验证，不构成投资建议。历史回测不能保证未来表现。

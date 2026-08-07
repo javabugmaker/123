@@ -26,7 +26,8 @@ from config import (
     FUNDAMENTAL_DATA_PATH,
     FUNDAMENTAL_PROGRESS_HEARTBEAT_SECONDS,
 )
-from downloader import configure_akshare_proxy_from_system, normalize_ticker
+from downloader import normalize_ticker
+from network_proxy import configure_akshare_proxy_from_system
 
 logger = logging.getLogger("institution_scanner.fundamental_data")
 

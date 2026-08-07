@@ -34,13 +34,13 @@ from analytics import enrich_results
 from config import (
     CACHE_DIR,
     CHECKPOINT_INTERVAL,
-    DOWNLOAD_THREADS,
     ENABLE_CHECKPOINT,
     LOG_DIR,
     MIN_MARKET_CAP,
     OUTPUT_DIR,
     SCAN_THREADS,
     SCORING_VERSION,
+    TICKFLOW_MAX_WORKERS,
     setup_logging,
 )
 from downloader import (
@@ -622,9 +622,9 @@ def run_scan(
     all_tickers = unique
 
     logger.info(
-        "Phase 1/2: downloading data for %d tickers (%d threads)...",
+        "Phase 1/2: preparing TickFlow data for %d tickers (batch workers=%d)...",
         len(all_tickers),
-        DOWNLOAD_THREADS,
+        TICKFLOW_MAX_WORKERS,
     )
     universe_symbols = {_normalize_ticker(ti.ticker) for ti in all_tickers}
     processed_set = load_checkpoint(data_source) if resume else set()
@@ -1259,23 +1259,33 @@ def _analyse_one_ticker(
 
 
 def run_parallel_indicator_scan(
-    ticker_infos: list[TickerInfo], data_source: str = "tickflow"
+    ticker_infos: list[TickerInfo],
+    data_source: str = "tickflow",
+    max_workers: int = SCAN_THREADS,
 ) -> list[ScanResult]:
     data_source = normalize_data_source(data_source)
     results: list[ScanResult] = []
-    with ThreadPoolExecutor(max_workers=SCAN_THREADS) as executor:
+    worker_count = max(1, int(max_workers))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
         future_to_ticker = {
             executor.submit(_analyse_one_ticker, ti, data_source): ti
             for ti in ticker_infos
         }
-        for future in as_completed(future_to_ticker):
-            ti = future_to_ticker[future]
-            try:
-                results.append(future.result())
-            except Exception as exc:
-                logger.exception("Analysis error for %s", ti.ticker)
-                results.append(
-                    ScanResult(ticker=ti.ticker, name=ti.name, error=str(exc))
-                )
+        with tqdm(
+            total=len(future_to_ticker),
+            desc="Parallel scan",
+            unit="ticker",
+            disable=not sys.stderr.isatty(),
+        ) as progress:
+            for future in as_completed(future_to_ticker):
+                ti = future_to_ticker[future]
+                try:
+                    results.append(future.result())
+                except Exception as exc:
+                    logger.exception("Analysis error for %s", ti.ticker)
+                    results.append(
+                        ScanResult(ticker=ti.ticker, name=ti.name, error=str(exc))
+                    )
+                progress.update(1)
     results.sort(key=lambda result: result.score.total, reverse=True)
     return results

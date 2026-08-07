@@ -82,6 +82,14 @@ def _refresh_fundamentals_if_needed(
     """Keep quality inputs current without forcing a provider hit every scan."""
     if not stock_universe:
         return
+    existing_path = fundamental_data_path()
+    explicit_refresh = bool(force or FUNDAMENTAL_REFRESH_FORCE)
+    if existing_path is None and not explicit_refresh:
+        logger.info(
+            "AkShare 基本面缓存尚未初始化；普通扫描不主动联网。"
+            "需要基本面时请勾选/使用 --refresh-fundamentals。"
+        )
+        return
     try:
         fundamental_path = refresh_fundamental_data(
             [ticker.ticker for ticker in stock_universe],

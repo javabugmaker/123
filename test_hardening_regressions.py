@@ -18,17 +18,16 @@ class HardeningRegressionTests(unittest.TestCase):
         self.assertEqual(downloader.normalize_ticker("920001"), "920001.BJ")
         self.assertEqual(downloader.normalize_ticker("830001"), "830001.BJ")
 
-    def test_explicit_sources_are_strict_and_auto_excludes_sina(self) -> None:
-        self.assertEqual(downloader._DATA_SOURCE_CANDIDATES["eastmoney"], ("eastmoney",))
-        self.assertEqual(downloader._DATA_SOURCE_CANDIDATES["tencent"], ("tencent",))
-        self.assertEqual(downloader._DATA_SOURCE_CANDIDATES["akshare"], ("akshare",))
-        self.assertEqual(downloader._DATA_SOURCE_CANDIDATES["sina"], ("sina",))
-        self.assertNotIn("sina", downloader._DATA_SOURCE_CANDIDATES["auto"])
+    def test_market_source_is_tickflow_only_with_legacy_alias_migration(self) -> None:
+        for source in ("tickflow", "auto", "akshare", "eastmoney", "sina", "tencent"):
+            self.assertEqual(downloader.normalize_data_source(source), "tickflow")
+        with self.assertRaises(ValueError):
+            downloader.normalize_data_source("unknown-provider")
 
-    def test_price_cache_schema_invalidates_legacy_mixed_source_cache(self) -> None:
+    def test_tickflow_cache_schema_invalidates_all_legacy_market_caches(self) -> None:
         path = downloader._cache_path("600000.SH", "eastmoney")
-        self.assertEqual(path.parent.name, "v2-provider-consistent")
-        self.assertTrue(path.name.endswith("600000.SH__eastmoney.parquet"))
+        self.assertEqual(path.parent.name, "v3-tickflow-forward")
+        self.assertEqual(path.name, "600000.SH.parquet")
 
     def test_sparse_fundamental_quality_is_shrunk_toward_neutral(self) -> None:
         quality = calculate_quality(
