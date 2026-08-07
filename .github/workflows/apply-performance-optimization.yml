@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/apply-performance-optimization.yml'
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
@@ -14,9 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
       - name: Set up Python
