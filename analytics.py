@@ -4,7 +4,8 @@ import json
 import logging
 import os
 import tempfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,13 @@ from config import (
     BACKTEST_NORMAL_WEIGHT,
     BACKTEST_OUTCOME_HORIZON_DAYS,
     BACKTEST_SIGNAL_COOLDOWN_DAYS,
+    BACKTEST_SCORE_WINDOW_BARS,
+    BACKTEST_MAX_PROCESSES,
+    BACKTEST_PROCESS_MIN_TICKERS,
+    BACKTEST_CHUNK_SIZE,
+    BACKTEST_PROGRESS_INTERVAL,
+    BACKTEST_CACHE_ENABLED,
+    INDICATOR_CACHE_ENABLED,
     ENABLE_VOLUME_PROFILE,
     INSTITUTIONAL_TIER_TRAP_LABEL,
     INSTITUTIONAL_TIER_WAIT_LABEL,
@@ -33,11 +41,19 @@ from config import (
 )
 from downloader import (
     _is_a_share_market_closed,
+    _cache_path,
     _load_cache,
     download_ticker,
     is_etf_ticker,
 )
 from indicators import compute_all_indicators, compute_volume_profile
+from performance_cache import (
+    backtest_cache_key,
+    file_signature,
+    load_backtest_cache,
+    load_or_compute_indicators,
+    save_backtest_cache,
+)
 from score import entry_point, score_ticker
 from signal_lifecycle import finalize_signal_ranking
 
@@ -59,6 +75,10 @@ _BACKTEST_ACTIONABLE_SIGNALS = frozenset(
 class BacktestSummary:
     samples: int = 0
     ticker_count: int = 0
+    cache_hits: int = 0
+    elapsed_seconds: float = 0.0
+    worker_count: int = 0
+    engine: str = "sequential"
     objective: str = "net_excess_return_20d"
     target_definition: str = "扣除交易成本后相对基准的20个交易日超额收益率"
     benchmark: str = "沪深300"
@@ -716,22 +736,61 @@ def _legacy_signal_points(
     return points
 
 
-def _signal_points(
+def _backtest_scoring_window(enriched: pd.DataFrame, index: int) -> pd.DataFrame:
+    """Return only the history score_ticker can actually consume.
+
+    Indicators are already computed on the chronological full series, so the
+    cumulative OBV/A-D values keep their original levels.  The 504-bar bound is
+    sufficient for every current scoring lookback and preserves the saturated
+    days-below-MA200 logic while cutting repeated DataFrame work sharply.
+    """
+    end = int(index) + 1
+    start = max(0, end - int(BACKTEST_SCORE_WINDOW_BARS))
+    historical = enriched.iloc[start:end].copy(deep=False)
+    if ENABLE_VOLUME_PROFILE:
+        # Volume Profile is end-point dependent and compute_all_indicators writes
+        # the latest profile across the column, so recompute it for this date.
+        historical = historical.drop(
+            columns=[
+                "VP_HVN_Center",
+                "DistToHVN_Pct",
+                "Above_HVN",
+                "VP_LVN_Center",
+                "DistToLVN_Pct",
+            ],
+            errors="ignore",
+        )
+        try:
+            compute_volume_profile(historical)
+        except (ArithmeticError, TypeError, ValueError):
+            logger.debug("Historical volume profile failed.", exc_info=True)
+    return historical
+
+
+def _signal_evaluations(
     enriched: pd.DataFrame,
     cooldown: int = BACKTEST_SIGNAL_COOLDOWN_DAYS,
     is_etf: bool = False,
-) -> list[int]:
-    """Find historical entries with the exact live score/entry engine."""
-    if len(enriched) < 252:
-        # Preserve the deterministic legacy helper behavior for narrow unit-test
-        # fixtures; real historical calibration always requires >=252 bars.
-        live_columns = {"High", "Low", "MA20", "MA50", "ATR14"}
-        if not live_columns.issubset(enriched.columns):
-            return _legacy_signal_points(enriched, max(1, int(cooldown)))
-        return []
+) -> list[tuple[int, float, str]]:
+    """Find actionable historical entries and retain their already-computed score.
+
+    The former implementation scored a valid historical point once while
+    discovering it and then scored the same prefix again in _backtest_one_ticker.
+    Returning score/signal together removes that duplicate hot path.
+    """
     live_columns = {"High", "Low", "MA20", "MA50", "ATR14"}
+    if len(enriched) < 252:
+        if not live_columns.issubset(enriched.columns):
+            return [
+                (index, np.nan, "UNKNOWN")
+                for index in _legacy_signal_points(enriched, max(1, int(cooldown)))
+            ]
+        return []
     if not live_columns.issubset(enriched.columns):
-        return _legacy_signal_points(enriched, max(1, int(cooldown)))
+        return [
+            (index, np.nan, "UNKNOWN")
+            for index in _legacy_signal_points(enriched, max(1, int(cooldown)))
+        ]
 
     cooldown = max(1, int(cooldown))
     close = pd.to_numeric(enriched["Close"], errors="coerce")
@@ -745,16 +804,12 @@ def _signal_points(
     effective_atr = atr.where(atr.gt(0), close * 0.03)
     near_support = close.le(support + effective_atr * 1.5)
     five_day_up = close.ge(close.shift(5))
-    trend_candidate = close.gt(ma20) & (
-        ma20.ge(ma50) | five_day_up | near_support
-    )
-    broad_candidate = (
-        trend_candidate | near_support | close.gt(resistance)
-    ).fillna(False)
+    trend_candidate = close.gt(ma20) & (ma20.ge(ma50) | five_day_up | near_support)
+    broad_candidate = (trend_candidate | near_support | close.gt(resistance)).fillna(False)
     candidates = np.flatnonzero(broad_candidate.to_numpy(dtype=bool))
 
     last_signal = -cooldown
-    points: list[int] = []
+    evaluations: list[tuple[int, float, str]] = []
     for index in candidates:
         if index < 251:
             continue
@@ -762,27 +817,48 @@ def _signal_points(
             continue
         if index - last_signal < cooldown:
             continue
-        historical = enriched.iloc[: index + 1].copy()
+        historical = _backtest_scoring_window(enriched, int(index))
         historical_score = score_ticker(historical, is_etf=is_etf)
         historical_entry = entry_point(
             historical,
-            breakout=_finite_float(
-                getattr(historical_score, "breakout_score", np.nan), np.nan
-            ),
-            volume_score=_finite_float(
-                getattr(historical_score, "volume", np.nan), np.nan
-            ),
-            value_trap_risk_value=_finite_float(
-                getattr(historical_score, "value_trap_risk", np.nan), np.nan
-            ),
+            breakout=_finite_float(getattr(historical_score, "breakout_score", np.nan), np.nan),
+            volume_score=_finite_float(getattr(historical_score, "volume", np.nan), np.nan),
+            value_trap_risk_value=_finite_float(getattr(historical_score, "value_trap_risk", np.nan), np.nan),
         )
         signal = str(historical_entry.get("signal", "AVOID")).upper()
         if signal not in _BACKTEST_ACTIONABLE_SIGNALS:
             continue
-        points.append(int(index))
+        final_score = _finite_float(getattr(historical_score, "final_score", np.nan), np.nan)
+        if not np.isfinite(final_score):
+            final_score = _finite_float(getattr(historical_score, "total", np.nan), 0.0)
+        evaluations.append((int(index), float(final_score), signal))
         last_signal = int(index)
-    return points
+    return evaluations
 
+
+class _SignalPointList(list[int]):
+    """List-compatible signal points carrying precomputed real-run evaluations."""
+
+    def __init__(self, evaluations: list[tuple[int, float, str]]) -> None:
+        super().__init__(index for index, _score, _signal in evaluations)
+        self.evaluations = evaluations
+
+
+def _signal_points(
+    enriched: pd.DataFrame,
+    cooldown: int = BACKTEST_SIGNAL_COOLDOWN_DAYS,
+    is_etf: bool = False,
+) -> list[int]:
+    """Return signal indexes while retaining score/signal metadata for the hot path.
+
+    Returning a normal list subtype preserves the public/test contract.  Real
+    calls reuse the attached evaluations, while patched/legacy callers that
+    return a plain list still follow the historical compatibility path.
+    """
+    evaluations = _signal_evaluations(
+        enriched, cooldown=cooldown, is_etf=is_etf
+    )
+    return _SignalPointList(evaluations)
 
 def _historical_entry_signal(
     historical: pd.DataFrame, historical_score: Any
@@ -818,28 +894,48 @@ def _backtest_one_ticker(
     frame = _load_cache(ticker, source)
     if frame is None or len(frame) < 300:
         return []
-    enriched = compute_all_indicators(frame.copy())
+    raw_path = _cache_path(ticker, source)
+    enriched, _indicator_cache_hit = load_or_compute_indicators(
+        ticker,
+        frame,
+        compute_all_indicators,
+        source_path=raw_path if raw_path.exists() else None,
+        enabled=INDICATOR_CACHE_ENABLED,
+    )
     is_etf = is_etf_ticker(str(ticker))
     signal_points = _signal_points(enriched, is_etf=is_etf)
     if not signal_points:
         return []
 
-    opens = (
-        enriched["Open"].to_numpy(dtype=float)
-        if "Open" in enriched
-        else np.full(len(enriched), np.nan)
-    )
-    lows = (
-        enriched["Low"].to_numpy(dtype=float)
-        if "Low" in enriched
-        else np.full(len(enriched), np.nan)
-    )
+    attached_evaluations = getattr(signal_points, "evaluations", None)
+    if attached_evaluations is not None:
+        evaluation_map = {
+            index: (score, signal)
+            for index, score, signal in attached_evaluations
+        }
+    else:
+        # Compatibility path for callers/tests that explicitly provide a plain
+        # list of historical points.  Each point is still evaluated only once.
+        evaluation_map: dict[int, tuple[float, str]] = {}
+        for index in signal_points:
+            historical = _backtest_scoring_window(enriched, int(index))
+            historical_score = score_ticker(historical, is_etf=is_etf)
+            final_score = _finite_float(
+                getattr(historical_score, "final_score", np.nan), np.nan
+            )
+            if not np.isfinite(final_score):
+                final_score = _finite_float(
+                    getattr(historical_score, "total", np.nan), 0.0
+                )
+            evaluation_map[int(index)] = (
+                float(final_score),
+                _historical_entry_signal(historical, historical_score),
+            )
+
+    opens = enriched["Open"].to_numpy(dtype=float) if "Open" in enriched else np.full(len(enriched), np.nan)
+    lows = enriched["Low"].to_numpy(dtype=float) if "Low" in enriched else np.full(len(enriched), np.nan)
     closes = enriched["Close"].to_numpy(dtype=float)
-    highs = (
-        enriched["High"].to_numpy(dtype=float)
-        if "High" in enriched
-        else closes.copy()
-    )
+    highs = enriched["High"].to_numpy(dtype=float) if "High" in enriched else closes.copy()
     outcome_horizon = max(60, int(BACKTEST_OUTCOME_HORIZON_DAYS))
     valid_points: list[int] = []
     for index in signal_points:
@@ -854,40 +950,13 @@ def _backtest_one_ticker(
             or not np.isfinite(closes[entry_index + outcome_horizon])
         ):
             continue
-        if np.any(
-            ~np.isfinite(highs[entry_index : entry_index + outcome_horizon + 1])
-        ) or np.any(highs[entry_index : entry_index + outcome_horizon + 1] <= 0):
+        if np.any(~np.isfinite(highs[entry_index : entry_index + outcome_horizon + 1])) or np.any(highs[entry_index : entry_index + outcome_horizon + 1] <= 0):
             continue
-        if np.any(
-            ~np.isfinite(lows[entry_index : entry_index + outcome_horizon + 1])
-        ) or np.any(lows[entry_index : entry_index + outcome_horizon + 1] <= 0):
+        if np.any(~np.isfinite(lows[entry_index : entry_index + outcome_horizon + 1])) or np.any(lows[entry_index : entry_index + outcome_horizon + 1] <= 0):
             continue
         valid_points.append(index)
     if not valid_points:
         return []
-
-    history_lengths = sorted({index + 1 for index in valid_points})
-    score_cache: dict[int, float] = {}
-    signal_cache: dict[int, str] = {}
-    for length in history_lengths:
-        historical = enriched.iloc[:length].copy()
-        if ENABLE_VOLUME_PROFILE:
-            try:
-                compute_volume_profile(historical)
-            except (ArithmeticError, TypeError, ValueError):
-                logger.debug("Historical volume profile failed for %s.", ticker)
-        historical_score = score_ticker(historical, is_etf=is_etf)
-        final_score = _finite_float(
-            getattr(historical_score, "final_score", np.nan)
-        )
-        score_cache[length] = (
-            final_score
-            if np.isfinite(final_score)
-            else _finite_float(getattr(historical_score, "total", np.nan), 0.0)
-        )
-        signal_cache[length] = _historical_entry_signal(
-            historical, historical_score
-        )
 
     benchmark_close = None
     if benchmark_frame is not None and not benchmark_frame.empty:
@@ -915,46 +984,28 @@ def _backtest_one_ticker(
                     and benchmark_close.loc[start_date] > 0
                 ):
                     benchmark_returns[period] = (
-                        benchmark_close.loc[end_date] / benchmark_close.loc[start_date]
-                        - 1
+                        benchmark_close.loc[end_date] / benchmark_close.loc[start_date] - 1
                     ) * 100
-        cost_percent = (
-            commission * 2 + slippage * 2 + (0.0 if is_etf else stamp_duty)
-        ) * 100
-        prices20 = np.concatenate(
-            ([entry_price], closes[entry_index : entry_index + 21])
-        )
-        prices60 = np.concatenate(
-            ([entry_price], closes[entry_index : entry_index + outcome_horizon + 1])
-        )
-        lows20 = np.concatenate(
-            ([entry_price], lows[entry_index : entry_index + 21])
-        )
-        lows60 = np.concatenate(
-            ([entry_price], lows[entry_index : entry_index + outcome_horizon + 1])
-        )
-        drawdown20 = float(
-            ((lows20 / np.maximum.accumulate(prices20) - 1).min()) * 100
-        )
-        drawdown60 = float(
-            ((lows60 / np.maximum.accumulate(prices60) - 1).min()) * 100
-        )
+        cost_percent = (commission * 2 + slippage * 2 + (0.0 if is_etf else stamp_duty)) * 100
+        prices20 = np.concatenate(([entry_price], closes[entry_index : entry_index + 21]))
+        prices60 = np.concatenate(([entry_price], closes[entry_index : entry_index + outcome_horizon + 1]))
+        lows20 = np.concatenate(([entry_price], lows[entry_index : entry_index + 21]))
+        lows60 = np.concatenate(([entry_price], lows[entry_index : entry_index + outcome_horizon + 1]))
+        drawdown20 = float(((lows20 / np.maximum.accumulate(prices20) - 1).min()) * 100)
+        drawdown60 = float(((lows60 / np.maximum.accumulate(prices60) - 1).min()) * 100)
         if test_start is not None and entry_date >= test_start:
             split = "test"
         elif validation_end is not None and entry_date >= validation_end:
             split = "validation"
         else:
             split = "train"
-        spacing = (
-            outcome_horizon
-            if previous_sample_index is None
-            else max(1, index - previous_sample_index)
-        )
+        spacing = outcome_horizon if previous_sample_index is None else max(1, index - previous_sample_index)
         sample_weight = min(1.0, spacing / float(outcome_horizon))
+        historical_score, historical_signal = evaluation_map[index]
         samples.append(
             {
                 "ticker": ticker,
-                "entry_signal": signal_cache.get(index + 1, "UNKNOWN"),
+                "entry_signal": historical_signal,
                 "signal_date": signal_date.strftime("%Y-%m-%d"),
                 "entry_date": entry_date.strftime("%Y-%m-%d"),
                 "entry_price": float(entry_price),
@@ -966,7 +1017,7 @@ def _backtest_one_ticker(
                 "net_return60": (future60 / entry_price - 1) * 100 - cost_percent,
                 "drawdown20": drawdown20,
                 "drawdown60": drawdown60,
-                "score": score_cache[index + 1],
+                "score": historical_score,
                 "split": split,
                 "sample_weight": round(sample_weight, 4),
             }
@@ -974,6 +1025,55 @@ def _backtest_one_ticker(
         previous_sample_index = index
     return samples
 
+
+def _backtest_one_ticker_cached(
+    ticker: str,
+    source: str,
+    benchmark_frame: pd.DataFrame | None,
+    commission: float,
+    stamp_duty: float,
+    slippage: float,
+    split_dates: tuple[pd.Timestamp | None, pd.Timestamp | None],
+    benchmark_signature: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    raw_path = _cache_path(ticker, source)
+    price_signature = file_signature(raw_path)
+    cache_key = ""
+    if price_signature:
+        cache_key = backtest_cache_key(
+            {
+                "ticker": str(ticker),
+                "source": str(source),
+                "price_signature": price_signature,
+                "benchmark_signature": benchmark_signature,
+                "commission": float(commission),
+                "stamp_duty": float(stamp_duty),
+                "slippage": float(slippage),
+                "split_dates": [
+                    value.isoformat() if value is not None else None
+                    for value in split_dates
+                ],
+                "cooldown": int(BACKTEST_SIGNAL_COOLDOWN_DAYS),
+                "horizon": int(BACKTEST_OUTCOME_HORIZON_DAYS),
+                "score_window": int(BACKTEST_SCORE_WINDOW_BARS),
+            }
+        )
+    if BACKTEST_CACHE_ENABLED and cache_key:
+        cached = load_backtest_cache(ticker, cache_key)
+        if cached is not None:
+            return cached, True
+    samples = _backtest_one_ticker(
+        ticker,
+        source,
+        benchmark_frame,
+        commission,
+        stamp_duty,
+        slippage,
+        split_dates,
+    )
+    if BACKTEST_CACHE_ENABLED and cache_key:
+        save_backtest_cache(ticker, cache_key, samples)
+    return samples, False
 
 def _backtest_evidence(
     samples: int, effective_samples: float, return_std: float
@@ -1627,6 +1727,68 @@ def _bucket_rows(sample_frame: pd.DataFrame) -> list[dict[str, Any]]:
     return rows
 
 
+_BACKTEST_WORKER_CONTEXT: dict[str, Any] = {}
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def _init_backtest_worker(
+    source: str,
+    benchmark: str,
+    commission: float,
+    stamp_duty: float,
+    slippage: float,
+    split_dates: tuple[pd.Timestamp | None, pd.Timestamp | None],
+    benchmark_signature: str,
+) -> None:
+    global _BACKTEST_WORKER_CONTEXT
+    benchmark_frame = _load_cache(BENCHMARKS[benchmark], source)
+    _BACKTEST_WORKER_CONTEXT = {
+        "source": source,
+        "benchmark_frame": benchmark_frame,
+        "commission": commission,
+        "stamp_duty": stamp_duty,
+        "slippage": slippage,
+        "split_dates": split_dates,
+        "benchmark_signature": benchmark_signature,
+    }
+
+
+def _backtest_chunk_worker(
+    tickers: list[str],
+) -> tuple[list[dict[str, Any]], int, list[tuple[str, str]], int]:
+    context = _BACKTEST_WORKER_CONTEXT
+    samples: list[dict[str, Any]] = []
+    cache_hits = 0
+    errors: list[tuple[str, str]] = []
+    for ticker in tickers:
+        try:
+            ticker_samples, cache_hit = _backtest_one_ticker_cached(
+                ticker,
+                context["source"],
+                context["benchmark_frame"],
+                context["commission"],
+                context["stamp_duty"],
+                context["slippage"],
+                context["split_dates"],
+                context["benchmark_signature"],
+            )
+            samples.extend(ticker_samples)
+            cache_hits += int(cache_hit)
+        except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
+            errors.append((ticker, str(exc)))
+    return samples, cache_hits, errors, len(tickers)
+
+
 def run_historical_backtest(
     tickers: list[str],
     source: str = "eastmoney",
@@ -1702,38 +1864,121 @@ def run_historical_backtest(
             summary.insufficient_test_data = True
             return summary
 
+    unique_tickers = list(dict.fromkeys(tickers))
     samples: list[dict[str, Any]] = []
-    total = len(tickers)
+    total = len(unique_tickers)
+    cpu_limit = max(1, (os.cpu_count() or 2) - 1)
+    requested_workers = int(workers) if workers is not None else int(BACKTEST_MAX_PROCESSES)
+    worker_count = min(
+        max(1, requested_workers),
+        max(1, int(BACKTEST_MAX_PROCESSES)),
+        cpu_limit,
+        max(1, total),
+    )
+    use_process_pool = bool(
+        total >= int(BACKTEST_PROCESS_MIN_TICKERS) and worker_count > 1
+    )
+    engine = "process" if use_process_pool else "sequential"
+    benchmark_signature = file_signature(_cache_path(BENCHMARKS[benchmark], source))
     completed = 0
-    worker_count = min(workers or SCAN_THREADS, max(1, total))
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = {
-            executor.submit(
-                _backtest_one_ticker,
-                ticker,
+    cache_hits = 0
+    next_progress = max(1, int(BACKTEST_PROGRESS_INTERVAL))
+    backtest_started = time.perf_counter()
+
+    # Prevent each spawned NumPy/SciPy process from creating its own BLAS thread
+    # pool and oversubscribing the CPU.  Spawned Windows workers inherit these.
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
+    logger.info(
+        "Backtest engine: %s, workers=%d, chunk=%d, persistent cache=%s.",
+        engine,
+        worker_count,
+        int(BACKTEST_CHUNK_SIZE),
+        "on" if BACKTEST_CACHE_ENABLED else "off",
+    )
+
+    def record_progress(
+        batch_samples: list[dict[str, Any]],
+        batch_completed: int,
+        batch_cache_hits: int,
+    ) -> None:
+        nonlocal completed, cache_hits, next_progress
+        samples.extend(batch_samples)
+        completed += int(batch_completed)
+        cache_hits += int(batch_cache_hits)
+        if completed >= next_progress or completed >= total:
+            elapsed = max(time.perf_counter() - backtest_started, 1e-9)
+            rate = completed / elapsed
+            remaining = max(0, total - completed)
+            eta = remaining / rate if rate > 0 else 0.0
+            percent = completed / max(total, 1) * 100.0
+            logger.info(
+                "Backtesting progress: %d/%d tickers, %d samples. %.1f%% | cache=%d | elapsed=%s | ETA=%s | rate=%.2f ticker/s",
+                completed,
+                total,
+                len(samples),
+                percent,
+                cache_hits,
+                _format_duration(elapsed),
+                _format_duration(eta),
+                rate,
+            )
+            interval = max(1, int(BACKTEST_PROGRESS_INTERVAL))
+            next_progress = ((completed // interval) + 1) * interval
+
+    if use_process_pool:
+        chunk_size = max(1, int(BACKTEST_CHUNK_SIZE))
+        chunks = [
+            unique_tickers[start : start + chunk_size]
+            for start in range(0, total, chunk_size)
+        ]
+        with ProcessPoolExecutor(
+            max_workers=worker_count,
+            initializer=_init_backtest_worker,
+            initargs=(
                 source,
-                benchmark_frame,
+                benchmark,
                 commission,
                 stamp_duty,
                 slippage,
                 (validation_end, test_start),
-            ): ticker
-            for ticker in tickers
-        }
-        for future in as_completed(futures):
-            ticker = futures[future]
+                benchmark_signature,
+            ),
+        ) as executor:
+            futures = {
+                executor.submit(_backtest_chunk_worker, chunk): chunk for chunk in chunks
+            }
+            for future in as_completed(futures):
+                chunk = futures[future]
+                try:
+                    batch_samples, batch_hits, errors, batch_count = future.result()
+                except Exception as exc:
+                    logger.exception("Backtest worker chunk failed: %s", exc)
+                    record_progress([], len(chunk), 0)
+                    continue
+                for ticker, error in errors:
+                    logger.warning("Backtest failed for %s: %s", ticker, error)
+                record_progress(batch_samples, batch_count, batch_hits)
+    else:
+        for ticker in unique_tickers:
             try:
-                samples.extend(future.result())
+                ticker_samples, cache_hit = _backtest_one_ticker_cached(
+                    ticker,
+                    source,
+                    benchmark_frame,
+                    commission,
+                    stamp_duty,
+                    slippage,
+                    (validation_end, test_start),
+                    benchmark_signature,
+                )
             except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
                 logger.warning("Backtest failed for %s: %s", ticker, exc)
-            completed += 1
-            if completed == total or completed % 250 == 0:
-                logger.info(
-                    "Backtesting progress: %d/%d tickers, %d samples.",
-                    completed,
-                    total,
-                    len(samples),
-                )
+                ticker_samples, cache_hit = [], False
+            record_progress(ticker_samples, 1, int(cache_hit))
 
     split_dates = {
         "global_start": global_start.strftime("%Y-%m-%d")
@@ -1765,6 +2010,10 @@ def run_historical_backtest(
         validation_ratio=validation_ratio,
         split_dates=split_dates,
     )
+    summary.cache_hits = int(cache_hits)
+    summary.elapsed_seconds = float(time.perf_counter() - backtest_started)
+    summary.worker_count = int(worker_count)
+    summary.engine = engine
     if not samples:
         summary.insufficient_test_data = True
         summary.error = "未生成有效回测样本"

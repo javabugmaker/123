@@ -378,6 +378,10 @@ FUNDAMENTAL_PROGRESS_RE = re.compile(
 ANALYSE_PROGRESS_RE = re.compile(
     r"ANALYSE progress: (\d+)/(\d+) \((\d+) successful, (\d+) failed\)\."
 )
+BACKTEST_PROGRESS_RE = re.compile(
+    r"Backtesting progress: (\d+)/(\d+) tickers, (\d+) samples\."
+)
+BACKTEST_ETA_RE = re.compile(r"ETA=([^|]+)")
 
 
 class ScannerGUI:
@@ -1009,6 +1013,7 @@ class ScannerGUI:
             latest_fundamental_progress = None
             latest_download_progress = None
             latest_analyse_progress = None
+            latest_backtest_progress = None
             rendered_lines: list[str] = []
             for line in lines:
                 if FUNDAMENTAL_PROGRESS_RE.search(line):
@@ -1017,6 +1022,8 @@ class ScannerGUI:
                     latest_download_progress = line
                 elif ANALYSE_PROGRESS_RE.search(line):
                     latest_analyse_progress = line
+                elif BACKTEST_PROGRESS_RE.search(line):
+                    latest_backtest_progress = line
                 else:
                     rendered_lines.append(line)
             if latest_fundamental_progress:
@@ -1025,6 +1032,8 @@ class ScannerGUI:
                 rendered_lines.append(latest_download_progress)
             if latest_analyse_progress:
                 rendered_lines.append(latest_analyse_progress)
+            if latest_backtest_progress:
+                rendered_lines.append(latest_backtest_progress)
             self.append_log("".join(rendered_lines))
         self._log_job = self.root.after(150, self._flush_log_queue)
 
@@ -1159,6 +1168,7 @@ class ScannerGUI:
         fundamental_progress = FUNDAMENTAL_PROGRESS_RE.search(text)
         progress = DOWNLOAD_PROGRESS_RE.search(text)
         analyse_progress = ANALYSE_PROGRESS_RE.search(text)
+        backtest_progress = BACKTEST_PROGRESS_RE.search(text)
         if fundamental_progress:
             completed, total, updated, unavailable = (
                 int(value) for value in fundamental_progress.groups()
@@ -1192,6 +1202,13 @@ class ScannerGUI:
             self.status.set(
                 f"指标分析 {completed}/{total} · 成功 {successful} · 失败 {failed}"
             )
+        elif backtest_progress:
+            completed, total, samples = (int(value) for value in backtest_progress.groups())
+            eta_match = BACKTEST_ETA_RE.search(text)
+            eta = eta_match.group(1).strip() if eta_match else "计算中"
+            self.progress.stop()
+            self.progress.configure(mode="determinate", maximum=max(total, 1), value=completed)
+            self.status.set(f"历史回测 {completed}/{total} · 样本 {samples} · ETA {eta}")
         elif "Phase 2/2:" in text:
             self.progress.configure(mode="indeterminate")
             self.progress.start(12)

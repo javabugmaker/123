@@ -40,6 +40,7 @@ from config import (
     OUTPUT_DIR,
     SCAN_THREADS,
     SCORING_VERSION,
+    INDICATOR_CACHE_ENABLED,
     TICKFLOW_MAX_WORKERS,
     setup_logging,
 )
@@ -56,6 +57,7 @@ from downloader import (
 from filters import run_all_filters
 from fundamental_quality import get_quality
 from indicators import compute_all_indicators
+from performance_cache import load_or_compute_indicators
 from score import (
     ScoreBreakdown,
     classify_style,
@@ -1091,6 +1093,7 @@ def run_scan(
                     _analyse_one_ticker_from_df,
                     ti,
                     downloaded_frames[ticker],
+                    data_source,
                 )
             ] = ti
             return True
@@ -1220,10 +1223,18 @@ def _cache_path_for(ticker: str, source: str) -> Path:
 def _analyse_one_ticker_from_df(
     ticker_info: TickerInfo,
     df: pd.DataFrame | None,
+    data_source: str = "tickflow",
 ) -> tuple[ScanResult, pd.DataFrame | None]:
     if df is None:
         return scan_single_from_df(ticker_info, df), None
-    enriched = compute_all_indicators(df.copy())
+    raw_path = _cache_path(_normalize_ticker(ticker_info.ticker), data_source)
+    enriched, _indicator_cache_hit = load_or_compute_indicators(
+        ticker_info.ticker,
+        df,
+        compute_all_indicators,
+        source_path=raw_path if raw_path.exists() else None,
+        enabled=INDICATOR_CACHE_ENABLED,
+    )
     result = scan_single_from_df(ticker_info, enriched, indicators_computed=True)
     if result.error:
         return result, None
@@ -1255,7 +1266,7 @@ def _analyse_one_ticker(
             is_etf=ticker_info.is_etf,
             error=f"No cached data: {cache_path}",
         )
-    return scan_single_from_df(ticker_info, df)
+    return _analyse_one_ticker_from_df(ticker_info, df, data_source)[0]
 
 
 def run_parallel_indicator_scan(

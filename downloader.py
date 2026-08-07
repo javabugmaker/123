@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -30,6 +31,7 @@ except ImportError:  # pragma: no cover - runtime error explains installation
 
 from config import (
     CACHE_DIR,
+    CACHE_READ_THREADS,
     EXCLUDED_SECURITY_KEYWORDS,
     HISTORY_YEARS,
     LOG_DIR,
@@ -53,6 +55,8 @@ _LEGACY_SOURCE_NAMES = frozenset({"auto", "akshare", "eastmoney", "sina", "tence
 _PRICE_CACHE_SCHEMA_VERSION = "v3-tickflow-forward"
 _PRICE_CACHE_DIR = CACHE_DIR / _PRICE_CACHE_SCHEMA_VERSION
 _UNIVERSE_CACHE_PATH = CACHE_DIR / "_tickflow_universe.json"
+_MARKET_MANIFEST_PATH = _PRICE_CACHE_DIR / "_manifest.json"
+_MARKET_MANIFEST_DIRTY: dict[str, dict[str, Any]] = {}
 _INCREMENTAL_BARS = 90
 _REBASE_TOLERANCE = 1e-4
 
@@ -313,6 +317,74 @@ def _save_cache(ticker: str, df: pd.DataFrame, source: str | None = None) -> Non
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+
+def _record_market_manifest(ticker: str, df: pd.DataFrame) -> None:
+    path = _cache_path(ticker)
+    try:
+        stat = path.stat()
+    except OSError:
+        return
+    index = pd.DatetimeIndex(pd.to_datetime(df.index, errors="coerce")).dropna()
+    latest = pd.Timestamp(index.max()).strftime("%Y-%m-%d") if len(index) else ""
+    _MARKET_MANIFEST_DIRTY[normalize_ticker(ticker)] = {
+        "path": path.name,
+        "rows": int(len(df)),
+        "last_date": latest,
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+        "adjust": TICKFLOW_ADJUST,
+        "schema": _PRICE_CACHE_SCHEMA_VERSION,
+    }
+
+
+def _flush_market_manifest() -> None:
+    if not _MARKET_MANIFEST_DIRTY:
+        return
+    payload: dict[str, Any] = {}
+    try:
+        if _MARKET_MANIFEST_PATH.exists():
+            loaded = json.loads(_MARKET_MANIFEST_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                payload = loaded
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        payload = {}
+    payload.update(_MARKET_MANIFEST_DIRTY)
+    _MARKET_MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = _MARKET_MANIFEST_PATH.with_name(f".{_MARKET_MANIFEST_PATH.name}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(_MARKET_MANIFEST_PATH)
+        _MARKET_MANIFEST_DIRTY.clear()
+    except OSError:
+        logger.debug("Unable to flush market cache manifest", exc_info=True)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _load_caches_parallel(symbols: list[str]) -> dict[str, pd.DataFrame]:
+    if not symbols:
+        return {}
+    workers = min(max(1, int(CACHE_READ_THREADS)), len(symbols))
+    if workers <= 1 or len(symbols) < 32:
+        return {
+            symbol: frame
+            for symbol in symbols
+            if (frame := _load_cache(symbol)) is not None
+        }
+    frames: dict[str, pd.DataFrame] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_load_cache, symbol): symbol for symbol in symbols}
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                frame = future.result()
+            except (OSError, ValueError, TypeError, ImportError):
+                frame = None
+            if frame is not None:
+                frames[symbol] = frame
+    return frames
 
 
 def _latest_completed_trading_day(now: datetime | None = None) -> date:
@@ -620,8 +692,9 @@ def download_batch(
     stale_cache: dict[str, pd.DataFrame] = {}
     missing: list[str] = []
 
+    cached_frames = {} if force else _load_caches_parallel(symbols)
     for symbol in symbols:
-        cached = None if force else _load_cache(symbol)
+        cached = cached_frames.get(symbol)
         if cached is None:
             missing.append(symbol)
         elif cache_first or _cache_has_completed_daily_bar(cached):
@@ -681,6 +754,9 @@ def download_batch(
             else:
                 failed += 1
 
+    for symbol, frame in results.items():
+        _record_market_manifest(symbol, frame)
+    _flush_market_manifest()
     _log_download_progress(total, total, len(results), failed)
     logger.info(
         "Download batch complete (TickFlow Free): %d/%d tickers available.",
