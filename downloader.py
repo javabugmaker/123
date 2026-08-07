@@ -1,23 +1,21 @@
 """
 downloader.py — TickFlow Free market-data layer for InstitutionScanner.
 
-TickFlow is the only OHLCV/universe provider.  AkShare is intentionally kept
-out of this module and is used only by fundamental_data.py for low-frequency
-fundamental refreshes.
+TickFlow Free is the sole provider for the A-share/ETF universe and historical
+daily OHLCV data. AkShare is intentionally not imported here; it is used only
+by fundamental_data.py for low-frequency fundamental refreshes.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
-import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Mapping, cast
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -25,7 +23,7 @@ import pandas as pd
 
 try:
     from tickflow import TickFlow
-except ImportError:  # pragma: no cover - handled with a clear runtime error
+except ImportError:  # pragma: no cover - runtime error explains installation
     TickFlow = None  # type: ignore[assignment]
 
 from config import (
@@ -49,94 +47,15 @@ logger = setup_logging(
 
 _DATA_SOURCE = "tickflow"
 _DATA_SOURCE_LABEL = "TickFlow Free"
+_LEGACY_SOURCE_NAMES = frozenset({"auto", "akshare", "eastmoney", "sina", "tencent"})
 _PRICE_CACHE_SCHEMA_VERSION = "v3-tickflow-forward"
 _PRICE_CACHE_DIR = CACHE_DIR / _PRICE_CACHE_SCHEMA_VERSION
 _UNIVERSE_CACHE_PATH = CACHE_DIR / "_tickflow_universe.json"
+_INCREMENTAL_BARS = 90
+_REBASE_TOLERANCE = 1e-4
+
 _TICKFLOW_CLIENT: Any | None = None
 _INSTRUMENT_META: dict[str, dict[str, Any]] = {}
-
-
-
-_AKSHARE_MANAGED_PROXY_ENV: dict[str, str] = {}
-
-
-def _proxy_url(value: str) -> str:
-    value = str(value or "").strip()
-    if not value:
-        return ""
-    return value if "://" in value else f"http://{value}"
-
-
-def _windows_system_proxy() -> dict[str, str]:
-    """Read WinINET proxy (used by Clash system-proxy mode) for AkShare only."""
-    if sys.platform != "win32":
-        return {}
-    try:
-        import winreg
-
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-        ) as key:
-            enabled = int(winreg.QueryValueEx(key, "ProxyEnable")[0] or 0)
-            if not enabled:
-                return {}
-            raw = str(winreg.QueryValueEx(key, "ProxyServer")[0] or "").strip()
-    except (OSError, ValueError, TypeError):
-        return {}
-    if not raw:
-        return {}
-    if ";" not in raw and "=" not in raw:
-        proxy = _proxy_url(raw)
-        return {"http": proxy, "https": proxy} if proxy else {}
-    result: dict[str, str] = {}
-    for item in raw.split(";"):
-        if "=" not in item:
-            continue
-        protocol, server = item.split("=", 1)
-        protocol = protocol.strip().lower()
-        if protocol in {"http", "https"}:
-            proxy = _proxy_url(server)
-            if proxy:
-                result[protocol] = proxy
-    if "http" in result and "https" not in result:
-        result["https"] = result["http"]
-    if "https" in result and "http" not in result:
-        result["http"] = result["https"]
-    return result
-
-
-def configure_akshare_proxy_from_system() -> dict[str, str]:
-    """Mirror Clash/Windows system proxy into Requests env for AkShare fundamentals."""
-    system_proxy = _windows_system_proxy()
-    explicit = {
-        "http": os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or "",
-        "https": os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or "",
-    }
-    if not system_proxy:
-        for key, managed in list(_AKSHARE_MANAGED_PROXY_ENV.items()):
-            if os.environ.get(key) == managed:
-                os.environ.pop(key, None)
-            _AKSHARE_MANAGED_PROXY_ENV.pop(key, None)
-        return {k: v for k, v in explicit.items() if v}
-
-    resolved = {
-        "http": _proxy_url(explicit["http"] or system_proxy.get("http", "")),
-        "https": _proxy_url(
-            explicit["https"] or system_proxy.get("https", system_proxy.get("http", ""))
-        ),
-    }
-    for protocol, value in resolved.items():
-        if not value:
-            continue
-        upper = f"{protocol.upper()}_PROXY"
-        lower = f"{protocol}_proxy"
-        if not os.environ.get(upper) and not os.environ.get(lower):
-            os.environ[upper] = value
-            os.environ[lower] = value
-            _AKSHARE_MANAGED_PROXY_ENV[upper] = value
-            _AKSHARE_MANAGED_PROXY_ENV[lower] = value
-    return {k: v for k, v in resolved.items() if v}
 
 
 class DownloadError(RuntimeError):
@@ -157,11 +76,29 @@ class TickerInfo:
     float_shares: float | None = None
 
 
+def _log_download_progress(
+    completed: int, total: int, successful: int, skipped: int
+) -> None:
+    """Stable GUI/test log format used by the scan progress parser."""
+    logger.info(
+        "DOWNLOAD progress: %d/%d (%d succeeded, %d no-data/failed).",
+        completed,
+        total,
+        successful,
+        skipped,
+    )
+
+
 def normalize_data_source(source: str | None = None) -> str:
+    """Return the only supported market source.
+
+    Legacy source names are accepted only as migration aliases so old
+    checkpoints/CLI tests can be read. They never select another provider.
+    """
     value = str(source or _DATA_SOURCE).strip().lower()
-    if value in {"", "tickflow", "tickflow-free", "free"}:
+    if value in {"", "tickflow", "tickflow-free", "free"} | _LEGACY_SOURCE_NAMES:
         return _DATA_SOURCE
-    raise ValueError(f"已移除行情数据源 {source!r}；当前仅支持 TickFlow Free")
+    raise ValueError(f"未知行情数据源 {source!r}；当前仅支持 TickFlow Free")
 
 
 def get_data_source_label(source: str | None = None) -> str:
@@ -237,6 +174,43 @@ def _legacy_cache_path(ticker: str, source: str | None = None) -> Path:
     return _PRICE_CACHE_DIR / f"{_safe_cache_stem(ticker)}.csv"
 
 
+def _number_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) and number > 0 else None
+
+
+def _as_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump()
+            return dict(dumped) if isinstance(dumped, Mapping) else {}
+        except Exception:
+            return {}
+    if hasattr(value, "__dict__"):
+        try:
+            return dict(vars(value))
+        except TypeError:
+            return {}
+    return {}
+
+
+def _extract_universe_symbols(value: Any) -> list[str]:
+    data = _as_mapping(value)
+    raw = data.get("symbols")
+    if raw is None and hasattr(value, "symbols"):
+        raw = getattr(value, "symbols")
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    return list(
+        dict.fromkeys(normalize_ticker(symbol) for symbol in raw if str(symbol).strip())
+    )
+
+
 def _validate_ohlcv(df: pd.DataFrame | None) -> pd.DataFrame | None:
     required = ["Open", "High", "Low", "Close", "Volume"]
     if df is None or df.empty or any(column not in df.columns for column in required):
@@ -250,9 +224,13 @@ def _validate_ohlcv(df: pd.DataFrame | None) -> pd.DataFrame | None:
         cleaned["Amount"] = pd.to_numeric(cleaned["Amount"], errors="coerce")
     cleaned = cleaned.sort_index()
     cleaned = cleaned.loc[~cleaned.index.duplicated(keep="last")]
+    finite = pd.Series(
+        np.isfinite(cleaned[required].to_numpy(dtype=float)).all(axis=1),
+        index=cleaned.index,
+    )
     valid = (
         cleaned[required].notna().all(axis=1)
-        & np.isfinite(cleaned[required]).all(axis=1)
+        & finite
         & (cleaned["Open"] > 0)
         & (cleaned["High"] > 0)
         & (cleaned["Low"] > 0)
@@ -286,24 +264,32 @@ def _normalize_tickflow_frame(frame: Any) -> pd.DataFrame | None:
     if "Date" in renamed.columns:
         renamed["Date"] = pd.to_datetime(renamed["Date"], errors="coerce")
         renamed = renamed.set_index("Date")
-    elif "trade_time" in frame.columns:
-        renamed.index = pd.to_datetime(frame["trade_time"], errors="coerce")
+    elif "trade_time" in renamed.columns:
+        renamed.index = pd.to_datetime(renamed["trade_time"], errors="coerce")
     return _validate_ohlcv(renamed)
 
 
 def _load_cache(ticker: str, source: str | None = None) -> pd.DataFrame | None:
-    for path, reader in (
+    readers = (
         (_cache_path(ticker, source), pd.read_parquet),
         (
             _legacy_cache_path(ticker, source),
-            lambda p: pd.read_csv(p, index_col=0, parse_dates=True),
+            lambda path: pd.read_csv(path, index_col=0, parse_dates=True),
         ),
-    ):
+    )
+    for path, reader in readers:
         if not path.exists():
             continue
         try:
             return _validate_ohlcv(reader(path))
-        except (OSError, ValueError, ImportError, pd.errors.ParserError):
+        except (
+            OSError,
+            UnicodeDecodeError,
+            ImportError,
+            ValueError,
+            pd.errors.EmptyDataError,
+            pd.errors.ParserError,
+        ):
             logger.warning("行情缓存损坏，忽略: %s", path)
     return None
 
@@ -314,7 +300,9 @@ def _save_cache(ticker: str, df: pd.DataFrame, source: str | None = None) -> Non
         return
     path = _cache_path(ticker, source)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(suffix=".parquet", dir=path.parent, delete=False) as fh:
+    with tempfile.NamedTemporaryFile(
+        suffix=".parquet", dir=path.parent, delete=False
+    ) as fh:
         temporary = Path(fh.name)
     try:
         validated.to_parquet(temporary)
@@ -361,7 +349,11 @@ def _load_universe_cache() -> dict[str, Any] | None:
         if age > TICKFLOW_UNIVERSE_CACHE_TTL_HOURS * 3600:
             return None
         payload = json.loads(_UNIVERSE_CACHE_PATH.read_text(encoding="utf-8"))
-        return payload if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            return None
+        if "stocks" not in payload or "etfs" not in payload or "metadata" not in payload:
+            return None
+        return payload
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
@@ -379,7 +371,6 @@ def _save_universe_cache(payload: dict[str, Any]) -> None:
 def _instrument_batches(symbols: list[str]) -> list[dict[str, Any]]:
     client = _tickflow()
     result: list[dict[str, Any]] = []
-    # TickFlow HTTP docs cap one instrument metadata batch at 1000 symbols.
     for start in range(0, len(symbols), 1000):
         chunk = symbols[start : start + 1000]
         try:
@@ -394,13 +385,38 @@ def _instrument_batches(symbols: list[str]) -> list[dict[str, Any]]:
                 exc,
             )
             continue
-        if isinstance(rows, list):
-            result.extend(row for row in rows if isinstance(row, dict))
+        if isinstance(rows, (list, tuple)):
+            result.extend(mapped for row in rows if (mapped := _as_mapping(row)))
     return result
 
 
-def _ticker_info_from_meta(symbol: str, meta: dict[str, Any], is_etf: bool) -> TickerInfo:
-    ext = meta.get("ext") if isinstance(meta.get("ext"), dict) else {}
+def _fetch_complete_universe() -> dict[str, Any]:
+    client = _tickflow()
+    try:
+        stocks = _extract_universe_symbols(client.universes.get("CN_Equity_A"))
+        etfs = _extract_universe_symbols(client.universes.get("CN_ETF"))
+    except Exception as exc:
+        raise DownloadError(f"TickFlow 标的池获取失败: {exc}") from exc
+    if not stocks:
+        raise DownloadError("TickFlow CN_Equity_A 标的池为空")
+    if not etfs:
+        logger.warning("TickFlow CN_ETF 标的池为空；ETF 扫描将暂时不可用")
+    symbols = list(dict.fromkeys(stocks + etfs))
+    metadata_rows = _instrument_batches(symbols)
+    metadata = {
+        normalize_ticker(row.get("symbol", "")): row
+        for row in metadata_rows
+        if row.get("symbol")
+    }
+    payload = {"stocks": stocks, "etfs": etfs, "metadata": metadata}
+    _save_universe_cache(payload)
+    return payload
+
+
+def _ticker_info_from_meta(
+    symbol: str, meta: dict[str, Any], is_etf: bool
+) -> TickerInfo:
+    ext = meta.get("ext") if isinstance(meta.get("ext"), Mapping) else {}
     total_shares = _number_or_none(ext.get("total_shares"))
     float_shares = _number_or_none(ext.get("float_shares"))
     name = str(meta.get("name") or "")
@@ -416,67 +432,41 @@ def _ticker_info_from_meta(symbol: str, meta: dict[str, Any], is_etf: bool) -> T
     )
 
 
-def _number_or_none(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if np.isfinite(number) and number > 0 else None
-
-
 def build_ticker_universe(
     include_stocks: bool = True,
     include_etfs: bool = True,
 ) -> tuple[list[TickerInfo], list[TickerInfo]]:
     cached = _load_universe_cache()
     if cached is None:
-        client = _tickflow()
-        stock_symbols: list[str] = []
-        etf_symbols: list[str] = []
-        if include_stocks:
-            universe = client.universes.get("CN_Equity_A")
-            stock_symbols = [
-                normalize_ticker(symbol)
-                for symbol in (universe.get("symbols") or [])
-                if symbol
-            ]
-        if include_etfs:
-            universe = client.universes.get("CN_ETF")
-            etf_symbols = [
-                normalize_ticker(symbol)
-                for symbol in (universe.get("symbols") or [])
-                if symbol
-            ]
-        all_symbols = list(dict.fromkeys(stock_symbols + etf_symbols))
-        metadata = _instrument_batches(all_symbols)
-        meta_by_symbol = {
-            normalize_ticker(row.get("symbol", "")): row
-            for row in metadata
-            if row.get("symbol")
-        }
-        cached = {
-            "stocks": stock_symbols,
-            "etfs": etf_symbols,
-            "metadata": meta_by_symbol,
-        }
-        _save_universe_cache(cached)
+        cached = _fetch_complete_universe()
 
-    stock_symbols = [normalize_ticker(s) for s in cached.get("stocks", [])] if include_stocks else []
-    etf_symbols = [normalize_ticker(s) for s in cached.get("etfs", [])] if include_etfs else []
     metadata = cached.get("metadata", {})
     if not isinstance(metadata, dict):
         metadata = {}
 
+    stock_symbols = (
+        [normalize_ticker(symbol) for symbol in cached.get("stocks", [])]
+        if include_stocks
+        else []
+    )
+    etf_symbols = (
+        [normalize_ticker(symbol) for symbol in cached.get("etfs", [])]
+        if include_etfs
+        else []
+    )
+
     stocks: list[TickerInfo] = []
     etfs: list[TickerInfo] = []
     for symbol in stock_symbols:
-        meta = metadata.get(symbol, {}) if isinstance(metadata.get(symbol, {}), dict) else {}
+        raw_meta = metadata.get(symbol, {})
+        meta = raw_meta if isinstance(raw_meta, dict) else {}
         _INSTRUMENT_META[symbol] = meta
         item = _ticker_info_from_meta(symbol, meta, False)
         if not _is_excluded_security_name(item.name):
             stocks.append(item)
     for symbol in etf_symbols:
-        meta = metadata.get(symbol, {}) if isinstance(metadata.get(symbol, {}), dict) else {}
+        raw_meta = metadata.get(symbol, {})
+        meta = raw_meta if isinstance(raw_meta, dict) else {}
         _INSTRUMENT_META[symbol] = meta
         item = _ticker_info_from_meta(symbol, meta, True)
         if not _is_excluded_security_name(item.name):
@@ -494,44 +484,82 @@ def _history_count() -> int:
     return min(10000, max(320, int(HISTORY_YEARS * 260 + 80)))
 
 
-def _batch_fetch(symbols: list[str]) -> dict[str, pd.DataFrame]:
+def _batch_fetch(
+    symbols: list[str],
+    count: int | None = None,
+) -> dict[str, pd.DataFrame]:
     if not symbols:
         return {}
     client = _tickflow()
+    request_count = _history_count() if count is None else max(2, int(count))
+    kwargs = {
+        "period": "1d",
+        "count": request_count,
+        "adjust": TICKFLOW_ADJUST,
+        "as_dataframe": True,
+        "show_progress": False,
+        "max_workers": TICKFLOW_MAX_WORKERS,
+        "batch_size": TICKFLOW_BATCH_SIZE,
+    }
     try:
-        raw = client.klines.batch(
-            symbols,
-            period="1d",
-            count=_history_count(),
-            adjust=TICKFLOW_ADJUST,
-            as_dataframe=True,
-            show_progress=False,
-            max_workers=TICKFLOW_MAX_WORKERS,
-            batch_size=TICKFLOW_BATCH_SIZE,
-        )
+        raw = client.klines.batch(symbols, **kwargs)
     except TypeError:
-        # Keep compatibility with older SDKs that may not expose batch_size.
-        raw = client.klines.batch(
-            symbols,
-            period="1d",
-            count=_history_count(),
-            adjust=TICKFLOW_ADJUST,
-            as_dataframe=True,
-            show_progress=False,
-            max_workers=TICKFLOW_MAX_WORKERS,
-        )
+        kwargs.pop("batch_size", None)
+        raw = client.klines.batch(symbols, **kwargs)
     except Exception as exc:
         raise DownloadError(f"TickFlow 批量 K 线请求失败: {exc}") from exc
 
     results: dict[str, pd.DataFrame] = {}
-    if not isinstance(raw, dict):
+    if not isinstance(raw, Mapping):
         return results
     for ticker, frame in raw.items():
-        symbol = normalize_ticker(ticker)
+        symbol = normalize_ticker(str(ticker))
         normalized = _normalize_tickflow_frame(frame)
         if normalized is not None and not normalized.empty:
             results[symbol] = normalized
     return results
+
+
+def _fetch_one(ticker: str, count: int | None = None) -> pd.DataFrame | None:
+    client = _tickflow()
+    request_count = _history_count() if count is None else max(2, int(count))
+    try:
+        frame = client.klines.get(
+            normalize_ticker(ticker),
+            period="1d",
+            count=request_count,
+            adjust=TICKFLOW_ADJUST,
+            as_dataframe=True,
+        )
+    except Exception as exc:
+        logger.warning("TickFlow 获取 %s 失败: %s", ticker, exc)
+        return None
+    return _normalize_tickflow_frame(frame)
+
+
+def _requires_full_rebase(
+    cached: pd.DataFrame,
+    recent: pd.DataFrame,
+) -> bool:
+    """Detect when forward-adjustment history was rebased by a corporate action."""
+    common = cached.index.intersection(recent.index)
+    if len(common) < 2:
+        return True
+    sample = common[-min(10, len(common)) :]
+    old = pd.to_numeric(cached.loc[sample, "Close"], errors="coerce")
+    new = pd.to_numeric(recent.loc[sample, "Close"], errors="coerce")
+    valid = old.notna() & new.notna() & old.gt(0)
+    if not valid.any():
+        return True
+    relative = ((new[valid] / old[valid]) - 1.0).abs()
+    return bool(relative.max() > _REBASE_TOLERANCE)
+
+
+def _merge_cached(cached: pd.DataFrame, recent: pd.DataFrame) -> pd.DataFrame:
+    combined = cast(pd.DataFrame, pd.concat([cached, recent], axis=0))
+    combined = combined.loc[~combined.index.duplicated(keep="last")].sort_index()
+    validated = _validate_ohlcv(combined)
+    return validated if validated is not None else cached
 
 
 def download_ticker(
@@ -545,25 +573,23 @@ def download_ticker(
     cached = None if force else _load_cache(ticker)
     if cached is not None and (cache_first or _cache_has_completed_daily_bar(cached)):
         return cached
-    try:
-        client = _tickflow()
-        frame = client.klines.get(
-            ticker,
-            period="1d",
-            count=_history_count(),
-            adjust=TICKFLOW_ADJUST,
-            as_dataframe=True,
-        )
-    except Exception as exc:
-        if cached is not None:
-            logger.warning("TickFlow 更新 %s 失败，继续使用缓存: %s", ticker, exc)
+
+    if cached is not None and not force:
+        recent = _fetch_one(ticker, _INCREMENTAL_BARS)
+        if recent is not None and not recent.empty:
+            if _requires_full_rebase(cached, recent):
+                logger.info("TickFlow 检测到 %s 复权基准变化，重建完整历史。", ticker)
+            else:
+                merged = _merge_cached(cached, recent)
+                _save_cache(ticker, merged)
+                return merged
+        else:
             return cached
-        logger.warning("TickFlow 获取 %s 失败: %s", ticker, exc)
-        return None
-    normalized = _normalize_tickflow_frame(frame)
-    if normalized is not None:
-        _save_cache(ticker, normalized)
-        return normalized
+
+    full = _fetch_one(ticker)
+    if full is not None and not full.empty:
+        _save_cache(ticker, full)
+        return full
     return cached
 
 
@@ -575,9 +601,9 @@ def download_batch(
     cache_first: bool = False,
     skip_tickers: set[str] | None = None,
 ) -> dict[str, pd.DataFrame]:
-    del desc  # TickFlow SDK handles batching; GUI progress is logged below.
+    del desc
     normalize_data_source(source)
-    skip = {normalize_ticker(t) for t in (skip_tickers or set())}
+    skip = {normalize_ticker(ticker) for ticker in (skip_tickers or set())}
     symbols = list(
         dict.fromkeys(
             normalize_ticker(item.ticker)
@@ -587,58 +613,71 @@ def download_batch(
     )
     total = len(symbols)
     results: dict[str, pd.DataFrame] = {}
-    pending: list[str] = []
+    stale_cache: dict[str, pd.DataFrame] = {}
+    missing: list[str] = []
 
     for symbol in symbols:
         cached = None if force else _load_cache(symbol)
-        if cached is not None and (
-            cache_first or _cache_has_completed_daily_bar(cached)
-        ):
+        if cached is None:
+            missing.append(symbol)
+        elif cache_first or _cache_has_completed_daily_bar(cached):
             results[symbol] = cached
         else:
-            pending.append(symbol)
+            stale_cache[symbol] = cached
 
     logger.info(
-        "DOWNLOAD start: %d tickers via TickFlow Free; %d cache hits, %d need refresh.",
+        "DOWNLOAD start: %d tickers via TickFlow Free; %d fresh cache, "
+        "%d incremental, %d full.",
         total,
         len(results),
-        len(pending),
+        len(stale_cache),
+        len(missing),
     )
-    logger.info(
-        "DOWNLOAD progress: %d/%d (%d succeeded, %d no-data/failed).",
-        len(results),
-        total,
-        len(results),
-        0,
-    )
+    _log_download_progress(len(results), total, len(results), 0)
 
     failed = 0
-    if pending:
+    rebase: list[str] = []
+    if stale_cache:
         try:
-            fetched = _batch_fetch(pending)
+            recent_frames = _batch_fetch(list(stale_cache), _INCREMENTAL_BARS)
+        except DownloadError as exc:
+            logger.warning("%s", exc)
+            recent_frames = {}
+
+        for symbol, cached in stale_cache.items():
+            recent = recent_frames.get(symbol)
+            if recent is None or recent.empty:
+                results[symbol] = cached
+                continue
+            if _requires_full_rebase(cached, recent):
+                rebase.append(symbol)
+                continue
+            merged = _merge_cached(cached, recent)
+            _save_cache(symbol, merged)
+            results[symbol] = merged
+
+    full_symbols = list(dict.fromkeys(missing + rebase))
+    if full_symbols:
+        try:
+            full_frames = _batch_fetch(full_symbols)
         except DownloadError as exc:
             logger.error("%s", exc)
-            fetched = {}
-        for symbol in pending:
-            frame = fetched.get(symbol)
+            full_frames = {}
+
+        for symbol in full_symbols:
+            frame = full_frames.get(symbol)
             if frame is not None and not frame.empty:
                 _save_cache(symbol, frame)
                 results[symbol] = frame
+                continue
+            old = stale_cache.get(symbol)
+            if old is not None and not force:
+                results[symbol] = old
+                logger.warning("TickFlow 无法重建 %s，暂时沿用旧缓存。", symbol)
             else:
-                stale = _load_cache(symbol)
-                if stale is not None and not force:
-                    results[symbol] = stale
-                    logger.debug("TickFlow 无新数据，沿用 %s 本地缓存", symbol)
-                else:
-                    failed += 1
+                failed += 1
 
-    logger.info(
-        "DOWNLOAD progress: %d/%d (%d succeeded, %d no-data/failed).",
-        total,
-        total,
-        len(results),
-        failed,
-    )
+    _log_download_progress(total, total, len(results), failed)
     logger.info(
         "Download batch complete (TickFlow Free): %d/%d tickers available.",
         len(results),
@@ -647,10 +686,23 @@ def download_batch(
     return results
 
 
+def _load_or_fetch_meta(symbol: str) -> dict[str, Any]:
+    symbol = normalize_ticker(symbol)
+    cached = _INSTRUMENT_META.get(symbol)
+    if cached:
+        return cached
+    rows = _instrument_batches([symbol])
+    if not rows:
+        return {}
+    meta = rows[0]
+    _INSTRUMENT_META[symbol] = meta
+    return meta
+
+
 def get_market_cap(ticker: str) -> float | None:
     symbol = normalize_ticker(ticker)
-    meta = _INSTRUMENT_META.get(symbol, {})
-    ext = meta.get("ext") if isinstance(meta.get("ext"), dict) else {}
+    meta = _load_or_fetch_meta(symbol)
+    ext = meta.get("ext") if isinstance(meta.get("ext"), Mapping) else {}
     shares = _number_or_none(ext.get("total_shares"))
     if shares is None:
         return None
@@ -659,24 +711,6 @@ def get_market_cap(ticker: str) -> float | None:
         return None
     close = _number_or_none(frame["Close"].iloc[-1])
     return shares * close if close is not None else None
-
-
-def _fetch_eastmoney_realtime_price(ticker: str) -> float | None:
-    """Legacy compatibility: TickFlow Free has no realtime quote endpoint."""
-    frame = _load_cache(ticker)
-    return float(frame["Close"].iloc[-1]) if frame is not None and not frame.empty else None
-
-
-def _fetch_eastmoney_realtime_prices(
-    tickers: list[str] | set[str],
-) -> dict[str, float]:
-    """Legacy compatibility: return latest cached TickFlow daily closes."""
-    result: dict[str, float] = {}
-    for ticker in tickers:
-        value = _fetch_eastmoney_realtime_price(ticker)
-        if value is not None and np.isfinite(value):
-            result[normalize_ticker(ticker)] = float(value)
-    return result
 
 
 def get_etf_fund_flows(ticker: str) -> float | None:
