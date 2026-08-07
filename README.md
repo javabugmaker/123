@@ -125,3 +125,10 @@ python main.py scan --refresh-fundamentals
 
 第一次全量回测仍需完成真实历史计算；从第二次开始，只要行情/评分参数没有变化，大量标的会直接命中回测缓存。若修改评分逻辑，请同步提升 `SCORING_VERSION`，派生缓存会自动重建。
 
+
+### 回测模式与增量性能
+
+- GUI 当前筛选结果 **<=100 只自动使用 Exact**：504 根历史评分窗口、20 日信号冷却、历史时点 Volume Profile，供 Top50 最终精确验证。
+- **>100 只自动使用 Fast**：252 根评分窗口、40 日冷却、向量候选预筛、跳过逐历史点 Volume Profile，用于全市场粗校准。
+- TickFlow 日 K 只新增交易日时，指标缓存只计算尾部窗口；回测缓存只重算最近历史尾部并与旧样本合并。前复权历史发生变化时会通过 OHLCV 指纹自动退回全量重建。
+- 回测 worker 根据 CPU、任务规模和 Fast/Exact 模式自动选择，并使用 DataFrame 批次跨进程返回，减少大量 Python dict 的 IPC 开销。

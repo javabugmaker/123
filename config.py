@@ -169,7 +169,7 @@ SCORING_WEIGHTS: Final[ScoringWeights] = ScoringWeights()
 TOP_N_REPORT: int = 50
 TOP_N_PARQUET: int = 200
 
-SCORING_VERSION: str = "2026-08-08-v13-performance-cache-process-backtest"
+SCORING_VERSION: str = "2026-08-08-v14-fast-exact-incremental-backtest"
 
 # Per-ticker historical evidence is only allowed to influence the composite
 # rank after more than a couple of independent observations.  This prevents a
@@ -183,13 +183,21 @@ BACKTEST_NEUTRAL_SCORE: Final[float] = 50.0
 # window.  Overlap is accounted for through effective sample weights.
 BACKTEST_SIGNAL_COOLDOWN_DAYS: Final[int] = 20
 BACKTEST_OUTCOME_HORIZON_DAYS: Final[int] = 60
-# Performance: score functions need at most 504 historical rows once indicators
-# have been precomputed.  Keeping this bound avoids repeatedly scanning 10 years.
+# Exact backtests preserve the complete historical scoring semantics.  Fast
+# full-market calibration uses a narrower window and sparser signal sampling;
+# final Top50 research automatically stays on Exact mode.
 BACKTEST_SCORE_WINDOW_BARS: Final[int] = 504
-BACKTEST_MAX_PROCESSES: Final[int] = 8
-BACKTEST_PROCESS_MIN_TICKERS: Final[int] = 100
-BACKTEST_CHUNK_SIZE: Final[int] = 8
+BACKTEST_FAST_SCORE_WINDOW_BARS: Final[int] = 252
+BACKTEST_FAST_COOLDOWN_DAYS: Final[int] = 40
+BACKTEST_FAST_CANDIDATE_GAP_DAYS: Final[int] = 5
+BACKTEST_AUTO_EXACT_MAX_TICKERS: Final[int] = 100
+BACKTEST_MAX_PROCESSES: Final[int] = 12
+BACKTEST_PROCESS_MIN_TICKERS: Final[int] = 8
+BACKTEST_CHUNK_SIZE: Final[int] = 4
+BACKTEST_FAST_CHUNK_SIZE: Final[int] = 12
 BACKTEST_PROGRESS_INTERVAL: Final[int] = 25
+BACKTEST_INCREMENTAL_TAIL_BARS: Final[int] = 900
+INDICATOR_INCREMENTAL_LOOKBACK_BARS: Final[int] = 620
 BACKTEST_CACHE_ENABLED: Final[bool] = True
 INDICATOR_CACHE_ENABLED: Final[bool] = True
 CACHE_READ_THREADS: Final[int] = 8

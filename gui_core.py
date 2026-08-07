@@ -382,6 +382,7 @@ BACKTEST_PROGRESS_RE = re.compile(
     r"Backtesting progress: (\d+)/(\d+) tickers, (\d+) samples\."
 )
 BACKTEST_ETA_RE = re.compile(r"ETA=([^|]+)")
+BACKTEST_MODE_RE = re.compile(r"mode=(FAST|EXACT)")
 
 
 class ScannerGUI:
@@ -880,6 +881,7 @@ class ScannerGUI:
         if hasattr(self, "cancel_button"):
             self.cancel_button.configure(state=tk.NORMAL)
         self.progress.start(12)
+        backtest_mode = "exact" if len(backtest_tickers) <= 100 else "fast"
         command = [
             sys.executable,
             str(MAIN_FILE),
@@ -888,10 +890,15 @@ class ScannerGUI:
             self._selected_data_source(),
             "--tickers-file",
             str(ticker_file),
+            "--mode",
+            backtest_mode,
         ]
-        self.append_log(f"回测当前筛选结果：{len(backtest_tickers)} 个标的\n")
+        mode_label = "精确 Exact" if backtest_mode == "exact" else "快速 Fast"
         self.append_log(
-            f"执行回测命令：{MAIN_FILE.name} backtest --数据源 {self.data_source.get()} --股票列表 BacktestAll.txt\n"
+            f"回测当前筛选结果：{len(backtest_tickers)} 个标的 · 模式：{mode_label}\n"
+        )
+        self.append_log(
+            f"执行回测命令：{MAIN_FILE.name} backtest --数据源 {self.data_source.get()} --股票列表 BacktestAll.txt --模式 {backtest_mode}\n"
         )
         threading.Thread(target=self.run_process, args=(command,), daemon=True).start()
 
@@ -934,6 +941,7 @@ class ScannerGUI:
             scroll.pack(side=tk.RIGHT, fill=tk.Y)
             ticker_count = data.get("ticker_count", len(data.get("by_ticker", [])))
             lines = [
+                f"回测模式：{str(data.get('mode', 'auto')).upper()}",
                 f"样本数：{data.get('samples', 0)}",
                 f"股票数：{ticker_count}",
                 f"20日胜率：{float(data.get('win_rate_20d', 0)) * 100:.2f}%",
@@ -1206,9 +1214,14 @@ class ScannerGUI:
             completed, total, samples = (int(value) for value in backtest_progress.groups())
             eta_match = BACKTEST_ETA_RE.search(text)
             eta = eta_match.group(1).strip() if eta_match else "计算中"
+            mode_match = BACKTEST_MODE_RE.search(text)
+            mode = mode_match.group(1) if mode_match else ""
+            mode_label = "精确" if mode == "EXACT" else "快速" if mode == "FAST" else "历史"
             self.progress.stop()
             self.progress.configure(mode="determinate", maximum=max(total, 1), value=completed)
-            self.status.set(f"历史回测 {completed}/{total} · 样本 {samples} · ETA {eta}")
+            self.status.set(
+                f"{mode_label}回测 {completed}/{total} · 样本 {samples} · ETA {eta}"
+            )
         elif "Phase 2/2:" in text:
             self.progress.configure(mode="indeterminate")
             self.progress.start(12)

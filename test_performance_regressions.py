@@ -11,7 +11,10 @@ import analytics
 import gui_core
 import performance_cache
 from config import (
+    BACKTEST_AUTO_EXACT_MAX_TICKERS,
     BACKTEST_CHUNK_SIZE,
+    BACKTEST_FAST_COOLDOWN_DAYS,
+    BACKTEST_FAST_SCORE_WINDOW_BARS,
     BACKTEST_MAX_PROCESSES,
     BACKTEST_PROGRESS_INTERVAL,
     BACKTEST_SCORE_WINDOW_BARS,
@@ -21,6 +24,10 @@ from config import (
 class TestPerformanceConfiguration(unittest.TestCase):
     def test_backtest_limits_are_bounded(self):
         self.assertGreaterEqual(BACKTEST_SCORE_WINDOW_BARS, 504)
+        self.assertGreaterEqual(BACKTEST_FAST_SCORE_WINDOW_BARS, 252)
+        self.assertLessEqual(BACKTEST_FAST_SCORE_WINDOW_BARS, BACKTEST_SCORE_WINDOW_BARS)
+        self.assertGreaterEqual(BACKTEST_FAST_COOLDOWN_DAYS, 20)
+        self.assertEqual(BACKTEST_AUTO_EXACT_MAX_TICKERS, 100)
         self.assertGreaterEqual(BACKTEST_MAX_PROCESSES, 2)
         self.assertGreaterEqual(BACKTEST_CHUNK_SIZE, 1)
         self.assertLessEqual(BACKTEST_PROGRESS_INTERVAL, 50)
@@ -28,12 +35,19 @@ class TestPerformanceConfiguration(unittest.TestCase):
     def test_gui_understands_backtest_progress(self):
         line = (
             "Backtesting progress: 250/5981 tickers, 422 samples. "
-            "4.2% | cache=10 | elapsed=3m10s | ETA=1h02m | rate=1.30 ticker/s"
+            "4.2% | mode=FAST | cache=10 | elapsed=3m10s | ETA=1h02m | rate=1.30 ticker/s"
         )
         match = gui_core.BACKTEST_PROGRESS_RE.search(line)
         self.assertIsNotNone(match)
         self.assertEqual(match.groups(), ("250", "5981", "422"))
         self.assertEqual(gui_core.BACKTEST_ETA_RE.search(line).group(1).strip(), "1h02m")
+        self.assertEqual(gui_core.BACKTEST_MODE_RE.search(line).group(1), "FAST")
+
+    def test_auto_mode_uses_exact_for_top50_and_fast_for_full_market(self):
+        self.assertEqual(analytics._resolve_backtest_profile("auto", 50).name, "exact")
+        self.assertEqual(analytics._resolve_backtest_profile("auto", 100).name, "exact")
+        self.assertEqual(analytics._resolve_backtest_profile("auto", 101).name, "fast")
+        self.assertEqual(analytics._resolve_backtest_profile("auto", 5985).name, "fast")
 
 
 class TestPersistentPerformanceCache(unittest.TestCase):
@@ -80,6 +94,55 @@ class TestPersistentPerformanceCache(unittest.TestCase):
                 self.assertTrue(second_hit)
                 self.assertEqual(calls["count"], 1)
                 pd.testing.assert_frame_equal(first, second, check_freq=False)
+
+    def test_indicator_cache_incrementally_appends_new_daily_bar(self):
+        base_index = pd.date_range("2023-01-02", periods=800, freq="B")
+        base = pd.DataFrame(
+            {
+                "Open": range(800),
+                "High": [value + 2 for value in range(800)],
+                "Low": [max(0, value - 1) for value in range(800)],
+                "Close": [value + 1 for value in range(800)],
+                "Volume": [1000 + value for value in range(800)],
+            },
+            index=base_index,
+            dtype=float,
+        )
+        extended = pd.concat(
+            [
+                base,
+                pd.DataFrame(
+                    {"Open": [800.0], "High": [802.0], "Low": [799.0], "Close": [801.0], "Volume": [1800.0]},
+                    index=[base_index[-1] + pd.offsets.BDay(1)],
+                ),
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "raw.parquet"
+            source.write_bytes(b"raw")
+            indicator_dir = Path(directory) / "indicators"
+            with patch.object(performance_cache, "INDICATOR_CACHE_DIR", indicator_dir):
+                calls: list[int] = []
+
+                def compute(value):
+                    calls.append(len(value))
+                    result = value.copy()
+                    result["MA20"] = result["Close"].rolling(20, min_periods=1).mean()
+                    result["OBV"] = result["Volume"].cumsum()
+                    result["AD"] = result["Volume"].cumsum() * 0.5
+                    return result
+
+                performance_cache.load_or_compute_indicators(
+                    "000001.SZ", base, compute, source_path=source
+                )
+                source.write_bytes(b"raw-extended")
+                result, reused = performance_cache.load_or_compute_indicators(
+                    "000001.SZ", extended, compute, source_path=source
+                )
+                self.assertTrue(reused)
+                self.assertEqual(len(result), len(extended))
+                self.assertEqual(calls[0], len(base))
+                self.assertLess(calls[1], len(extended))
 
 
 class TestBacktestHotPath(unittest.TestCase):

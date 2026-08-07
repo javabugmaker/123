@@ -286,7 +286,12 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     if not unique_tickers:
         logger.error("回测标的为空。")
         return 2
-    logger.info("Backtesting %d explicitly specified tickers...", len(unique_tickers))
+    requested_mode = str(getattr(args, "mode", "auto") or "auto").lower()
+    logger.info(
+        "Backtesting %d explicitly specified tickers (mode=%s)...",
+        len(unique_tickers),
+        requested_mode.upper(),
+    )
     options = {
         "objective": getattr(args, "objective", "net_excess_return_20d"),
         "benchmark": getattr(args, "benchmark", "沪深300"),
@@ -310,12 +315,14 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         logger.error("--test-ratio 与 --validation-ratio 之和必须小于 1。")
         return 2
 
-    summary = run_historical_backtest(
-        unique_tickers,
-        source=args.data_source,
-        workers=getattr(args, "workers", None),
+    backtest_kwargs = {
+        "source": args.data_source,
+        "workers": getattr(args, "workers", None),
         **options,
-    )
+    }
+    if requested_mode != "auto":
+        backtest_kwargs["mode"] = requested_mode
+    summary = run_historical_backtest(unique_tickers, **backtest_kwargs)
     if getattr(summary, "insufficient_test_data", False) is True:
         logger.error(
             "回测测试集有效样本不足：%s", getattr(summary, "error", "未知错误")
@@ -323,7 +330,8 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         return 2
     apply_backtest_ranking(summary, top_n=TOP_N_REPORT)
     logger.info(
-        "Backtest complete: %d test samples, %d all samples, 20d win rate %.1f%%, average return %.2f%%, 60d average return %.2f%%.",
+        "Backtest complete: mode=%s, %d test samples, %d all samples, 20d win rate %.1f%%, average return %.2f%%, 60d average return %.2f%%.",
+        str(getattr(summary, "mode", requested_mode)).upper(),
         summary.samples,
         getattr(summary, "all_samples", summary.samples),
         summary.win_rate_20d * 100,
@@ -446,7 +454,13 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_p.add_argument("--tickers-file", type=Path, default=None)
     backtest_p.add_argument("--all-results", action="store_true")
     backtest_p.add_argument(
-        "--workers", type=lambda value: _positive_int(value, "回测线程数"), default=None
+        "--mode",
+        choices=("auto", "fast", "exact"),
+        default="auto",
+        help="回测模式：auto=<=100只精确、>100只快速；fast=全市场快速；exact=最高精度",
+    )
+    backtest_p.add_argument(
+        "--workers", type=lambda value: _positive_int(value, "回测进程数"), default=None
     )
     backtest_p.add_argument(
         "--data-source", choices=DATA_SOURCE_CHOICES, default="tickflow"

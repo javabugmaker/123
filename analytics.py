@@ -24,10 +24,16 @@ from config import (
     BACKTEST_OUTCOME_HORIZON_DAYS,
     BACKTEST_SIGNAL_COOLDOWN_DAYS,
     BACKTEST_SCORE_WINDOW_BARS,
+    BACKTEST_FAST_SCORE_WINDOW_BARS,
+    BACKTEST_FAST_COOLDOWN_DAYS,
+    BACKTEST_FAST_CANDIDATE_GAP_DAYS,
+    BACKTEST_AUTO_EXACT_MAX_TICKERS,
     BACKTEST_MAX_PROCESSES,
     BACKTEST_PROCESS_MIN_TICKERS,
     BACKTEST_CHUNK_SIZE,
+    BACKTEST_FAST_CHUNK_SIZE,
     BACKTEST_PROGRESS_INTERVAL,
+    BACKTEST_INCREMENTAL_TAIL_BARS,
     BACKTEST_CACHE_ENABLED,
     INDICATOR_CACHE_ENABLED,
     ENABLE_VOLUME_PROFILE,
@@ -49,12 +55,13 @@ from downloader import (
 from indicators import compute_all_indicators, compute_volume_profile
 from performance_cache import (
     backtest_cache_key,
-    file_signature,
-    load_backtest_cache,
+    load_backtest_cache_state,
     load_or_compute_indicators,
+    market_cache_state,
+    market_prefix_matches,
     save_backtest_cache,
 )
-from score import entry_point, score_ticker
+from score import breakout_score, entry_point, score_ticker, value_trap_risk
 from signal_lifecycle import finalize_signal_ranking
 
 logger = logging.getLogger("institution_scanner.analytics")
@@ -79,6 +86,7 @@ class BacktestSummary:
     elapsed_seconds: float = 0.0
     worker_count: int = 0
     engine: str = "sequential"
+    mode: str = "auto"
     objective: str = "net_excess_return_20d"
     target_definition: str = "扣除交易成本后相对基准的20个交易日超额收益率"
     benchmark: str = "沪深300"
@@ -736,30 +744,71 @@ def _legacy_signal_points(
     return points
 
 
-def _backtest_scoring_window(enriched: pd.DataFrame, index: int) -> pd.DataFrame:
-    """Return only the history score_ticker can actually consume.
+@dataclass(frozen=True)
+class BacktestExecutionProfile:
+    name: str
+    cooldown: int
+    score_window: int
+    historical_volume_profile: bool
+    candidate_gap: int
+    fast_prefilter: bool
+    chunk_size: int
 
-    Indicators are already computed on the chronological full series, so the
-    cumulative OBV/A-D values keep their original levels.  The 504-bar bound is
-    sufficient for every current scoring lookback and preserves the saturated
-    days-below-MA200 logic while cutting repeated DataFrame work sharply.
-    """
-    end = int(index) + 1
-    start = max(0, end - int(BACKTEST_SCORE_WINDOW_BARS))
-    historical = enriched.iloc[start:end].copy(deep=False)
-    if ENABLE_VOLUME_PROFILE:
-        # Volume Profile is end-point dependent and compute_all_indicators writes
-        # the latest profile across the column, so recompute it for this date.
-        historical = historical.drop(
-            columns=[
-                "VP_HVN_Center",
-                "DistToHVN_Pct",
-                "Above_HVN",
-                "VP_LVN_Center",
-                "DistToLVN_Pct",
-            ],
-            errors="ignore",
+
+def _resolve_backtest_profile(mode: str | None, ticker_count: int) -> BacktestExecutionProfile:
+    normalized = str(mode or "auto").strip().lower()
+    if normalized not in {"auto", "fast", "exact"}:
+        raise ValueError(f"unsupported backtest mode: {mode}")
+    if normalized == "auto":
+        normalized = (
+            "exact"
+            if int(ticker_count) <= int(BACKTEST_AUTO_EXACT_MAX_TICKERS)
+            else "fast"
         )
+    if normalized == "exact":
+        return BacktestExecutionProfile(
+            name="exact",
+            cooldown=max(1, int(BACKTEST_SIGNAL_COOLDOWN_DAYS)),
+            score_window=max(252, int(BACKTEST_SCORE_WINDOW_BARS)),
+            historical_volume_profile=bool(ENABLE_VOLUME_PROFILE),
+            candidate_gap=1,
+            fast_prefilter=False,
+            chunk_size=max(1, int(BACKTEST_CHUNK_SIZE)),
+        )
+    return BacktestExecutionProfile(
+        name="fast",
+        cooldown=max(1, int(BACKTEST_FAST_COOLDOWN_DAYS)),
+        score_window=max(252, int(BACKTEST_FAST_SCORE_WINDOW_BARS)),
+        historical_volume_profile=False,
+        candidate_gap=max(1, int(BACKTEST_FAST_CANDIDATE_GAP_DAYS)),
+        fast_prefilter=True,
+        chunk_size=max(1, int(BACKTEST_FAST_CHUNK_SIZE)),
+    )
+
+
+def _backtest_scoring_window(
+    enriched: pd.DataFrame,
+    index: int,
+    *,
+    score_window: int | None = None,
+    include_volume_profile: bool | None = None,
+) -> pd.DataFrame:
+    """Return the bounded, point-in-time frame consumed by score_ticker."""
+    end = int(index) + 1
+    window = int(score_window or BACKTEST_SCORE_WINDOW_BARS)
+    start = max(0, end - max(252, window))
+    historical = enriched.iloc[start:end].copy(deep=False)
+    vp_columns = [
+        "VP_HVN_Center",
+        "DistToHVN_Pct",
+        "Above_HVN",
+        "VP_LVN_Center",
+        "DistToLVN_Pct",
+    ]
+    historical = historical.drop(columns=vp_columns, errors="ignore")
+    should_compute_vp = ENABLE_VOLUME_PROFILE if include_volume_profile is None else bool(include_volume_profile)
+    if should_compute_vp:
+        historical = historical.copy(deep=False)
         try:
             compute_volume_profile(historical)
         except (ArithmeticError, TypeError, ValueError):
@@ -767,16 +816,65 @@ def _backtest_scoring_window(enriched: pd.DataFrame, index: int) -> pd.DataFrame
     return historical
 
 
+def _candidate_endpoint_matrix(
+    enriched: pd.DataFrame,
+    *,
+    fast_prefilter: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorize cheap endpoint features before any historical score_ticker call."""
+    index = enriched.index
+    def numeric(name: str) -> pd.Series:
+        if name not in enriched.columns:
+            return pd.Series(np.nan, index=index, dtype=float)
+        return pd.to_numeric(enriched[name], errors="coerce")
+
+    close = numeric("Close")
+    high = numeric("High")
+    low = numeric("Low")
+    ma20 = numeric("MA20")
+    ma50 = numeric("MA50")
+    atr = numeric("ATR14")
+    support = low.rolling(20, min_periods=20).min()
+    resistance = high.shift(1).rolling(20, min_periods=20).max()
+    effective_atr = atr.where(atr.gt(0), close * 0.03)
+    near_support = close.le(support + effective_atr * 1.5)
+    five_day_up = close.ge(close.shift(5))
+    trend_candidate = close.gt(ma20) & (ma20.ge(ma50) | five_day_up | near_support)
+    breakout_flag = close.gt(resistance).fillna(False)
+    broad = (trend_candidate | near_support | breakout_flag).fillna(False)
+
+    if fast_prefilter:
+        volume = numeric("Volume")
+        vol20 = numeric("VolMA20")
+        volume_ratio = volume / vol20.replace(0, np.nan)
+        cmf = numeric("CMF")
+        ad_slope = numeric("AD_Slope")
+        flow_ok = cmf.ge(-0.02) | ad_slope.gt(0)
+        volume_ok = volume_ratio.ge(0.85)
+        evidence_available = volume_ratio.notna() | cmf.notna() | ad_slope.notna()
+        support_ready = near_support & (flow_ok | volume_ok)
+        trend_ready = close.gt(ma20) & (ma20.ge(ma50) | five_day_up) & (flow_ok | volume_ok)
+        filtered = (breakout_flag | support_ready | trend_ready).fillna(False)
+        broad = broad.where(~evidence_available, filtered)
+
+    candidates = np.flatnonzero(broad.to_numpy(dtype=bool))
+    return candidates, breakout_flag.to_numpy(dtype=bool)
+
+
 def _signal_evaluations(
     enriched: pd.DataFrame,
     cooldown: int = BACKTEST_SIGNAL_COOLDOWN_DAYS,
     is_etf: bool = False,
+    *,
+    profile: BacktestExecutionProfile | None = None,
+    start_index: int | None = None,
 ) -> list[tuple[int, float, str]]:
-    """Find actionable historical entries and retain their already-computed score.
+    """Find actionable historical entries with lazy exact scoring.
 
-    The former implementation scored a valid historical point once while
-    discovering it and then scored the same prefix again in _backtest_one_ticker.
-    Returning score/signal together removes that duplicate hot path.
+    Cheap endpoint logic first determines whether a date can possibly become an
+    actionable entry.  Full score_ticker and historical Volume Profile are only
+    executed for dates that survive that gate; Exact mode therefore preserves
+    the final actionable score while avoiding thousands of wasted full scores.
     """
     live_columns = {"High", "Low", "MA20", "MA50", "ATR14"}
     if len(enriched) < 252:
@@ -792,35 +890,76 @@ def _signal_evaluations(
             for index in _legacy_signal_points(enriched, max(1, int(cooldown)))
         ]
 
-    cooldown = max(1, int(cooldown))
-    close = pd.to_numeric(enriched["Close"], errors="coerce")
-    high = pd.to_numeric(enriched["High"], errors="coerce")
-    low = pd.to_numeric(enriched["Low"], errors="coerce")
-    ma20 = pd.to_numeric(enriched["MA20"], errors="coerce")
-    ma50 = pd.to_numeric(enriched["MA50"], errors="coerce")
-    atr = pd.to_numeric(enriched["ATR14"], errors="coerce")
-    support = low.rolling(20, min_periods=20).min()
-    resistance = high.shift(1).rolling(20, min_periods=20).max()
-    effective_atr = atr.where(atr.gt(0), close * 0.03)
-    near_support = close.le(support + effective_atr * 1.5)
-    five_day_up = close.ge(close.shift(5))
-    trend_candidate = close.gt(ma20) & (ma20.ge(ma50) | five_day_up | near_support)
-    broad_candidate = (trend_candidate | near_support | close.gt(resistance)).fillna(False)
-    candidates = np.flatnonzero(broad_candidate.to_numpy(dtype=bool))
-
-    last_signal = -cooldown
+    if profile is None:
+        profile = BacktestExecutionProfile(
+            name="exact",
+            cooldown=max(1, int(cooldown)),
+            score_window=max(252, int(BACKTEST_SCORE_WINDOW_BARS)),
+            historical_volume_profile=bool(ENABLE_VOLUME_PROFILE),
+            candidate_gap=1,
+            fast_prefilter=False,
+            chunk_size=max(1, int(BACKTEST_CHUNK_SIZE)),
+        )
+    cooldown = max(1, int(profile.cooldown))
+    candidates, breakout_flags = _candidate_endpoint_matrix(
+        enriched, fast_prefilter=profile.fast_prefilter
+    )
+    minimum_index = max(251, int(start_index) if start_index is not None else 251)
+    last_signal = minimum_index - cooldown
+    last_evaluated = minimum_index - max(1, int(profile.candidate_gap))
     evaluations: list[tuple[int, float, str]] = []
+
     for index in candidates:
-        if index < 251:
+        index = int(index)
+        if index < minimum_index:
             continue
         if index >= len(enriched) - BACKTEST_OUTCOME_HORIZON_DAYS:
             continue
         if index - last_signal < cooldown:
             continue
-        historical = _backtest_scoring_window(enriched, int(index))
-        historical_score = score_ticker(historical, is_etf=is_etf)
-        historical_entry = entry_point(
+        if (
+            profile.candidate_gap > 1
+            and index - last_evaluated < profile.candidate_gap
+            and not breakout_flags[index]
+        ):
+            continue
+        last_evaluated = index
+
+        historical = _backtest_scoring_window(
+            enriched,
+            index,
+            score_window=profile.score_window,
+            include_volume_profile=False,
+        )
+        quick_breakout = breakout_score(historical)
+        quick_trap = value_trap_risk(historical)
+        quick_entry = entry_point(
             historical,
+            breakout=quick_breakout,
+            volume_score=None,
+            value_trap_risk_value=quick_trap,
+        )
+        quick_signal = str(quick_entry.get("signal", "AVOID")).upper()
+        # volume_score can only change the price-breakout branch into
+        # BREAKOUT_CONFIRM.  All other non-actionable quick signals are safe to
+        # reject without a full historical score.
+        if (
+            quick_signal not in _BACKTEST_ACTIONABLE_SIGNALS
+            and not bool(quick_entry.get("price_breakout", False))
+        ):
+            continue
+
+        scoring_frame = historical
+        if profile.historical_volume_profile:
+            scoring_frame = _backtest_scoring_window(
+                enriched,
+                index,
+                score_window=profile.score_window,
+                include_volume_profile=True,
+            )
+        historical_score = score_ticker(scoring_frame, is_etf=is_etf)
+        historical_entry = entry_point(
+            scoring_frame,
             breakout=_finite_float(getattr(historical_score, "breakout_score", np.nan), np.nan),
             volume_score=_finite_float(getattr(historical_score, "volume", np.nan), np.nan),
             value_trap_risk_value=_finite_float(getattr(historical_score, "value_trap_risk", np.nan), np.nan),
@@ -831,8 +970,8 @@ def _signal_evaluations(
         final_score = _finite_float(getattr(historical_score, "final_score", np.nan), np.nan)
         if not np.isfinite(final_score):
             final_score = _finite_float(getattr(historical_score, "total", np.nan), 0.0)
-        evaluations.append((int(index), float(final_score), signal))
-        last_signal = int(index)
+        evaluations.append((index, float(final_score), signal))
+        last_signal = index
     return evaluations
 
 
@@ -849,21 +988,15 @@ def _signal_points(
     cooldown: int = BACKTEST_SIGNAL_COOLDOWN_DAYS,
     is_etf: bool = False,
 ) -> list[int]:
-    """Return signal indexes while retaining score/signal metadata for the hot path.
-
-    Returning a normal list subtype preserves the public/test contract.  Real
-    calls reuse the attached evaluations, while patched/legacy callers that
-    return a plain list still follow the historical compatibility path.
-    """
     evaluations = _signal_evaluations(
         enriched, cooldown=cooldown, is_etf=is_etf
     )
     return _SignalPointList(evaluations)
 
+
 def _historical_entry_signal(
     historical: pd.DataFrame, historical_score: Any
 ) -> str:
-    """Resolve an entry label defensively for legacy/mocked score objects."""
     try:
         entry = entry_point(
             historical,
@@ -890,8 +1023,14 @@ def _backtest_one_ticker(
     stamp_duty: float = 0.0005,
     slippage: float = 0.001,
     split_dates: tuple[pd.Timestamp | None, pd.Timestamp | None] = (None, None),
+    *,
+    profile: BacktestExecutionProfile | None = None,
+    signal_start_index: int | None = None,
+    sample_min_signal_index: int | None = None,
+    frame: pd.DataFrame | None = None,
 ) -> list[dict[str, Any]]:
-    frame = _load_cache(ticker, source)
+    if frame is None:
+        frame = _load_cache(ticker, source)
     if frame is None or len(frame) < 300:
         return []
     raw_path = _cache_path(ticker, source)
@@ -903,7 +1042,18 @@ def _backtest_one_ticker(
         enabled=INDICATOR_CACHE_ENABLED,
     )
     is_etf = is_etf_ticker(str(ticker))
-    signal_points = _signal_points(enriched, is_etf=is_etf)
+    if profile is None and signal_start_index is None:
+        signal_points = _signal_points(enriched, is_etf=is_etf)
+    else:
+        active_profile = profile or _resolve_backtest_profile("exact", 1)
+        signal_points = _SignalPointList(
+            _signal_evaluations(
+                enriched,
+                is_etf=is_etf,
+                profile=active_profile,
+                start_index=signal_start_index,
+            )
+        )
     if not signal_points:
         return []
 
@@ -914,8 +1064,6 @@ def _backtest_one_ticker(
             for index, score, signal in attached_evaluations
         }
     else:
-        # Compatibility path for callers/tests that explicitly provide a plain
-        # list of historical points.  Each point is still evaluated only once.
         evaluation_map: dict[int, tuple[float, str]] = {}
         for index in signal_points:
             historical = _backtest_scoring_window(enriched, int(index))
@@ -937,8 +1085,11 @@ def _backtest_one_ticker(
     closes = enriched["Close"].to_numpy(dtype=float)
     highs = enriched["High"].to_numpy(dtype=float) if "High" in enriched else closes.copy()
     outcome_horizon = max(60, int(BACKTEST_OUTCOME_HORIZON_DAYS))
+    minimum_sample_index = int(sample_min_signal_index) if sample_min_signal_index is not None else 0
     valid_points: list[int] = []
     for index in signal_points:
+        if int(index) < minimum_sample_index:
+            continue
         entry_index = index + 1
         if entry_index >= len(enriched):
             continue
@@ -1026,6 +1177,61 @@ def _backtest_one_ticker(
     return samples
 
 
+def _relabel_sample_splits(
+    samples: list[dict[str, Any]],
+    split_dates: tuple[pd.Timestamp | None, pd.Timestamp | None],
+) -> list[dict[str, Any]]:
+    validation_end, test_start = split_dates
+    result: list[dict[str, Any]] = []
+    for sample in samples:
+        item = dict(sample)
+        entry_date = pd.Timestamp(item.get("entry_date"))
+        if test_start is not None and entry_date >= test_start:
+            item["split"] = "test"
+        elif validation_end is not None and entry_date >= validation_end:
+            item["split"] = "validation"
+        else:
+            item["split"] = "train"
+        result.append(item)
+    return result
+
+
+def _reweight_samples(samples: list[dict[str, Any]], frame: pd.DataFrame) -> list[dict[str, Any]]:
+    if not samples:
+        return samples
+    positions = {
+        pd.Timestamp(value).strftime("%Y-%m-%d"): index
+        for index, value in enumerate(pd.DatetimeIndex(frame.index))
+    }
+    horizon = max(60, int(BACKTEST_OUTCOME_HORIZON_DAYS))
+    ordered = sorted(samples, key=lambda item: str(item.get("signal_date", "")))
+    previous: int | None = None
+    for item in ordered:
+        position = positions.get(str(item.get("signal_date", "")))
+        if position is None:
+            continue
+        spacing = horizon if previous is None else max(1, position - previous)
+        item["sample_weight"] = round(min(1.0, spacing / float(horizon)), 4)
+        previous = position
+    return ordered
+
+
+def _merge_backtest_samples(
+    historical: list[dict[str, Any]],
+    tail: list[dict[str, Any]],
+    frame: pd.DataFrame,
+) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in [*historical, *tail]:
+        key = (
+            str(item.get("ticker", "")),
+            str(item.get("signal_date", "")),
+            str(item.get("entry_signal", "")),
+        )
+        merged[key] = dict(item)
+    return _reweight_samples(list(merged.values()), frame)
+
+
 def _backtest_one_ticker_cached(
     ticker: str,
     source: str,
@@ -1034,34 +1240,105 @@ def _backtest_one_ticker_cached(
     stamp_duty: float,
     slippage: float,
     split_dates: tuple[pd.Timestamp | None, pd.Timestamp | None],
-    benchmark_signature: str,
+    benchmark_signature: str = "",
+    *,
+    profile: BacktestExecutionProfile | None = None,
+    benchmark_name: str = "沪深300",
 ) -> tuple[list[dict[str, Any]], bool]:
-    raw_path = _cache_path(ticker, source)
-    price_signature = file_signature(raw_path)
-    cache_key = ""
-    if price_signature:
-        cache_key = backtest_cache_key(
-            {
-                "ticker": str(ticker),
-                "source": str(source),
-                "price_signature": price_signature,
-                "benchmark_signature": benchmark_signature,
-                "commission": float(commission),
-                "stamp_duty": float(stamp_duty),
-                "slippage": float(slippage),
-                "split_dates": [
-                    value.isoformat() if value is not None else None
-                    for value in split_dates
-                ],
-                "cooldown": int(BACKTEST_SIGNAL_COOLDOWN_DAYS),
-                "horizon": int(BACKTEST_OUTCOME_HORIZON_DAYS),
-                "score_window": int(BACKTEST_SCORE_WINDOW_BARS),
-            }
+    del benchmark_signature  # v5 validates benchmark data by market-state prefix instead.
+    frame = _load_cache(ticker, source)
+    if frame is None or len(frame) < 300:
+        return (
+            _backtest_one_ticker(
+                ticker,
+                source,
+                benchmark_frame,
+                commission,
+                stamp_duty,
+                slippage,
+                split_dates,
+            ),
+            False,
         )
-    if BACKTEST_CACHE_ENABLED and cache_key:
-        cached = load_backtest_cache(ticker, cache_key)
-        if cached is not None:
-            return cached, True
+    active_profile = profile or _resolve_backtest_profile("exact", 1)
+    cache_key = backtest_cache_key(
+        {
+            "ticker": str(ticker),
+            "source": str(source),
+            "benchmark": str(benchmark_name),
+            "commission": float(commission),
+            "stamp_duty": float(stamp_duty),
+            "slippage": float(slippage),
+            "cooldown": int(active_profile.cooldown),
+            "horizon": int(BACKTEST_OUTCOME_HORIZON_DAYS),
+            "score_window": int(active_profile.score_window),
+            "mode": active_profile.name,
+            "historical_volume_profile": bool(active_profile.historical_volume_profile),
+            "candidate_gap": int(active_profile.candidate_gap),
+            "fast_prefilter": bool(active_profile.fast_prefilter),
+        }
+    )
+    current_market = market_cache_state(frame)
+    current_benchmark = market_cache_state(benchmark_frame) if benchmark_frame is not None else {}
+    cached_payload = load_backtest_cache_state(ticker, cache_key) if BACKTEST_CACHE_ENABLED else None
+    if cached_payload is not None:
+        cached_samples = list(cached_payload.get("samples", []))
+        cached_state = cached_payload.get("state", {}) if isinstance(cached_payload.get("state", {}), dict) else {}
+        cached_market = cached_state.get("market", {})
+        cached_benchmark = cached_state.get("benchmark", {})
+        market_ok = market_prefix_matches(frame, cached_market)
+        benchmark_ok = (
+            not cached_benchmark
+            or benchmark_frame is None
+            or market_prefix_matches(benchmark_frame, cached_benchmark)
+        )
+        if market_ok and benchmark_ok:
+            old_rows = int(cached_market.get("rows", 0) or 0)
+            old_last = str(cached_market.get("last", ""))
+            same_market = old_rows == len(frame) and old_last == str(current_market.get("last", ""))
+            if same_market:
+                return _relabel_sample_splits(cached_samples, split_dates), True
+
+            cutoff_index = max(251, len(frame) - max(300, int(BACKTEST_INCREMENTAL_TAIL_BARS)))
+            warmup = max(
+                251,
+                cutoff_index
+                - max(
+                    int(active_profile.cooldown),
+                    int(BACKTEST_OUTCOME_HORIZON_DAYS),
+                    int(active_profile.candidate_gap),
+                ),
+            )
+            cutoff_date = pd.Timestamp(frame.index[cutoff_index])
+            retained = [
+                dict(item)
+                for item in cached_samples
+                if pd.Timestamp(item.get("signal_date")) < cutoff_date
+            ]
+            tail_samples = _backtest_one_ticker(
+                ticker,
+                source,
+                benchmark_frame,
+                commission,
+                stamp_duty,
+                slippage,
+                split_dates,
+                profile=active_profile,
+                signal_start_index=warmup,
+                sample_min_signal_index=cutoff_index,
+                frame=frame,
+            )
+            samples = _merge_backtest_samples(retained, tail_samples, frame)
+            samples = _relabel_sample_splits(samples, split_dates)
+            if BACKTEST_CACHE_ENABLED:
+                save_backtest_cache(
+                    ticker,
+                    cache_key,
+                    samples,
+                    state={"market": current_market, "benchmark": current_benchmark},
+                )
+            return samples, True
+
     samples = _backtest_one_ticker(
         ticker,
         source,
@@ -1070,9 +1347,16 @@ def _backtest_one_ticker_cached(
         stamp_duty,
         slippage,
         split_dates,
+        profile=active_profile,
+        frame=frame,
     )
-    if BACKTEST_CACHE_ENABLED and cache_key:
-        save_backtest_cache(ticker, cache_key, samples)
+    if BACKTEST_CACHE_ENABLED:
+        save_backtest_cache(
+            ticker,
+            cache_key,
+            samples,
+            state={"market": current_market, "benchmark": current_benchmark},
+        )
     return samples, False
 
 def _backtest_evidence(
@@ -1741,6 +2025,20 @@ def _format_duration(seconds: float) -> str:
     return f"{secs}s"
 
 
+def _adaptive_worker_count(
+    total: int,
+    requested: int | None,
+    profile: BacktestExecutionProfile,
+) -> int:
+    cpu_limit = max(1, (os.cpu_count() or 2) - 1)
+    hard_limit = min(max(1, int(BACKTEST_MAX_PROCESSES)), cpu_limit, max(1, total))
+    if requested is not None:
+        return min(hard_limit, max(1, int(requested)))
+    utilization = 0.90 if profile.name == "fast" else 0.75
+    target = max(2, int(round(cpu_limit * utilization))) if total >= BACKTEST_PROCESS_MIN_TICKERS else 1
+    return min(hard_limit, target, max(1, total))
+
+
 def _init_backtest_worker(
     source: str,
     benchmark: str,
@@ -1749,25 +2047,28 @@ def _init_backtest_worker(
     slippage: float,
     split_dates: tuple[pd.Timestamp | None, pd.Timestamp | None],
     benchmark_signature: str,
+    profile: BacktestExecutionProfile,
 ) -> None:
     global _BACKTEST_WORKER_CONTEXT
     benchmark_frame = _load_cache(BENCHMARKS[benchmark], source)
     _BACKTEST_WORKER_CONTEXT = {
         "source": source,
+        "benchmark": benchmark,
         "benchmark_frame": benchmark_frame,
         "commission": commission,
         "stamp_duty": stamp_duty,
         "slippage": slippage,
         "split_dates": split_dates,
         "benchmark_signature": benchmark_signature,
+        "profile": profile,
     }
 
 
 def _backtest_chunk_worker(
     tickers: list[str],
-) -> tuple[list[dict[str, Any]], int, list[tuple[str, str]], int]:
+) -> tuple[pd.DataFrame, int, list[tuple[str, str]], int]:
     context = _BACKTEST_WORKER_CONTEXT
-    samples: list[dict[str, Any]] = []
+    frames: list[pd.DataFrame] = []
     cache_hits = 0
     errors: list[tuple[str, str]] = []
     for ticker in tickers:
@@ -1781,12 +2082,16 @@ def _backtest_chunk_worker(
                 context["slippage"],
                 context["split_dates"],
                 context["benchmark_signature"],
+                profile=context["profile"],
+                benchmark_name=context["benchmark"],
             )
-            samples.extend(ticker_samples)
+            if ticker_samples:
+                frames.append(pd.DataFrame.from_records(ticker_samples))
             cache_hits += int(cache_hit)
         except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
             errors.append((ticker, str(exc)))
-    return samples, cache_hits, errors, len(tickers)
+    batch = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    return batch, cache_hits, errors, len(tickers)
 
 
 def run_historical_backtest(
@@ -1800,6 +2105,7 @@ def run_historical_backtest(
     test_ratio: float = 0.2,
     validation_ratio: float = 0.2,
     workers: int | None = None,
+    mode: str = "auto",
 ) -> BacktestSummary:
     if objective not in {
         "return_20d",
@@ -1865,48 +2171,44 @@ def run_historical_backtest(
             return summary
 
     unique_tickers = list(dict.fromkeys(tickers))
-    samples: list[dict[str, Any]] = []
     total = len(unique_tickers)
-    cpu_limit = max(1, (os.cpu_count() or 2) - 1)
-    requested_workers = int(workers) if workers is not None else int(BACKTEST_MAX_PROCESSES)
-    worker_count = min(
-        max(1, requested_workers),
-        max(1, int(BACKTEST_MAX_PROCESSES)),
-        cpu_limit,
-        max(1, total),
-    )
+    profile = _resolve_backtest_profile(mode, total)
+    sample_batches: list[pd.DataFrame] = []
+    sample_count = 0
+    worker_count = _adaptive_worker_count(total, workers, profile)
     use_process_pool = bool(
         total >= int(BACKTEST_PROCESS_MIN_TICKERS) and worker_count > 1
     )
     engine = "process" if use_process_pool else "sequential"
-    benchmark_signature = file_signature(_cache_path(BENCHMARKS[benchmark], source))
+    benchmark_signature = "state-v5"
     completed = 0
     cache_hits = 0
     next_progress = max(1, int(BACKTEST_PROGRESS_INTERVAL))
     backtest_started = time.perf_counter()
 
-    # Prevent each spawned NumPy/SciPy process from creating its own BLAS thread
-    # pool and oversubscribing the CPU.  Spawned Windows workers inherit these.
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     os.environ.setdefault("MKL_NUM_THREADS", "1")
     os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
     logger.info(
-        "Backtest engine: %s, workers=%d, chunk=%d, persistent cache=%s.",
+        "Backtest engine: %s, mode=%s, workers=%d, chunk=%d, persistent cache=%s.",
         engine,
+        profile.name.upper(),
         worker_count,
-        int(BACKTEST_CHUNK_SIZE),
+        profile.chunk_size,
         "on" if BACKTEST_CACHE_ENABLED else "off",
     )
 
     def record_progress(
-        batch_samples: list[dict[str, Any]],
+        batch_frame: pd.DataFrame,
         batch_completed: int,
         batch_cache_hits: int,
     ) -> None:
-        nonlocal completed, cache_hits, next_progress
-        samples.extend(batch_samples)
+        nonlocal completed, cache_hits, next_progress, sample_count
+        if batch_frame is not None and not batch_frame.empty:
+            sample_batches.append(batch_frame)
+            sample_count += len(batch_frame)
         completed += int(batch_completed)
         cache_hits += int(batch_cache_hits)
         if completed >= next_progress or completed >= total:
@@ -1916,11 +2218,12 @@ def run_historical_backtest(
             eta = remaining / rate if rate > 0 else 0.0
             percent = completed / max(total, 1) * 100.0
             logger.info(
-                "Backtesting progress: %d/%d tickers, %d samples. %.1f%% | cache=%d | elapsed=%s | ETA=%s | rate=%.2f ticker/s",
+                "Backtesting progress: %d/%d tickers, %d samples. %.1f%% | mode=%s | cache=%d | elapsed=%s | ETA=%s | rate=%.2f ticker/s",
                 completed,
                 total,
-                len(samples),
+                sample_count,
                 percent,
+                profile.name.upper(),
                 cache_hits,
                 _format_duration(elapsed),
                 _format_duration(eta),
@@ -1930,7 +2233,7 @@ def run_historical_backtest(
             next_progress = ((completed // interval) + 1) * interval
 
     if use_process_pool:
-        chunk_size = max(1, int(BACKTEST_CHUNK_SIZE))
+        chunk_size = max(1, int(profile.chunk_size))
         chunks = [
             unique_tickers[start : start + chunk_size]
             for start in range(0, total, chunk_size)
@@ -1946,6 +2249,7 @@ def run_historical_backtest(
                 slippage,
                 (validation_end, test_start),
                 benchmark_signature,
+                profile,
             ),
         ) as executor:
             futures = {
@@ -1954,14 +2258,14 @@ def run_historical_backtest(
             for future in as_completed(futures):
                 chunk = futures[future]
                 try:
-                    batch_samples, batch_hits, errors, batch_count = future.result()
+                    batch_frame, batch_hits, errors, batch_count = future.result()
                 except Exception as exc:
                     logger.exception("Backtest worker chunk failed: %s", exc)
-                    record_progress([], len(chunk), 0)
+                    record_progress(pd.DataFrame(), len(chunk), 0)
                     continue
                 for ticker, error in errors:
                     logger.warning("Backtest failed for %s: %s", ticker, error)
-                record_progress(batch_samples, batch_count, batch_hits)
+                record_progress(batch_frame, batch_count, batch_hits)
     else:
         for ticker in unique_tickers:
             try:
@@ -1974,11 +2278,18 @@ def run_historical_backtest(
                     slippage,
                     (validation_end, test_start),
                     benchmark_signature,
+                    profile=profile,
+                    benchmark_name=benchmark,
                 )
             except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
                 logger.warning("Backtest failed for %s: %s", ticker, exc)
                 ticker_samples, cache_hit = [], False
-            record_progress(ticker_samples, 1, int(cache_hit))
+            batch_frame = (
+                pd.DataFrame.from_records(ticker_samples)
+                if ticker_samples
+                else pd.DataFrame()
+            )
+            record_progress(batch_frame, 1, int(cache_hit))
 
     split_dates = {
         "global_start": global_start.strftime("%Y-%m-%d")
@@ -1996,6 +2307,7 @@ def run_historical_backtest(
     }
     summary = BacktestSummary(
         ticker_count=len(dict.fromkeys(tickers)),
+        mode=profile.name,
         objective=objective,
         benchmark=benchmark,
         commission=commission,
@@ -2014,11 +2326,11 @@ def run_historical_backtest(
     summary.elapsed_seconds = float(time.perf_counter() - backtest_started)
     summary.worker_count = int(worker_count)
     summary.engine = engine
-    if not samples:
+    if not sample_batches:
         summary.insufficient_test_data = True
         summary.error = "未生成有效回测样本"
     else:
-        all_frame = pd.DataFrame(samples)
+        all_frame = pd.concat(sample_batches, ignore_index=True)
         summary.all_samples = len(all_frame)
         test_frame = all_frame[all_frame["split"] == "test"]
         if len(test_frame) < 2:
