@@ -23,7 +23,7 @@ _core.DISPLAY_COLUMNS = (
     "OverallRank",
     "Ticker",
     "Name",
-    "AssetType",
+    "Close",
     "EntrySignal",
     "EntryZone",
     "BreakoutBuyPrice",
@@ -47,6 +47,7 @@ _core.DISPLAY_COLUMNS = (
 
 _core.COLUMN_NAMES.update(
     {
+        "Close": "当日收盘价",
         "EntryZone": "回调买点",
         "BreakoutBuyPrice": "突破买点",
         "StopLoss": "止损位",
@@ -61,7 +62,7 @@ _core.COLUMN_WIDTHS.update(
         "OverallRank": 64,
         "Ticker": 90,
         "Name": 104,
-        "AssetType": 54,
+        "Close": 86,
         "EntrySignal": 108,
         "EntryZone": 104,
         "BreakoutBuyPrice": 88,
