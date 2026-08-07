@@ -48,6 +48,7 @@ from downloader import (
     normalize_ticker,
 )
 from report import export_all, print_scan_summary, print_terminal_report
+from scan_service import ScanRequest, execute_scan
 from scanner import clear_checkpoint, run_parallel_indicator_scan, run_scan
 
 
@@ -104,66 +105,29 @@ def _refresh_fundamentals_if_needed(
 
 def cmd_scan(args: argparse.Namespace) -> int:
     logger = logging.getLogger("institution_scanner")
-    include_stocks = not args.etfs_only
-    include_etfs = not args.stocks_only
-
-    if args.tickers:
-        symbols = list(
-            dict.fromkeys(
-                normalize_ticker(t) for t in args.tickers.split(",") if t.strip()
-            )
-        )
-        stock_universe = [
-            TickerInfo(ticker=s)
-            for s in symbols
-            if include_stocks and not is_etf_ticker(s)
-        ]
-        etf_universe = [
-            TickerInfo(ticker=s, is_etf=True, asset_type="etf")
-            for s in symbols
-            if include_etfs and is_etf_ticker(s)
-        ]
-        logger.info(
-            "Scanning %d specified tickers: %s", len(symbols), ", ".join(symbols)
-        )
-    else:
-        logger.info(
-            "Building ticker universe (stocks=%s, ETFs=%s)...",
-            include_stocks,
-            include_etfs,
-        )
-        stock_universe, etf_universe = build_ticker_universe(
-            include_stocks=include_stocks,
-            include_etfs=include_etfs,
-        )
-        logger.info(
-            "Universe: %d stocks, %d ETFs — %d total.",
-            len(stock_universe),
-            len(etf_universe),
-            len(stock_universe) + len(etf_universe),
-        )
-
-    _refresh_fundamentals_if_needed(
-        stock_universe,
-        force=bool(getattr(args, "refresh_fundamentals", False)),
-        logger=logger,
-    )
-
-    report = run_scan(
-        stock_universe=stock_universe,
-        etf_universe=etf_universe,
-        force_download=args.force_download,
-        resume=not args.no_resume,
+    request = ScanRequest(
+        include_stocks=not args.etfs_only,
+        include_etfs=not args.stocks_only,
+        tickers=tuple(
+            value.strip() for value in str(args.tickers or "").split(",") if value.strip()
+        ),
+        force_download=bool(args.force_download),
+        resume=not bool(args.no_resume),
         data_source=args.data_source,
-        cache_first=args.cache_first,
-    )
-
-    csv_path, parquet_path, full_csv, full_parquet = export_all(
-        report.results,
+        cache_first=bool(args.cache_first),
+        refresh_fundamentals=bool(getattr(args, "refresh_fundamentals", False)),
         top_n_csv=args.top,
         top_n_parquet=args.top_parquet,
-        data_source=args.data_source,
     )
+    execution = execute_scan(
+        request,
+        logger=logger,
+        build_universe_fn=build_ticker_universe,
+        run_scan_fn=run_scan,
+        export_all_fn=export_all,
+        refresh_policy_fn=_refresh_fundamentals_if_needed,
+    )
+    report = execution.report
 
     if report.successful == 0:
         logger.error("没有可用 TickFlow 行情数据，扫描失败；请检查网络或 TickFlow Free 服务后重试。")
@@ -172,10 +136,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
     print_terminal_report(report.results, n=args.top)
     print_scan_summary(report)
-    logger.info("Top CSV:    %s", csv_path)
-    logger.info("Top PQ:     %s", parquet_path)
-    logger.info("All CSV:    %s", full_csv)
-    logger.info("All PQ:     %s", full_parquet)
+    logger.info("Top CSV:    %s", execution.top_csv)
+    logger.info("Top PQ:     %s", execution.top_parquet)
+    logger.info("All CSV:    %s", execution.full_csv)
+    logger.info("All PQ:     %s", execution.full_parquet)
     return 0
 
 

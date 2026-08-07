@@ -435,6 +435,10 @@ class ScannerGUI:
         self._current_page = 0
         self.page_summary = tk.StringVar(value="")
         self._log_queue: queue.Queue[str] = queue.Queue()
+        self._scan_event_queue: queue.Queue[tuple[str, int, int, str]] = queue.Queue()
+        self._scan_cancel_event: threading.Event | None = None
+        self._scan_execution_mode = ""
+        self._last_scan_execution = None
         self._log_job = self.root.after(150, self._flush_log_queue)
         self._configure_style()
         self._build_ui()
@@ -962,6 +966,25 @@ class ScannerGUI:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, tk.TclError) as exc:
             messagebox.showerror("读取回测结果失败", str(exc))
 
+    def _build_scan_request(self):
+        from scan_service import ScanRequest
+
+        scope = self.scope.get()
+        return ScanRequest(
+            include_stocks=scope != "仅ETF",
+            include_etfs=scope != "仅股票",
+            tickers=tuple(
+                value.strip()
+                for value in self.tickers.get().split(",")
+                if value.strip()
+            ),
+            force_download=bool(self.force_download.get()),
+            resume=not bool(self.no_resume.get() or self.force_download.get()),
+            data_source=self._selected_data_source(),
+            cache_first=bool(self.cache_first.get() and not self.force_download.get()),
+            refresh_fundamentals=bool(self.refresh_fundamentals.get()),
+        )
+
     def start_scan(self) -> None:
         if self.scan_running:
             messagebox.showinfo("提示", "扫描正在运行中")
@@ -977,9 +1000,80 @@ class ScannerGUI:
         self.progress.stop()
         self.progress.configure(mode="determinate", maximum=100, value=0)
         self.status.set("准备扫描")
-        command = self.build_command()
-        self.append_log("执行：" + " ".join(command) + "\n")
-        threading.Thread(target=self.run_process, args=(command,), daemon=True).start()
+        request = self._build_scan_request()
+        fallback_command = self.build_command()
+        self._scan_cancel_event = threading.Event()
+        self._scan_execution_mode = "inprocess"
+        self.append_log("执行：进程内扫描（异常时自动回退子进程）\n")
+        threading.Thread(
+            target=self._run_scan_inprocess,
+            args=(request, fallback_command),
+            daemon=True,
+        ).start()
+
+    def _run_scan_inprocess(self, request, fallback_command: list[str]) -> None:
+        from scan_service import execute_scan
+        from scanner import ScanCancelled
+
+        def progress(stage: str, current: int, total: int, message: str) -> None:
+            self._scan_event_queue.put((stage, current, total, message))
+
+        try:
+            result = execute_scan(
+                request,
+                progress_callback=progress,
+                cancel_event=self._scan_cancel_event,
+            )
+        except ScanCancelled:
+            try:
+                self.root.after(0, self.scan_finished, 130)
+            except tk.TclError:
+                pass
+            return
+        except Exception as exc:
+            if self._cancel_requested:
+                try:
+                    self.root.after(0, self.scan_finished, 130)
+                except tk.TclError:
+                    pass
+                return
+            self._log_queue.put(
+                f"进程内扫描异常：{exc}\n自动回退到兼容子进程模式。\n"
+            )
+            self._scan_execution_mode = "process-fallback"
+            self._scan_cancel_event = None
+            self.run_process(fallback_command)
+            return
+        self._last_scan_execution = result
+        try:
+            self.root.after(0, self.scan_finished, 0)
+        except tk.TclError:
+            pass
+
+    def _apply_scan_progress_event(
+        self, stage: str, current: int, total: int, message: str
+    ) -> None:
+        if stage == "prepare":
+            self.progress.stop()
+            self.progress.configure(mode="indeterminate")
+            self.progress.start(12)
+            self.status.set(message or "准备扫描")
+            return
+        self.progress.stop()
+        self.progress.configure(
+            mode="determinate", maximum=max(int(total), 1), value=max(int(current), 0)
+        )
+        labels = {
+            "download": "行情准备",
+            "analyse": "指标分析",
+            "enrich": "评分排序",
+            "complete": "扫描完成",
+        }
+        prefix = labels.get(stage, "扫描")
+        if total > 0 and stage != "complete":
+            self.status.set(f"{prefix} {current}/{total} · {message}")
+        else:
+            self.status.set(message or prefix)
 
     def run_process(self, command: list[str]) -> None:
         try:
@@ -1043,6 +1137,14 @@ class ScannerGUI:
             if latest_backtest_progress:
                 rendered_lines.append(latest_backtest_progress)
             self.append_log("".join(rendered_lines))
+        latest_scan_event = None
+        while True:
+            try:
+                latest_scan_event = self._scan_event_queue.get_nowait()
+            except queue.Empty:
+                break
+        if latest_scan_event is not None:
+            self._apply_scan_progress_event(*latest_scan_event)
         self._log_job = self.root.after(150, self._flush_log_queue)
 
     def scan_finished(self, code: int) -> None:
@@ -1051,6 +1153,8 @@ class ScannerGUI:
         was_cancelled = self._cancel_requested
         self.scan_running = False
         self.process = None
+        self._scan_cancel_event = None
+        self._scan_execution_mode = ""
         self.start_button.configure(state=tk.NORMAL)
         if hasattr(self, "cancel_button"):
             self.cancel_button.configure(state=tk.DISABLED)
@@ -1112,6 +1216,8 @@ class ScannerGUI:
         self.progress.stop()
         self.scan_running = False
         self.process = None
+        self._scan_cancel_event = None
+        self._scan_execution_mode = ""
         self.start_button.configure(state=tk.NORMAL)
         if hasattr(self, "cancel_button"):
             self.cancel_button.configure(state=tk.DISABLED)
@@ -1137,6 +1243,9 @@ class ScannerGUI:
         if hasattr(self, "cancel_button"):
             self.cancel_button.configure(state=tk.DISABLED)
         self.status.set("正在取消任务")
+        scan_cancel_event = getattr(self, "_scan_cancel_event", None)
+        if scan_cancel_event is not None:
+            scan_cancel_event.set()
         try:
             if self.process is not None:
                 self.process.terminate()
