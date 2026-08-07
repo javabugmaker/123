@@ -51,7 +51,7 @@ from report import export_all, print_scan_summary, print_terminal_report
 from scanner import clear_checkpoint, run_parallel_indicator_scan, run_scan
 
 
-DATA_SOURCE_CHOICES = ("auto", "akshare", "eastmoney", "sina", "tencent")
+DATA_SOURCE_CHOICES = ("tickflow",)
 
 
 def _configure_logging(verbose: bool = False) -> None:
@@ -158,7 +158,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     )
 
     if report.successful == 0:
-        logger.error("没有可用行情数据，扫描失败；请检查网络或数据源后重试。")
+        logger.error("没有可用 TickFlow 行情数据，扫描失败；请检查网络或 TickFlow Free 服务后重试。")
         print_scan_summary(report)
         return 2
 
@@ -386,7 +386,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="强制刷新基本面缓存（普通扫描会自动检查时效）",
     )
     scan_p.add_argument(
-        "--data-source", choices=DATA_SOURCE_CHOICES, default="auto"
+        "--data-source", choices=DATA_SOURCE_CHOICES, default="tickflow"
     )
     scan_p.add_argument(
         "--top",
@@ -414,7 +414,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=TOP_N_PARQUET,
     )
     report_p.add_argument(
-        "--data-source", choices=DATA_SOURCE_CHOICES, default="auto"
+        "--data-source", choices=DATA_SOURCE_CHOICES, default="tickflow"
     )
     report_p.add_argument(
         "--refresh-fundamentals",
@@ -428,7 +428,7 @@ def build_parser() -> argparse.ArgumentParser:
     dl_scope.add_argument("--stocks-only", action="store_true")
     dl_scope.add_argument("--etfs-only", action="store_true")
     dl_p.add_argument("--tickers", type=str, default=None)
-    dl_p.add_argument("--data-source", choices=DATA_SOURCE_CHOICES, default="auto")
+    dl_p.add_argument("--data-source", choices=DATA_SOURCE_CHOICES, default="tickflow")
     dl_p.add_argument("--verbose", "-v", action="store_true")
 
     backtest_p = sub.add_parser(
@@ -441,7 +441,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--workers", type=lambda value: _positive_int(value, "回测线程数"), default=None
     )
     backtest_p.add_argument(
-        "--data-source", choices=DATA_SOURCE_CHOICES, default="auto"
+        "--data-source", choices=DATA_SOURCE_CHOICES, default="tickflow"
     )
     backtest_p.add_argument(
         "--objective",

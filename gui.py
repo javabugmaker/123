@@ -12,16 +12,9 @@ import sys
 
 import gui_core as _core
 
-# Strict source semantics after provider-consistent cache hardening.
-_core.DATA_SOURCE_HINTS.update(
-    {
-        "自动优选": "腾讯 / AKShare / 东方财富自动择优（统一前复权）",
-        "AkShare": "仅使用 AkShare，不静默混源",
-        "东方财富": "仅使用东方财富，不静默混源",
-        "新浪财经": "仅使用新浪财经（独立缓存）",
-        "腾讯财经": "仅使用腾讯财经，不静默混源",
-    }
-)
+# Market data is fixed to TickFlow Free; AkShare is fundamentals-only.
+_core.DATA_SOURCE_HINTS.clear()
+_core.DATA_SOURCE_HINTS["TickFlow Free"] = "日K/标的池：TickFlow Free；基本面：AkShare 低频缓存"
 
 # Main table: trading decision first. Diagnostics remain in CSV/detail view.
 _core.DISPLAY_COLUMNS = (

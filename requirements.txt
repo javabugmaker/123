@@ -6,10 +6,10 @@ pandas>=2.0.0,<3.0
 numpy>=1.24.0,<3.0
 scipy>=1.10.0
 
-# Data download
-requests>=2.28.0,<3.0
-# 1.16.53 includes the stock_yjbb_em repair used by fundamental_data.py.
-# Pin exactly: provider API drift can silently break fundamental fields.
+# Market data / fundamentals
+# TickFlow Free is the sole OHLCV + universe provider.
+tickflow[all]==0.1.24
+# AkShare is retained only for low-frequency fundamental refreshes.
 akshare==1.16.53
 
 # Technical indicators

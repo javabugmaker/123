@@ -52,6 +52,12 @@ EXCLUDED_SECURITY_KEYWORDS: tuple[str, ...] = (
 # ======================================================================
 HISTORY_YEARS: int = 10  # Years of daily data to pull
 
+# TickFlow Free market-data settings
+TICKFLOW_ADJUST: str = "forward"  # ratio forward-adjusted; suited to returns/backtests
+TICKFLOW_BATCH_SIZE: int = 100
+TICKFLOW_MAX_WORKERS: int = 5
+TICKFLOW_UNIVERSE_CACHE_TTL_HOURS: int = 12
+
 DOWNLOAD_THREADS: int = 20  # Global ceiling; providers may apply lower limits.
 DOWNLOAD_RATE_LIMIT_PAUSE: float = 0.1
 DOWNLOAD_RETRIES: int = 2  # retries on transient errors (401s, 429s, timeouts) — don't waste time retrying dead URLs
@@ -163,7 +169,7 @@ SCORING_WEIGHTS: Final[ScoringWeights] = ScoringWeights()
 TOP_N_REPORT: int = 50
 TOP_N_PARQUET: int = 200
 
-SCORING_VERSION: str = "2026-08-07-v11-provider-consistency-entry-backtest"
+SCORING_VERSION: str = "2026-08-08-v12-tickflow-free-akshare-fundamentals"
 
 # Per-ticker historical evidence is only allowed to influence the composite
 # rank after more than a couple of independent observations.  This prevents a

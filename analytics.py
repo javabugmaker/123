@@ -32,8 +32,6 @@ from config import (
     SCAN_THREADS,
 )
 from downloader import (
-    _fetch_eastmoney_realtime_price,
-    _fetch_eastmoney_realtime_prices,
     _is_a_share_market_closed,
     _load_cache,
     download_ticker,
@@ -370,26 +368,9 @@ def _enrich_one_result(
     indexed_date = pd.to_datetime(enriched.index[-1], errors="coerce")
     latest_date = indexed_date.date() if not pd.isna(indexed_date) else None
     reported_date = latest_date
+    # TickFlow Free exposes historical daily bars only; the last daily close
+    # remains tied to its actual trade_date and is never promoted to today.
     result.close = float(enriched["Close"].iloc[-1])
-    last_business_day = (pd.Timestamp(today) - pd.offsets.BDay(1)).date()
-    if (
-        _is_a_share_market_closed()
-        and latest_date is not None
-        and latest_date < today
-        and latest_date >= last_business_day
-        and not is_etf_ticker(result.ticker)
-    ):
-        if realtime_prices is None:
-            try:
-                realtime_close = _fetch_eastmoney_realtime_price(result.ticker)
-            except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-                realtime_close = None
-        else:
-            realtime_close = realtime_prices.get(result.ticker)
-        realtime_value = _finite_float(realtime_close)
-        if np.isfinite(realtime_value):
-            result.close = realtime_value
-            reported_date = today
 
     if reported_date is None:
         data_age = -1
@@ -449,19 +430,8 @@ def enrich_results(
         regime_confidence,
         regime_reason,
     ) = _benchmark_regime_components(benchmark_frames, slow_regime, slow_reason)
+    # TickFlow Free has no realtime quote service.
     realtime_prices: dict[str, float] | None = None
-    if _is_a_share_market_closed():
-        try:
-            realtime_prices = _fetch_eastmoney_realtime_prices(
-                [
-                    result.ticker
-                    for result in results
-                    if not is_etf_ticker(result.ticker)
-                ]
-            )
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
-            logger.debug("批量实时行情获取失败：%s", exc)
-            realtime_prices = {}
 
     industry_returns: dict[str, dict[str, float]] = {}
     cached_frames: dict[str, pd.DataFrame] = {}

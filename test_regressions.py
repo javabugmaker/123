@@ -640,12 +640,6 @@ class RegressionTests(TestCase):
 
         scanner.load_csv.assert_called_once_with("AllResults.csv")
 
-    def test_cache_path_isolated_by_source(self):
-        eastmoney = _cache_path("600000.SH", "eastmoney")
-        sina = _cache_path("600000.SH", "sina")
-        self.assertNotEqual(eastmoney, sina)
-        self.assertTrue(str(eastmoney).endswith("600000.SH__eastmoney.parquet"))
-
     def test_invalid_latest_values_fail_basic_filters(self):
         frame = pd.DataFrame({"Close": [10, np.nan], "Volume": [1000, np.nan]})
         self.assertFalse(filter_min_price(frame).passed)
@@ -806,44 +800,6 @@ class RegressionTests(TestCase):
         command = scanner.build_command()
 
         self.assertIn("--cache-first", command)
-
-    def test_gui_build_command_supports_akshare(self):
-        scanner = object.__new__(gui.ScannerGUI)
-        scanner.tickers = Mock()
-        scanner.tickers.get.return_value = ""
-        scanner.scope = Mock()
-        scanner.scope.get.return_value = "全部股票和ETF"
-        scanner.no_resume = Mock()
-        scanner.no_resume.get.return_value = False
-        scanner.force_download = Mock()
-        scanner.force_download.get.return_value = False
-        scanner.refresh_fundamentals = Mock()
-        scanner.refresh_fundamentals.get.return_value = False
-        scanner.data_source = Mock()
-        scanner.data_source.get.return_value = "AkShare"
-
-        command = scanner.build_command()
-
-        self.assertEqual(command[command.index("--data-source") + 1], "akshare")
-
-    def test_gui_build_command_supports_auto_data_source(self):
-        scanner = object.__new__(gui.ScannerGUI)
-        scanner.tickers = Mock()
-        scanner.tickers.get.return_value = ""
-        scanner.scope = Mock()
-        scanner.scope.get.return_value = "全部股票和ETF"
-        scanner.no_resume = Mock()
-        scanner.no_resume.get.return_value = False
-        scanner.force_download = Mock()
-        scanner.force_download.get.return_value = False
-        scanner.refresh_fundamentals = Mock()
-        scanner.refresh_fundamentals.get.return_value = False
-        scanner.data_source = Mock()
-        scanner.data_source.get.return_value = "自动优选"
-
-        command = scanner.build_command()
-
-        self.assertEqual(command[command.index("--data-source") + 1], "auto")
 
     def test_signal_lifecycle_same_trade_date_does_not_increment_signal_days(self):
         frame = pd.DataFrame({
@@ -1478,11 +1434,6 @@ class RegressionTests(TestCase):
             parser.parse_args(["scan", "--top", "0"])
         with self.assertRaises(SystemExit):
             parser.parse_args(["report", "--top-parquet", "-1"])
-
-    def test_parser_defaults_to_auto_data_source(self):
-        parser = main.build_parser()
-        self.assertEqual(parser.parse_args(["scan"]).data_source, "auto")
-        self.assertEqual(parser.parse_args(["download"]).data_source, "auto")
 
     def test_parser_rejects_conflicting_scope_options(self):
         parser = main.build_parser()

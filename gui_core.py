@@ -19,8 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "output"
 MAIN_FILE = PROJECT_ROOT / "main.py"
 DISPLAY_VALUE_NAMES = {
-    "auto": "自动优选",
-    "akshare": "AkShare",
+    "tickflow": "TickFlow Free",
     "ACCUMULATION": "吸筹阶段",
     "BREAKOUT": "启动阶段",
     "DISTRIBUTION": "派发阶段",
@@ -34,9 +33,6 @@ DISPLAY_VALUE_NAMES = {
     "AVOID": "回避",
     "ETF": "ETF",
     "STOCK": "股票",
-    "eastmoney": "东方财富",
-    "sina": "新浪财经",
-    "tencent": "腾讯财经",
     "current_survivor_pool": "当前结果股票池",
     "PASS": "通过",
     "FAIL": "未通过",
@@ -44,21 +40,9 @@ DISPLAY_VALUE_NAMES = {
 }
 DISPLAY_VALUE_CODES = {label: value for value, label in DISPLAY_VALUE_NAMES.items()}
 
-DATA_SOURCE_CODES = {
-    "自动优选": "auto",
-    "AkShare": "akshare",
-    "东方财富": "eastmoney",
-    "新浪财经": "sina",
-    "腾讯财经": "tencent",
-}
+DATA_SOURCE_CODES = {"TickFlow Free": "tickflow"}
 
-DATA_SOURCE_HINTS = {
-    "自动优选": "新浪优先，自动回退",
-    "AkShare": "失败时自动回退",
-    "东方财富": "失败时自动回退",
-    "新浪财经": "失败时自动回退",
-    "腾讯财经": "失败时自动回退",
-}
+DATA_SOURCE_HINTS = {"TickFlow Free": "日K/标的池：TickFlow Free；基本面：AkShare 低频缓存"}
 
 CsvCacheToken = tuple[int, int] | tuple[int, int, str]
 MISSING_VALUE_TEXTS = frozenset(
@@ -420,9 +404,9 @@ class ScannerGUI:
         self.force_download = tk.BooleanVar(value=False)
         self.cache_first = tk.BooleanVar(value=False)
         self.refresh_fundamentals = tk.BooleanVar(value=False)
-        self.data_source = tk.StringVar(value="自动优选")
+        self.data_source = tk.StringVar(value="TickFlow Free")
         self.data_source_label = tk.StringVar(
-            value="当前：自动优选 · 新浪优先，自动回退"
+            value="行情：TickFlow Free（日K/前复权） · 基本面：AkShare（低频缓存）"
         )
         self.status = tk.StringVar(value="就绪")
         self.result_summary = tk.StringVar(value="等待加载结果")
@@ -762,7 +746,7 @@ class ScannerGUI:
         return command
 
     def _selected_data_source(self) -> str:
-        return DATA_SOURCE_CODES.get(self.data_source.get(), "auto")
+        return DATA_SOURCE_CODES.get(self.data_source.get(), "tickflow")
 
     def _top50_tickers(self) -> list[str]:
         path = OUTPUT_DIR / "Top50.csv"

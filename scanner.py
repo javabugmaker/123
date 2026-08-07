@@ -557,7 +557,7 @@ def scan_single_from_df(
 def scan_single(
     ticker_info: TickerInfo,
     force_download: bool = False,
-    data_source: str = "eastmoney",
+    data_source: str = "tickflow",
 ) -> ScanResult:
     ticker = _normalize_ticker(ticker_info.ticker)
     ticker_info.ticker = ticker
@@ -592,7 +592,7 @@ def run_scan(
     etf_universe: list[TickerInfo] | None = None,
     force_download: bool = False,
     resume: bool = True,
-    data_source: str = "eastmoney",
+    data_source: str = "tickflow",
     cache_first: bool = False,
 ) -> ScanReport:
     start_time = time.perf_counter()
@@ -1244,7 +1244,7 @@ def _analyse_one_ticker_from_df(
 
 
 def _analyse_one_ticker(
-    ticker_info: TickerInfo, data_source: str = "eastmoney"
+    ticker_info: TickerInfo, data_source: str = "tickflow"
 ) -> ScanResult:
     df = _load_cache(ticker_info.ticker, data_source)
     if df is None:
@@ -1259,7 +1259,7 @@ def _analyse_one_ticker(
 
 
 def run_parallel_indicator_scan(
-    ticker_infos: list[TickerInfo], data_source: str = "eastmoney"
+    ticker_infos: list[TickerInfo], data_source: str = "tickflow"
 ) -> list[ScanResult]:
     data_source = normalize_data_source(data_source)
     results: list[ScanResult] = []
