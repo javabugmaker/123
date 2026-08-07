@@ -62,7 +62,7 @@ def patch_gui() -> None:
     text = replace_once(
         text,
         '''        self.status.set("正在取消任务")\n        try:\n            if self.process is not None:\n                self.process.terminate()\n''',
-        '''        self.status.set("正在取消任务")\n        if self._scan_cancel_event is not None:\n            self._scan_cancel_event.set()\n        try:\n            if self.process is not None:\n                self.process.terminate()\n''',
+        '''        self.status.set("正在取消任务")\n        scan_cancel_event = getattr(self, "_scan_cancel_event", None)\n        if scan_cancel_event is not None:\n            scan_cancel_event.set()\n        try:\n            if self.process is not None:\n                self.process.terminate()\n''',
         "gui cooperative cancellation",
     )
     path.write_text(text, encoding="utf-8")
