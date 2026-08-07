@@ -45,24 +45,14 @@ FUNDAMENTAL_COLUMNS = (
 
 _CACHE_PATH = CACHE_DIR / "fundamental_data.csv"
 _META_PATH = CACHE_DIR / "fundamental_data_meta.json"
-
-# Module-level batch data cache — populated once per refresh run.
 _batch_finance_cache: dict[str, dict[str, Any]] = {}
 _batch_holders_cache: dict[str, dict[str, Any]] = {}
 _batch_cache_lock = threading.Lock()
 _NETWORK_ENV_LOCK = threading.Lock()
-_CACHE_COMPLETENESS_THRESHOLD = 0.90
+_CACHE_COMPLETENESS_THRESHOLD = 0.80
+_FUNDAMENTAL_CACHE_MAX_AGE_DAYS = 7
 _BATCH_FETCH_TIMEOUT_SECONDS = max(
     30.0, float(FUNDAMENTAL_PROGRESS_HEARTBEAT_SECONDS) * 3.0
-)
-_REQUIRED_CACHE_NUMERIC_COLUMNS = (
-    "ROE",
-    "GrossMargin",
-    "InstitutionHoldingPeriods",
-    "NetProfitY1",
-    "NetProfitY2",
-    "NetProfitY3",
-    "IndustryGrossMarginPercentile",
 )
 _PROXY_ENV_KEYS = (
     "HTTP_PROXY",
@@ -77,7 +67,6 @@ _PROXY_ENV_KEYS = (
 
 
 def _wait_for_slot() -> None:
-    """Rate-limit helper — preserved for compatibility."""
     time.sleep(DOWNLOAD_RATE_LIMIT_PAUSE)
 
 
@@ -89,12 +78,7 @@ def _log_fundamental_progress(
     force: bool = False,
 ) -> None:
     interval = max(1, total // 100)
-    if (
-        force
-        or completed == 0
-        or completed == total
-        or completed % interval == 0
-    ):
+    if force or completed == 0 or completed == total or completed % interval == 0:
         logger.info(
             "FUNDAMENTAL progress: %d/%d (%d updated, %d unavailable).",
             completed,
@@ -146,7 +130,6 @@ def _row_value(row: Mapping[str, Any], *names: str) -> Any:
 
 
 def _code_to_ticker(code: Any) -> str:
-    """Convert a 6-digit stock code to a normalized ticker with exchange suffix."""
     value = _text(code).upper()
     if value.endswith(".0") and value[:-2].isdigit():
         value = value[:-2]
@@ -171,14 +154,7 @@ def _annual_report_dates() -> tuple[str, ...]:
 
 
 def _institution_report_symbols(limit: int = 8) -> tuple[str, ...]:
-    """Return recent completed reporting periods in AKShare's YYYYQ format.
-
-    stock_institute_hold does not have a no-argument mode.  Its ``symbol`` is
-    the report period, where 1/2/3/4 mean Q1/H1/Q3/annual report respectively.
-    Start from the most recently completed calendar quarter and walk backwards
-    because the newest report can legitimately be unavailable during disclosure
-    season.
-    """
+    """Return recent completed AKShare report periods in YYYYQ format."""
     if limit <= 0:
         return ()
     today = date.today()
@@ -199,14 +175,7 @@ def _institution_report_symbols(limit: int = 8) -> tuple[str, ...]:
 
 @contextmanager
 def _direct_network_environment():
-    """Temporarily bypass environment proxies for provider requests.
-
-    ``downloader.py`` already uses a requests.Session with ``trust_env=False``.
-    AKShare creates its own Requests sessions internally, so it can otherwise
-    inherit HTTP(S)_PROXY/ALL_PROXY (for example 127.0.0.1:7897 on Windows).
-    Keep the override scoped to one AKShare operation and restore the user's
-    environment afterwards.
-    """
+    """Scope proxy bypass to one AKShare call and always restore the environment."""
     with _NETWORK_ENV_LOCK:
         previous = {key: os.environ.get(key) for key in _PROXY_ENV_KEYS}
         for key in _PROXY_ENV_KEYS:
@@ -226,14 +195,14 @@ def _direct_network_environment():
 def _run_akshare_dataframe(
     label: str, operation: Callable[[], Any]
 ) -> pd.DataFrame | None:
-    """Run an AKShare request without letting one stalled request freeze a scan."""
+    """Bound waiting time for provider calls without blocking the scan forever."""
     outcome: dict[str, Any] = {}
 
     def run() -> None:
         try:
             with _direct_network_environment():
                 outcome["frame"] = operation()
-        except Exception as exc:  # AKShare wraps provider errors in varied types.
+        except Exception as exc:
             outcome["error"] = exc
 
     worker = threading.Thread(target=run, name=f"akshare-{label}", daemon=True)
@@ -265,12 +234,7 @@ def _run_akshare_dataframe(
     return frame if isinstance(frame, pd.DataFrame) else None
 
 
-# ---------------------------------------------------------------------------
-# Batch data fetching via AKShare
-# ---------------------------------------------------------------------------
-
 def _batch_fetch_financial_data() -> dict[str, dict[str, Any]]:
-    """Fetch the latest three available annual reports for all A-shares."""
     if ak is None:
         logger.warning("AKShare 未安装，无法批量获取财务数据。")
         return {}
@@ -343,13 +307,7 @@ def _batch_fetch_financial_data() -> dict[str, dict[str, Any]]:
 
 
 def _batch_fetch_institutional_data() -> dict[str, dict[str, Any]]:
-    """Fetch two latest available institutional-holding snapshots.
-
-    AKShare ``stock_institute_hold`` requires a report-period symbol such as
-    ``20262``.  Two snapshots are used so the scanner only treats institutional
-    accumulation/distribution as confirmed when two consecutive reported
-    changes agree; one available period remains neutral/UNKNOWN.
-    """
+    """Fetch two snapshots of institution-count changes, not aggregate holdings."""
     if ak is None:
         return {}
     if not hasattr(ak, "stock_institute_hold"):
@@ -358,9 +316,9 @@ def _batch_fetch_institutional_data() -> dict[str, dict[str, Any]]:
 
     snapshots: list[tuple[str, pd.DataFrame]] = []
     for report_symbol in _institution_report_symbols():
-        logger.info("正在通过 AKShare 获取机构持股报告期 %s...", report_symbol)
+        logger.info("正在通过 AKShare 获取机构覆盖报告期 %s...", report_symbol)
         frame = _run_akshare_dataframe(
-            f"机构持股 {report_symbol}",
+            f"机构覆盖 {report_symbol}",
             lambda report_symbol=report_symbol: ak.stock_institute_hold(
                 symbol=report_symbol
             ),
@@ -368,16 +326,12 @@ def _batch_fetch_institutional_data() -> dict[str, dict[str, Any]]:
         if frame is None or frame.empty:
             continue
         snapshots.append((report_symbol, frame))
-        logger.info(
-            "AKShare 机构持股 %s 已载入：%d 条。",
-            report_symbol,
-            len(frame),
-        )
+        logger.info("AKShare 机构覆盖 %s 已载入：%d 条。", report_symbol, len(frame))
         if len(snapshots) == 2:
             break
 
     if not snapshots:
-        logger.warning("AKShare 机构持股数据为空或暂不可用。")
+        logger.warning("AKShare 机构覆盖家数数据为空或暂不可用。")
         return {}
 
     result: dict[str, dict[str, Any]] = {}
@@ -421,7 +375,7 @@ def _batch_fetch_institutional_data() -> dict[str, dict[str, Any]]:
                 values["PreviousReportSymbol"] = report_symbol
 
     logger.info(
-        "AKShare 机构持股批量获取完成：%d 只股票，使用报告期 %s。",
+        "AKShare 机构覆盖家数批量获取完成：%d 只股票，使用报告期 %s。",
         len(result),
         ", ".join(symbol for symbol, _ in snapshots),
     )
@@ -429,7 +383,6 @@ def _batch_fetch_institutional_data() -> dict[str, dict[str, Any]]:
 
 
 def _prefetch_batch_data() -> None:
-    """Populate the module-level batch data caches."""
     global _batch_finance_cache, _batch_holders_cache
     with _batch_cache_lock:
         if not _batch_finance_cache:
@@ -439,27 +392,16 @@ def _prefetch_batch_data() -> None:
 
 
 def _clear_batch_cache() -> None:
-    """Clear the module-level batch data caches."""
     global _batch_finance_cache, _batch_holders_cache
     with _batch_cache_lock:
         _batch_finance_cache = {}
         _batch_holders_cache = {}
 
 
-# ---------------------------------------------------------------------------
-# Per-ticker data lookup (from batch cache)
-# ---------------------------------------------------------------------------
-
 def _fetch_ticker_from_batch(ticker: str) -> dict[str, Any] | None:
-    """Look up fundamental data for a single ticker from the batch cache.
-
-    This replaces the old per-ticker Eastmoney calls using the removed
-    RPT_F10_FINANCE_MAINFIN_INDEX and RPT_F10_EH_HOLDERS reports.
-    """
     normalized = normalize_ticker(ticker)
     finance = _batch_finance_cache.get(normalized, {})
     holders = _batch_holders_cache.get(normalized, {})
-
     if not finance and not holders:
         return None
 
@@ -474,9 +416,6 @@ def _fetch_ticker_from_batch(ticker: str) -> dict[str, Any] | None:
     elif len(changes) >= 2 and all(value <= 0 for value in changes[:2]):
         trend = "not_increasing"
     else:
-        # Missing or mixed institutional snapshots are evidence-unknown, not a
-        # negative signal.  signal_lifecycle therefore keeps the holding gate
-        # neutral until two consistent periods exist.
         trend = "unknown"
 
     return {
@@ -496,7 +435,6 @@ def _fetch_ticker_from_batch(ticker: str) -> dict[str, Any] | None:
 def _fetch_ticker(
     ticker: str, request: Callable[..., Any] | None = None
 ) -> dict[str, Any] | None:
-    """Compatibility wrapper for callers that previously supplied a request hook."""
     del request
     return _fetch_ticker_from_batch(ticker)
 
@@ -523,7 +461,6 @@ def _configured_frame() -> pd.DataFrame:
 
 
 def _fundamental_index(frame: pd.DataFrame) -> pd.DataFrame:
-    """Normalize a fundamental-data frame for safe ticker-level merging."""
     normalized = frame.reindex(columns=FUNDAMENTAL_COLUMNS).copy()
     normalized["Ticker"] = normalized["Ticker"].map(normalize_ticker)
     normalized = normalized.loc[normalized["Ticker"].ne("")]
@@ -533,7 +470,6 @@ def _fundamental_index(frame: pd.DataFrame) -> pd.DataFrame:
 def _replace_fundamental_rows(
     base: pd.DataFrame, replacement: pd.DataFrame
 ) -> pd.DataFrame:
-    """Replace whole ticker rows without pandas concat dtype coercion."""
     if replacement.empty:
         return base
     merged = base.reindex(base.index.union(replacement.index, sort=False)).copy()
@@ -542,11 +478,16 @@ def _replace_fundamental_rows(
 
 
 def _is_current_quarter() -> bool:
+    """A cache is current only when its quarter and update age are both current."""
     try:
         metadata = json.loads(_META_PATH.read_text(encoding="utf-8"))
-        return metadata.get("quarter") == (
+        expected_quarter = (
             f"{date.today().year}-Q{(date.today().month - 1) // 3 + 1}"
         )
+        if metadata.get("quarter") != expected_quarter:
+            return False
+        updated = date.fromisoformat(str(metadata.get("updated", "")))
+        return (date.today() - updated).days <= _FUNDAMENTAL_CACHE_MAX_AGE_DAYS
     except (OSError, ValueError, TypeError):
         return False
 
@@ -608,6 +549,7 @@ def _cache_completeness(
     symbols: list[str],
     industries: Mapping[str, str],
 ) -> float:
+    """Measure usable factor-group coverage rather than demanding every cell."""
     if frame.empty or not symbols:
         return 0.0
     cached = (
@@ -615,15 +557,41 @@ def _cache_completeness(
         .set_index("Ticker")
         .reindex(symbols)
     )
-    numeric = cached.loc[:, _REQUIRED_CACHE_NUMERIC_COLUMNS].apply(
-        pd.to_numeric, errors="coerce"
+    roe = pd.to_numeric(cached.get("ROE"), errors="coerce").notna()
+    margin = pd.to_numeric(
+        cached.get("IndustryGrossMarginPercentile"), errors="coerce"
+    ).notna()
+    profits = (
+        pd.to_numeric(cached.get("NetProfitY1"), errors="coerce").notna()
+        & pd.to_numeric(cached.get("NetProfitY2"), errors="coerce").notna()
+        & pd.to_numeric(cached.get("NetProfitY3"), errors="coerce").notna()
     )
-    complete = numeric.notna().all(axis=1)
-    trend = cached["InstitutionHoldingTrend"].fillna("").astype(str).str.strip()
-    complete &= trend.ne("")
+    periods = pd.to_numeric(
+        cached.get("InstitutionHoldingPeriods"), errors="coerce"
+    )
+    trend = (
+        cached.get("InstitutionHoldingTrend", pd.Series("", index=cached.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    holder = periods.ge(2) & trend.ne("") & ~trend.str.lower().eq("unknown")
+    factor_count = (
+        roe.astype(int)
+        + margin.astype(int)
+        + profits.astype(int)
+        + holder.astype(int)
+    )
+    complete = factor_count.ge(3)
     if industries:
         expected_industry = cached.index.to_series().isin(industries)
-        cache_industry = cached["Industry"].fillna("").astype(str).str.strip().ne("")
+        cache_industry = (
+            cached.get("Industry", pd.Series("", index=cached.index))
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .ne("")
+        )
         complete &= ~expected_industry | cache_industry
     return float(complete.mean()) if len(complete) else 0.0
 
@@ -633,7 +601,6 @@ def _fetch_fundamental_row(
     request: Callable[..., Any] | None,
     industries: Mapping[str, str],
 ) -> dict[str, Any] | None:
-    """Fetch fundamental data for a single ticker from the batch cache."""
     try:
         row = _fetch_ticker(ticker, request)
     except Exception as exc:
@@ -653,12 +620,7 @@ def refresh_fundamental_data(
     industry_by_ticker: Mapping[str, str] | None = None,
     workers: int | None = None,
 ) -> Path:
-    """Refresh fundamental data for all tickers.
-
-    Uses current AKShare full-market interfaces instead of the removed
-    Eastmoney RPT_F10 reports.  Financial reports and institutional snapshots
-    are fetched in batches, then ticker rows are assembled locally.
-    """
+    """Refresh stale/incomplete fundamentals; otherwise reuse the current cache."""
     existing = _read_frame(_CACHE_PATH)
     fallback = _configured_frame()
     industries = {
@@ -676,19 +638,23 @@ def refresh_fundamental_data(
     ]
     total = len(symbols)
     completeness = _cache_completeness(existing, symbols, industries)
+    cache_current = _is_current_quarter()
     if (
         not force
-        and _is_current_quarter()
+        and cache_current
         and completeness >= _CACHE_COMPLETENESS_THRESHOLD
     ):
         logger.info(
-            "基本面缓存已是本季度完整版本（%.0f%%），跳过刷新。",
+            "基本面缓存时效与完整度正常（%.0f%%），跳过刷新。",
             completeness * 100,
         )
         return _CACHE_PATH
-    if _is_current_quarter() and not existing.empty:
+    if not force and existing.empty and not symbols:
+        return _CACHE_PATH
+    if not force and not existing.empty:
         logger.info(
-            "基本面缓存完整度为 %.0f%%，将重新获取缺失数据。",
+            "基本面缓存需要刷新：时效=%s，完整度=%.0f%%。",
+            "正常" if cache_current else "过期",
             completeness * 100,
         )
 
@@ -714,7 +680,6 @@ def refresh_fundamental_data(
         _log_fundamental_progress(completed, total, len(rows), unavailable)
 
     _clear_batch_cache()
-
     downloaded = pd.DataFrame(rows, columns=FUNDAMENTAL_COLUMNS)
     combined = _replace_fundamental_rows(
         _fundamental_index(fallback), _fundamental_index(existing)
@@ -731,9 +696,7 @@ def refresh_fundamental_data(
             combined["Industry"]
         )
     combined["Industry"] = combined["Industry"].fillna("").astype(str).str.strip()
-    combined["IndustryGrossMarginPercentile"] = _industry_margin_percentiles(
-        combined
-    )
+    combined["IndustryGrossMarginPercentile"] = _industry_margin_percentiles(combined)
     _write_frame(combined)
     logger.info(
         "基本面刷新完成：%d/%d 只股票已更新，%d 只暂不可用。",
