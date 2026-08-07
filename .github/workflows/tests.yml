@@ -3,6 +3,8 @@ name: Apply performance v2 via regression
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
@@ -43,6 +45,7 @@ jobs:
         run: python -m unittest discover -v
 
       - name: Restore normal CI and commit validated code
+        if: github.event_name == 'push'
         run: |
           cat > .github/workflows/tests.yml <<'EOF'
           name: Regression Tests
