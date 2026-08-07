@@ -1,18 +1,20 @@
 name: Apply ranking v15
 
 on:
-  push:
+  pull_request:
     branches: [main]
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   test:
+    if: github.head_ref == 'agent/ranking-v15'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
           ref: main
@@ -42,7 +44,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git show HEAD^:.github/workflows/tests.yml > .github/workflows/tests.yml
+          git show 80d2c77371e7f5b450e7ee3aca8dd3c2b2ec745c:.github/workflows/tests.yml > .github/workflows/tests.yml
           git add config.py scanner.py analytics.py signal_lifecycle.py report.py test_ranking_v15_regressions.py .github/workflows/tests.yml
           git commit -m 'fix: improve ranking quality and ETF diversity'
           git push origin HEAD:main
