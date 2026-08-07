@@ -53,19 +53,12 @@ def patch_gui() -> None:
         '''            if latest_backtest_progress:\n                rendered_lines.append(latest_backtest_progress)\n            self.append_log("".join(rendered_lines))\n        latest_scan_event = None\n        while True:\n            try:\n                latest_scan_event = self._scan_event_queue.get_nowait()\n            except queue.Empty:\n                break\n        if latest_scan_event is not None:\n            self._apply_scan_progress_event(*latest_scan_event)\n        self._log_job = self.root.after(150, self._flush_log_queue)\n''',
         "gui structured progress flush",
     )
-    text = replace_once(
-        text,
-        '        self.scan_running = False\n        self.process = None\n        self.start_button.configure(state=tk.NORMAL)\n',
-        '        self.scan_running = False\n        self.process = None\n        self._scan_cancel_event = None\n        self._scan_execution_mode = ""\n        self.start_button.configure(state=tk.NORMAL)\n',
-        "gui finish state reset",
-    )
-    # There are two identical state blocks (finished/failed); replace remaining one.
-    text = replace_once(
-        text,
-        '        self.scan_running = False\n        self.process = None\n        self.start_button.configure(state=tk.NORMAL)\n',
-        '        self.scan_running = False\n        self.process = None\n        self._scan_cancel_event = None\n        self._scan_execution_mode = ""\n        self.start_button.configure(state=tk.NORMAL)\n',
-        "gui failure state reset",
-    )
+    reset_old = '        self.scan_running = False\n        self.process = None\n        self.start_button.configure(state=tk.NORMAL)\n'
+    reset_new = '        self.scan_running = False\n        self.process = None\n        self._scan_cancel_event = None\n        self._scan_execution_mode = ""\n        self.start_button.configure(state=tk.NORMAL)\n'
+    reset_count = text.count(reset_old)
+    if reset_count != 2:
+        raise RuntimeError(f"gui state reset: expected two matches, found {reset_count}")
+    text = text.replace(reset_old, reset_new, 2)
     text = replace_once(
         text,
         '''        self.status.set("正在取消任务")\n        try:\n            if self.process is not None:\n                self.process.terminate()\n''',
