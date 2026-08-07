@@ -3,7 +3,7 @@ from __future__ import annotations
 """Shared application service for CLI and GUI scan execution.
 
 The service owns universe preparation, optional fundamental refresh, scan
-execution and report export.  UI/CLI layers only build a request and present the
+execution and report export. UI/CLI layers only build a request and present the
 result, which prevents their execution paths from drifting apart.
 """
 
@@ -50,6 +50,7 @@ RunScanFn = Callable[..., ScanReport]
 ExportAllFn = Callable[..., tuple[Path, Path, Path, Path]]
 FundamentalPathFn = Callable[[], Path | None]
 RefreshFundamentalsFn = Callable[..., Path]
+RefreshPolicyFn = Callable[[list[TickerInfo], bool, logging.Logger], None]
 
 
 def _normalize_symbols(values: tuple[str, ...] | list[str]) -> list[str]:
@@ -155,6 +156,7 @@ def execute_scan(
     export_all_fn: ExportAllFn = export_all,
     fundamental_path_fn: FundamentalPathFn = fundamental_data_path,
     refresh_fundamentals_fn: RefreshFundamentalsFn = refresh_fundamental_data,
+    refresh_policy_fn: RefreshPolicyFn | None = None,
 ) -> ScanExecutionResult:
     """Execute one complete scan through the shared application path."""
     log = logger or logging.getLogger("institution_scanner")
@@ -163,13 +165,16 @@ def execute_scan(
         build_universe_fn=build_universe_fn,
         logger=log,
     )
-    refresh_fundamentals_if_needed(
-        stocks,
-        request.refresh_fundamentals,
-        log,
-        fundamental_path_fn=fundamental_path_fn,
-        refresh_fundamentals_fn=refresh_fundamentals_fn,
-    )
+    if refresh_policy_fn is not None:
+        refresh_policy_fn(stocks, request.refresh_fundamentals, log)
+    else:
+        refresh_fundamentals_if_needed(
+            stocks,
+            request.refresh_fundamentals,
+            log,
+            fundamental_path_fn=fundamental_path_fn,
+            refresh_fundamentals_fn=refresh_fundamentals_fn,
+        )
     report = run_scan_fn(
         stock_universe=stocks,
         etf_universe=etfs,
