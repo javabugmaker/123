@@ -45,6 +45,7 @@ from config import (
 )
 from downloader import (
     TickerInfo,
+    _cache_path,
     _load_cache,
     build_ticker_universe,
     download_batch,
@@ -63,15 +64,14 @@ from score import (
     smart_money_stage,
 )
 
-logger = setup_logging("institution_scanner.scanner", level=logging.DEBUG, log_to_file=True, log_dir=LOG_DIR)
-
+logger = setup_logging(
+    "institution_scanner.scanner",
+    level=logging.DEBUG,
+    log_to_file=True,
+    log_dir=LOG_DIR,
+)
 
 _SCAN_RECOVERABLE_ERRORS = (OSError, ValueError, TypeError, KeyError, IndexError)
-
-
-# ======================================================================
-# Scan result container
-# ======================================================================
 
 
 @dataclass
@@ -201,10 +201,6 @@ class ScanResult:
     survivorship_bias_warning: bool = True
 
 
-# ======================================================================
-# Checkpointing
-# ======================================================================
-
 _CHECKPOINT_PATH = OUTPUT_DIR / "_checkpoint.json"
 
 
@@ -248,7 +244,6 @@ def _checkpoint_trade_date(now: datetime | None = None) -> str:
 
 
 def save_checkpoint(processed: set[str], data_source: str = "") -> None:
-    """Save the set of already-processed tickers."""
     if not ENABLE_CHECKPOINT:
         return
     try:
@@ -266,7 +261,6 @@ def save_checkpoint(processed: set[str], data_source: str = "") -> None:
 
 
 def load_checkpoint(data_source: str = "") -> set[str]:
-    """Load previously-processed tickers when checkpoint metadata matches."""
     if not _CHECKPOINT_PATH.exists():
         return set()
     try:
@@ -297,7 +291,6 @@ def _load_previous_tickers() -> set[str]:
 
 
 def clear_checkpoint() -> None:
-    """Remove the checkpoint file."""
     try:
         if _CHECKPOINT_PATH.exists():
             _CHECKPOINT_PATH.unlink(missing_ok=True)
@@ -305,21 +298,11 @@ def clear_checkpoint() -> None:
         logger.warning("Failed to remove checkpoint: %s", exc)
 
 
-# ======================================================================
-# Single-ticker scan
-# ======================================================================
-
-
 def scan_single_from_df(
     ticker_info: TickerInfo,
     df: pd.DataFrame | None,
     indicators_computed: bool = False,
 ) -> ScanResult:
-    """
-    Run indicators → filters → score on an already-downloaded DataFrame.
-
-    Returns a ScanResult regardless of whether the ticker passes or fails.
-    """
     ticker = _normalize_ticker(ticker_info.ticker)
     ticker_info.ticker = ticker
 
@@ -335,7 +318,6 @@ def scan_single_from_df(
                 error="Insufficient data",
             )
 
-        # Pre-filter: skip tickers below the minimum market cap
         market_cap = ticker_info.market_cap
         if market_cap is None and not ticker_info.is_etf:
             try:
@@ -361,6 +343,7 @@ def scan_single_from_df(
                 sector=ticker_info.sector,
                 industry=ticker_info.industry,
                 is_etf=ticker_info.is_etf,
+                asset_type=ticker_info.asset_type,
                 error=f"市值 {market_cap:,.0f} 元低于最低要求 {MIN_MARKET_CAP:,.0f} 元",
             )
 
@@ -378,7 +361,6 @@ def scan_single_from_df(
                 error="最新收盘价无效",
             )
 
-        # ---- 3. Filters ----
         filter_results = run_all_filters(
             df,
             market_cap=market_cap,
@@ -404,32 +386,60 @@ def scan_single_from_df(
             "volatility_contraction": filter_results.volatility_contraction.passed,
         }
 
-        # ---- 4. Score ----
         sb = score_ticker(df, is_etf=ticker_info.is_etf)
         style = classify_style(df, is_etf=ticker_info.is_etf)
 
-        # ---- 5. Extract snapshot values ----
         obv_val = df["OBV"].iloc[-1] if "OBV" in df.columns else np.nan
         cmf_val = df["CMF"].iloc[-1] if "CMF" in df.columns else np.nan
         ad_val = df["AD"].iloc[-1] if "AD" in df.columns else np.nan
         atr14_val = df["ATR14"].iloc[-1] if "ATR14" in df.columns else np.nan
         rsi14_val = df["RSI14"].iloc[-1] if "RSI14" in df.columns else np.nan
         dist_low = (
-            df["DistToLow52W"].iloc[-1] if "DistToLow52W" in df.columns else np.nan
+            df["DistToLow52W"].iloc[-1]
+            if "DistToLow52W" in df.columns
+            else np.nan
         )
-        ma20_value = _parse_float(df["MA20"].iloc[-1], np.nan) if "MA20" in df.columns else np.nan
-        ma50_value = _parse_float(df["MA50"].iloc[-1], np.nan) if "MA50" in df.columns else np.nan
-        dist_ma20 = ((close / ma20_value) - 1.0) * 100.0 if np.isfinite(ma20_value) and ma20_value > 0 else np.nan
-        dist_ma50 = ((close / ma50_value) - 1.0) * 100.0 if np.isfinite(ma50_value) and ma50_value > 0 else np.nan
+        ma20_value = (
+            _parse_float(df["MA20"].iloc[-1], np.nan)
+            if "MA20" in df.columns
+            else np.nan
+        )
+        ma50_value = (
+            _parse_float(df["MA50"].iloc[-1], np.nan)
+            if "MA50" in df.columns
+            else np.nan
+        )
+        dist_ma20 = (
+            ((close / ma20_value) - 1.0) * 100.0
+            if np.isfinite(ma20_value) and ma20_value > 0
+            else np.nan
+        )
+        dist_ma50 = (
+            ((close / ma50_value) - 1.0) * 100.0
+            if np.isfinite(ma50_value) and ma50_value > 0
+            else np.nan
+        )
         recent_return_20d = (
             (close / _parse_float(df["Close"].iloc[-21], np.nan) - 1.0) * 100.0
             if len(df) >= 21 and _parse_float(df["Close"].iloc[-21], np.nan) > 0
             else np.nan
         )
-        atr50_value = _parse_float(df["ATR50"].iloc[-1], np.nan) if "ATR50" in df.columns else np.nan
-        atr_expansion = (atr14_val / atr50_value) if np.isfinite(atr14_val) and np.isfinite(atr50_value) and atr50_value > 0 else np.nan
+        atr50_value = (
+            _parse_float(df["ATR50"].iloc[-1], np.nan)
+            if "ATR50" in df.columns
+            else np.nan
+        )
+        atr_expansion = (
+            atr14_val / atr50_value
+            if np.isfinite(atr14_val)
+            and np.isfinite(atr50_value)
+            and atr50_value > 0
+            else np.nan
+        )
         phase = (
-            df["WyckoffPhase"].iloc[-1] if "WyckoffPhase" in df.columns else "Unknown"
+            df["WyckoffPhase"].iloc[-1]
+            if "WyckoffPhase" in df.columns
+            else "Unknown"
         )
         vol_accum_days = int(
             filter_results.volume_accumulation.details.get("consecutive_days", 0)
@@ -475,7 +485,9 @@ def scan_single_from_df(
             score_coverage=_parse_float(
                 getattr(sb, "indicator_coverage", np.nan), 0.0
             ),
-            score_confidence=_parse_float(getattr(sb, "confidence", np.nan), 0.0),
+            score_confidence=_parse_float(
+                getattr(sb, "confidence", np.nan), 0.0
+            ),
             obv=obv_val,
             cmf=cmf_val,
             ad=ad_val,
@@ -496,7 +508,9 @@ def scan_single_from_df(
             entry_zone=entry_zone,
             breakout_buy_price=_parse_float(entry["breakout"]),
             breakout_volume_ratio=_parse_float(entry.get("volume_ratio")),
-            breakout_volume_confirmed=_parse_bool(entry.get("volume_confirmed")),
+            breakout_volume_confirmed=_parse_bool(
+                entry.get("volume_confirmed")
+            ),
             breakout_flow_confirmed=_parse_bool(entry.get("flow_confirmed")),
             price_breakout=_parse_bool(entry.get("price_breakout")),
             stop_loss=_parse_float(entry["stop"]),
@@ -545,12 +559,6 @@ def scan_single(
     force_download: bool = False,
     data_source: str = "eastmoney",
 ) -> ScanResult:
-    """
-    Full scan pipeline for one ticker:
-      download → indicators → filters → score.
-
-    Prefer scan_single_from_df() when data is already downloaded.
-    """
     ticker = _normalize_ticker(ticker_info.ticker)
     ticker_info.ticker = ticker
     try:
@@ -566,22 +574,17 @@ def scan_single(
         )
 
 
-# ======================================================================
-# Full scan orchestration
-# ======================================================================
-
-
 @dataclass
 class ScanReport:
-    """Aggregated results from a full scan run."""
-
     results: list[ScanResult] = field(default_factory=list)
     total_tickers: int = 0
     successful: int = 0
     failed: int = 0
     passed_filters: int = 0
     elapsed_seconds: float = 0.0
-    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    timestamp: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
 
 
 def run_scan(
@@ -592,34 +595,11 @@ def run_scan(
     data_source: str = "eastmoney",
     cache_first: bool = False,
 ) -> ScanReport:
-    """
-    Two-phase parallel scan across the entire ticker universe.
-
-    Phase 1 — Download: parallel (ThreadPoolExecutor) data fetch via
-    downloader.download_batch().  Tickers already cached are skipped
-    unless force_download=True.  Bar the first ever run this phase is
-    fast (most tickers only need a few incremental days).
-
-    Phase 2 — Analyse: parallel indicator computation + scoring via
-    ThreadPoolExecutor on the cached DataFrames.  This is CPU-bound
-    and scales well with more workers.
-
-    Args:
-        stock_universe: Optional pre-built list of stocks.
-        etf_universe: Optional pre-built list of ETFs.
-        force_download: If True, re-download all data.
-        resume: If True, load checkpoint and skip already-analysed tickers.
-
-    Returns:
-        ScanReport with ranked results.
-    """
-
     start_time = time.perf_counter()
     data_source = normalize_data_source(data_source)
     if force_download:
         resume = False
 
-    # ---- Build universe ----
     if stock_universe is None and etf_universe is None:
         stock_universe, etf_universe = build_ticker_universe(
             include_stocks=True,
@@ -632,34 +612,30 @@ def run_scan(
     if etf_universe:
         all_tickers.extend(etf_universe)
 
-    # Deduplicate by ticker
     seen: set[str] = set()
     unique: list[TickerInfo] = []
     for ti in all_tickers:
         ti.ticker = _normalize_ticker(ti.ticker)
-        tup = ti.ticker
-        if tup not in seen:
-            seen.add(tup)
+        if ti.ticker not in seen:
+            seen.add(ti.ticker)
             unique.append(ti)
     all_tickers = unique
 
-    # ---- Phase 1: Parallel download ----
     logger.info(
         "Phase 1/2: downloading data for %d tickers (%d threads)...",
         len(all_tickers),
         DOWNLOAD_THREADS,
     )
-
-    # On the first ever run, everything is a full download.
-    # On subsequent runs, download_batch() still calls download_ticker()
-    # which does incremental fetch for already-cached symbols.
     universe_symbols = {_normalize_ticker(ti.ticker) for ti in all_tickers}
     processed_set = load_checkpoint(data_source) if resume else set()
     processed_set.intersection_update(universe_symbols)
     previous_tickers = _load_previous_tickers() if resume and processed_set else set()
     skip_processed = processed_set.intersection(previous_tickers)
     if skip_processed:
-        logger.info("Resuming interrupted scan: %d tickers already analysed.", len(skip_processed))
+        logger.info(
+            "Resuming interrupted scan: %d tickers already analysed.",
+            len(skip_processed),
+        )
     download_started = time.perf_counter()
     downloaded = download_batch(
         all_tickers,
@@ -672,9 +648,7 @@ def run_scan(
     download_elapsed = time.perf_counter() - download_started
     logger.info("Download phase complete in %.1f seconds.", download_elapsed)
 
-    # ---- Phase 2: Parallel analyse ----
     processed_set = skip_processed
-
     downloaded_frames = {
         _normalize_ticker(ticker): frame for ticker, frame in downloaded.items()
     }
@@ -703,9 +677,9 @@ def run_scan(
     results: list[ScanResult] = []
     analysed_frames: dict[str, pd.DataFrame] = {}
     analysed_this_run: set[str] = set()
-    successful: int = 0
-    failed: int = 0
-    passed: int = 0
+    successful = 0
+    failed = 0
+    passed = 0
 
     prev_parquet = OUTPUT_DIR / "AllResults.parquet"
     prev_results: dict[str, ScanResult] = {}
@@ -716,279 +690,389 @@ def run_scan(
             metadata = pd.read_parquet(prev_parquet, columns=["DataSource"])
             if not metadata.empty:
                 previous_report_source = str(
-                    metadata["DataSource"].dropna().iloc[0] or ""
-                )
-        except (OSError, ImportError, KeyError, ValueError):
+                    metadata["DataSource"].dropna().iloc[0]
+                ).strip()
+        except (OSError, ImportError, KeyError, ValueError, IndexError):
             previous_report_source = ""
-
-    if skip_processed and prev_parquet.exists() and previous_report_source in ("", data_source):
-        try:
-            prev_df = pd.read_parquet(prev_parquet)
-            for _, row in prev_df.iterrows():
-                ticker = _normalize_ticker(str(row.get("Ticker", "") or ""))
-                sr = ScanResult(
-                    ticker=ticker,
-                    name=str(row.get("Name", "") or ""),
-                    sector=str(row.get("Sector", "") or ""),
-                    industry=str(row.get("Industry", "") or ""),
-                    is_etf=_parse_bool(row.get("IsETF", False)),
-                    close=_parse_float(row.get("Close", 0), 0.0),
-                    score=ScoreBreakdown(
-                        total=_parse_float(row.get("Score", 0), 0.0),
-                        trend=_parse_float(row.get("TrendScore", 0), 0.0),
-                        volume=_parse_float(row.get("VolumeScore", 0), 0.0),
-                        accumulation=_parse_float(row.get("AccumulationScore", 0), 0.0),
-                        volatility=_parse_float(row.get("CompressionScore", 0), 0.0),
-                        structure=_parse_float(row.get("StructureScore", 0), 0.0),
-                        missing_indicators=_parse_int(
+        if previous_report_source and previous_report_source != data_source:
+            logger.warning(
+                "Ignoring resume rows from source %s while current source is %s.",
+                previous_report_source,
+                data_source,
+            )
+            skip_processed = set()
+            processed_set = set()
+        else:
+            try:
+                prev_df = pd.read_parquet(prev_parquet)
+                for _, row in prev_df.iterrows():
+                    ticker = _normalize_ticker(str(row.get("Ticker", "")))
+                    if not ticker:
+                        continue
+                    sr = ScanResult(
+                        ticker=ticker,
+                        name=str(row.get("Name", "") or ""),
+                        sector=str(row.get("Sector", "") or ""),
+                        industry=str(row.get("Industry", "") or ""),
+                        is_etf=_parse_bool(row.get("IsETF", False)),
+                        asset_type=str(row.get("AssetType", "stock") or "stock"),
+                        close=_parse_float(row.get("Close", np.nan), 0.0),
+                        score=ScoreBreakdown(
+                            total=_parse_float(row.get("Score", np.nan), 0.0),
+                            trend=_parse_float(row.get("TrendScore", np.nan), 0.0),
+                            volume=_parse_float(row.get("VolumeScore", np.nan), 0.0),
+                            accumulation=_parse_float(
+                                row.get("AccumulationScore", np.nan), 0.0
+                            ),
+                            volatility=_parse_float(
+                                row.get("CompressionScore", np.nan), 0.0
+                            ),
+                            structure=_parse_float(
+                                row.get("StructureScore", np.nan), 0.0
+                            ),
+                            missing_indicators=_parse_int(
+                                row.get("ScoreMissingIndicators", 0), 0
+                            ),
+                            indicator_coverage=_parse_float(
+                                row.get("ScoreCoverage", 1.0), 1.0
+                            ),
+                            confidence=_parse_float(
+                                row.get("ScoreConfidence", 1.0), 1.0
+                            ),
+                        ),
+                        score_missing_indicators=_parse_int(
                             row.get("ScoreMissingIndicators", 0), 0
                         ),
-                        indicator_coverage=_parse_float(
+                        score_coverage=_parse_float(
                             row.get("ScoreCoverage", 1.0), 1.0
                         ),
-                        confidence=_parse_float(
-                            row.get("ScoreConfidence", row.get("ScoreCoverage", 1.0)),
-                            1.0,
+                        score_confidence=_parse_float(
+                            row.get("ScoreConfidence", 1.0), 1.0
                         ),
-                        contributions={
-                            "trend": _parse_float(
-                                row.get(
-                                    "ScoreContributionTrend", row.get("TrendScore", 0)
-                                ),
-                                0.0,
+                        backtest_score=_parse_float(
+                            row.get("BacktestScore", np.nan)
+                        ),
+                        backtest_samples=_parse_int(
+                            row.get("BacktestSamples", 0), 0
+                        ),
+                        backtest_effective_samples=_parse_float(
+                            row.get("BacktestEffectiveSamples", 0.0), 0.0
+                        ),
+                        backtest_win_rate_20d=_parse_float(
+                            row.get("BacktestWinRate20D", np.nan)
+                        ),
+                        backtest_win_rate_60d=_parse_float(
+                            row.get("BacktestWinRate60D", np.nan)
+                        ),
+                        backtest_average_return_20d=_parse_float(
+                            row.get("BacktestAverageReturn20D", np.nan)
+                        ),
+                        backtest_average_return_60d=_parse_float(
+                            row.get("BacktestAverageReturn60D", np.nan)
+                        ),
+                        backtest_objective_value=_parse_float(
+                            row.get("BacktestObjectiveValue", np.nan)
+                        ),
+                        backtest_effective_weight=_parse_float(
+                            row.get("BacktestEffectiveWeight", 0.0), 0.0
+                        ),
+                        backtest_confidence_tier=str(
+                            row.get("BacktestConfidenceTier", "样本不足")
+                            or "样本不足"
+                        ),
+                        backtest_adjusted_score=_parse_float(
+                            row.get("BacktestAdjustedScore", np.nan)
+                        ),
+                        backtest_median_return_20d=_parse_float(
+                            row.get("BacktestMedianReturn20D", np.nan)
+                        ),
+                        backtest_median_return_60d=_parse_float(
+                            row.get("BacktestMedianReturn60D", np.nan)
+                        ),
+                        backtest_max_drawdown_20d=_parse_float(
+                            row.get("BacktestMaxDrawdown20D", np.nan)
+                        ),
+                        backtest_max_drawdown_60d=_parse_float(
+                            row.get("BacktestMaxDrawdown60D", np.nan)
+                        ),
+                        backtest_profit_factor=_parse_float(
+                            row.get("BacktestProfitFactor", np.nan)
+                        ),
+                        backtest_signal_span_days=_parse_int(
+                            row.get("BacktestSignalSpanDays", 0), 0
+                        ),
+                        backtest_return_std_20d=_parse_float(
+                            row.get("BacktestReturnStd20D", np.nan)
+                        ),
+                        composite_score=_parse_float(
+                            row.get("CompositeScore", np.nan)
+                        ),
+                        failure_signal_factor=_parse_float(
+                            row.get("FailureSignalFactor", 1.0), 1.0
+                        ),
+                        failure_adjusted_score=_parse_float(
+                            row.get("FailureAdjustedScore", np.nan)
+                        ),
+                        signal_recency_factor=_parse_float(
+                            row.get("SignalRecencyFactor", 1.0), 1.0
+                        ),
+                        signal_recency_days=_parse_int(
+                            row.get("SignalRecencyDays", -1), -1
+                        ),
+                        breakout_quality_factor=_parse_float(
+                            row.get("BreakoutQualityFactor", 1.0), 1.0
+                        ),
+                        institutional_score=_parse_float(
+                            row.get("InstitutionalScore", np.nan)
+                        ),
+                        base_score=_parse_float(row.get("BaseScore", np.nan)),
+                        trigger_score=_parse_float(row.get("TriggerScore", np.nan)),
+                        final_score=_parse_float(row.get("FinalScore", np.nan)),
+                        breakout_score=_parse_float(
+                            row.get("BreakoutScore", np.nan)
+                        ),
+                        smart_money_stage=str(
+                            row.get("SmartMoneyStage", "NONE") or "NONE"
+                        ),
+                        entry_score=_parse_float(row.get("EntryScore", np.nan)),
+                        entry_signal=str(row.get("EntrySignal", "AVOID") or "AVOID"),
+                        entry_zone=str(row.get("EntryZone", "") or ""),
+                        breakout_buy_price=_parse_float(
+                            row.get("BreakoutBuyPrice", np.nan)
+                        ),
+                        breakout_volume_ratio=_parse_float(
+                            row.get("BreakoutVolumeRatio", np.nan)
+                        ),
+                        breakout_volume_confirmed=_parse_bool(
+                            row.get("BreakoutVolumeConfirmed", False)
+                        ),
+                        breakout_flow_confirmed=_parse_bool(
+                            row.get("BreakoutFlowConfirmed", False)
+                        ),
+                        price_breakout=_parse_bool(row.get("PriceBreakout", False)),
+                        stop_loss=_parse_float(row.get("StopLoss", np.nan)),
+                        value_trap_risk=_parse_float(
+                            row.get("ValueTrapRisk", np.nan)
+                        ),
+                        risk_warning=str(row.get("RiskWarning", "") or ""),
+                        operation_advice=str(row.get("OperationAdvice", "") or ""),
+                        quality_roe=_parse_float(row.get("ROE", np.nan)),
+                        quality_gross_margin=_parse_float(
+                            row.get("GrossMargin", np.nan)
+                        ),
+                        quality_institution_holding_trend=row.get(
+                            "InstitutionHoldingTrend"
+                        ),
+                        quality_institution_holding_periods=_parse_float(
+                            row.get("InstitutionHoldingPeriods", np.nan)
+                        ),
+                        quality_net_profit_y1=_parse_float(
+                            row.get("NetProfitY1", np.nan)
+                        ),
+                        quality_net_profit_y2=_parse_float(
+                            row.get("NetProfitY2", np.nan)
+                        ),
+                        quality_net_profit_y3=_parse_float(
+                            row.get("NetProfitY3", np.nan)
+                        ),
+                        quality_industry_gross_margin_percentile=_parse_float(
+                            row.get("IndustryGrossMarginPercentile", np.nan)
+                        ),
+                        quality_roe_factor=_parse_bool(
+                            row.get("QualityROE", False)
+                        ),
+                        quality_gross_margin_factor=_parse_bool(
+                            row.get("QualityGrossMargin", False)
+                        ),
+                        quality_institution_holding_factor=_parse_bool(
+                            row.get("QualityInstitutionHolding", False)
+                        ),
+                        quality_net_profit_factor=_parse_bool(
+                            row.get("QualityNetProfit", False)
+                        ),
+                        quality_score=_parse_float(
+                            row.get("QualityScore", np.nan)
+                        ),
+                        quality_gate=_parse_bool(
+                            row.get("QualityGate", True), True
+                        ),
+                        quality_reason=str(
+                            row.get("QualityReason", "基本面数据缺失（中性）")
+                            or "基本面数据缺失（中性）"
+                        ),
+                        quality_data_available=_parse_bool(
+                            row.get("QualityDataAvailable", False)
+                        ),
+                        quality_institution_holding_status=str(
+                            row.get("InstitutionHoldingStatus", "UNKNOWN")
+                            or "UNKNOWN"
+                        ),
+                        quality_data_completeness=_parse_float(
+                            row.get("QualityDataCompleteness", 0.0), 0.0
+                        ),
+                        quality_gate_reason=str(
+                            row.get(
+                                "QualityGateReason", "基本面数据缺失（中性）"
+                            )
+                            or "基本面数据缺失（中性）"
+                        ),
+                        quality_multiplier=_parse_float(
+                            row.get("QualityMultiplier", 0.95), 0.95
+                        ),
+                        sector_confirmation_factor=_parse_float(
+                            row.get("SectorConfirmationFactor", 1.0), 1.0
+                        ),
+                        industry_momentum_60d=_parse_float(
+                            row.get("IndustryMomentum60D", np.nan)
+                        ),
+                        universe_type=str(
+                            row.get("UniverseType", "current_survivor_pool")
+                            or "current_survivor_pool"
+                        ),
+                        survivorship_bias_warning=_parse_bool(
+                            row.get("SurvivorshipBiasWarning", True), True
+                        ),
+                        obv=_parse_float(row.get("OBV", np.nan)),
+                        cmf=_parse_float(row.get("CMF", np.nan)),
+                        ad=_parse_float(row.get("AD", np.nan)),
+                        atr14=_parse_float(row.get("ATR14", np.nan)),
+                        rsi14=_parse_float(row.get("RSI14", np.nan)),
+                        dist_to_low_52w=_parse_float(
+                            row.get("DistToLow52W", np.nan)
+                        ),
+                        dist_to_ma20=_parse_float(row.get("DistToMA20", np.nan)),
+                        dist_to_ma50=_parse_float(row.get("DistToMA50", np.nan)),
+                        recent_return_20d=_parse_float(
+                            row.get("RecentReturn20D", np.nan)
+                        ),
+                        atr_expansion=_parse_float(
+                            row.get("ATRExpansion", np.nan)
+                        ),
+                        wyckoff_phase=str(
+                            row.get("WyckoffPhase", "Unknown") or "Unknown"
+                        ),
+                        volume_accum_days=_parse_int(row.get("VolAccumDays", 0), 0),
+                        passed_filters=_parse_bool(
+                            row.get("PassedFilters", False)
+                        ),
+                        style=str(row.get("Style", "均衡")),
+                        filter_details={
+                            "obv_divergence": _parse_bool(
+                                row.get("OBV_Div", False)
                             ),
-                            "volume": _parse_float(
-                                row.get(
-                                    "ScoreContributionVolume", row.get("VolumeScore", 0)
-                                ),
-                                0.0,
+                            "cmf_positive": _parse_bool(row.get("CMF_Pos", False)),
+                            "cmf_improving": _parse_bool(
+                                row.get("CMF_Improving", False)
                             ),
-                            "accumulation": _parse_float(
-                                row.get(
-                                    "ScoreContributionAccumulation",
-                                    row.get("AccumulationScore", 0),
-                                ),
-                                0.0,
+                            "ad_slope": _parse_bool(
+                                row.get("AD_SlopePos", False)
                             ),
-                            "compression": _parse_float(
-                                row.get(
-                                    "ScoreContributionCompression",
-                                    row.get("CompressionScore", 0),
-                                ),
-                                0.0,
+                            "bear_market": _parse_bool(
+                                row.get("BearMarket", False)
                             ),
-                            "structure": _parse_float(
-                                row.get(
-                                    "ScoreContributionStructure",
-                                    row.get("StructureScore", 0),
-                                ),
-                                0.0,
+                            "consolidation": _parse_bool(
+                                row.get("Consolidation", False)
+                            ),
+                            "volume_accumulation": _parse_bool(
+                                row.get("VolAccum", False)
+                            ),
+                            "volatility_contraction": _parse_bool(
+                                row.get("VolContract", False)
+                            ),
+                            "signal_count": _parse_int(
+                                row.get("SignalCount", 0), 0
+                            ),
+                            "filter_count": _parse_int(
+                                row.get("FilterCount", 0), 0
                             ),
                         },
-                    ),
-                    score_missing_indicators=_parse_int(
-                        row.get("ScoreMissingIndicators", 0), 0
-                    ),
-                    score_coverage=_parse_float(row.get("ScoreCoverage", 1.0), 1.0),
-                    score_confidence=_parse_float(
-                        row.get("ScoreConfidence", row.get("ScoreCoverage", 1.0)), 1.0
-                    ),
-                    backtest_score=_parse_float(row.get("BacktestScore", np.nan)),
-                    backtest_samples=_parse_int(row.get("BacktestSamples", 0), 0),
-                    backtest_effective_samples=_parse_float(
-                        row.get("BacktestEffectiveSamples", 0.0), 0.0
-                    ),
-                    backtest_win_rate_20d=_parse_float(
-                        row.get("BacktestWinRate20D", np.nan)
-                    ),
-                    backtest_win_rate_60d=_parse_float(
-                        row.get("BacktestWinRate60D", np.nan)
-                    ),
-                    backtest_average_return_20d=_parse_float(
-                        row.get("BacktestAverageReturn20D", np.nan)
-                    ),
-                    backtest_average_return_60d=_parse_float(
-                        row.get("BacktestAverageReturn60D", np.nan)
-                    ),
-                    backtest_objective_value=_parse_float(
-                        row.get("BacktestObjectiveValue", np.nan)
-                    ),
-                    backtest_effective_weight=_parse_float(
-                        row.get("BacktestEffectiveWeight", 0.0), 0.0
-                    ),
-                    backtest_confidence_tier=str(
-                        row.get("BacktestConfidenceTier", "样本不足") or "样本不足"
-                    ),
-                    backtest_adjusted_score=_parse_float(
-                        row.get("BacktestAdjustedScore", np.nan)
-                    ),
-                    backtest_median_return_20d=_parse_float(
-                        row.get("BacktestMedianReturn20D", np.nan)
-                    ),
-                    backtest_median_return_60d=_parse_float(
-                        row.get("BacktestMedianReturn60D", np.nan)
-                    ),
-                    backtest_max_drawdown_20d=_parse_float(
-                        row.get("BacktestMaxDrawdown20D", np.nan)
-                    ),
-                    backtest_max_drawdown_60d=_parse_float(
-                        row.get("BacktestMaxDrawdown60D", np.nan)
-                    ),
-                    backtest_profit_factor=_parse_float(
-                        row.get("BacktestProfitFactor", np.nan)
-                    ),
-                    backtest_signal_span_days=_parse_int(
-                        row.get("BacktestSignalSpanDays", 0), 0
-                    ),
-                    backtest_return_std_20d=_parse_float(
-                        row.get("BacktestReturnStd20D", np.nan)
-                    ),
-                    composite_score=_parse_float(row.get("CompositeScore", np.nan)),
-                    failure_signal_factor=_parse_float(
-                        row.get("FailureSignalFactor", 1.0), 1.0
-                    ),
-                    failure_adjusted_score=_parse_float(
-                        row.get("FailureAdjustedScore", np.nan)
-                    ),
-                    signal_recency_factor=_parse_float(
-                        row.get("SignalRecencyFactor", 1.0), 1.0
-                    ),
-                    signal_recency_days=_parse_int(
-                        row.get("SignalRecencyDays", -1), -1
-                    ),
-                    breakout_quality_factor=_parse_float(
-                        row.get("BreakoutQualityFactor", 1.0), 1.0
-                    ),
-                    institutional_score=_parse_float(
-                        row.get("InstitutionalScore", np.nan)
-                    ),
-                    base_score=_parse_float(row.get("BaseScore", np.nan)),
-                    trigger_score=_parse_float(row.get("TriggerScore", np.nan)),
-                    final_score=_parse_float(row.get("FinalScore", np.nan)),
-                    breakout_score=_parse_float(row.get("BreakoutScore", np.nan)),
-                    smart_money_stage=str(row.get("SmartMoneyStage", "NONE") or "NONE"),
-                    entry_score=_parse_float(row.get("EntryScore", np.nan)),
-                    entry_signal=str(row.get("EntrySignal", "AVOID") or "AVOID"),
-                    entry_zone=str(row.get("EntryZone", "") or ""),
-                    breakout_buy_price=_parse_float(row.get("BreakoutBuyPrice", np.nan)),
-                    breakout_volume_ratio=_parse_float(row.get("BreakoutVolumeRatio", np.nan)),
-                    breakout_volume_confirmed=_parse_bool(row.get("BreakoutVolumeConfirmed", False)),
-                    breakout_flow_confirmed=_parse_bool(row.get("BreakoutFlowConfirmed", False)),
-                    price_breakout=_parse_bool(row.get("PriceBreakout", False)),
-                    stop_loss=_parse_float(row.get("StopLoss", np.nan)),
-                    value_trap_risk=_parse_float(row.get("ValueTrapRisk", np.nan)),
-                    risk_warning=str(row.get("RiskWarning", "") or ""),
-                    operation_advice=str(row.get("OperationAdvice", "") or ""),
-                    quality_roe=_parse_float(row.get("ROE", np.nan)),
-                    quality_gross_margin=_parse_float(row.get("GrossMargin", np.nan)),
-                    quality_institution_holding_trend=row.get("InstitutionHoldingTrend"),
-                    quality_institution_holding_periods=_parse_float(row.get("InstitutionHoldingPeriods", np.nan)),
-                    quality_net_profit_y1=_parse_float(row.get("NetProfitY1", np.nan)),
-                    quality_net_profit_y2=_parse_float(row.get("NetProfitY2", np.nan)),
-                    quality_net_profit_y3=_parse_float(row.get("NetProfitY3", np.nan)),
-                    quality_industry_gross_margin_percentile=_parse_float(row.get("IndustryGrossMarginPercentile", np.nan)),
-                    quality_roe_factor=_parse_bool(row.get("QualityROE", False)),
-                    quality_gross_margin_factor=_parse_bool(row.get("QualityGrossMargin", False)),
-                    quality_institution_holding_factor=_parse_bool(row.get("QualityInstitutionHolding", False)),
-                    quality_net_profit_factor=_parse_bool(row.get("QualityNetProfit", False)),
-                    quality_score=_parse_float(row.get("QualityScore", np.nan)),
-                    quality_gate=_parse_bool(row.get("QualityGate", True), True),
-                    quality_reason=str(row.get("QualityReason", "基本面数据缺失（中性）") or "基本面数据缺失（中性）"),
-                    quality_data_available=_parse_bool(row.get("QualityDataAvailable", False)),
-                    quality_institution_holding_status=str(
-                        row.get("InstitutionHoldingStatus", "UNKNOWN") or "UNKNOWN"
-                    ),
-                    quality_data_completeness=_parse_float(
-                        row.get("QualityDataCompleteness", 0.0), 0.0
-                    ),
-                    quality_gate_reason=str(
-                        row.get("QualityGateReason", "基本面数据缺失（中性）")
-                        or "基本面数据缺失（中性）"
-                    ),
-                    quality_multiplier=_parse_float(
-                        row.get("QualityMultiplier", 0.95), 0.95
-                    ),
-                    sector_confirmation_factor=_parse_float(
-                        row.get("SectorConfirmationFactor", 1.0), 1.0
-                    ),
-                    industry_momentum_60d=_parse_float(
-                        row.get("IndustryMomentum60D", np.nan)
-                    ),
-                    universe_type=str(
-                        row.get("UniverseType", "current_survivor_pool")
-                        or "current_survivor_pool"
-                    ),
-                    survivorship_bias_warning=_parse_bool(
-                        row.get("SurvivorshipBiasWarning", True), True
-                    ),
-                    obv=_parse_float(row.get("OBV", np.nan)),
-                    cmf=_parse_float(row.get("CMF", np.nan)),
-                    ad=_parse_float(row.get("AD", np.nan)),
-                    atr14=_parse_float(row.get("ATR14", np.nan)),
-                    rsi14=_parse_float(row.get("RSI14", np.nan)),
-                    dist_to_low_52w=_parse_float(row.get("DistToLow52W", np.nan)),
-                    dist_to_ma20=_parse_float(row.get("DistToMA20", np.nan)),
-                    dist_to_ma50=_parse_float(row.get("DistToMA50", np.nan)),
-                    recent_return_20d=_parse_float(row.get("RecentReturn20D", np.nan)),
-                    atr_expansion=_parse_float(row.get("ATRExpansion", np.nan)),
-                    wyckoff_phase=str(row.get("WyckoffPhase", "Unknown") or "Unknown"),
-                    volume_accum_days=_parse_int(row.get("VolAccumDays", 0), 0),
-                    passed_filters=_parse_bool(row.get("PassedFilters", False)),
-                    style=str(row.get("Style", "均衡")),
-                    filter_details={
-                        "obv_divergence": _parse_bool(row.get("OBV_Div", False)),
-                        "cmf_positive": _parse_bool(row.get("CMF_Pos", False)),
-                        "cmf_improving": _parse_bool(row.get("CMF_Improving", False)),
-                        "ad_slope": _parse_bool(row.get("AD_SlopePos", False)),
-                        "bear_market": _parse_bool(row.get("BearMarket", False)),
-                        "consolidation": _parse_bool(row.get("Consolidation", False)),
-                        "volume_accumulation": _parse_bool(row.get("VolAccum", False)),
-                        "volatility_contraction": _parse_bool(
-                            row.get("VolContract", False)
+                        error=str(row.get("Error", "") or ""),
+                        market_regime=str(
+                            row.get("MarketRegime", "未知") or "未知"
                         ),
-                        "signal_count": _parse_int(row.get("SignalCount", 0), 0),
-                        "filter_count": _parse_int(row.get("FilterCount", 0), 0),
-                    },
-                    error=str(row.get("Error", "") or ""),
-                    market_regime=str(row.get("MarketRegime", "未知") or "未知"),
-                    market_regime_fast=str(row.get("MarketRegimeFast", "未知") or "未知"),
-                    market_regime_slow=str(row.get("MarketRegimeSlow", "未知") or "未知"),
-                    market_regime_confidence=_parse_float(
-                        row.get("MarketRegimeConfidence", 0.0), 0.0
-                    ),
-                    market_regime_reason=str(row.get("MarketRegimeReason", "") or ""),
-                    industry_relative_strength=_parse_float(
-                        row.get("IndustryRelativeStrength", np.nan)
-                    ),
-                    stage=str(row.get("Stage", "未知") or "未知"),
-                    data_source=str(row.get("DataSource", "") or ""),
-                    data_asof=str(row.get("DataAsOf", "") or ""),
-                    data_age_days=_parse_int(row.get("DataAgeDays", -1), -1),
-                    data_trading_age_days=_parse_int(
-                        row.get("DataTradingAgeDays", -1), -1
-                    ),
-                    data_coverage=_parse_float(row.get("DataCoverage", 0.0), 0.0),
-                    chase_risk_score=_parse_float(row.get("ChaseRiskScore", 0.0), 0.0),
-                    chase_risk_level=str(row.get("ChaseRiskLevel", "低") or "低"),
-                    chase_risk_reason=str(row.get("ChaseRiskReason", "") or ""),
-                    hard_risk_flag=_parse_bool(row.get("HardRiskFlag", False)),
-                    hard_risk_penalty=_parse_float(row.get("HardRiskPenalty", 1.0), 1.0),
-                    hard_risk_reason=str(row.get("HardRiskReason", "") or ""),
-                    ranking_penalty_reason=str(row.get("RankingPenaltyReason", "") or ""),
-                    ranking_eligibility=str(row.get("RankingEligibility", "观察") or "观察"),
-                    ranking_score=_parse_float(row.get("RankingScore", np.nan)),
-                    overall_rank=_parse_int(row.get("OverallRank", 0), 0),
-                    ranking_reason=str(row.get("RankingReason", "") or ""),
-                    institutional_percentile=_parse_float(row.get("InstitutionalPercentile", np.nan)),
-                    institutional_rank=_parse_int(row.get("InstitutionalRank", 0), 0),
-                    institutional_tier_reason=str(row.get("InstitutionalTierReason", "") or ""),
-                    signal_adjustment_reason=str(row.get("SignalAdjustmentReason", "") or ""),
-                    opportunity_stage=str(row.get("OpportunityStage", "未知") or "未知"),
-                )
-                if sr.ticker in universe_symbols and sr.ticker in processed_set:
-                    prev_results[sr.ticker] = sr
-        except (OSError, ImportError, KeyError, TypeError, ValueError, IndexError) as exc:
-            logger.debug("Could not load previous scan results: %s", exc)
+                        market_regime_fast=str(
+                            row.get("MarketRegimeFast", "未知") or "未知"
+                        ),
+                        market_regime_slow=str(
+                            row.get("MarketRegimeSlow", "未知") or "未知"
+                        ),
+                        market_regime_confidence=_parse_float(
+                            row.get("MarketRegimeConfidence", 0.0), 0.0
+                        ),
+                        market_regime_reason=str(
+                            row.get("MarketRegimeReason", "") or ""
+                        ),
+                        industry_relative_strength=_parse_float(
+                            row.get("IndustryRelativeStrength", np.nan)
+                        ),
+                        stage=str(row.get("Stage", "未知") or "未知"),
+                        data_source=str(row.get("DataSource", "") or ""),
+                        data_asof=str(row.get("DataAsOf", "") or ""),
+                        data_age_days=_parse_int(row.get("DataAgeDays", -1), -1),
+                        data_trading_age_days=_parse_int(
+                            row.get("DataTradingAgeDays", -1), -1
+                        ),
+                        data_coverage=_parse_float(
+                            row.get("DataCoverage", 0.0), 0.0
+                        ),
+                        chase_risk_score=_parse_float(
+                            row.get("ChaseRiskScore", 0.0), 0.0
+                        ),
+                        chase_risk_level=str(
+                            row.get("ChaseRiskLevel", "低") or "低"
+                        ),
+                        chase_risk_reason=str(
+                            row.get("ChaseRiskReason", "") or ""
+                        ),
+                        hard_risk_flag=_parse_bool(
+                            row.get("HardRiskFlag", False)
+                        ),
+                        hard_risk_penalty=_parse_float(
+                            row.get("HardRiskPenalty", 1.0), 1.0
+                        ),
+                        hard_risk_reason=str(
+                            row.get("HardRiskReason", "") or ""
+                        ),
+                        ranking_penalty_reason=str(
+                            row.get("RankingPenaltyReason", "") or ""
+                        ),
+                        ranking_eligibility=str(
+                            row.get("RankingEligibility", "观察") or "观察"
+                        ),
+                        ranking_score=_parse_float(
+                            row.get("RankingScore", np.nan)
+                        ),
+                        overall_rank=_parse_int(row.get("OverallRank", 0), 0),
+                        ranking_reason=str(
+                            row.get("RankingReason", "") or ""
+                        ),
+                        institutional_percentile=_parse_float(
+                            row.get("InstitutionalPercentile", np.nan)
+                        ),
+                        institutional_rank=_parse_int(
+                            row.get("InstitutionalRank", 0), 0
+                        ),
+                        institutional_tier_reason=str(
+                            row.get("InstitutionalTierReason", "") or ""
+                        ),
+                        signal_adjustment_reason=str(
+                            row.get("SignalAdjustmentReason", "") or ""
+                        ),
+                        opportunity_stage=str(
+                            row.get("OpportunityStage", "未知") or "未知"
+                        ),
+                    )
+                    if sr.ticker in universe_symbols and sr.ticker in processed_set:
+                        prev_results[sr.ticker] = sr
+            except (
+                OSError,
+                ImportError,
+                KeyError,
+                TypeError,
+                ValueError,
+                IndexError,
+            ) as exc:
+                logger.debug("Could not load previous scan results: %s", exc)
 
     analysis_started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=SCAN_THREADS) as executor:
@@ -1029,7 +1113,10 @@ def run_scan(
                     result, frame = future.result()
                 except Exception as exc:
                     logger.exception("Analysis error for %s", ti.ticker)
-                    result, frame = ScanResult(ticker=ti.ticker, error=str(exc)), None
+                    result, frame = (
+                        ScanResult(ticker=ti.ticker, error=str(exc)),
+                        None,
+                    )
 
                 results.append(result)
                 if frame is not None:
@@ -1037,7 +1124,9 @@ def run_scan(
 
                 if result.error:
                     failed += 1
-                    logger.warning("Analysis failed for %s: %s", ti.ticker, result.error)
+                    logger.warning(
+                        "Analysis failed for %s: %s", ti.ticker, result.error
+                    )
                 else:
                     successful += 1
                     if result.passed_filters:
@@ -1048,9 +1137,9 @@ def run_scan(
                 analysed_this_run.add(ti.ticker)
                 progress.update(1)
 
-                if len(analysed_this_run) % 100 == 0 or len(analysed_this_run) == len(
-                    analyse_queue
-                ):
+                if len(analysed_this_run) % 100 == 0 or len(
+                    analysed_this_run
+                ) == len(analyse_queue):
                     logger.info(
                         "ANALYSE progress: %d/%d (%d successful, %d failed).",
                         completed,
@@ -1059,14 +1148,16 @@ def run_scan(
                         failed,
                     )
 
-                if ENABLE_CHECKPOINT and len(analysed_this_run) % CHECKPOINT_INTERVAL == 0:
+                if (
+                    ENABLE_CHECKPOINT
+                    and len(analysed_this_run) % CHECKPOINT_INTERVAL == 0
+                ):
                     save_checkpoint(processed_set, data_source)
 
                 submit_next()
     analysis_elapsed = time.perf_counter() - analysis_started
     logger.info("Analysis phase complete in %.1f seconds.", analysis_elapsed)
 
-    # Merge previous results for tickers we didn't re-analyse
     for ticker, sr in prev_results.items():
         if ticker not in analysed_this_run:
             results.append(sr)
@@ -1089,11 +1180,13 @@ def run_scan(
         enrichment_elapsed,
     )
 
-    # Prefer the post-enrichment rank when it is available; fall back to the
-    # technical score for partially processed or legacy rows.
+    # RankingScore is the single final execution rank. InstitutionalScore and
+    # FinalScore remain fallbacks for partially enriched/legacy rows only.
     results.sort(
         key=lambda result: (
-            _parse_float(result.institutional_score, np.nan)
+            _parse_float(result.ranking_score, np.nan)
+            if np.isfinite(_parse_float(result.ranking_score, np.nan))
+            else _parse_float(result.institutional_score, np.nan)
             if np.isfinite(_parse_float(result.institutional_score, np.nan))
             else _parse_float(result.final_score, result.score.total)
         ),
@@ -1101,7 +1194,6 @@ def run_scan(
     )
 
     elapsed = time.perf_counter() - start_time
-
     report = ScanReport(
         results=results,
         total_tickers=len(all_tickers),
@@ -1110,7 +1202,6 @@ def run_scan(
         passed_filters=passed,
         elapsed_seconds=elapsed,
     )
-
     logger.info(
         "Scan complete: %d successful, %d failed, %d passed filters, %.1f seconds.",
         successful,
@@ -1118,13 +1209,12 @@ def run_scan(
         passed,
         elapsed,
     )
-
     return report
 
 
 def _cache_path_for(ticker: str, source: str) -> Path:
-    safe = _normalize_ticker(ticker).replace("/", "_").replace("\\", "_")
-    return CACHE_DIR / f"{safe}__{normalize_data_source(source)}.parquet"
+    """Use downloader's canonical, schema-versioned cache path everywhere."""
+    return _cache_path(_normalize_ticker(ticker), normalize_data_source(source))
 
 
 def _analyse_one_ticker_from_df(
@@ -1147,80 +1237,45 @@ def _analyse_one_ticker_from_df(
         "MA50",
         "RSI14",
     ]
-    available_columns = [column for column in enrichment_columns if column in enriched]
+    available_columns = [
+        column for column in enrichment_columns if column in enriched
+    ]
     return result, enriched.loc[:, available_columns].copy()
 
 
 def _analyse_one_ticker(
     ticker_info: TickerInfo, data_source: str = "eastmoney"
 ) -> ScanResult:
-    """Load cached CSV and run the analysis pipeline.  Sits inside a ThreadPool."""
-    ticker = ticker_info.ticker
-    try:
-        df = _load_cache(ticker, data_source)
-        if df is None or df.empty or len(df) < 20:
-            return ScanResult(
-                ticker=ticker,
-                name=ticker_info.name,
-                sector=ticker_info.sector,
-                industry=ticker_info.industry,
-                is_etf=ticker_info.is_etf,
-                error="No cached data",
-            )
-        return _analyse_one_ticker_from_df(ticker_info, df)[0]
-    except _SCAN_RECOVERABLE_ERRORS as exc:
-        return ScanResult(ticker=ticker, name=ticker_info.name, error=str(exc))
-
-
-# ======================================================================
-# Parallel indicator computation (alternative fast path)
-# ======================================================================
+    df = _load_cache(ticker_info.ticker, data_source)
+    if df is None:
+        cache_path = _cache_path_for(ticker_info.ticker, data_source)
+        return ScanResult(
+            ticker=ticker_info.ticker,
+            name=ticker_info.name,
+            is_etf=ticker_info.is_etf,
+            error=f"No cached data: {cache_path}",
+        )
+    return scan_single_from_df(ticker_info, df)
 
 
 def run_parallel_indicator_scan(
-    tickers: list[TickerInfo],
-    max_workers: int = SCAN_THREADS,
-    data_source: str = "eastmoney",
+    ticker_infos: list[TickerInfo], data_source: str = "eastmoney"
 ) -> list[ScanResult]:
-    """
-    Compute indicators and scores in parallel using ThreadPoolExecutor.
-
-    Data must already be cached. This is the fast path for re-scans.
-    """
+    data_source = normalize_data_source(data_source)
     results: list[ScanResult] = []
-    max_pending = max(max_workers * 4, max_workers)
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        ticker_iter = iter(tickers)
-        futures: dict[Any, TickerInfo] = {}
-
-        def submit_next() -> bool:
+    with ThreadPoolExecutor(max_workers=SCAN_THREADS) as executor:
+        future_to_ticker = {
+            executor.submit(_analyse_one_ticker, ti, data_source): ti
+            for ti in ticker_infos
+        }
+        for future in as_completed(future_to_ticker):
+            ti = future_to_ticker[future]
             try:
-                ticker_info = next(ticker_iter)
-            except StopIteration:
-                return False
-            futures[executor.submit(_analyse_one_ticker, ticker_info, data_source)] = ticker_info
-            return True
-
-        for _ in range(min(max_pending, len(tickers))):
-            submit_next()
-
-        with tqdm(
-            total=len(tickers),
-            desc="Parallel scan",
-            unit="ticker",
-            disable=not sys.stderr.isatty(),
-        ) as progress:
-            while futures:
-                future = next(as_completed(futures))
-                ticker_info = futures.pop(future)
-                try:
-                    results.append(future.result(timeout=60))
-                except _SCAN_RECOVERABLE_ERRORS as exc:
-                    logger.warning("Scan timeout/error for %s: %s", ticker_info.ticker, exc)
-                    results.append(ScanResult(ticker=ticker_info.ticker, error=str(exc)))
-                progress.update(1)
-                submit_next()
-
-    results.sort(key=lambda r: r.score.total, reverse=True)
+                results.append(future.result())
+            except Exception as exc:
+                logger.exception("Analysis error for %s", ti.ticker)
+                results.append(
+                    ScanResult(ticker=ti.ticker, name=ti.name, error=str(exc))
+                )
+    results.sort(key=lambda result: result.score.total, reverse=True)
     return results
