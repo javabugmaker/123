@@ -7,6 +7,7 @@ import re
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -45,10 +46,11 @@ FUNDAMENTAL_COLUMNS = (
 _CACHE_PATH = CACHE_DIR / "fundamental_data.csv"
 _META_PATH = CACHE_DIR / "fundamental_data_meta.json"
 
-# Module-level batch data cache — populated once per refresh run
+# Module-level batch data cache — populated once per refresh run.
 _batch_finance_cache: dict[str, dict[str, Any]] = {}
 _batch_holders_cache: dict[str, dict[str, Any]] = {}
 _batch_cache_lock = threading.Lock()
+_NETWORK_ENV_LOCK = threading.Lock()
 _CACHE_COMPLETENESS_THRESHOLD = 0.90
 _BATCH_FETCH_TIMEOUT_SECONDS = max(
     30.0, float(FUNDAMENTAL_PROGRESS_HEARTBEAT_SECONDS) * 3.0
@@ -61,6 +63,16 @@ _REQUIRED_CACHE_NUMERIC_COLUMNS = (
     "NetProfitY2",
     "NetProfitY3",
     "IndustryGrossMarginPercentile",
+)
+_PROXY_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
 )
 
 
@@ -158,16 +170,70 @@ def _annual_report_dates() -> tuple[str, ...]:
     return tuple(f"{year}1231" for year in range(latest_year, latest_year - 4, -1))
 
 
+def _institution_report_symbols(limit: int = 8) -> tuple[str, ...]:
+    """Return recent completed reporting periods in AKShare's YYYYQ format.
+
+    stock_institute_hold does not have a no-argument mode.  Its ``symbol`` is
+    the report period, where 1/2/3/4 mean Q1/H1/Q3/annual report respectively.
+    Start from the most recently completed calendar quarter and walk backwards
+    because the newest report can legitimately be unavailable during disclosure
+    season.
+    """
+    if limit <= 0:
+        return ()
+    today = date.today()
+    quarter = (today.month - 1) // 3
+    year = today.year
+    if quarter == 0:
+        year -= 1
+        quarter = 4
+    result: list[str] = []
+    for _ in range(limit):
+        result.append(f"{year}{quarter}")
+        quarter -= 1
+        if quarter == 0:
+            year -= 1
+            quarter = 4
+    return tuple(result)
+
+
+@contextmanager
+def _direct_network_environment():
+    """Temporarily bypass environment proxies for provider requests.
+
+    ``downloader.py`` already uses a requests.Session with ``trust_env=False``.
+    AKShare creates its own Requests sessions internally, so it can otherwise
+    inherit HTTP(S)_PROXY/ALL_PROXY (for example 127.0.0.1:7897 on Windows).
+    Keep the override scoped to one AKShare operation and restore the user's
+    environment afterwards.
+    """
+    with _NETWORK_ENV_LOCK:
+        previous = {key: os.environ.get(key) for key in _PROXY_ENV_KEYS}
+        for key in _PROXY_ENV_KEYS:
+            os.environ.pop(key, None)
+        os.environ["NO_PROXY"] = "*"
+        os.environ["no_proxy"] = "*"
+        try:
+            yield
+        finally:
+            for key in _PROXY_ENV_KEYS:
+                os.environ.pop(key, None)
+            for key, value in previous.items():
+                if value is not None:
+                    os.environ[key] = value
+
+
 def _run_akshare_dataframe(
     label: str, operation: Callable[[], Any]
 ) -> pd.DataFrame | None:
-    """Run an AkShare request without letting one stalled request freeze a scan."""
+    """Run an AKShare request without letting one stalled request freeze a scan."""
     outcome: dict[str, Any] = {}
 
     def run() -> None:
         try:
-            outcome["frame"] = operation()
-        except Exception as exc:  # AkShare wraps provider errors in varied types.
+            with _direct_network_environment():
+                outcome["frame"] = operation()
+        except Exception as exc:  # AKShare wraps provider errors in varied types.
             outcome["error"] = exc
 
     worker = threading.Thread(target=run, name=f"akshare-{label}", daemon=True)
@@ -208,7 +274,11 @@ def _batch_fetch_financial_data() -> dict[str, dict[str, Any]]:
     if ak is None:
         logger.warning("AKShare 未安装，无法批量获取财务数据。")
         return {}
+    if not hasattr(ak, "stock_yjbb_em"):
+        logger.warning("当前 AKShare 缺少 stock_yjbb_em，请升级 AKShare 后重试。")
+        return {}
 
+    logger.info("AKShare 版本：%s", getattr(ak, "__version__", "unknown"))
     result: dict[str, dict[str, Any]] = {}
     reports_loaded = 0
     for report_date in _annual_report_dates():
@@ -273,29 +343,67 @@ def _batch_fetch_financial_data() -> dict[str, dict[str, Any]]:
 
 
 def _batch_fetch_institutional_data() -> dict[str, dict[str, Any]]:
-    """Fetch institutional holdings for all A-shares in one batch via AKShare.
+    """Fetch two latest available institutional-holding snapshots.
 
-    Returns a dict keyed by normalized ticker with:
-        OrgNum, OrgNumChange
+    AKShare ``stock_institute_hold`` requires a report-period symbol such as
+    ``20262``.  Two snapshots are used so the scanner only treats institutional
+    accumulation/distribution as confirmed when two consecutive reported
+    changes agree; one available period remains neutral/UNKNOWN.
     """
     if ak is None:
         return {}
+    if not hasattr(ak, "stock_institute_hold"):
+        logger.warning("当前 AKShare 缺少 stock_institute_hold，请升级 AKShare 后重试。")
+        return {}
 
-    logger.info("正在通过 AKShare 批量获取机构持股数据...")
-    frame = _run_akshare_dataframe("机构持股", ak.stock_institute_hold)
-    if frame is None or frame.empty:
+    snapshots: list[tuple[str, pd.DataFrame]] = []
+    for report_symbol in _institution_report_symbols():
+        logger.info("正在通过 AKShare 获取机构持股报告期 %s...", report_symbol)
+        frame = _run_akshare_dataframe(
+            f"机构持股 {report_symbol}",
+            lambda report_symbol=report_symbol: ak.stock_institute_hold(
+                symbol=report_symbol
+            ),
+        )
+        if frame is None or frame.empty:
+            continue
+        snapshots.append((report_symbol, frame))
+        logger.info(
+            "AKShare 机构持股 %s 已载入：%d 条。",
+            report_symbol,
+            len(frame),
+        )
+        if len(snapshots) == 2:
+            break
+
+    if not snapshots:
         logger.warning("AKShare 机构持股数据为空或暂不可用。")
         return {}
+
     result: dict[str, dict[str, Any]] = {}
-    for _, row in frame.iterrows():
-        ticker = _code_to_ticker(_row_value(row, "证券代码", "股票代码", "代码"))
-        if not ticker:
-            continue
-        result[ticker] = {
-            "OrgNum": _number(
+    for snapshot_index, (report_symbol, frame) in enumerate(snapshots, start=1):
+        change_key = f"OrgNumChange{snapshot_index}"
+        for _, row in frame.iterrows():
+            ticker = _code_to_ticker(
+                _row_value(row, "证券代码", "股票代码", "代码")
+            )
+            if not ticker:
+                continue
+            values = result.setdefault(
+                ticker,
+                {
+                    "OrgNum": np.nan,
+                    "OrgNumChange": np.nan,
+                    "OrgNumChange1": np.nan,
+                    "OrgNumChange2": np.nan,
+                    "LatestReportSymbol": "",
+                    "PreviousReportSymbol": "",
+                },
+            )
+            org_num = _number(
                 _row_value(row, "机构数", "持股机构家数", "机构家数")
-            ),
-            "OrgNumChange": _number(
+            )
+            org_change = _number(
                 _row_value(
                     row,
                     "机构数变化",
@@ -303,9 +411,20 @@ def _batch_fetch_institutional_data() -> dict[str, dict[str, Any]]:
                     "持股机构家数变动",
                     "持股家数变动",
                 )
-            ),
-        }
-    logger.info("AKShare 机构持股数据批量获取完成：%d 只股票。", len(result))
+            )
+            values[change_key] = org_change
+            if snapshot_index == 1:
+                values["OrgNum"] = org_num
+                values["OrgNumChange"] = org_change
+                values["LatestReportSymbol"] = report_symbol
+            else:
+                values["PreviousReportSymbol"] = report_symbol
+
+    logger.info(
+        "AKShare 机构持股批量获取完成：%d 只股票，使用报告期 %s。",
+        len(result),
+        ", ".join(symbol for symbol, _ in snapshots),
+    )
     return result
 
 
@@ -334,8 +453,8 @@ def _clear_batch_cache() -> None:
 def _fetch_ticker_from_batch(ticker: str) -> dict[str, Any] | None:
     """Look up fundamental data for a single ticker from the batch cache.
 
-    This replaces the old _fetch_ticker which made individual API calls to
-    Eastmoney's deprecated RPT_F10_FINANCE_MAINFIN_INDEX and RPT_F10_EH_HOLDERS.
+    This replaces the old per-ticker Eastmoney calls using the removed
+    RPT_F10_FINANCE_MAINFIN_INDEX and RPT_F10_EH_HOLDERS reports.
     """
     normalized = normalize_ticker(ticker)
     finance = _batch_finance_cache.get(normalized, {})
@@ -344,17 +463,21 @@ def _fetch_ticker_from_batch(ticker: str) -> dict[str, Any] | None:
     if not finance and not holders:
         return None
 
-    org_change = _number(holders.get("OrgNumChange", np.nan))
-
-    # Determine institutional holding trend
-    if np.isfinite(org_change) and org_change > 0:
+    changes = [
+        _number(holders.get("OrgNumChange1", np.nan)),
+        _number(holders.get("OrgNumChange2", np.nan)),
+    ]
+    changes = [value for value in changes if np.isfinite(value)]
+    periods = float(len(changes))
+    if len(changes) >= 2 and all(value > 0 for value in changes[:2]):
         trend = "increasing"
-        # The batch endpoint exposes a change value, not a count of reporting
-        # periods.  Mark the confirmed positive period without inflating it.
-        periods = 1.0
-    else:
+    elif len(changes) >= 2 and all(value <= 0 for value in changes[:2]):
         trend = "not_increasing"
-        periods = 0.0
+    else:
+        # Missing or mixed institutional snapshots are evidence-unknown, not a
+        # negative signal.  signal_lifecycle therefore keeps the holding gate
+        # neutral until two consistent periods exist.
+        trend = "unknown"
 
     return {
         "Ticker": normalized,
@@ -421,20 +544,37 @@ def _replace_fundamental_rows(
 def _is_current_quarter() -> bool:
     try:
         metadata = json.loads(_META_PATH.read_text(encoding="utf-8"))
-        return metadata.get("quarter") == f"{date.today().year}-Q{(date.today().month - 1) // 3 + 1}"
+        return metadata.get("quarter") == (
+            f"{date.today().year}-Q{(date.today().month - 1) // 3 + 1}"
+        )
     except (OSError, ValueError, TypeError):
         return False
 
 
 def _write_frame(frame: pd.DataFrame) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(prefix="fundamental_", suffix=".csv", dir=CACHE_DIR)
+    fd, temp_name = tempfile.mkstemp(
+        prefix="fundamental_", suffix=".csv", dir=CACHE_DIR
+    )
     os.close(fd)
     temp_path = Path(temp_name)
     try:
         frame.to_csv(temp_path, index=False, encoding="utf-8-sig")
         temp_path.replace(_CACHE_PATH)
-        _META_PATH.write_text(json.dumps({"quarter": f"{date.today().year}-Q{(date.today().month - 1) // 3 + 1}", "updated": date.today().isoformat()}, ensure_ascii=False), encoding="utf-8")
+        _META_PATH.write_text(
+            json.dumps(
+                {
+                    "quarter": (
+                        f"{date.today().year}-Q"
+                        f"{(date.today().month - 1) // 3 + 1}"
+                    ),
+                    "updated": date.today().isoformat(),
+                    "provider": "akshare-batch",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
     finally:
         temp_path.unlink(missing_ok=True)
 
@@ -500,8 +640,6 @@ def _fetch_fundamental_row(
         logger.debug("基本面获取失败 %s: %s", ticker, exc)
         return None
     if row is not None:
-        # Industry from the AKShare batch data takes priority;
-        # fall back to the industry_by_ticker mapping provided by downloader.
         industry_from_batch = row.get("Industry", "")
         if not industry_from_batch or str(industry_from_batch).strip() == "":
             row["Industry"] = industries.get(ticker, "")
@@ -517,9 +655,9 @@ def refresh_fundamental_data(
 ) -> Path:
     """Refresh fundamental data for all tickers.
 
-    Uses AKShare batch APIs (stock_yjbb_em + stock_institute_hold) to fetch
-    financial indicators and institutional holdings in just 2 API calls instead
-    of making individual requests per ticker.
+    Uses current AKShare full-market interfaces instead of the removed
+    Eastmoney RPT_F10 reports.  Financial reports and institutional snapshots
+    are fetched in batches, then ticker rows are assembled locally.
     """
     existing = _read_frame(_CACHE_PATH)
     fallback = _configured_frame()
@@ -532,11 +670,17 @@ def refresh_fundamental_data(
         ticker
         for ticker in dict.fromkeys(normalize_ticker(value) for value in tickers)
         if ticker
-        and not ticker.split(".", 1)[0].startswith(("15", "16", "50", "51", "56", "58"))
+        and not ticker.split(".", 1)[0].startswith(
+            ("15", "16", "50", "51", "56", "58")
+        )
     ]
     total = len(symbols)
     completeness = _cache_completeness(existing, symbols, industries)
-    if not force and _is_current_quarter() and completeness >= _CACHE_COMPLETENESS_THRESHOLD:
+    if (
+        not force
+        and _is_current_quarter()
+        and completeness >= _CACHE_COMPLETENESS_THRESHOLD
+    ):
         logger.info(
             "基本面缓存已是本季度完整版本（%.0f%%），跳过刷新。",
             completeness * 100,
@@ -550,7 +694,6 @@ def refresh_fundamental_data(
 
     logger.info("开始准备 AKShare 基本面批量数据：%d 只股票。", total)
     _log_fundamental_progress(0, total, 0, 0, force=True)
-    # Prefetch the full-market snapshots once; individual rows are local lookups.
     _clear_batch_cache()
     _prefetch_batch_data()
 
@@ -580,6 +723,7 @@ def refresh_fundamental_data(
         combined = _fundamental_index(downloaded).combine_first(combined)
     combined = combined.reset_index()
     if combined.empty:
+        logger.warning("本轮未取得任何基本面数据，保留现有缓存。")
         return _CACHE_PATH
     combined = combined.drop_duplicates("Ticker", keep="last")
     if industries:
