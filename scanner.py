@@ -34,13 +34,13 @@ from analytics import enrich_results
 from config import (
     CACHE_DIR,
     CHECKPOINT_INTERVAL,
-    DOWNLOAD_THREADS,
     ENABLE_CHECKPOINT,
     LOG_DIR,
     MIN_MARKET_CAP,
     OUTPUT_DIR,
     SCAN_THREADS,
     SCORING_VERSION,
+    TICKFLOW_MAX_WORKERS,
     setup_logging,
 )
 from downloader import (
@@ -624,8 +624,7 @@ def run_scan(
     logger.info(
         "Phase 1/2: downloading data for %d tickers (%d threads)...",
         len(all_tickers),
-        DOWNLOAD_THREADS,
-    )
+        )
     universe_symbols = {_normalize_ticker(ti.ticker) for ti in all_tickers}
     processed_set = load_checkpoint(data_source) if resume else set()
     processed_set.intersection_update(universe_symbols)

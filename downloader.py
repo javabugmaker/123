@@ -81,14 +81,16 @@ class TickerInfo:
 def _log_download_progress(
     completed: int, total: int, successful: int, skipped: int
 ) -> None:
-    """Stable GUI/test log format used by the scan progress parser."""
-    logger.info(
-        "DOWNLOAD progress: %d/%d (%d succeeded, %d no-data/failed).",
-        completed,
-        total,
-        successful,
-        skipped,
-    )
+    """Stable, throttled GUI/test log format used by the scan progress parser."""
+    interval = max(1, total // 100)
+    if completed == 1 or completed == total or completed % interval == 0:
+        logger.info(
+            "DOWNLOAD progress: %d/%d (%d succeeded, %d no-data/failed).",
+            completed,
+            total,
+            successful,
+            skipped,
+        )
 
 
 def normalize_data_source(source: str | None = None) -> str:
