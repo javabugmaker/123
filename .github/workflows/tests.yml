@@ -25,7 +25,9 @@ jobs:
           python-version: '3.11'
           cache: pip
       - name: Apply model v3 upgrade
-        run: python tools/model_v3_upgrade.py
+        run: |
+          python tools/model_v3_upgrade.py
+          python tools/model_v3_compat_fix.py
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
       - name: Compile
@@ -37,7 +39,7 @@ jobs:
       - name: Commit validated implementation
         if: success()
         run: |
-          rm -f tools/model_v3_upgrade.py
+          rm -f tools/model_v3_upgrade.py tools/model_v3_compat_fix.py
           cat > .github/workflows/tests.yml <<'EOF'
           name: Regression Tests
 
