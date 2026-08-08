@@ -16,6 +16,9 @@ import numpy as np
 import pandas as pd
 
 from classification import etf_tracking_key, model_classification, theme_cluster
+from calibration_bridge import bridge_global_calibration
+from tradeability import is_entry_tradeable
+from trading_calendar import trading_age_days
 from config import (
     BACKTEST_FULL_WEIGHT_SAMPLES,
     BACKTEST_LOW_CONFIDENCE_MAX_SAMPLES,
@@ -157,6 +160,7 @@ class BacktestSummary:
     global_calibration: list[dict[str, Any]] = field(default_factory=list)
     walk_forward: list[dict[str, Any]] = field(default_factory=list)
     component_calibration: dict[str, Any] = field(default_factory=dict)
+    fast_exact_bridge: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         result = dict(self.__dict__)
@@ -447,7 +451,7 @@ def _enrich_one_result(
         trading_age = -1
     else:
         data_age = max(0, (today - reported_date).days)
-        trading_age = max(0, len(pd.bdate_range(reported_date, today)) - 1)
+        trading_age = trading_age_days(reported_date)
     result.market_regime = regime
     result.market_regime_reason = regime_reason
     result.market_regime_fast = regime_fast
@@ -1202,6 +1206,11 @@ def _backtest_one_ticker(
             continue
         if not np.isfinite(opens[entry_index]) or opens[entry_index] <= 0:
             continue
+        tradeable, _tradeability_reason = is_entry_tradeable(
+            ticker, enriched, entry_index, is_etf=is_etf
+        )
+        if not tradeable:
+            continue
         if (
             entry_index + outcome_horizon >= len(enriched)
             or not np.isfinite(closes[entry_index + 20])
@@ -1785,6 +1794,14 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
             for row in exact_rows:
                 row["backtest_stage"] = "EXACT_REFINEMENT"
             fast_rows = list(summary.by_ticker or [])
+            adjusted_global, bridge_metadata = bridge_global_calibration(
+                summary.global_calibration,
+                fast_rows,
+                exact_rows,
+                min_samples=BACKTEST_MIN_SAMPLES_FOR_RANKING,
+            )
+            summary.global_calibration = adjusted_global
+            summary.fast_exact_bridge = bridge_metadata
             for row in fast_rows:
                 row.setdefault("backtest_stage", "FAST_SCREEN")
             refined_tickers = set(refine_tickers)
@@ -1793,8 +1810,9 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
             summary.by_ticker = combined
             summary.mode = "hybrid"
             summary.engine = f"{summary.engine}+exact:{exact.engine}"
-            # Keep full-market peer calibration; exact Top candidates only replace
-            # per-ticker evidence and must not redefine the global peer prior.
+            # Full-market peer calibration is retained, but the overlapping
+            # FAST/EXACT candidates now estimate a bounded bridge correction so
+            # the global prior is closer to the exact execution distribution.
 
     prior_institutional_score = pd.to_numeric(
         frame.get("InstitutionalScore", pd.Series(np.nan, index=frame.index)),

@@ -114,14 +114,30 @@ class ScoreBreakdown:
 
 
 _MODEL_WEIGHT_CACHE: tuple[float, float, float] | None = None
+_MODEL_WEIGHT_CACHE_STATE: tuple[int, int] | None = None
+
+
+def _model_weight_file_state(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return int(stat.st_mtime_ns), int(stat.st_size)
+
+
+def invalidate_model_weight_cache() -> None:
+    global _MODEL_WEIGHT_CACHE, _MODEL_WEIGHT_CACHE_STATE
+    _MODEL_WEIGHT_CACHE = None
+    _MODEL_WEIGHT_CACHE_STATE = None
 
 
 def _model_component_weights() -> tuple[float, float, float]:
-    global _MODEL_WEIGHT_CACHE
-    if _MODEL_WEIGHT_CACHE is not None:
-        return _MODEL_WEIGHT_CACHE
+    global _MODEL_WEIGHT_CACHE, _MODEL_WEIGHT_CACHE_STATE
     defaults = (MODEL_SETUP_WEIGHT, MODEL_TRIGGER_WEIGHT, MODEL_EXECUTION_WEIGHT)
     path = OUTPUT_DIR / "ScoreCalibration.json"
+    state = _model_weight_file_state(path)
+    if _MODEL_WEIGHT_CACHE is not None and state == _MODEL_WEIGHT_CACHE_STATE:
+        return _MODEL_WEIGHT_CACHE
     try:
         payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         if not bool(payload.get("accepted", False)):
@@ -136,6 +152,7 @@ def _model_component_weights() -> tuple[float, float, float]:
         _MODEL_WEIGHT_CACHE = (setup, trigger, execution)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
         _MODEL_WEIGHT_CACHE = defaults
+    _MODEL_WEIGHT_CACHE_STATE = _model_weight_file_state(path)
     return _MODEL_WEIGHT_CACHE
 
 
