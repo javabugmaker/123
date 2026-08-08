@@ -26,6 +26,26 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - name: Repair migration anchor
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tools/model_v20_migrate.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''replace_once(
+              "gui_core.py",
+              ''' + "'''" + '''            "ATR14",\n            "MA20",\n''' + "'''" + ''',
+              ''' + "'''" + '''            "ATR14",\n            "ATR50",\n            "ATRExpansion",\n            "ATRExpansionSource",\n            "MA20",\n''' + "'''" + ''',
+          )'''
+          new = '''replace_once(
+              "gui_core.py",
+              ''' + "'''" + '''            "StructureScore",\n            "WyckoffPhase",\n''' + "'''" + ''',
+              ''' + "'''" + '''            "StructureScore",\n            "ATR14",\n            "ATR50",\n            "ATRExpansion",\n            "ATRExpansionSource",\n            "WyckoffPhase",\n''' + "'''" + ''',
+          )'''
+          if old not in text:
+              raise SystemExit('old GUI ATR migration block not found')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
       - name: Apply model v20 migration
         run: python tools/model_v20_migrate.py
       - name: Compile
