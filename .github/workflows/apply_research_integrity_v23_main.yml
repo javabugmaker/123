@@ -1,5 +1,6 @@
 name: Apply Research Integrity v23 Main
 
+# Trigger v23 migration after the workflow exists on main.
 on:
   push:
     branches: [main]
