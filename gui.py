@@ -8,7 +8,8 @@ filters so GUI changes do not disturb the scanner/backtest engine.
 """
 
 import re
-import sys
+from collections.abc import Sequence
+from pathlib import Path
 
 import gui_core as _core
 
@@ -415,7 +416,7 @@ def _row_matches_filters_v16(
     row: list[str],
     query: str,
     search_text: str | None = None,
-    filter_values: tuple[str, ...] | None = None,
+    filter_values: Sequence[str] | None = None,
 ) -> bool:
     # Core owns search/sector/industry/legacy-quality/stage/entry/eligibility.
     legacy_values = tuple(filter_values[:6]) if filter_values is not None else None
@@ -568,8 +569,8 @@ class DecisionScannerGUI(_core.ScannerGUI):
             _core.ScannerGUI._load_best_available_results
         )
 
-    def _write_top50_csv(self, tickers: list[str]) -> None:
-        self._call_core_with_legacy_output_dir(
+    def _write_top50_csv(self, tickers: list[str]) -> Path:
+        return self._call_core_with_legacy_output_dir(
             _core.ScannerGUI._write_top50_csv, tickers
         )
 
@@ -585,7 +586,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         row: list[str],
         query: str,
         search_text: str | None = None,
-        filter_values: tuple[str, ...] | None = None,
+        filter_values: Sequence[str] | None = None,
     ) -> bool:
         return _row_matches_filters_v16(
             self, indexes, row, query, search_text, filter_values

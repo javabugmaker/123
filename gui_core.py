@@ -436,9 +436,11 @@ class ScannerGUI:
         self.page_summary = tk.StringVar(value="")
         self._log_queue: queue.Queue[str] = queue.Queue()
         self._scan_event_queue: queue.Queue[tuple[str, int, int, str]] = queue.Queue()
+        self._scan_completion_queue: queue.Queue[tuple[str, int | str]] = queue.Queue()
         self._scan_cancel_event: threading.Event | None = None
         self._scan_execution_mode = ""
         self._last_scan_execution = None
+        self._last_scan_progress_text = ""
         self._log_job = self.root.after(150, self._flush_log_queue)
         self._configure_style()
         self._build_ui()
@@ -1004,6 +1006,7 @@ class ScannerGUI:
         fallback_command = self.build_command()
         self._scan_cancel_event = threading.Event()
         self._scan_execution_mode = "inprocess"
+        self._last_scan_progress_text = ""
         self.append_log("执行：进程内扫描（异常时自动回退子进程）\n")
         threading.Thread(
             target=self._run_scan_inprocess,
@@ -1025,17 +1028,11 @@ class ScannerGUI:
                 cancel_event=self._scan_cancel_event,
             )
         except ScanCancelled:
-            try:
-                self.root.after(0, self.scan_finished, 130)
-            except tk.TclError:
-                pass
+            self._scan_completion_queue.put(("finished", 130))
             return
         except Exception as exc:
             if self._cancel_requested:
-                try:
-                    self.root.after(0, self.scan_finished, 130)
-                except tk.TclError:
-                    pass
+                self._scan_completion_queue.put(("finished", 130))
                 return
             self._log_queue.put(
                 f"进程内扫描异常：{exc}\n自动回退到兼容子进程模式。\n"
@@ -1045,35 +1042,40 @@ class ScannerGUI:
             self.run_process(fallback_command)
             return
         self._last_scan_execution = result
-        try:
-            self.root.after(0, self.scan_finished, 0)
-        except tk.TclError:
-            pass
+        self._scan_completion_queue.put(("finished", 0))
 
     def _apply_scan_progress_event(
         self, stage: str, current: int, total: int, message: str
     ) -> None:
+        labels = {
+            "prepare": "准备扫描",
+            "download": "行情准备",
+            "analyse": "指标分析",
+            "enrich": "评分排序",
+            "export": "写入结果",
+            "complete": "扫描完成",
+        }
+        prefix = labels.get(stage, "扫描")
         if stage == "prepare":
             self.progress.stop()
             self.progress.configure(mode="indeterminate")
             self.progress.start(12)
-            self.status.set(message or "准备扫描")
-            return
-        self.progress.stop()
-        self.progress.configure(
-            mode="determinate", maximum=max(int(total), 1), value=max(int(current), 0)
-        )
-        labels = {
-            "download": "行情准备",
-            "analyse": "指标分析",
-            "enrich": "评分排序",
-            "complete": "扫描完成",
-        }
-        prefix = labels.get(stage, "扫描")
-        if total > 0 and stage != "complete":
-            self.status.set(f"{prefix} {current}/{total} · {message}")
+            status_text = message or prefix
         else:
-            self.status.set(message or prefix)
+            self.progress.stop()
+            self.progress.configure(
+                mode="determinate",
+                maximum=max(int(total), 1),
+                value=min(max(int(current), 0), max(int(total), 1)),
+            )
+            if total > 0 and stage != "complete":
+                status_text = f"{prefix} {current}/{total} · {message}"
+            else:
+                status_text = message or prefix
+        if status_text != self._last_scan_progress_text:
+            self.append_log(f"{status_text}\n")
+            self._last_scan_progress_text = status_text
+        self.status.set(status_text)
 
     def run_process(self, command: list[str]) -> None:
         try:
@@ -1098,9 +1100,34 @@ class ScannerGUI:
                 self._log_queue.put(line)
             code = self.process.wait()
             self.process = None
-            self.root.after(0, self.scan_finished, code)
-        except (OSError, subprocess.SubprocessError, tk.TclError) as exc:
-            self.root.after(0, self.scan_failed, str(exc))
+            self._scan_completion_queue.put(("finished", code))
+        except (OSError, subprocess.SubprocessError) as exc:
+            self._scan_completion_queue.put(("failed", str(exc)))
+
+    def _drain_scan_progress_events(self) -> None:
+        latest_scan_event = None
+        while True:
+            try:
+                latest_scan_event = self._scan_event_queue.get_nowait()
+            except queue.Empty:
+                break
+        if latest_scan_event is not None:
+            self._apply_scan_progress_event(*latest_scan_event)
+
+    def _drain_scan_completion_events(self) -> None:
+        while True:
+            try:
+                event, payload = self._scan_completion_queue.get_nowait()
+            except queue.Empty:
+                break
+            if event == "failed":
+                self.scan_failed(str(payload))
+            else:
+                try:
+                    code = int(payload)
+                except (TypeError, ValueError):
+                    code = 1
+                self.scan_finished(code)
 
     def _flush_log_queue(self) -> None:
         if self._closing:
@@ -1137,15 +1164,10 @@ class ScannerGUI:
             if latest_backtest_progress:
                 rendered_lines.append(latest_backtest_progress)
             self.append_log("".join(rendered_lines))
-        latest_scan_event = None
-        while True:
-            try:
-                latest_scan_event = self._scan_event_queue.get_nowait()
-            except queue.Empty:
-                break
-        if latest_scan_event is not None:
-            self._apply_scan_progress_event(*latest_scan_event)
-        self._log_job = self.root.after(150, self._flush_log_queue)
+        self._drain_scan_progress_events()
+        self._drain_scan_completion_events()
+        if not self._closing:
+            self._log_job = self.root.after(150, self._flush_log_queue)
 
     def scan_finished(self, code: int) -> None:
         self.progress.stop()
@@ -1669,7 +1691,7 @@ class ScannerGUI:
         row: list[str],
         query: str,
         search_text: str | None = None,
-        filter_values: tuple[str, str, str, str, str, str] | None = None,
+        filter_values: Sequence[str] | None = None,
     ) -> bool:
         values = (
             row

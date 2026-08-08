@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Any, Callable, Mapping, cast
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -68,6 +68,9 @@ class DownloadError(RuntimeError):
     pass
 
 
+DownloadProgressCallback = Callable[[int, int, int, int], None]
+
+
 @dataclass
 class TickerInfo:
     ticker: str
@@ -95,6 +98,30 @@ def _log_download_progress(
             successful,
             skipped,
         )
+
+
+def _notify_download_progress(
+    callback: DownloadProgressCallback | None,
+    completed: int,
+    total: int,
+    successful: int,
+    skipped: int,
+) -> None:
+    if callback is not None:
+        try:
+            callback(int(completed), int(total), int(successful), int(skipped))
+        except Exception:
+            logger.debug("Download progress callback failed.", exc_info=True)
+    _log_download_progress(completed, total, successful, skipped)
+
+
+def _request_chunks(symbols: list[str]) -> list[list[str]]:
+    # TickFlow already parallelises batches internally.  Keeping up to one
+    # worker-wave per outer request preserves throughput while allowing the
+    # GUI to receive progress between waves instead of waiting for the whole
+    # market request to return.
+    size = max(1, int(TICKFLOW_BATCH_SIZE) * max(1, int(TICKFLOW_MAX_WORKERS)))
+    return [symbols[index : index + size] for index in range(0, len(symbols), size)]
 
 
 def normalize_data_source(source: str | None = None) -> str:
@@ -676,6 +703,7 @@ def download_batch(
     source: str | None = None,
     cache_first: bool = False,
     skip_tickers: set[str] | None = None,
+    progress_callback: DownloadProgressCallback | None = None,
 ) -> dict[str, pd.DataFrame]:
     del desc
     normalize_data_source(source)
@@ -710,54 +738,73 @@ def download_batch(
         len(stale_cache),
         len(missing),
     )
-    _log_download_progress(len(results), total, len(results), 0)
-
+    completed = len(results)
     failed = 0
+    _notify_download_progress(
+        progress_callback, completed, total, len(results), failed
+    )
+
     rebase: list[str] = []
     if stale_cache:
-        try:
-            recent_frames = _batch_fetch(list(stale_cache), _INCREMENTAL_BARS)
-        except DownloadError as exc:
-            logger.warning("%s", exc)
-            recent_frames = {}
+        stale_symbols = list(stale_cache)
+        for batch in _request_chunks(stale_symbols):
+            try:
+                recent_frames = _batch_fetch(batch, _INCREMENTAL_BARS)
+            except DownloadError as exc:
+                logger.warning("%s", exc)
+                recent_frames = {}
 
-        for symbol, cached in stale_cache.items():
-            recent = recent_frames.get(symbol)
-            if recent is None or recent.empty:
-                results[symbol] = cached
-                continue
-            if _requires_full_rebase(cached, recent):
-                rebase.append(symbol)
-                continue
-            merged = _merge_cached(cached, recent)
-            _save_cache(symbol, merged)
-            results[symbol] = merged
+            for symbol in batch:
+                cached = stale_cache[symbol]
+                recent = recent_frames.get(symbol)
+                if recent is None or recent.empty:
+                    results[symbol] = cached
+                    completed += 1
+                    continue
+                if _requires_full_rebase(cached, recent):
+                    rebase.append(symbol)
+                    continue
+                merged = _merge_cached(cached, recent)
+                _save_cache(symbol, merged)
+                results[symbol] = merged
+                completed += 1
+            _notify_download_progress(
+                progress_callback, completed, total, len(results), failed
+            )
 
     full_symbols = list(dict.fromkeys(missing + rebase))
-    if full_symbols:
+    for batch in _request_chunks(full_symbols):
         try:
-            full_frames = _batch_fetch(full_symbols)
+            full_frames = _batch_fetch(batch)
         except DownloadError as exc:
             logger.error("%s", exc)
             full_frames = {}
 
-        for symbol in full_symbols:
+        for symbol in batch:
             frame = full_frames.get(symbol)
             if frame is not None and not frame.empty:
                 _save_cache(symbol, frame)
                 results[symbol] = frame
-                continue
-            old = stale_cache.get(symbol)
-            if old is not None and not force:
-                results[symbol] = old
-                logger.warning("TickFlow 无法重建 %s，暂时沿用旧缓存。", symbol)
             else:
-                failed += 1
+                old = stale_cache.get(symbol)
+                if old is not None and not force:
+                    results[symbol] = old
+                    logger.warning("TickFlow 无法重建 %s，暂时沿用旧缓存。", symbol)
+                else:
+                    failed += 1
+            completed += 1
+        _notify_download_progress(
+            progress_callback, completed, total, len(results), failed
+        )
 
     for symbol, frame in results.items():
         _record_market_manifest(symbol, frame)
     _flush_market_manifest()
-    _log_download_progress(total, total, len(results), failed)
+    if completed != total or total == 0:
+        completed = total
+        _notify_download_progress(
+            progress_callback, completed, total, len(results), failed
+        )
     logger.info(
         "Download batch complete (TickFlow Free): %d/%d tickers available.",
         len(results),
