@@ -27,7 +27,9 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
       - name: Apply model v18 migration
-        run: python tools/model_v18_migrate.py
+        run: |
+          python tools/prepare_model_v18_migration.py
+          python tools/model_v18_migrate.py
       - name: Compile
         run: python -m compileall -q .
       - name: Unit tests
@@ -37,7 +39,7 @@ jobs:
       - name: Materialize validated migration
         if: success() && github.event_name == 'pull_request'
         run: |
-          rm -f tools/model_v18_migrate.py
+          rm -f tools/model_v18_migrate.py tools/prepare_model_v18_migration.py
           git checkout origin/main -- .github/workflows/tests.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
