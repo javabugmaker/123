@@ -72,6 +72,16 @@ replace_once(
     result["TradeReadinessReason"] = readiness_reason
 ''',
 )
+replace_once(
+    "signal_lifecycle.py",
+    '''    operation_advice.loc[decision_state.eq("BLOCKED")] = "当前存在硬风险条件，暂不参与。"
+''',
+    '''    operation_advice.loc[
+        decision_state.eq("BLOCKED") & ~stale_data
+    ] = "当前存在硬风险条件，暂不参与。"
+    operation_advice.loc[stale_data] = "行情数据已过期，请刷新后再判断。"
+''',
+)
 
 # The old regression suite encoded the v17 contract where safety gates rewrote
 # EntrySignal.  v18 deliberately keeps the technical state immutable and moves
