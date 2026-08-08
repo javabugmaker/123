@@ -76,7 +76,7 @@ class RegressionTests(TestCase):
             "IndustryGrossMarginPercentile": 0.30,
         })
 
-        self.assertEqual(quality.quality_score, 100.0)
+        self.assertAlmostEqual(quality.quality_score, 81.1765, places=4)
         self.assertTrue(quality.quality_gate)
         self.assertEqual(quality.quality_reason, "全部通过")
 
@@ -1736,7 +1736,7 @@ class RegressionTests(TestCase):
             analytics.enrich_results([result], "eastmoney", frames={"000001.SZ": frame})
 
         self.assertEqual(result.sector_confirmation_factor, 1.0)
-        self.assertEqual(result.institutional_score, 58.9)
+        self.assertEqual(result.institutional_score, 68.0)
 
     def test_report_sorts_by_institutional_score(self):
         results = [

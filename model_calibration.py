@@ -17,6 +17,8 @@ import pandas as pd
 DEFAULT_COMPONENT_WEIGHTS: tuple[float, float, float] = (0.60, 0.25, 0.15)
 SCORE_BUCKET_EDGES: tuple[float, ...] = (-np.inf, 40.0, 50.0, 60.0, 70.0, 80.0, np.inf)
 SCORE_BUCKET_LABELS: tuple[str, ...] = ("<40", "40-50", "50-60", "60-70", "70-80", ">=80")
+SETUP_BUCKET_EDGES: tuple[float, ...] = (-np.inf, 40.0, 55.0, 70.0, np.inf)
+SETUP_BUCKET_LABELS: tuple[str, ...] = ("<40", "40-55", "55-70", ">=70")
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,17 @@ def _numeric(frame: pd.DataFrame, column: str) -> pd.Series:
     if column not in frame:
         return pd.Series(np.nan, index=frame.index, dtype=float)
     return pd.to_numeric(frame[column], errors="coerce").replace([np.inf, -np.inf], np.nan)
+
+
+def _normalize_regime(value: Any) -> str:
+    text = str(value or "UNKNOWN").strip().upper()
+    if text in {"RISK_ON", "风险偏好", "风险偏好环境"}:
+        return "RISK_ON"
+    if text in {"RISK_OFF", "风险规避", "风险规避环境"}:
+        return "RISK_OFF"
+    if text in {"NEUTRAL", "震荡", "震荡修复", "震荡转弱"}:
+        return "NEUTRAL"
+    return "UNKNOWN"
 
 
 def _weighted_mean(values: pd.Series, weights: pd.Series) -> float:
@@ -90,7 +103,9 @@ def _prepare_samples(frame: pd.DataFrame) -> pd.DataFrame:
         )
     result["asset_type"] = result["asset_type"].fillna("stock").astype(str).str.lower()
     result["entry_signal"] = result.get("entry_signal", pd.Series("UNKNOWN", index=result.index)).fillna("UNKNOWN").astype(str).str.upper()
+    result["market_regime"] = result.get("market_regime", pd.Series("UNKNOWN", index=result.index)).map(_normalize_regime)
     result["score"] = _numeric(result, "score")
+    result["setup_score"] = _numeric(result, "setup_score")
     result["sample_weight"] = _numeric(result, "sample_weight").fillna(1.0).clip(0.0, 1.0)
     result["net_excess20"] = _numeric(result, "net_return20") - _numeric(result, "benchmark_return20")
     result["net_excess60"] = _numeric(result, "net_return60") - _numeric(result, "benchmark_return60")
@@ -98,6 +113,13 @@ def _prepare_samples(frame: pd.DataFrame) -> pd.DataFrame:
         result["score"],
         bins=SCORE_BUCKET_EDGES,
         labels=SCORE_BUCKET_LABELS,
+        right=False,
+        include_lowest=True,
+    ).astype("object")
+    result["setup_bucket"] = pd.cut(
+        result["setup_score"],
+        bins=SETUP_BUCKET_EDGES,
+        labels=SETUP_BUCKET_LABELS,
         right=False,
         include_lowest=True,
     ).astype("object")
@@ -133,6 +155,9 @@ def build_global_calibration(
         return []
 
     levels: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("asset_signal_regime_score_setup", ("asset_type", "entry_signal", "market_regime", "score_bucket", "setup_bucket")),
+        ("asset_signal_regime_score", ("asset_type", "entry_signal", "market_regime", "score_bucket")),
+        ("asset_signal_regime", ("asset_type", "entry_signal", "market_regime")),
         ("asset_signal_bucket", ("asset_type", "entry_signal", "score_bucket")),
         ("asset_signal", ("asset_type", "entry_signal")),
         ("signal_bucket", ("entry_signal", "score_bucket")),
@@ -180,11 +205,14 @@ def resolve_global_calibration(
     entry_signal: str,
     score: float,
     rows: list[dict[str, Any]] | None,
+    market_regime: str = "UNKNOWN",
+    setup_score: float = np.nan,
 ) -> tuple[float, float, str]:
     if not rows:
         return 50.0, 0.0, "none"
     asset = str(asset_type or "stock").lower()
     signal = str(entry_signal or "UNKNOWN").upper()
+    regime = _normalize_regime(market_regime)
     bucket_series = pd.cut(
         pd.Series([score], dtype=float),
         bins=SCORE_BUCKET_EDGES,
@@ -193,7 +221,18 @@ def resolve_global_calibration(
         include_lowest=True,
     )
     bucket = str(bucket_series.iloc[0]) if pd.notna(bucket_series.iloc[0]) else ""
+    setup_bucket_series = pd.cut(
+        pd.Series([setup_score], dtype=float),
+        bins=SETUP_BUCKET_EDGES,
+        labels=SETUP_BUCKET_LABELS,
+        right=False,
+        include_lowest=True,
+    )
+    setup_bucket = str(setup_bucket_series.iloc[0]) if pd.notna(setup_bucket_series.iloc[0]) else ""
     priorities = (
+        ("asset_signal_regime_score_setup", {"asset_type": asset, "entry_signal": signal, "market_regime": regime, "score_bucket": bucket, "setup_bucket": setup_bucket}),
+        ("asset_signal_regime_score", {"asset_type": asset, "entry_signal": signal, "market_regime": regime, "score_bucket": bucket}),
+        ("asset_signal_regime", {"asset_type": asset, "entry_signal": signal, "market_regime": regime}),
         ("asset_signal_bucket", {"asset_type": asset, "entry_signal": signal, "score_bucket": bucket}),
         ("asset_signal", {"asset_type": asset, "entry_signal": signal}),
         ("signal_bucket", {"entry_signal": signal, "score_bucket": bucket}),
@@ -229,9 +268,21 @@ def calibration_scores_for_frame(
         frame.get("FinalScore", frame.get("score", pd.Series(np.nan, index=frame.index))),
         errors="coerce",
     )
-    for asset, signal, score in zip(asset_values, signal_values, model_scores):
+    regime_values = frame.get("MarketRegime", frame.get("market_regime", pd.Series("UNKNOWN", index=frame.index)))
+    setup_values = pd.to_numeric(
+        frame.get("BaseScore", frame.get("setup_score", pd.Series(np.nan, index=frame.index))),
+        errors="coerce",
+    )
+    for asset, signal, score, regime, setup in zip(
+        asset_values, signal_values, model_scores, regime_values, setup_values
+    ):
         value, confidence, _level = resolve_global_calibration(
-            str(asset), str(signal), float(score) if pd.notna(score) else np.nan, rows
+            str(asset),
+            str(signal),
+            float(score) if pd.notna(score) else np.nan,
+            rows,
+            market_regime=str(regime),
+            setup_score=float(setup) if pd.notna(setup) else np.nan,
         )
         scores.append(value)
         confidences.append(confidence)

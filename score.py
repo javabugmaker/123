@@ -759,11 +759,16 @@ def entry_point(
             "price_breakout": False,
         }
     atr = atr if _is_finite(atr) and atr > 0 else price * 0.03
-    low_zone = max(support, price - atr * 1.2)
-    high_zone = min(price + atr * 0.3, resistance)
+    # Define a forward-looking support zone.  Anchoring it around the current
+    # close made nearly every WAIT_PULLBACK row already sit inside EntryZone.
+    support_anchor = support + atr * 0.55
+    if _is_finite(ma20) and ma20 <= price:
+        support_anchor = max(support_anchor, float(ma20))
+    support_anchor = min(support_anchor, price)
+    low_zone = max(support, support_anchor - atr * 0.35)
+    high_zone = min(resistance, support_anchor + atr * 0.35)
     if high_zone < low_zone:
-        low_zone = max(support, min(price, resistance))
-        high_zone = max(low_zone, min(price + atr * 0.3, resistance))
+        high_zone = low_zone
     score = 0.0
     if _is_finite(ma20) and price >= ma20:
         score += 20.0
@@ -786,10 +791,12 @@ def entry_point(
         signal = "BREAKOUT_CONFIRM"
     elif price_breakout:
         signal = "PRICE_BREAKOUT"
-    elif score >= 70.0 and price <= support + atr * 1.5:
+    elif score >= 70.0 and low_zone <= price <= high_zone:
         signal = "BUY_NOW"
-    elif _is_finite(ma20) and score >= 50.0 and price > ma20:
+    elif score >= 50.0 and price > high_zone:
         signal = "WAIT_PULLBACK"
+    elif score >= 50.0 and low_zone <= price <= high_zone:
+        signal = "HOLD_WAIT"
     elif score >= 35.0:
         signal = "HOLD_WAIT"
     else:

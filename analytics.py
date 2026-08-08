@@ -38,6 +38,7 @@ from config import (
     GLOBAL_CALIBRATION_MAX_WEIGHT,
     GLOBAL_CALIBRATION_MIN_SAMPLES,
     INDICATOR_CACHE_ENABLED,
+    MODEL_QUALITY_WEIGHT,
     ENABLE_VOLUME_PROFILE,
     INSTITUTIONAL_TIER_TRAP_LABEL,
     INSTITUTIONAL_TIER_WAIT_LABEL,
@@ -195,7 +196,8 @@ def _quality_adjusted_score(
         return np.nan
     quality = _finite_float(quality_score)
     if quality_available and not is_etf and np.isfinite(quality):
-        return float(score * 0.7 + quality * 0.3)
+        quality_weight = float(np.clip(MODEL_QUALITY_WEIGHT, 0.0, 0.5))
+        return float(score * (1.0 - quality_weight) + quality * quality_weight)
     return float(score)
 
 
@@ -577,12 +579,9 @@ def enrich_results(
             result.quality_data_available,
             result.is_etf,
         )
-        quality_multiplier = _finite_float(
-            getattr(result, "quality_multiplier", 1.0), 1.0
-        )
-        result.institutional_score = round(
-            quality_adjusted * np.clip(quality_multiplier, 0.0, 1.0), 4
-        )
+        # QualityGate/QualityMultiplier are decision gates, not a second score
+        # penalty.  The quality contribution is already present in the blend.
+        result.institutional_score = round(quality_adjusted, 4)
 
 
 def refresh_research_outcomes(
@@ -1153,6 +1152,26 @@ def _backtest_one_ticker(
     benchmark_close = None
     if benchmark_frame is not None and not benchmark_frame.empty:
         benchmark_close = benchmark_frame["Close"].astype(float).sort_index()
+
+    def historical_regime(at_date: pd.Timestamp) -> str:
+        if benchmark_close is None:
+            return "UNKNOWN"
+        history = benchmark_close.loc[:at_date].dropna()
+        if len(history) < 60:
+            return "UNKNOWN"
+        last = float(history.iloc[-1])
+        ma60 = float(history.iloc[-60:].mean())
+        ma200 = float(history.iloc[-200:].mean()) if len(history) >= 200 else ma60
+        ret60 = (
+            (last / float(history.iloc[-61]) - 1.0) * 100.0
+            if len(history) >= 61 and float(history.iloc[-61]) > 0
+            else 0.0
+        )
+        if last >= ma60 and last >= ma200 and ret60 > 3.0:
+            return "RISK_ON"
+        if last < ma60 and last < ma200 and ret60 < -3.0:
+            return "RISK_OFF"
+        return "NEUTRAL"
     validation_end, test_start = split_dates
     samples: list[dict[str, Any]] = []
     previous_sample_index: int | None = None
@@ -1202,6 +1221,7 @@ def _backtest_one_ticker(
                 "ticker": ticker,
                 "asset_type": "etf" if is_etf else "stock",
                 "entry_signal": historical_signal,
+                "market_regime": historical_regime(signal_date),
                 "signal_date": signal_date.strftime("%Y-%m-%d"),
                 "entry_date": entry_date.strftime("%Y-%m-%d"),
                 "entry_price": float(entry_price),
@@ -1973,14 +1993,16 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         [QUALITY_MULTIPLIER_FAIL, QUALITY_MULTIPLIER_UNKNOWN],
         default=QUALITY_MULTIPLIER_PASS,
     )
+    quality_weight = float(np.clip(MODEL_QUALITY_WEIGHT, 0.0, 0.5))
     legacy_institutional = pd.Series(
         np.where(
             quality_eligible,
-            institutional_component * 0.7 + quality_score * 0.3,
+            institutional_component * (1.0 - quality_weight)
+            + quality_score * quality_weight,
             institutional_component,
         ),
         index=frame.index,
-    ).mul(frame["QualityMultiplier"], axis=0)
+    )
     raw_reference = raw_score.replace(0.0, np.nan)
     calibration_ratio = (
         pd.to_numeric(frame["FailureAdjustedScore"], errors="coerce") / raw_reference
