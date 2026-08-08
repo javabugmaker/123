@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 from network_proxy import configure_akshare_proxy_from_system
+from trading_calendar import latest_completed_trading_day, market_is_closed
 
 try:
     from tickflow import TickFlow
@@ -415,14 +416,7 @@ def _load_caches_parallel(symbols: list[str]) -> dict[str, pd.DataFrame]:
 
 
 def _latest_completed_trading_day(now: datetime | None = None) -> date:
-    current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
-    candidate = current.date()
-    if current.weekday() < 5 and current.hour * 60 + current.minute >= 15 * 60:
-        return candidate
-    candidate -= timedelta(days=1)
-    while candidate.weekday() >= 5:
-        candidate -= timedelta(days=1)
-    return candidate
+    return latest_completed_trading_day(now)
 
 
 def _cache_has_completed_daily_bar(
@@ -440,8 +434,7 @@ def _cache_has_completed_daily_bar(
 
 
 def _is_a_share_market_closed(now: datetime | None = None) -> bool:
-    current = now or datetime.now(ZoneInfo("Asia/Shanghai"))
-    return current.weekday() >= 5 or current.hour * 60 + current.minute >= 15 * 60
+    return market_is_closed(now)
 
 
 def _load_universe_cache() -> dict[str, Any] | None:

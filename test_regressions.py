@@ -1716,7 +1716,7 @@ class RegressionTests(TestCase):
         self.assertEqual(weaker.sector_confirmation_factor, 0.8402)
         self.assertGreater(stronger.sector_confirmation_factor, weaker.sector_confirmation_factor)
 
-    def test_enrichment_blends_available_quality_score(self):
+    def test_enrichment_keeps_fundamentals_as_gate_not_alpha(self):
         result = ScanResult(
             ticker="000001.SZ",
             industry="银行",
@@ -1738,7 +1738,7 @@ class RegressionTests(TestCase):
             analytics.enrich_results([result], "eastmoney", frames={"000001.SZ": frame})
 
         self.assertEqual(result.sector_confirmation_factor, 1.0)
-        self.assertEqual(result.institutional_score, 68.0)
+        self.assertEqual(result.institutional_score, 80.0)
 
     def test_report_sorts_by_institutional_score(self):
         results = [
@@ -2109,27 +2109,27 @@ class RegressionTests(TestCase):
         scanner._csv_rows = [["000001.SZ", "90"], ["000002.SZ", "80"], ["000003.SZ", "70"]]
         scanner._csv_path = Path("cached.csv")
         with TemporaryDirectory() as temp_dir, patch("gui.OUTPUT_DIR", Path(temp_dir)):
-            path = Path(temp_dir) / "Top50.csv"
+            path = Path(temp_dir) / "Top50Filtered.csv"
             path.write_text("", encoding="utf-8")
             scanner._write_top50_csv(["000003.SZ", "000001.SZ"])
             with path.open("r", encoding="utf-8-sig", newline="") as file:
                 rows = list(csv.reader(file))
             self.assertEqual(rows, [["Ticker", "Score"], ["000003.SZ", "70"], ["000001.SZ", "90"]])
             self.assertIsNone(scanner._csv_path)
-            self.assertFalse((Path(temp_dir) / ".Top50.csv.tmp").exists())
+            self.assertFalse((Path(temp_dir) / ".Top50Filtered.csv.tmp").exists())
 
     def test_gui_top50_write_failure_keeps_existing_file(self):
         scanner = object.__new__(gui.ScannerGUI)
         scanner._csv_headers = ["Ticker", "Score"]
         scanner._csv_rows = [["000001.SZ", "90"]]
         scanner._csv_path = None
-        with TemporaryDirectory() as temp_dir, patch("gui.OUTPUT_DIR", Path(temp_dir)), patch("gui.os.replace", side_effect=OSError("replace failed")):
-            path = Path(temp_dir) / "Top50.csv"
+        with TemporaryDirectory() as temp_dir, patch("gui.OUTPUT_DIR", Path(temp_dir)), patch("gui_core.os.replace", side_effect=OSError("replace failed")):
+            path = Path(temp_dir) / "Top50Filtered.csv"
             path.write_text("old", encoding="utf-8")
             with self.assertRaises(OSError):
                 scanner._write_top50_csv(["000001.SZ"])
             self.assertEqual(path.read_text(encoding="utf-8"), "old")
-            self.assertFalse((Path(temp_dir) / ".Top50.csv.tmp").exists())
+            self.assertFalse((Path(temp_dir) / ".Top50Filtered.csv.tmp").exists())
 
     def test_gui_backtest_uses_all_current_filtered_tickers(self):
         scanner = object.__new__(gui.ScannerGUI)

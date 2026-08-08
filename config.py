@@ -178,7 +178,7 @@ SECTOR_CONFIRMATION_RELATIVE_WEIGHT: Final[float] = 0.55
 BACKTEST_AUTO_EXACT_REFINEMENT: Final[bool] = True
 BACKTEST_EXACT_REFINEMENT_CANDIDATES: Final[int] = 150
 
-SCORING_VERSION: str = "2026-08-09-v21-output-integrity"
+SCORING_VERSION: str = "2026-08-09-v23-research-integrity"
 
 # Per-ticker historical evidence is only allowed to influence the composite
 # rank after more than a couple of independent observations.  This prevents a
@@ -195,7 +195,8 @@ BACKTEST_NEUTRAL_SCORE: Final[float] = 50.0
 MODEL_SETUP_WEIGHT: Final[float] = 0.60
 MODEL_TRIGGER_WEIGHT: Final[float] = 0.25
 MODEL_EXECUTION_WEIGHT: Final[float] = 0.15
-MODEL_QUALITY_WEIGHT: Final[float] = 0.20
+# Fundamental quality is an execution gate/confidence input, not unvalidated alpha.
+MODEL_QUALITY_WEIGHT: Final[float] = 0.00
 GLOBAL_CALIBRATION_MIN_SAMPLES: Final[int] = 30
 GLOBAL_CALIBRATION_MAX_WEIGHT: Final[float] = 0.15
 # Historical signals are sampled more frequently than their 60-day evaluation

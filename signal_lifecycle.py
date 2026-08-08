@@ -529,9 +529,22 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     trap_risk = trap.ge(VALUE_TRAP_HARD_RISK_THRESHOLD)
     data_risk = score_coverage.lt(0.45)
     stale_data = freshness_status.eq("过期")
+    style_text = _text_series(result, "Style", "").str.lower()
+    cyclical_style = style_text.str.contains("周期", regex=False) | style_text.str.contains(
+        "cyc", regex=False
+    )
+    quality_score_value = _number(
+        result.get("QualityScore", pd.Series(np.nan, index=result.index)), np.nan
+    )
+    cyclical_quality_override = (
+        cyclical_style
+        & result["QualityDataCompleteness"].ge(QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE)
+        & quality_score_value.ge(45.0)
+    )
+    result["CyclicalQualityOverride"] = cyclical_quality_override
     quality_action_block = quality_applicable & (
-        ~result["QualityGate"]
-        | result["QualityDataCompleteness"].lt(QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE)
+        result["QualityDataCompleteness"].lt(QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE)
+        | (~result["QualityGate"] & ~cyclical_quality_override)
     )
     # Missing legacy columns are treated as compatible; explicit False/FAILED
     # values from current scans are authoritative.

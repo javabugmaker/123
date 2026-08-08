@@ -40,6 +40,7 @@ from config import (
     setup_logging,
 )
 from fundamental_data import fundamental_data_path, refresh_fundamental_data
+from historical_universe import merge_with_cached_universe
 from downloader import (
     TickerInfo,
     build_ticker_universe,
@@ -228,7 +229,16 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         except (OSError, UnicodeError, csv.Error) as exc:
             logger.error("无法读取全量回测结果文件 %s：%s", results_path, exc)
             return 2
-        tickers = [normalize_ticker(ticker) for ticker in raw_tickers if ticker.strip()]
+        current_tickers = [
+            normalize_ticker(ticker) for ticker in raw_tickers if ticker.strip()
+        ]
+        tickers = merge_with_cached_universe(current_tickers)
+        logger.info(
+            "回测股票池：当前结果 %d 只 + 历史行情缓存，合计 %d 只；"
+            "该方法降低但不能完全消除幸存者偏差。",
+            len(current_tickers),
+            len(tickers),
+        )
     elif args.tickers_file:
         try:
             raw_tickers = args.tickers_file.read_text(encoding="utf-8").splitlines()
@@ -287,6 +297,12 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     if requested_mode != "auto":
         backtest_kwargs["mode"] = requested_mode
     summary = run_historical_backtest(unique_tickers, **backtest_kwargs)
+    if all_results:
+        summary.universe_type = "cache_plus_current_pool"
+        summary.survivorship_bias_warning = True
+        summary.current_pool_selection_warning = (
+            "当前结果与历史缓存联合股票池，已降低但仍不能完全消除幸存者偏差"
+        )
     if getattr(summary, "insufficient_test_data", False) is True:
         logger.error(
             "回测测试集有效样本不足：%s", getattr(summary, "error", "未知错误")

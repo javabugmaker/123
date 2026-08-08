@@ -23,3 +23,6 @@ pyarrow>=12.0.0
 
 # Optional: plotting (used in future dashboard module)
 matplotlib>=3.7.0
+
+# China exchange holiday-aware trading calendar
+holidays>=0.60,<1.0
