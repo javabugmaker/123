@@ -145,6 +145,23 @@ def refresh_fundamentals_if_needed(
         logger.info("基本面数据路径: %s", fundamental_path_fn() or fundamental_path)
 
 
+def _emit_progress(
+    callback: ScanProgressCallback | None,
+    stage: str,
+    current: int,
+    total: int,
+    message: str,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(stage, int(current), int(total), str(message))
+    except Exception:
+        logging.getLogger("institution_scanner").debug(
+            "Scan service progress callback failed.", exc_info=True
+        )
+
+
 def execute_scan(
     request: ScanRequest,
     *,
@@ -160,10 +177,18 @@ def execute_scan(
 ) -> ScanExecutionResult:
     """Execute one complete scan through the shared application path."""
     log = logger or logging.getLogger("institution_scanner")
+    _emit_progress(progress_callback, "prepare", 0, 0, "正在准备股票池")
     stocks, etfs = prepare_universe(
         request,
         build_universe_fn=build_universe_fn,
         logger=log,
+    )
+    _emit_progress(
+        progress_callback,
+        "prepare",
+        0,
+        0,
+        f"股票池准备完成：股票 {len(stocks)} · ETF {len(etfs)}；正在检查基本面",
     )
     if refresh_policy_fn is not None:
         refresh_policy_fn(stocks, request.refresh_fundamentals, log)
@@ -185,11 +210,21 @@ def execute_scan(
         progress_callback=progress_callback,
         cancel_event=cancel_event,
     )
+    _emit_progress(
+        progress_callback, "export", 0, len(report.results), "正在写入 CSV / Parquet 结果"
+    )
     top_csv, top_parquet, full_csv, full_parquet = export_all_fn(
         report.results,
         top_n_csv=request.top_n_csv,
         top_n_parquet=request.top_n_parquet,
         data_source=request.data_source,
+    )
+    _emit_progress(
+        progress_callback,
+        "export",
+        len(report.results),
+        len(report.results),
+        "结果文件写入完成",
     )
     return ScanExecutionResult(
         report=report,

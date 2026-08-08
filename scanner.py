@@ -679,6 +679,17 @@ def run_scan(
             len(skip_processed),
         )
     download_started = time.perf_counter()
+    def on_download_progress(
+        completed: int, total: int, available: int, unavailable: int
+    ) -> None:
+        _emit_progress(
+            progress_callback,
+            "download",
+            completed,
+            total,
+            f"TickFlow 行情 {completed}/{total} · 可用 {available} · 无数据/失败 {unavailable}",
+        )
+
     downloaded = download_batch(
         all_tickers,
         desc="Downloading",
@@ -686,6 +697,7 @@ def run_scan(
         source=data_source,
         cache_first=cache_first and not force_download,
         skip_tickers=set(skip_processed) if resume else None,
+        progress_callback=on_download_progress,
     )
     download_elapsed = time.perf_counter() - download_started
     logger.info("Download phase complete in %.1f seconds.", download_elapsed)
@@ -1121,6 +1133,13 @@ def run_scan(
             ) as exc:
                 logger.debug("Could not load previous scan results: %s", exc)
 
+    _emit_progress(
+        progress_callback,
+        "analyse",
+        0,
+        len(analyse_queue),
+        f"开始指标分析：{len(analyse_queue)} 个标的",
+    )
     analysis_started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=SCAN_THREADS) as executor:
         max_pending = max(SCAN_THREADS * 4, SCAN_THREADS)
