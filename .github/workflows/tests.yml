@@ -60,7 +60,9 @@ jobs:
           path.write_text(''.join(lines), encoding='utf-8')
           PY
       - name: Apply model v20 migration
-        run: python tools/model_v20_migrate.py
+        run: |
+          python tools/model_v20_migrate.py
+          python tools/model_v20_postfix.py
       - name: Compile
         run: python -m compileall -q .
       - name: Unit tests
@@ -70,7 +72,7 @@ jobs:
       - name: Materialize validated source
         run: |
           git show origin/main:.github/workflows/tests.yml > .github/workflows/tests.yml
-          rm -f tools/model_v20_migrate.py
+          rm -f tools/model_v20_migrate.py tools/model_v20_postfix.py
           rm -f .github/workflows/model-v20-materialize.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
