@@ -593,10 +593,20 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     asset_percentile = ranked_input.groupby(asset_group).rank(method="average", pct=True) * 100.0
     result["AssetPercentile"] = asset_percentile.round(2)
     use_cross_asset_normalization = valid_asset_score & valid_group_size.ge(5) & asset_percentile.notna()
+    # Relative percentile is useful for comparing stocks with ETFs, but it must
+    # never overwhelm the absolute institutional score.  Keep the absolute score
+    # as the dominant anchor and cap percentile uplift at +15 points.
     normalized_score = (
-        asset_percentile * 0.70
-        + institutional_raw.clip(0.0, 100.0) * 0.30
+        asset_percentile * 0.45
+        + institutional_raw.clip(0.0, 100.0) * 0.55
     ).clip(0.0, 100.0)
+    normalized_score = pd.Series(
+        np.minimum(
+            normalized_score.to_numpy(dtype=float),
+            (institutional_raw.clip(0.0, 100.0) + 15.0).to_numpy(dtype=float),
+        ),
+        index=result.index,
+    )
     cross_asset_score = institutional_raw.clip(0.0, 100.0).where(
         ~use_cross_asset_normalization, normalized_score
     )
@@ -744,8 +754,22 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     result["DataConfidenceFactor"] = data_confidence.round(4)
     result["ChaseRiskFactor"] = chase_factor.round(4)
     decision_factor = decision_state.map(
-        {"READY": 1.0, "OBSERVE": 0.95, "BLOCKED": 0.75}
-    ).fillna(0.95)
+        {"READY": 1.0, "OBSERVE": 0.88, "BLOCKED": 0.55}
+    ).fillna(0.88)
+    # OBSERVE is a broad state: a clean WAIT_PULLBACK should remain visible,
+    # while failed lifecycle/quality/filter states must not masquerade as top
+    # candidates.  Apply only distinct execution-integrity penalties here.
+    readiness_penalty_factor = pd.Series(1.0, index=result.index)
+    readiness_penalty_factor *= np.where(quality_action_block, 0.82, 1.0)
+    readiness_penalty_factor *= np.where(lifecycle_failed, 0.70, 1.0)
+    readiness_penalty_factor *= np.where(~passed_filters & ~filter_override, 0.90, 1.0)
+    readiness_penalty_factor *= np.where(trap_observe & ~trap_risk, 0.82, 1.0)
+    readiness_penalty_factor *= np.where(
+        signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"}) & minimum_score_risk,
+        0.85,
+        1.0,
+    )
+    result["ReadinessPenaltyFactor"] = readiness_penalty_factor.round(4)
     result["RankingScore"] = (
         base_score
         * entry_factor
@@ -754,6 +778,7 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         * data_confidence
         * recency_multiplier
         * decision_factor
+        * readiness_penalty_factor
     ).round(4)
 
     score = _number(result.get("CrossAssetScore", result["InstitutionalScore"]), 0.0)
@@ -989,7 +1014,7 @@ def _stage(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.Series]:
             "派发": "规避或减仓",
         }
     )
-    risk = pd.Series("结构仍需确认", index=frame.index)
+    risk = pd.Series("结构仍需确认", index=result.index)
     risk.loc[result.eq("加速风险")] = "短期乖离偏高"
     risk.loc[result.eq("派发")] = "趋势与资金转弱"
     risk.loc[distance.between(0, 8)] = "接近52周低位，关注破位风险"
