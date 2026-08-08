@@ -31,14 +31,18 @@ from config import (
     INSTITUTIONAL_TIER_TRAP_LABEL,
     INSTITUTIONAL_TIER_WAIT_LABEL,
     ETF_THEME_MAX_PER_TOP_LIST,
+    ETF_TRACKING_MAX_PER_TOP_LIST,
     STOCK_INDUSTRY_MAX_PER_TOP_LIST,
+    THEME_CLUSTER_SOFT_PENALTY,
+    SCORING_VERSION,
     OUTPUT_DIR,
     TOP_N_PARQUET,
     TOP_N_REPORT,
     VALUE_TRAP_RISK_THRESHOLD,
 )
-from classification import etf_theme_key
+from classification import etf_theme_key, etf_tracking_key, theme_cluster
 from scanner import ScanReport, ScanResult
+from performance_cache import BACKTEST_CACHE_VERSION, INDICATOR_CACHE_VERSION
 from signal_lifecycle import enrich_signal_lifecycle, finalize_signal_ranking
 
 logger = logging.getLogger("institution_scanner.report")
@@ -138,6 +142,8 @@ def _rankable_results(results: list[ScanResult]) -> list[ScanResult]:
 
 def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
     """Convert ScanResult list to a sorted, clean DataFrame."""
+    scan_timestamp = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
+    run_id = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d-%H%M%S")
     rows = []
     for r in results:
         rows.append(
@@ -301,6 +307,8 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "CMF": round(r.cmf, 4) if not np.isnan(r.cmf) else None,
                 "AD": r.ad if not np.isnan(r.ad) else None,
                 "ATR14": round(r.atr14, 4) if not np.isnan(r.atr14) else None,
+                "ATR50": round(r.atr50, 4) if np.isfinite(r.atr50) else None,
+                "ATRExpansionSource": r.atr_expansion_source,
                 "RSI14": round(r.rsi14, 2) if not np.isnan(r.rsi14) else None,
                 "DistToLow52W": round(r.dist_to_low_52w, 2)
                 if not np.isnan(r.dist_to_low_52w)
@@ -331,6 +339,14 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "SignalCount": r.filter_details.get("signal_count", 0),
                 "FilterCount": r.filter_details.get("filter_count", 0),
                 "PassedFilters": r.passed_filters,
+                "UniverseEligible": r.universe_eligible,
+                "SignalConfirmed": r.signal_confirmed,
+                "FailedFilterCount": r.failed_filter_count,
+                "FailedFilterNames": r.failed_filter_names,
+                "MinPricePassed": r.filter_details.get("min_price", False),
+                "MinVolumePassed": r.filter_details.get("min_volume", False),
+                "MinMarketCapPassed": r.filter_details.get("min_market_cap", False),
+                "SufficientHistoryPassed": r.filter_details.get("sufficient_history", False),
                 "OBV_Div": r.filter_details.get("obv_divergence", False),
                 "CMF_Pos": r.filter_details.get("cmf_positive", False),
                 "CMF_Improving": r.filter_details.get("cmf_improving", False),
@@ -350,10 +366,21 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "DecisionReason": r.decision_reason,
                 "TradeReadiness": r.trade_readiness or r.ranking_eligibility,
                 "ResearchTier": r.research_tier,
+                "TechnicalInstitutionalScore": round(r.technical_institutional_score, 4) if np.isfinite(r.technical_institutional_score) else None,
+                "AssetPercentile": round(r.asset_percentile, 2) if np.isfinite(r.asset_percentile) else None,
+                "CrossAssetScore": round(r.cross_asset_score, 4) if np.isfinite(r.cross_asset_score) else None,
                 "ModelClassification": r.model_classification,
+                "ETFTrackingKey": r.etf_tracking_key,
+                "ThemeCluster": r.theme_cluster,
                 "SignalAdjustmentReason": r.signal_adjustment_reason,
                 "OpportunityStage": r.opportunity_stage,
                 "Error": r.error if r.error else "",
+                "ModelVersion": SCORING_VERSION,
+                "IndicatorCacheVersion": INDICATOR_CACHE_VERSION,
+                "BacktestCacheVersion": BACKTEST_CACHE_VERSION,
+                "RunId": run_id,
+                "ScanTimestamp": scan_timestamp,
+                "CandidateGenerationStage": "SCAN",
             }
         )
 
@@ -495,30 +522,71 @@ def _diversify_ranked_candidates(
         return frame.head(0).copy()
     working = frame.copy()
     working["ETFTheme"] = working.apply(_etf_theme_key, axis=1)
+    working["ETFTrackingKey"] = working.apply(
+        lambda row: etf_tracking_key(
+            name=row.get("Name", ""), industry=row.get("Industry", ""),
+            sector="", ticker=row.get("Ticker", "")
+        ) if _truthy(row.get("IsETF", False)) or str(row.get("AssetType", "")).strip().lower() == "etf" else "",
+        axis=1,
+    )
+    working["ThemeCluster"] = working.apply(
+        lambda row: theme_cluster(
+            is_etf=_truthy(row.get("IsETF", False)) or str(row.get("AssetType", "")).strip().lower() == "etf",
+            name=row.get("Name", ""), industry=row.get("Industry", ""), sector=row.get("Sector", ""),
+            classification=row.get("ModelClassification", ""), ticker=row.get("Ticker", ""),
+        ), axis=1,
+    )
     theme_counts: dict[str, int] = {}
+    tracking_counts: dict[str, int] = {}
     stock_industry_counts: dict[str, int] = {}
+    cluster_counts: dict[str, int] = {}
     selected: list[int] = []
-    for index, row in working.iterrows():
-        theme = str(row.get("ETFTheme", "") or "").strip()
-        if theme:
-            if theme_counts.get(theme, 0) >= max(1, int(max_per_theme)):
+    remaining = list(working.index)
+    rank_score = pd.to_numeric(
+        working.get("RankingScore", working.get("CrossAssetScore", pd.Series(0.0, index=working.index))),
+        errors="coerce",
+    ).fillna(0.0)
+    penalties: dict[int, float] = {}
+    while remaining and len(selected) < int(limit):
+        best_index: int | None = None
+        best_value = -np.inf
+        best_penalty = 1.0
+        for index in remaining:
+            row = working.loc[index]
+            theme = str(row.get("ETFTheme", "") or "").strip()
+            tracking = str(row.get("ETFTrackingKey", "") or "").strip()
+            classification = str(row.get("ModelClassification", "") or row.get("Industry", "") or row.get("Sector", "") or "").strip()
+            cluster = str(row.get("ThemeCluster", "") or "").strip()
+            if tracking and tracking_counts.get(tracking, 0) >= max(1, int(ETF_TRACKING_MAX_PER_TOP_LIST)):
                 continue
-            theme_counts[theme] = theme_counts.get(theme, 0) + 1
-        else:
-            classification = str(
-                row.get("ModelClassification", "")
-                or row.get("Industry", "")
-                or row.get("Sector", "")
-                or ""
-            ).strip()
-            if classification and classification.lower() not in {"nan", "none"}:
-                if stock_industry_counts.get(classification, 0) >= max(1, int(max_per_stock_industry)):
-                    continue
-                stock_industry_counts[classification] = stock_industry_counts.get(classification, 0) + 1
-        selected.append(index)
-        if len(selected) >= int(limit):
+            if theme and theme_counts.get(theme, 0) >= max(1, int(max_per_theme)):
+                continue
+            if not theme and classification and classification.lower() not in {"nan", "none"} and stock_industry_counts.get(classification, 0) >= max(1, int(max_per_stock_industry)):
+                continue
+            penalty = max(0.70, 1.0 - float(THEME_CLUSTER_SOFT_PENALTY) * cluster_counts.get(cluster, 0)) if cluster else 1.0
+            value = float(rank_score.loc[index]) * penalty
+            if value > best_value:
+                best_index, best_value, best_penalty = int(index), value, penalty
+        if best_index is None:
             break
+        row = working.loc[best_index]
+        theme = str(row.get("ETFTheme", "") or "").strip()
+        tracking = str(row.get("ETFTrackingKey", "") or "").strip()
+        classification = str(row.get("ModelClassification", "") or row.get("Industry", "") or row.get("Sector", "") or "").strip()
+        cluster = str(row.get("ThemeCluster", "") or "").strip()
+        if theme:
+            theme_counts[theme] = theme_counts.get(theme, 0) + 1
+        if tracking:
+            tracking_counts[tracking] = tracking_counts.get(tracking, 0) + 1
+        if not theme and classification and classification.lower() not in {"nan", "none"}:
+            stock_industry_counts[classification] = stock_industry_counts.get(classification, 0) + 1
+        if cluster:
+            cluster_counts[cluster] = cluster_counts.get(cluster, 0) + 1
+        penalties[best_index] = best_penalty
+        selected.append(best_index)
+        remaining.remove(best_index)
     result = working.loc[selected].copy().reset_index(drop=True)
+    result["ResearchDiversityPenalty"] = [round(penalties.get(index, 1.0), 4) for index in selected]
     result["ResearchPoolRank"] = np.arange(1, len(result) + 1)
     return result
 
@@ -540,6 +608,14 @@ def refresh_candidate_exports(
     """Refresh every GUI-facing candidate export from one ranked result frame."""
     destination = output_dir if output_dir is not None else OUTPUT_DIR
     ranked = _rank_valid_candidates(frame)
+    ranked["ModelVersion"] = ranked.get("ModelVersion", pd.Series(SCORING_VERSION, index=ranked.index)).replace("", SCORING_VERSION).fillna(SCORING_VERSION)
+    ranked["IndicatorCacheVersion"] = ranked.get("IndicatorCacheVersion", pd.Series(INDICATOR_CACHE_VERSION, index=ranked.index)).replace("", INDICATOR_CACHE_VERSION).fillna(INDICATOR_CACHE_VERSION)
+    ranked["BacktestCacheVersion"] = ranked.get("BacktestCacheVersion", pd.Series(BACKTEST_CACHE_VERSION, index=ranked.index)).replace("", BACKTEST_CACHE_VERSION).fillna(BACKTEST_CACHE_VERSION)
+    if "BacktestStage" in ranked:
+        ranked["CandidateGenerationStage"] = np.where(
+            ranked["BacktestStage"].fillna("").astype(str).eq("EXACT_REFINEMENT"),
+            "EXACT_REFINED", "FAST_SCREEN"
+        )
 
     csv_path = destination / f"Top{top_n_csv}.csv"
     research_pool = _diversify_ranked_candidates(ranked, top_n_csv)
