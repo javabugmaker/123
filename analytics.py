@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from classification import model_classification
+from classification import etf_tracking_key, model_classification, theme_cluster
 from config import (
     BACKTEST_FULL_WEIGHT_SAMPLES,
     BACKTEST_LOW_CONFIDENCE_MAX_SAMPLES,
@@ -29,6 +29,8 @@ from config import (
     BACKTEST_FAST_COOLDOWN_DAYS,
     BACKTEST_FAST_CANDIDATE_GAP_DAYS,
     BACKTEST_AUTO_EXACT_MAX_TICKERS,
+    BACKTEST_AUTO_EXACT_REFINEMENT,
+    BACKTEST_EXACT_REFINEMENT_CANDIDATES,
     BACKTEST_MAX_PROCESSES,
     BACKTEST_PROCESS_MIN_TICKERS,
     BACKTEST_CHUNK_SIZE,
@@ -542,6 +544,13 @@ def enrich_results(
                     ticker=result.ticker,
                 )
                 result.model_classification = classification
+                result.etf_tracking_key = etf_tracking_key(
+                    name=result.name, industry=result.industry, sector="", ticker=result.ticker
+                ) if result.is_etf else ""
+                result.theme_cluster = theme_cluster(
+                    is_etf=bool(result.is_etf), name=result.name, industry=result.industry,
+                    sector=result.sector, classification=classification, ticker=result.ticker
+                )
                 if result.is_etf and not str(result.sector or "").strip() and classification:
                     result.sector = classification
                 if classification and np.isfinite(relative):
@@ -567,6 +576,13 @@ def enrich_results(
             ticker=result.ticker,
         )
         result.model_classification = classification
+        result.etf_tracking_key = etf_tracking_key(
+            name=result.name, industry=result.industry, sector="", ticker=result.ticker
+        ) if result.is_etf else ""
+        result.theme_cluster = theme_cluster(
+            is_etf=bool(result.is_etf), name=result.name, industry=result.industry,
+            sector=result.sector, classification=classification, ticker=result.ticker
+        )
         if result.is_etf and not str(result.sector or "").strip() and classification:
             result.sector = classification
         if not classification:
@@ -615,6 +631,7 @@ def enrich_results(
             * (0.7 + 0.3 * sector_factor)
             * (0.8 + 0.2 * effective_breakout_factor)
         )
+        result.technical_institutional_score = round(technical_score, 4)
         quality_adjusted = _quality_adjusted_score(
             technical_score,
             result.quality_score,
@@ -1721,6 +1738,56 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     if not path.exists() or not summary.by_ticker:
         return
     frame = pd.read_csv(path, encoding="utf-8-sig")
+    original_mode = str(summary.mode or "").strip().lower()
+    if original_mode == "fast" and BACKTEST_AUTO_EXACT_REFINEMENT:
+        rank_metric = pd.to_numeric(
+            frame.get("RankingScore", frame.get("InstitutionalScore", frame.get("FinalScore"))),
+            errors="coerce",
+        ).fillna(-np.inf)
+        eligible = ~frame.get("RankingEligibility", pd.Series("观察", index=frame.index)).fillna("观察").eq("风险过滤")
+        pool = (
+            frame.assign(_RefineMetric=rank_metric)
+            .loc[eligible]
+            .sort_values("_RefineMetric", ascending=False, kind="mergesort")
+            .head(max(1, int(BACKTEST_EXACT_REFINEMENT_CANDIDATES)))
+        )
+        refine_tickers = pool.get("Ticker", pd.Series(dtype=str)).dropna().astype(str).tolist()
+        if refine_tickers:
+            logger.info("FAST screen complete; exact-refining %d candidates.", len(refine_tickers))
+            exact = run_historical_backtest(
+                refine_tickers, source="tickflow", objective=summary.objective,
+                benchmark=summary.benchmark, commission=summary.commission,
+                stamp_duty=summary.stamp_duty, slippage=summary.slippage,
+                test_ratio=summary.test_ratio, validation_ratio=summary.validation_ratio,
+                mode="exact",
+            )
+            exact_rows = list(exact.by_ticker or [])
+            exact_keys = {(str(row.get("ticker", "")), str(row.get("entry_signal", "")).upper()) for row in exact_rows}
+            current_signal = dict(zip(pool["Ticker"].astype(str), pool.get("EntrySignal", pd.Series("UNKNOWN", index=pool.index)).fillna("UNKNOWN").astype(str).str.upper()))
+            for ticker in refine_tickers:
+                key = (ticker, current_signal.get(ticker, "UNKNOWN"))
+                if key not in exact_keys:
+                    exact_rows.append({
+                        "ticker": ticker, "entry_signal": key[1], "samples": 0,
+                        "effective_samples": 0.0, "backtest_score": BACKTEST_NEUTRAL_SCORE,
+                        "backtest_mode": "EXACT", "backtest_cache_hit": False,
+                        "backtest_last_evaluated_date": exact.split_dates.get("global_end") or "",
+                        "backtest_engine": exact.engine, "backtest_stage": "EXACT_REFINEMENT",
+                    })
+            for row in exact_rows:
+                row["backtest_stage"] = "EXACT_REFINEMENT"
+            fast_rows = list(summary.by_ticker or [])
+            for row in fast_rows:
+                row.setdefault("backtest_stage", "FAST_SCREEN")
+            refined_tickers = set(refine_tickers)
+            combined = [row for row in fast_rows if str(row.get("ticker", "")) not in refined_tickers]
+            combined.extend(exact_rows)
+            summary.by_ticker = combined
+            summary.mode = "hybrid"
+            summary.engine = f"{summary.engine}+exact:{exact.engine}"
+            # Keep full-market peer calibration; exact Top candidates only replace
+            # per-ticker evidence and must not redefine the global peer prior.
+
     prior_institutional_score = pd.to_numeric(
         frame.get("InstitutionalScore", pd.Series(np.nan, index=frame.index)),
         errors="coerce",
@@ -1750,6 +1817,7 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "backtest_cache_hit": "BacktestCacheHit",
         "backtest_last_evaluated_date": "BacktestLastEvaluatedDate",
         "backtest_engine": "BacktestEngine",
+        "backtest_stage": "BacktestStage",
     }
     legacy_columns = {
         "backtest_score",
@@ -1787,9 +1855,16 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "BacktestLastEvaluatedDate",
         "BacktestEngine",
         "BacktestStatus",
+        "BacktestStage",
         "GlobalCalibrationScore",
         "GlobalCalibrationConfidence",
         "GlobalCalibrationLevel",
+        "GlobalCalibrationSamples",
+        "GlobalCalibrationEffectiveSamples",
+        "GlobalCalibrationMeanExcess20D",
+        "GlobalCalibrationWinRate20D",
+        "GlobalCalibrationStartDate",
+        "GlobalCalibrationEndDate",
         "InstitutionalTier",
         "InstitutionalPercentile",
         "InstitutionalRank",
@@ -1852,6 +1927,12 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "BacktestCacheHit", pd.Series(False, index=frame.index)
     ).fillna(False).astype(bool)
     frame["BacktestStatus"] = np.where(observed.gt(0.0), "SAMPLES", "NO_SIGNAL_SAMPLES")
+    if "BacktestStage" not in frame:
+        frame["BacktestStage"] = np.where(
+            frame["BacktestMode"].astype(str).str.upper().eq("EXACT"),
+            "EXACT",
+            "FAST_SCREEN",
+        )
     effective_observed = (
         pd.to_numeric(frame["BacktestEffectiveSamples"], errors="coerce")
         .replace([np.inf, -np.inf], np.nan)
@@ -1913,6 +1994,12 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     frame["GlobalCalibrationScore"] = peer_score.round(4)
     frame["GlobalCalibrationConfidence"] = peer_confidence.round(4)
     frame["GlobalCalibrationLevel"] = calibration_details["level"].astype(str)
+    frame["GlobalCalibrationSamples"] = calibration_details["samples"].astype(int)
+    frame["GlobalCalibrationEffectiveSamples"] = calibration_details["effective_samples"].round(4)
+    frame["GlobalCalibrationMeanExcess20D"] = calibration_details["mean_net_excess20"].round(4)
+    frame["GlobalCalibrationWinRate20D"] = calibration_details["win_rate_net_excess20"].round(4)
+    frame["GlobalCalibrationStartDate"] = calibration_details["start_date"].astype(str)
+    frame["GlobalCalibrationEndDate"] = calibration_details["end_date"].astype(str)
     peer_available = peer_confidence.gt(0.0)
     peer_anchor = peer_score.where(peer_available, BACKTEST_NEUTRAL_SCORE)
     frame["BacktestAdjustedScore"] = (
@@ -1997,6 +2084,7 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         * recency_multiplier
         * (0.8 + 0.2 * effective_breakout_factor)
     )
+    frame["TechnicalInstitutionalScore"] = institutional_component.round(4)
     quality_score = pd.to_numeric(
         frame.get("QualityScore", pd.Series(np.nan, index=frame.index)),
         errors="coerce",
@@ -2596,6 +2684,7 @@ def run_historical_backtest(
             row["backtest_cache_hit"] = str(row.get("ticker", "")) in cache_hit_tickers
             row["backtest_last_evaluated_date"] = last_evaluated
             row["backtest_engine"] = engine
+            row["backtest_stage"] = "FAST_SCREEN" if profile.name == "fast" else "EXACT"
         summary.by_score_bucket = _bucket_rows(sample_frame)
         if summary.by_score_bucket:
             summary.monotonicity_high_low_20d = (

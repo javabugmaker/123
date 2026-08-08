@@ -193,6 +193,8 @@ def build_global_calibration(
                 "win_rate_net_excess20": round(float(win20), 4) if np.isfinite(win20) else np.nan,
                 "calibration_score": score,
                 "confidence": confidence,
+                "start_date": str(group["entry_date"].min().date()) if group["entry_date"].notna().any() else "",
+                "end_date": str(group["entry_date"].max().date()) if group["entry_date"].notna().any() else "",
             }
             for column, value in zip(keys, key_values):
                 row[column] = "" if pd.isna(value) else str(value)
@@ -258,59 +260,50 @@ def calibration_details_for_frame(
     frame: pd.DataFrame,
     rows: list[dict[str, Any]] | None,
 ) -> pd.DataFrame:
+    columns = {
+        "score": 50.0, "confidence": 0.0, "level": "none", "samples": 0,
+        "effective_samples": 0.0, "mean_net_excess20": np.nan,
+        "win_rate_net_excess20": np.nan, "start_date": "", "end_date": "",
+    }
     if frame.empty:
-        return pd.DataFrame(
-            {
-                "score": pd.Series(dtype=float),
-                "confidence": pd.Series(dtype=float),
-                "level": pd.Series(dtype=str),
-            },
-            index=frame.index,
-        )
+        return pd.DataFrame({key: pd.Series(dtype=float if isinstance(value, (int, float)) else str) for key, value in columns.items()}, index=frame.index)
     if not rows:
-        return pd.DataFrame(
-            {
-                "score": pd.Series(50.0, index=frame.index, dtype=float),
-                "confidence": pd.Series(0.0, index=frame.index, dtype=float),
-                "level": pd.Series("none", index=frame.index, dtype=str),
-            }
-        )
-    scores: list[float] = []
-    confidences: list[float] = []
-    levels: list[str] = []
+        return pd.DataFrame({key: pd.Series(value, index=frame.index) for key, value in columns.items()})
+
+    prepared_rows = list(rows)
     asset_values = frame.get("AssetType", frame.get("asset_type", pd.Series("stock", index=frame.index)))
     signal_values = frame.get("EntrySignal", frame.get("entry_signal", pd.Series("UNKNOWN", index=frame.index)))
-    model_scores = pd.to_numeric(
-        frame.get("FinalScore", frame.get("score", pd.Series(np.nan, index=frame.index))),
-        errors="coerce",
-    )
+    model_scores = pd.to_numeric(frame.get("FinalScore", frame.get("score", pd.Series(np.nan, index=frame.index))), errors="coerce")
     regime_values = frame.get("MarketRegime", frame.get("market_regime", pd.Series("UNKNOWN", index=frame.index)))
-    setup_values = pd.to_numeric(
-        frame.get("BaseScore", frame.get("setup_score", pd.Series(np.nan, index=frame.index))),
-        errors="coerce",
-    )
-    for asset, signal, score, regime, setup in zip(
-        asset_values, signal_values, model_scores, regime_values, setup_values
-    ):
+    setup_values = pd.to_numeric(frame.get("BaseScore", frame.get("setup_score", pd.Series(np.nan, index=frame.index))), errors="coerce")
+    records: list[dict[str, Any]] = []
+    for asset, signal, score, regime, setup in zip(asset_values, signal_values, model_scores, regime_values, setup_values):
         value, confidence, level = resolve_global_calibration(
-            str(asset),
-            str(signal),
-            float(score) if pd.notna(score) else np.nan,
-            rows,
-            market_regime=str(regime),
-            setup_score=float(setup) if pd.notna(setup) else np.nan,
+            str(asset), str(signal), float(score) if pd.notna(score) else np.nan, prepared_rows,
+            market_regime=str(regime), setup_score=float(setup) if pd.notna(setup) else np.nan,
         )
-        scores.append(value)
-        confidences.append(confidence)
-        levels.append(level)
-    return pd.DataFrame(
-        {
-            "score": pd.Series(scores, index=frame.index, dtype=float),
-            "confidence": pd.Series(confidences, index=frame.index, dtype=float),
-            "level": pd.Series(levels, index=frame.index, dtype=str),
-        }
-    )
-
+        matched: dict[str, Any] | None = None
+        for row in prepared_rows:
+            if str(row.get("level", "")) != level:
+                continue
+            try:
+                row_score = float(row.get("calibration_score", np.nan))
+                row_confidence = float(row.get("confidence", np.nan))
+            except (TypeError, ValueError):
+                continue
+            if np.isclose(row_score, value, equal_nan=False) and np.isclose(row_confidence, confidence, equal_nan=False):
+                matched = row
+                break
+        records.append({
+            "score": value, "confidence": confidence, "level": level,
+            "samples": int((matched or {}).get("samples", 0) or 0),
+            "effective_samples": float((matched or {}).get("effective_samples", 0.0) or 0.0),
+            "mean_net_excess20": pd.to_numeric(pd.Series([(matched or {}).get("mean_net_excess20", np.nan)]), errors="coerce").iloc[0],
+            "win_rate_net_excess20": pd.to_numeric(pd.Series([(matched or {}).get("win_rate_net_excess20", np.nan)]), errors="coerce").iloc[0],
+            "start_date": str((matched or {}).get("start_date", "") or ""),
+            "end_date": str((matched or {}).get("end_date", "") or ""),
+        })
+    return pd.DataFrame.from_records(records, index=frame.index)
 
 def calibration_scores_for_frame(
     frame: pd.DataFrame,

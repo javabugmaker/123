@@ -32,7 +32,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from analytics import enrich_results
-from classification import etf_theme_key, model_classification
+from classification import etf_theme_key, etf_tracking_key, model_classification, theme_cluster
 from config import (
     CACHE_DIR,
     CHECKPOINT_INTERVAL,
@@ -123,6 +123,8 @@ class ScanResult:
     cmf: float = np.nan
     ad: float = np.nan
     atr14: float = np.nan
+    atr50: float = np.nan
+    atr_expansion_source: str = ""
     rsi14: float = np.nan
     dist_to_low_52w: float = np.nan
     dist_to_ma20: float = np.nan
@@ -153,6 +155,10 @@ class ScanResult:
     trigger_score: float = np.nan
     final_score: float = np.nan
     passed_filters: bool = False
+    universe_eligible: bool = False
+    signal_confirmed: bool = False
+    failed_filter_count: int = 0
+    failed_filter_names: str = ""
     filter_details: dict[str, bool | int] = field(default_factory=dict)
     error: str = ""
     style: str = "均衡"
@@ -240,6 +246,11 @@ class ScanResult:
     trade_readiness: str = "观察"
     research_tier: str = ""
     model_classification: str = ""
+    etf_tracking_key: str = ""
+    theme_cluster: str = ""
+    technical_institutional_score: float = np.nan
+    asset_percentile: float = np.nan
+    cross_asset_score: float = np.nan
     institutional_percentile: float = np.nan
     institutional_rank: int = 0
     institutional_tier_reason: str = ""
@@ -448,6 +459,33 @@ def scan_single_from_df(
             "volatility_contraction": filter_results.volatility_contraction.passed,
         }
 
+        base_filter_states = {
+            "min_price": filter_results.min_price.passed,
+            "min_volume": filter_results.min_volume.passed,
+            "min_market_cap": filter_results.min_market_cap.passed,
+            "sufficient_history": filter_results.sufficient_history.passed,
+        }
+        accumulation_states = {
+            "volume_accumulation": filter_results.volume_accumulation.passed,
+            "obv_divergence": filter_results.obv_divergence.passed,
+            "cmf_positive": filter_results.cmf_positive.passed,
+            "ad_slope": filter_results.ad_slope.passed,
+        }
+        structure_states = {
+            "consolidation": filter_results.consolidation.passed,
+            "volatility_contraction": filter_results.volatility_contraction.passed,
+        }
+        universe_eligible = all(base_filter_states.values())
+        signal_confirmed = bool(
+            sum(bool(value) for value in accumulation_states.values()) >= 2
+            and any(bool(value) for value in structure_states.values())
+        )
+        failed_filter_names = [
+            name
+            for name, state in {**base_filter_states, **accumulation_states, **structure_states}.items()
+            if not state
+        ]
+
         sb = score_ticker(df, is_etf=ticker_info.is_etf)
         style = classify_style(df, is_etf=ticker_info.is_etf)
 
@@ -486,8 +524,10 @@ def scan_single_from_df(
             if len(df) >= 21 and _parse_float(df["Close"].iloc[-21], np.nan) > 0
             else np.nan
         )
+        atr_expansion_source = "indicator"
         if not np.isfinite(atr14_val):
             atr14_val = _latest_atr_from_ohlc(df, 14)
+            atr_expansion_source = "ohlc_fallback"
         atr50_value = (
             _parse_float(df["ATR50"].iloc[-1], np.nan)
             if "ATR50" in df.columns
@@ -495,6 +535,7 @@ def scan_single_from_df(
         )
         if not np.isfinite(atr50_value):
             atr50_value = _latest_atr_from_ohlc(df, 50)
+            atr_expansion_source = "ohlc_fallback"
         atr_expansion = (
             atr14_val / atr50_value
             if np.isfinite(atr14_val)
@@ -528,7 +569,25 @@ def scan_single_from_df(
             is_etf=ticker_info.is_etf,
             name=ticker_info.name,
             industry=resolved_industry,
+            sector="" if ticker_info.is_etf else resolved_sector,
+            ticker=ticker,
+        )
+        resolved_tracking_key = (
+            etf_tracking_key(
+                name=ticker_info.name,
+                industry=resolved_industry,
+                sector="",
+                ticker=ticker,
+            )
+            if ticker_info.is_etf
+            else ""
+        )
+        resolved_theme_cluster = theme_cluster(
+            is_etf=ticker_info.is_etf,
+            name=ticker_info.name,
+            industry=resolved_industry,
             sector=resolved_sector,
+            classification=resolved_classification,
             ticker=ticker,
         )
         breakout = _parse_float(getattr(sb, "breakout_score", np.nan), 0.0)
@@ -578,6 +637,8 @@ def scan_single_from_df(
             cmf=cmf_val,
             ad=ad_val,
             atr14=atr14_val,
+            atr50=atr50_value,
+            atr_expansion_source=atr_expansion_source if np.isfinite(atr_expansion) else "unavailable",
             rsi14=rsi14_val,
             dist_to_low_52w=dist_low,
             dist_to_ma20=dist_ma20,
@@ -610,6 +671,10 @@ def scan_single_from_df(
             trigger_score=_parse_float(getattr(sb, "trigger_score", np.nan)),
             final_score=_parse_float(getattr(sb, "final_score", np.nan)),
             passed_filters=passed,
+            universe_eligible=universe_eligible,
+            signal_confirmed=signal_confirmed,
+            failed_filter_count=len(failed_filter_names),
+            failed_filter_names=",".join(failed_filter_names),
             filter_details=filter_map,
             style=style,
             quality_roe=quality.roe,
@@ -634,6 +699,8 @@ def scan_single_from_df(
             quality_gate_reason=quality.quality_gate_reason,
             quality_multiplier=quality.quality_multiplier,
             model_classification=resolved_classification,
+            etf_tracking_key=resolved_tracking_key,
+            theme_cluster=resolved_theme_cluster,
         )
 
     except _SCAN_RECOVERABLE_ERRORS as exc:
@@ -1053,6 +1120,11 @@ def run_scan(
                         quality_multiplier=_parse_float(
                             row.get("QualityMultiplier", 0.95), 0.95
                         ),
+                        etf_tracking_key=str(row.get("ETFTrackingKey", "") or ""),
+                        theme_cluster=str(row.get("ThemeCluster", "") or ""),
+                        technical_institutional_score=_parse_float(row.get("TechnicalInstitutionalScore", np.nan)),
+                        asset_percentile=_parse_float(row.get("AssetPercentile", np.nan)),
+                        cross_asset_score=_parse_float(row.get("CrossAssetScore", np.nan)),
                         sector_confirmation_factor=_parse_float(
                             row.get("SectorConfirmationFactor", 1.0), 1.0
                         ),
@@ -1070,6 +1142,8 @@ def run_scan(
                         cmf=_parse_float(row.get("CMF", np.nan)),
                         ad=_parse_float(row.get("AD", np.nan)),
                         atr14=_parse_float(row.get("ATR14", np.nan)),
+                        atr50=_parse_float(row.get("ATR50", np.nan)),
+                        atr_expansion_source=str(row.get("ATRExpansionSource", "") or ""),
                         rsi14=_parse_float(row.get("RSI14", np.nan)),
                         dist_to_low_52w=_parse_float(
                             row.get("DistToLow52W", np.nan)
@@ -1089,6 +1163,10 @@ def run_scan(
                         passed_filters=_parse_bool(
                             row.get("PassedFilters", False)
                         ),
+                        universe_eligible=_parse_bool(row.get("UniverseEligible", False)),
+                        signal_confirmed=_parse_bool(row.get("SignalConfirmed", False)),
+                        failed_filter_count=_parse_int(row.get("FailedFilterCount", 0), 0),
+                        failed_filter_names=str(row.get("FailedFilterNames", "") or ""),
                         style=str(row.get("Style", "均衡")),
                         filter_details={
                             "obv_divergence": _parse_bool(

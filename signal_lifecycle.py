@@ -575,16 +575,34 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     ranking_penalty_reason = _append_reason(
         ranking_penalty_reason, lifecycle_failed, "历史信号生命周期已失败"
     )
-    base_score = _number(
+    institutional_raw = _number(
         result.get(
             "InstitutionalScore",
-            result.get(
-                "FinalScore", result.get("Score", pd.Series(0.0, index=result.index))
-            ),
+            result.get("FinalScore", result.get("Score", pd.Series(0.0, index=result.index))),
         ),
         0.0,
     )
-    minimum_score_risk = base_score.lt(TRADE_READY_MIN_INSTITUTIONAL_SCORE)
+    technical_raw = _number(
+        result.get("TechnicalInstitutionalScore", institutional_raw), 0.0
+    )
+    result["TechnicalInstitutionalScore"] = technical_raw.round(4)
+    asset_group = pd.Series(np.where(is_etf, "ETF", "STOCK"), index=result.index)
+    valid_asset_score = institutional_raw.gt(0.0) & np.isfinite(institutional_raw)
+    valid_group_size = valid_asset_score.groupby(asset_group).transform("sum")
+    ranked_input = institutional_raw.where(valid_asset_score)
+    asset_percentile = ranked_input.groupby(asset_group).rank(method="average", pct=True) * 100.0
+    result["AssetPercentile"] = asset_percentile.round(2)
+    use_cross_asset_normalization = valid_asset_score & valid_group_size.ge(5) & asset_percentile.notna()
+    normalized_score = (
+        asset_percentile * 0.70
+        + institutional_raw.clip(0.0, 100.0) * 0.30
+    ).clip(0.0, 100.0)
+    cross_asset_score = institutional_raw.clip(0.0, 100.0).where(
+        ~use_cross_asset_normalization, normalized_score
+    )
+    result["CrossAssetScore"] = cross_asset_score.round(4)
+    base_score = cross_asset_score
+    minimum_score_risk = institutional_raw.lt(TRADE_READY_MIN_INSTITUTIONAL_SCORE)
     ranking_penalty_reason = _append_reason(
         ranking_penalty_reason,
         signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"}) & minimum_score_risk,
@@ -738,7 +756,7 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         * decision_factor
     ).round(4)
 
-    score = _number(result["InstitutionalScore"], 0.0)
+    score = _number(result.get("CrossAssetScore", result["InstitutionalScore"]), 0.0)
     result["InstitutionalRank"] = score.rank(method="min", ascending=False).astype(int)
     result["InstitutionalPercentile"] = (
         score.rank(method="average", pct=True) * 100.0
