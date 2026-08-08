@@ -25,6 +25,7 @@ FUNDAMENTAL_FACTOR_COLUMNS = tuple(
 class FundamentalQuality:
     ticker: str
     industry: str = ""
+    applicable: bool = True
     roe: float = np.nan
     gross_margin: float = np.nan
     institution_holding_trend: Any = None
@@ -274,12 +275,13 @@ def get_quality(ticker: str, is_etf: bool = False) -> FundamentalQuality:
     if is_etf:
         return FundamentalQuality(
             ticker=normalized_ticker,
+            applicable=False,
             quality_gate=True,
-            quality_reason="ETF跳过基本面门槛",
-            data_available=True,
-            institution_holding_status="PASS",
-            quality_data_completeness=1.0,
-            quality_gate_reason="ETF跳过基本面门槛",
+            quality_reason="ETF基本面门槛不适用",
+            data_available=False,
+            institution_holding_status="UNKNOWN",
+            quality_data_completeness=0.0,
+            quality_gate_reason="ETF基本面门槛不适用",
             quality_multiplier=QUALITY_MULTIPLIER_PASS,
         )
     path = _path_value()

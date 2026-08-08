@@ -70,6 +70,19 @@ _core.COLUMN_NAMES.update(
         "BacktestEngine": "回测引擎",
         "ETFTheme": "ETF主题",
         "ResearchPoolRank": "研究池排名",
+        "DecisionState": "决策状态",
+        "DecisionReason": "决策说明",
+        "TradeReadiness": "交易就绪",
+        "ResearchTier": "研究等级",
+        "ModelClassification": "模型分类",
+        "EntryZoneDistancePct": "距买区%",
+        "EntryZoneDistanceATR": "距买区ATR",
+        "PullbackQualityScore": "回踩质量",
+        "QualityApplicable": "基本面适用",
+        "BacktestStatus": "回测状态",
+        "GlobalCalibrationScore": "全局校准分",
+        "GlobalCalibrationConfidence": "全局校准可信度",
+        "GlobalCalibrationLevel": "全局校准层级",
     }
 )
 

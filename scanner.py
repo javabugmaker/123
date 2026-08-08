@@ -32,6 +32,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from analytics import enrich_results
+from classification import etf_theme_key, model_classification
 from config import (
     CACHE_DIR,
     CHECKPOINT_INTERVAL,
@@ -135,7 +136,11 @@ class ScanResult:
     smart_money_stage: str = "NONE"
     entry_score: float = np.nan
     entry_signal: str = "AVOID"
+    raw_entry_signal: str = "AVOID"
     entry_zone: str = ""
+    entry_zone_distance_pct: float = np.nan
+    entry_zone_distance_atr: float = np.nan
+    pullback_quality_score: float = np.nan
     breakout_buy_price: float = np.nan
     breakout_volume_ratio: float = np.nan
     breakout_volume_confirmed: bool = False
@@ -181,6 +186,7 @@ class ScanResult:
     quality_gate: bool = True
     quality_reason: str = "基本面数据缺失（中性）"
     quality_data_available: bool = False
+    quality_applicable: bool = True
     quality_institution_holding_status: str = "UNKNOWN"
     quality_data_completeness: float = 0.0
     quality_gate_reason: str = "基本面数据缺失（中性）"
@@ -213,6 +219,10 @@ class ScanResult:
     backtest_cache_hit: bool = False
     backtest_last_evaluated_date: str = ""
     backtest_engine: str = ""
+    backtest_status: str = ""
+    global_calibration_score: float = np.nan
+    global_calibration_confidence: float = 0.0
+    global_calibration_level: str = "none"
     composite_score: float = np.nan
     chase_risk_score: float = 0.0
     chase_risk_level: str = "低"
@@ -225,6 +235,11 @@ class ScanResult:
     ranking_score: float = np.nan
     overall_rank: int = 0
     ranking_reason: str = ""
+    decision_state: str = "OBSERVE"
+    decision_reason: str = ""
+    trade_readiness: str = "观察"
+    research_tier: str = ""
+    model_classification: str = ""
     institutional_percentile: float = np.nan
     institutional_rank: int = 0
     institutional_tier_reason: str = ""
@@ -265,6 +280,20 @@ def _parse_float(value: Any, default: float = np.nan) -> float:
     except (TypeError, ValueError):
         return default
     return parsed if np.isfinite(parsed) else default
+
+
+def _latest_atr_from_ohlc(df: pd.DataFrame, period: int) -> float:
+    if df is None or len(df) < period or not {"High", "Low", "Close"}.issubset(df.columns):
+        return np.nan
+    high = pd.to_numeric(df["High"], errors="coerce")
+    low = pd.to_numeric(df["Low"], errors="coerce")
+    close = pd.to_numeric(df["Close"], errors="coerce")
+    prev_close = close.shift(1)
+    true_range = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
+    value = true_range.rolling(period, min_periods=period).mean().iloc[-1]
+    return _parse_float(value, np.nan)
 
 
 def _checkpoint_trade_date(now: datetime | None = None) -> str:
@@ -457,11 +486,15 @@ def scan_single_from_df(
             if len(df) >= 21 and _parse_float(df["Close"].iloc[-21], np.nan) > 0
             else np.nan
         )
+        if not np.isfinite(atr14_val):
+            atr14_val = _latest_atr_from_ohlc(df, 14)
         atr50_value = (
             _parse_float(df["ATR50"].iloc[-1], np.nan)
             if "ATR50" in df.columns
             else np.nan
         )
+        if not np.isfinite(atr50_value):
+            atr50_value = _latest_atr_from_ohlc(df, 50)
         atr_expansion = (
             atr14_val / atr50_value
             if np.isfinite(atr14_val)
@@ -481,10 +514,23 @@ def scan_single_from_df(
         resolved_industry = str(
             ticker_info.industry or getattr(quality, "industry", "") or ""
         ).strip()
-        # TickFlow Free metadata does not consistently expose a separate sector.
-        # Reuse the verified fundamental industry as a fallback instead of leaving
-        # both classification fields blank.
-        resolved_sector = str(ticker_info.sector or resolved_industry or "").strip()
+        if ticker_info.is_etf:
+            resolved_sector = str(ticker_info.sector or "").strip() or etf_theme_key(
+                name=ticker_info.name,
+                industry=resolved_industry,
+                sector=ticker_info.sector,
+                ticker=ticker,
+            )
+        else:
+            # TickFlow Free metadata does not consistently expose a separate sector.
+            resolved_sector = str(ticker_info.sector or resolved_industry or "").strip()
+        resolved_classification = model_classification(
+            is_etf=ticker_info.is_etf,
+            name=ticker_info.name,
+            industry=resolved_industry,
+            sector=resolved_sector,
+            ticker=ticker,
+        )
         breakout = _parse_float(getattr(sb, "breakout_score", np.nan), 0.0)
         trap = _parse_float(getattr(sb, "value_trap_risk", np.nan), 0.0)
         entry = entry_point(
@@ -545,7 +591,11 @@ def scan_single_from_df(
             smart_money_stage=smart_stage,
             entry_score=_parse_float(entry["score"], 0.0),
             entry_signal=entry["signal"],
+            raw_entry_signal=entry["signal"],
             entry_zone=entry_zone,
+            entry_zone_distance_pct=_parse_float(entry.get("zone_distance_pct")),
+            entry_zone_distance_atr=_parse_float(entry.get("zone_distance_atr")),
+            pullback_quality_score=_parse_float(entry.get("pullback_quality")),
             breakout_buy_price=_parse_float(entry["breakout"]),
             breakout_volume_ratio=_parse_float(entry.get("volume_ratio")),
             breakout_volume_confirmed=_parse_bool(
@@ -578,10 +628,12 @@ def scan_single_from_df(
             quality_gate=quality.quality_gate,
             quality_reason=quality.quality_reason,
             quality_data_available=quality.data_available,
+            quality_applicable=getattr(quality, "applicable", not ticker_info.is_etf),
             quality_institution_holding_status=quality.institution_holding_status,
             quality_data_completeness=quality.quality_data_completeness,
             quality_gate_reason=quality.quality_gate_reason,
             quality_multiplier=quality.quality_multiplier,
+            model_classification=resolved_classification,
         )
 
     except _SCAN_RECOVERABLE_ERRORS as exc:
@@ -870,6 +922,14 @@ def run_scan(
                         backtest_return_std_20d=_parse_float(
                             row.get("BacktestReturnStd20D", np.nan)
                         ),
+                        backtest_mode=str(row.get("BacktestMode", "") or ""),
+                        backtest_cache_hit=_parse_bool(row.get("BacktestCacheHit", False)),
+                        backtest_last_evaluated_date=str(row.get("BacktestLastEvaluatedDate", "") or ""),
+                        backtest_engine=str(row.get("BacktestEngine", "") or ""),
+                        backtest_status=str(row.get("BacktestStatus", "") or ""),
+                        global_calibration_score=_parse_float(row.get("GlobalCalibrationScore", np.nan)),
+                        global_calibration_confidence=_parse_float(row.get("GlobalCalibrationConfidence", 0.0), 0.0),
+                        global_calibration_level=str(row.get("GlobalCalibrationLevel", "none") or "none"),
                         composite_score=_parse_float(
                             row.get("CompositeScore", np.nan)
                         ),
@@ -902,7 +962,11 @@ def run_scan(
                         ),
                         entry_score=_parse_float(row.get("EntryScore", np.nan)),
                         entry_signal=str(row.get("EntrySignal", "AVOID") or "AVOID"),
+                        raw_entry_signal=str(row.get("RawEntrySignal", row.get("EntrySignal", "AVOID")) or "AVOID"),
                         entry_zone=str(row.get("EntryZone", "") or ""),
+                        entry_zone_distance_pct=_parse_float(row.get("EntryZoneDistancePct", np.nan)),
+                        entry_zone_distance_atr=_parse_float(row.get("EntryZoneDistanceATR", np.nan)),
+                        pullback_quality_score=_parse_float(row.get("PullbackQualityScore", np.nan)),
                         breakout_buy_price=_parse_float(
                             row.get("BreakoutBuyPrice", np.nan)
                         ),
@@ -968,6 +1032,10 @@ def run_scan(
                         ),
                         quality_data_available=_parse_bool(
                             row.get("QualityDataAvailable", False)
+                        ),
+                        quality_applicable=_parse_bool(
+                            row.get("QualityApplicable", not _parse_bool(row.get("IsETF", False))),
+                            not _parse_bool(row.get("IsETF", False)),
                         ),
                         quality_institution_holding_status=str(
                             row.get("InstitutionHoldingStatus", "UNKNOWN")
@@ -1112,6 +1180,11 @@ def run_scan(
                         ranking_reason=str(
                             row.get("RankingReason", "") or ""
                         ),
+                        decision_state=str(row.get("DecisionState", "OBSERVE") or "OBSERVE"),
+                        decision_reason=str(row.get("DecisionReason", "") or ""),
+                        trade_readiness=str(row.get("TradeReadiness", row.get("RankingEligibility", "观察")) or "观察"),
+                        research_tier=str(row.get("ResearchTier", "") or ""),
+                        model_classification=str(row.get("ModelClassification", row.get("Industry", row.get("Sector", ""))) or ""),
                         institutional_percentile=_parse_float(
                             row.get("InstitutionalPercentile", np.nan)
                         ),

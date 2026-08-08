@@ -254,14 +254,30 @@ def resolve_global_calibration(
     return 50.0, 0.0, "none"
 
 
-def calibration_scores_for_frame(
+def calibration_details_for_frame(
     frame: pd.DataFrame,
     rows: list[dict[str, Any]] | None,
-) -> tuple[pd.Series, pd.Series]:
-    if frame.empty or not rows:
-        return pd.Series(50.0, index=frame.index), pd.Series(0.0, index=frame.index)
+) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(
+            {
+                "score": pd.Series(dtype=float),
+                "confidence": pd.Series(dtype=float),
+                "level": pd.Series(dtype=str),
+            },
+            index=frame.index,
+        )
+    if not rows:
+        return pd.DataFrame(
+            {
+                "score": pd.Series(50.0, index=frame.index, dtype=float),
+                "confidence": pd.Series(0.0, index=frame.index, dtype=float),
+                "level": pd.Series("none", index=frame.index, dtype=str),
+            }
+        )
     scores: list[float] = []
     confidences: list[float] = []
+    levels: list[str] = []
     asset_values = frame.get("AssetType", frame.get("asset_type", pd.Series("stock", index=frame.index)))
     signal_values = frame.get("EntrySignal", frame.get("entry_signal", pd.Series("UNKNOWN", index=frame.index)))
     model_scores = pd.to_numeric(
@@ -276,7 +292,7 @@ def calibration_scores_for_frame(
     for asset, signal, score, regime, setup in zip(
         asset_values, signal_values, model_scores, regime_values, setup_values
     ):
-        value, confidence, _level = resolve_global_calibration(
+        value, confidence, level = resolve_global_calibration(
             str(asset),
             str(signal),
             float(score) if pd.notna(score) else np.nan,
@@ -286,7 +302,22 @@ def calibration_scores_for_frame(
         )
         scores.append(value)
         confidences.append(confidence)
-    return pd.Series(scores, index=frame.index, dtype=float), pd.Series(confidences, index=frame.index, dtype=float)
+        levels.append(level)
+    return pd.DataFrame(
+        {
+            "score": pd.Series(scores, index=frame.index, dtype=float),
+            "confidence": pd.Series(confidences, index=frame.index, dtype=float),
+            "level": pd.Series(levels, index=frame.index, dtype=str),
+        }
+    )
+
+
+def calibration_scores_for_frame(
+    frame: pd.DataFrame,
+    rows: list[dict[str, Any]] | None,
+) -> tuple[pd.Series, pd.Series]:
+    details = calibration_details_for_frame(frame, rows)
+    return details["score"], details["confidence"]
 
 
 def _component_score(frame: pd.DataFrame, weights: tuple[float, float, float]) -> pd.Series:
