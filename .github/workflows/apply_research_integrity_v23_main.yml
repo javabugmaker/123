@@ -1,0 +1,62 @@
+name: Apply Research Integrity v23 Main
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply_research_integrity_v23_main.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-test-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Load staged migration
+        shell: bash
+        run: |
+          git fetch origin agent/research-integrity-v23
+          git show origin/agent/research-integrity-v23:research_integrity_v23_migration.py > research_integrity_v23_migration.py
+      - name: Apply deterministic migration
+        run: python research_integrity_v23_migration.py
+      - name: Install migrated dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - name: Validate and publish verified implementation
+        shell: bash
+        env:
+          MPLBACKEND: Agg
+        run: |
+          set +e
+          python -m compileall -q .
+          compile_status=$?
+          python -m unittest discover -v > migration_tests.log 2>&1
+          test_status=$?
+          cat migration_tests.log
+          if [ "$compile_status" -ne 0 ] || [ "$test_status" -ne 0 ]; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git checkout -B agent/research-integrity-v23-failure
+            git add migration_tests.log
+            git commit -m 'test: capture research integrity v23 failure' || true
+            git push --force origin HEAD:agent/research-integrity-v23-failure
+            exit 1
+          fi
+          rm -f migration_tests.log
+          rm -f .github/workflows/apply_research_integrity_v23_main.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: research integrity v23'
+          git push origin HEAD:main
