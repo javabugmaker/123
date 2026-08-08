@@ -475,6 +475,14 @@ def _enrich_one_result(
     result.recent_return_20d = _safe_return(enriched["Close"], 20)
     atr14 = _finite_float(enriched["ATR14"].iloc[-1]) if "ATR14" in enriched else np.nan
     atr50 = _finite_float(enriched["ATR50"].iloc[-1]) if "ATR50" in enriched else np.nan
+    if not np.isfinite(atr14):
+        atr14 = _finite_float(getattr(result, "atr14", np.nan))
+    if not np.isfinite(atr50):
+        atr50 = _finite_float(getattr(result, "atr50", np.nan))
+    if np.isfinite(atr14):
+        result.atr14 = atr14
+    if np.isfinite(atr50):
+        result.atr50 = atr50
     result.atr_expansion = (
         atr14 / atr50
         if np.isfinite(atr14) and np.isfinite(atr50) and atr50 > 0
@@ -1737,7 +1745,7 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     path = OUTPUT_DIR / "AllResults.csv"
     if not path.exists() or not summary.by_ticker:
         return
-    frame = pd.read_csv(path, encoding="utf-8-sig")
+    frame = pd.read_csv(path, encoding="utf-8-sig", low_memory=False).copy()
     original_mode = str(summary.mode or "").strip().lower()
     if original_mode == "fast" and BACKTEST_AUTO_EXACT_REFINEMENT:
         rank_metric = pd.to_numeric(
@@ -1904,7 +1912,7 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         on=["Ticker", "EntrySignal"],
         how="left",
         validate="one_to_one",
-    )
+    ).copy()
     for column in (
         "BacktestSamples",
         "BacktestEffectiveSamples",

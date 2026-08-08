@@ -806,7 +806,7 @@ class ScannerGUI:
         return cls._cell_text(value).casefold() in MISSING_VALUE_TEXTS
 
     def _write_top50_csv(self, tickers: list[str]) -> Path:
-        path = OUTPUT_DIR / "Top50.csv"
+        path = OUTPUT_DIR / "Top50Filtered.csv"
         if "Ticker" not in self._csv_headers:
             raise ValueError("当前结果缺少 Ticker 列，无法生成 Top50.csv")
         ordered_tickers = list(
@@ -849,12 +849,12 @@ class ScannerGUI:
         tickers = list(dict.fromkeys(self.filtered_tickers))[:50]
         try:
             self._write_top50_csv(tickers)
-            if not self.load_csv("Top50.csv"):
-                raise ValueError("Top50.csv 已生成，但未包含有效结果")
+            if not self.load_csv("Top50Filtered.csv"):
+                raise ValueError("Top50Filtered.csv 已生成，但未包含有效结果")
         except (OSError, UnicodeError, csv.Error, ValueError) as exc:
             messagebox.showerror("生成 Top50 失败", str(exc))
             return
-        self.append_log(f"已从当前筛选结果生成 Top50.csv：{len(tickers)} 只\n")
+        self.append_log(f"已从当前筛选结果生成 Top50Filtered.csv：{len(tickers)} 只\n")
 
     def _load_trade_ready(self) -> None:
         filename = "Top50TradeReady.csv"

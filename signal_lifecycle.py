@@ -620,8 +620,10 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     )
     result["RankingPenaltyReason"] = ranking_penalty_reason
 
+    universe_eligible = _bool_series(result, "UniverseEligible", True)
     filter_override = (
         ~passed_filters
+        & universe_eligible
         & signal.eq("BREAKOUT_CONFIRM")
         & _bool_series(result, "BreakoutVolumeConfirmed", False)
         & _bool_series(result, "BreakoutFlowConfirmed", False)

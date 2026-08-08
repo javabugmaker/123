@@ -460,9 +460,9 @@ def scan_single_from_df(
         }
 
         base_filter_states = {
-            "min_price": filter_results.min_price.passed,
+            "min_price": True if ticker_info.is_etf else filter_results.min_price.passed,
             "min_volume": filter_results.min_volume.passed,
-            "min_market_cap": filter_results.min_market_cap.passed,
+            "min_market_cap": True if ticker_info.is_etf else filter_results.min_market_cap.passed,
             "sufficient_history": filter_results.sufficient_history.passed,
         }
         accumulation_states = {
@@ -1487,6 +1487,8 @@ def _analyse_one_ticker_from_df(
         "Volume",
         "MA20",
         "MA50",
+        "ATR14",
+        "ATR50",
         "RSI14",
     ]
     available_columns = [
