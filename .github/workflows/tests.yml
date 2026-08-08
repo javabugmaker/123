@@ -66,9 +66,21 @@ jobs:
       - name: Compile
         run: python -m compileall -q .
       - name: Unit tests
+        id: regression
+        continue-on-error: true
         env:
           MPLBACKEND: Agg
-        run: python -m unittest discover -v
+        run: python -m unittest discover -v 2>&1 | tee /tmp/v20-tests.log
+      - name: Summarize failures
+        if: steps.regression.outcome == 'failure'
+        run: |
+          echo '=== FAILURE INDEX ==='
+          grep -nE '^(FAIL|ERROR):|AssertionError|FAILED \(' /tmp/v20-tests.log || true
+          echo '=== LOG TAIL ==='
+          tail -n 220 /tmp/v20-tests.log
+      - name: Stop on regression failure
+        if: steps.regression.outcome == 'failure'
+        run: exit 1
       - name: Materialize validated source
         run: |
           git show origin/main:.github/workflows/tests.yml > .github/workflows/tests.yml
