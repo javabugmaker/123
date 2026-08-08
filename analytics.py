@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+from classification import model_classification
 from config import (
     BACKTEST_FULL_WEIGHT_SAMPLES,
     BACKTEST_LOW_CONFIDENCE_MAX_SAMPLES,
@@ -47,6 +48,9 @@ from config import (
     QUALITY_MULTIPLIER_PASS,
     QUALITY_MULTIPLIER_UNKNOWN,
     SCAN_THREADS,
+    SECTOR_CONFIRMATION_MIN_FACTOR,
+    SECTOR_CONFIRMATION_INDUSTRY_WEIGHT,
+    SECTOR_CONFIRMATION_RELATIVE_WEIGHT,
 )
 from downloader import (
     _is_a_share_market_closed,
@@ -59,6 +63,7 @@ from indicators import compute_all_indicators, compute_volume_profile
 from model_calibration import (
     build_global_calibration,
     calibrate_component_weights,
+    calibration_details_for_frame,
     calibration_scores_for_frame,
     walk_forward_stats,
 )
@@ -176,6 +181,27 @@ def _bounded_score(value: float, low: float, high: float) -> float:
     if not np.isfinite(value) or high <= low:
         return 0.5
     return float(np.clip((value - low) / (high - low), 0.0, 1.0))
+
+
+def _sector_confirmation_factor(peer_return: float, relative_strength: float) -> float:
+    if not np.isfinite(peer_return):
+        return 1.0
+    industry_component = _bounded_score(peer_return, -20.0, 20.0)
+    relative_component = (
+        _bounded_score(relative_strength, -15.0, 15.0)
+        if np.isfinite(relative_strength)
+        else 0.5
+    )
+    total_weight = max(
+        float(SECTOR_CONFIRMATION_INDUSTRY_WEIGHT + SECTOR_CONFIRMATION_RELATIVE_WEIGHT),
+        1e-9,
+    )
+    combined = (
+        industry_component * float(SECTOR_CONFIRMATION_INDUSTRY_WEIGHT)
+        + relative_component * float(SECTOR_CONFIRMATION_RELATIVE_WEIGHT)
+    ) / total_weight
+    floor = float(np.clip(SECTOR_CONFIRMATION_MIN_FACTOR, 0.0, 1.0))
+    return round(float(np.clip(floor + (1.0 - floor) * combined, floor, 1.0)), 4)
 
 
 def _finite_float(value: Any, default: float = np.nan) -> float:
@@ -508,7 +534,16 @@ def enrich_results(
             completed += 1
             if enriched is not None:
                 cached_frames[result.ticker] = enriched
-                classification = str(result.industry or result.sector or "").strip()
+                classification = model_classification(
+                    is_etf=bool(result.is_etf),
+                    name=result.name,
+                    industry=result.industry,
+                    sector=result.sector,
+                    ticker=result.ticker,
+                )
+                result.model_classification = classification
+                if result.is_etf and not str(result.sector or "").strip() and classification:
+                    result.sector = classification
                 if classification and np.isfinite(relative):
                     industry_returns.setdefault(classification, {})[result.ticker] = relative
             if completed == total or completed % 100 == 0:
@@ -524,7 +559,16 @@ def enrich_results(
         if frame is None:
             continue
         value = _safe_return(frame["Close"], 60)
-        classification = str(result.industry or result.sector or "").strip()
+        classification = model_classification(
+            is_etf=bool(result.is_etf),
+            name=result.name,
+            industry=result.industry,
+            sector=result.sector,
+            ticker=result.ticker,
+        )
+        result.model_classification = classification
+        if result.is_etf and not str(result.sector or "").strip() and classification:
+            result.sector = classification
         if not classification:
             result.industry_relative_strength = np.nan
             result.industry_momentum_60d = np.nan
@@ -543,15 +587,9 @@ def enrich_results(
         )
         result.industry_momentum_60d = round(peer, 2) if np.isfinite(peer) else np.nan
         if np.isfinite(peer):
-            result.sector_confirmation_factor = round(
-                float(
-                    np.clip(
-                        0.2 + _bounded_score(peer, -20.0, 20.0) * 0.8,
-                        0.2,
-                        1.0,
-                    )
-                ),
-                4,
+            relative_strength = value - peer if np.isfinite(value) else np.nan
+            result.sector_confirmation_factor = _sector_confirmation_factor(
+                peer, relative_strength
             )
         else:
             result.sector_confirmation_factor = 1.0
@@ -568,10 +606,14 @@ def enrich_results(
         breakout_factor = float(
             np.clip(_finite_float(result.breakout_quality_factor, 1.0), 0.0, 1.0)
         )
+        breakout_state = str(result.entry_signal or "").upper() in {
+            "BREAKOUT_CONFIRM", "PRICE_BREAKOUT", "WAIT_VOLUME_CONFIRM"
+        }
+        effective_breakout_factor = breakout_factor if breakout_state else 1.0
         technical_score = (
             base_score
             * (0.7 + 0.3 * sector_factor)
-            * (0.8 + 0.2 * breakout_factor)
+            * (0.8 + 0.2 * effective_breakout_factor)
         )
         quality_adjusted = _quality_adjusted_score(
             technical_score,
@@ -1744,6 +1786,10 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "BacktestCacheHit",
         "BacktestLastEvaluatedDate",
         "BacktestEngine",
+        "BacktestStatus",
+        "GlobalCalibrationScore",
+        "GlobalCalibrationConfidence",
+        "GlobalCalibrationLevel",
         "InstitutionalTier",
         "InstitutionalPercentile",
         "InstitutionalRank",
@@ -1794,6 +1840,18 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
             frame[column] = np.nan
 
     observed = pd.to_numeric(frame["BacktestSamples"], errors="coerce").fillna(0.0)
+    frame["BacktestMode"] = (
+        frame.get("BacktestMode", pd.Series("", index=frame.index))
+        .fillna("").astype(str).str.strip().replace("", str(summary.mode).upper())
+    )
+    frame["BacktestEngine"] = (
+        frame.get("BacktestEngine", pd.Series("", index=frame.index))
+        .fillna("").astype(str).str.strip().replace("", str(summary.engine))
+    )
+    frame["BacktestCacheHit"] = frame.get(
+        "BacktestCacheHit", pd.Series(False, index=frame.index)
+    ).fillna(False).astype(bool)
+    frame["BacktestStatus"] = np.where(observed.gt(0.0), "SAMPLES", "NO_SIGNAL_SAMPLES")
     effective_observed = (
         pd.to_numeric(frame["BacktestEffectiveSamples"], errors="coerce")
         .replace([np.inf, -np.inf], np.nan)
@@ -1847,9 +1905,14 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     reliability = pd.to_numeric(
         frame["BacktestReliability"], errors="coerce"
     ).fillna(0.0)
-    peer_score, peer_confidence = calibration_scores_for_frame(
+    calibration_details = calibration_details_for_frame(
         frame, getattr(summary, "global_calibration", None)
     )
+    peer_score = calibration_details["score"]
+    peer_confidence = calibration_details["confidence"]
+    frame["GlobalCalibrationScore"] = peer_score.round(4)
+    frame["GlobalCalibrationConfidence"] = peer_confidence.round(4)
+    frame["GlobalCalibrationLevel"] = calibration_details["level"].astype(str)
     peer_available = peer_confidence.gt(0.0)
     peer_anchor = peer_score.where(peer_available, BACKTEST_NEUTRAL_SCORE)
     frame["BacktestAdjustedScore"] = (
@@ -1924,11 +1987,15 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         errors="coerce",
     ).fillna(1.0).clip(0.0, 1.0)
     frame["BreakoutQualityFactor"] = breakout_factor
+    breakout_state = frame["EntrySignal"].isin(
+        {"BREAKOUT_CONFIRM", "PRICE_BREAKOUT", "WAIT_VOLUME_CONFIRM"}
+    )
+    effective_breakout_factor = breakout_factor.where(breakout_state, 1.0)
     institutional_component = (
         frame["FailureAdjustedScore"]
         * sector_multiplier
         * recency_multiplier
-        * (0.8 + 0.2 * breakout_factor)
+        * (0.8 + 0.2 * effective_breakout_factor)
     )
     quality_score = pd.to_numeric(
         frame.get("QualityScore", pd.Series(np.nan, index=frame.index)),

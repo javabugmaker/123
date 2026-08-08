@@ -236,43 +236,15 @@ def _backtest_confidence(
 
 
 def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
-    """Apply signal safety rules once before ranking/export."""
+    """Validate technical confirmation without rewriting the raw EntrySignal."""
     result = frame.copy()
     signal = _text_series(result, "EntrySignal", "AVOID").str.upper()
+    result["RawEntrySignal"] = _text_series(result, "RawEntrySignal", "")
+    result.loc[result["RawEntrySignal"].eq(""), "RawEntrySignal"] = signal
     adjustments = _text_series(result, "SignalAdjustmentReason", "")
-    trap = _number(
-        result.get("ValueTrapRisk", pd.Series(0.0, index=result.index))
-    )
-    lifecycle = _text_series(result, "LifecycleStage", "未知")
-    rsi = _number(
-        result.get("RSI14", pd.Series(np.nan, index=result.index)), np.nan
-    )
-    chase_risk = _number(
-        result.get("ChaseRiskScore", pd.Series(np.nan, index=result.index)),
-        np.nan,
-    )
-    is_etf = _bool_series(result, "IsETF") | _text_series(
-        result, "AssetType", ""
-    ).str.lower().eq("etf")
-    supplied_completeness = _number(
-        result.get("QualityDataCompleteness", pd.Series(np.nan, index=result.index)),
-        np.nan,
-    )
-    quality_failed = pd.Series(False, index=result.index)
-    if "QualityGate" in result:
-        quality_failed = ~_bool_series(result, "QualityGate", True) & ~is_etf
-    quality_sparse = (
-        supplied_completeness.notna()
-        & supplied_completeness.lt(QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE)
-        & ~is_etf
-    )
-    quality_action_block = quality_failed | quality_sparse
-    freshness_status, _freshness_factor, _freshness_reason = _data_freshness(result)
-    stale_data = freshness_status.eq("过期")
 
     volume_ratio = _number(
-        result.get("BreakoutVolumeRatio", pd.Series(np.nan, index=result.index)),
-        np.nan,
+        result.get("BreakoutVolumeRatio", pd.Series(np.nan, index=result.index)), np.nan
     )
     volume_score = _number(
         result.get("VolumeScore", pd.Series(np.nan, index=result.index)), np.nan
@@ -311,54 +283,9 @@ def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
     weak_breakout = signal.eq("BREAKOUT_CONFIRM") & ~(
         volume_confirmed & flow_confirmed
     )
-    signal.loc[weak_breakout] = "PRICE_BREAKOUT"
     adjustments = _append_reason(
-        adjustments, weak_breakout, "突破缺少量能或资金确认，降为等待量能"
+        adjustments, weak_breakout, "突破状态缺少量能或资金确认，决策层转观察"
     )
-    trap_block = trap.ge(VALUE_TRAP_HARD_RISK_THRESHOLD) & signal.isin(
-        {"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"}
-    )
-    signal.loc[trap_block] = "AVOID"
-    adjustments = _append_reason(
-        adjustments, trap_block, "价值陷阱风险高，禁止积极买点"
-    )
-    stage_block = lifecycle.isin({"加速风险", "派发"}) & signal.isin(
-        {"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"}
-    )
-    signal.loc[stage_block & lifecycle.eq("加速风险")] = "HOLD_WAIT"
-    signal.loc[stage_block & lifecycle.eq("派发")] = "AVOID"
-    adjustments = _append_reason(adjustments, stage_block, "生命周期风险阶段，买点降级")
-    rsi_block = rsi.ge(CHASE_RISK_RSI_HARD) & signal.isin(
-        {"BUY_NOW", "BREAKOUT_CONFIRM"}
-    )
-    signal.loc[rsi_block] = "HOLD_WAIT"
-    adjustments = _append_reason(adjustments, rsi_block, "RSI高位过热，停止追涨")
-    chase_block = chase_risk.ge(CHASE_RISK_HIGH_THRESHOLD) & signal.isin(
-        {"BUY_NOW", "BREAKOUT_CONFIRM"}
-    )
-    signal.loc[chase_block] = "HOLD_WAIT"
-    adjustments = _append_reason(adjustments, chase_block, "追高风险过高，停止追涨")
-    quality_buy_block = quality_action_block & signal.isin(
-        {"BUY_NOW", "BREAKOUT_CONFIRM"}
-    )
-    signal.loc[quality_buy_block & signal.eq("BUY_NOW")] = "WAIT_PULLBACK"
-    signal.loc[quality_buy_block & signal.eq("BREAKOUT_CONFIRM")] = "PRICE_BREAKOUT"
-    adjustments = _append_reason(
-        adjustments, quality_buy_block, "质量门槛未通过或数据不足，降为观察"
-    )
-    stale_signal_block = stale_data & signal.ne("AVOID")
-    signal.loc[stale_signal_block] = "HOLD_WAIT"
-    adjustments = _append_reason(
-        adjustments, stale_signal_block, "行情数据已过期，停止使用即时买点"
-    )
-
-    operation_advice = _text_series(result, "OperationAdvice", "")
-    operation_advice.loc[
-        signal.isin({"PRICE_BREAKOUT", "WAIT_VOLUME_CONFIRM"})
-    ] = "价格已突破，等待成交量确认，暂不追高。"
-    operation_advice.loc[signal.eq("HOLD_WAIT")] = "暂缓操作，等待风险或趋势条件改善。"
-    operation_advice.loc[signal.eq("AVOID")] = "暂不参与，等待风险解除。"
-    operation_advice.loc[stale_data] = "行情数据已过期，请刷新后再判断。"
     result["EntrySignal"] = signal
     result["BreakoutVolumeConfirmed"] = volume_confirmed
     result["BreakoutFlowConfirmed"] = flow_confirmed
@@ -367,7 +294,6 @@ def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
         signal.isin({"PRICE_BREAKOUT", "BREAKOUT_CONFIRM"}),
     ).fillna(False)
     result["SignalAdjustmentReason"] = adjustments
-    result["OperationAdvice"] = operation_advice
     return result
 
 
@@ -382,6 +308,17 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         result["FinalScore"] = _number(result["Score"])
     if "InstitutionalScore" not in result:
         result["InstitutionalScore"] = _number(result["FinalScore"])
+
+    is_etf = _bool_series(result, "IsETF") | _text_series(
+        result, "AssetType", ""
+    ).str.lower().eq("etf")
+    quality_applicable = (
+        _bool_series(result, "QualityApplicable", True)
+        if "QualityApplicable" in result
+        else ~is_etf
+    )
+    quality_applicable = quality_applicable & ~is_etf
+    result["QualityApplicable"] = quality_applicable
 
     status = _holding_status(result)
     result["InstitutionHoldingStatus"] = status
@@ -429,27 +366,31 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         if "QualityGate" in result
         else pd.Series(False, index=result.index)
     )
-    known_fail = (
+    known_fail = quality_applicable & (
         (roe_available & ~_bool_series(result, "QualityROE", True))
         | (margin_available & ~_bool_series(result, "QualityGrossMargin", True))
         | (profit_available & ~_bool_series(result, "QualityNetProfit", True))
         | status.eq("FAIL")
         | supplied_quality_fail
     )
-    any_unknown = status.eq("UNKNOWN") | ~(
-        roe_available & margin_available & profit_available
+    any_unknown = quality_applicable & (
+        status.eq("UNKNOWN") | ~(roe_available & margin_available & profit_available)
     )
     result["QualityGate"] = ~known_fail
     result["QualityMultiplier"] = np.select(
-        [known_fail, any_unknown],
-        [QUALITY_MULTIPLIER_FAIL, QUALITY_MULTIPLIER_UNKNOWN],
+        [~quality_applicable, known_fail, any_unknown],
+        [1.0, QUALITY_MULTIPLIER_FAIL, QUALITY_MULTIPLIER_UNKNOWN],
         default=QUALITY_MULTIPLIER_PASS,
     )
     quality_reason = _text_series(result, "QualityGateReason", "")
     quality_reason = quality_reason.where(~known_fail, "存在已确认质量未通过项")
     quality_reason = quality_reason.where(
-        ~(status.eq("UNKNOWN") & ~known_fail),
+        ~(status.eq("UNKNOWN") & ~known_fail & quality_applicable),
         "机构覆盖家数历史不足，按中性处理",
+    )
+    quality_reason = quality_reason.where(
+        quality_applicable,
+        "ETF基本面门槛不适用",
     )
     quality_reason = quality_reason.where(
         ~(quality_reason.eq("") & ~known_fail & ~any_unknown),
@@ -588,12 +529,9 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     trap_risk = trap.ge(VALUE_TRAP_HARD_RISK_THRESHOLD)
     data_risk = score_coverage.lt(0.45)
     stale_data = freshness_status.eq("过期")
-    is_etf = _bool_series(result, "IsETF") | _text_series(
-        result, "AssetType", ""
-    ).str.lower().eq("etf")
-    quality_action_block = ~result["QualityGate"] | (
-        result["QualityDataCompleteness"].lt(QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE)
-        & ~is_etf
+    quality_action_block = quality_applicable & (
+        ~result["QualityGate"]
+        | result["QualityDataCompleteness"].lt(QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE)
     )
     # Missing legacy columns are treated as compatible; explicit False/FAILED
     # values from current scans are authoritative.
@@ -668,8 +606,16 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     )
     result["RankingPenaltyReason"] = ranking_penalty_reason
 
+    breakout_confirmation_ok = (
+        ~signal.eq("BREAKOUT_CONFIRM")
+        | (
+            _bool_series(result, "BreakoutVolumeConfirmed", False)
+            & _bool_series(result, "BreakoutFlowConfirmed", False)
+        )
+    )
     trade_ready = (
         signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
+        & breakout_confirmation_ok
         & (passed_filters | filter_override)
         & ~lifecycle_failed
         & ~stage_risk
@@ -678,18 +624,22 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         & ~data_risk
         & ~stale_data
         & ~minimum_score_risk
+        & chase.lt(CHASE_RISK_HIGH_THRESHOLD)
     )
-    result["RankingEligibility"] = np.select(
-        [
-            avoid
-            | trap_risk
-            | lifecycle.isin({"派发", "DISTRIBUTION"})
-            | stale_data,
-            trade_ready,
-        ],
-        ["风险过滤", "推荐"],
-        default="观察",
+    hard_decision_block = (
+        avoid
+        | trap_risk
+        | lifecycle.isin({"派发", "DISTRIBUTION"})
+        | stale_data
     )
+    decision_state = pd.Series("OBSERVE", index=result.index)
+    decision_state.loc[hard_decision_block] = "BLOCKED"
+    decision_state.loc[trade_ready] = "READY"
+    result["DecisionState"] = decision_state
+    result["RankingEligibility"] = decision_state.map(
+        {"READY": "推荐", "OBSERVE": "观察", "BLOCKED": "风险过滤"}
+    ).fillna("观察")
+    result["TradeReadiness"] = result["RankingEligibility"]
     readiness_reason = pd.Series("等待趋势、量能或风险条件改善", index=result.index)
     active_signal = signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
     hard_filter = (
@@ -719,7 +669,32 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         & ~lifecycle_failed
         & (passed_filters | filter_override)
     ] = "买点、质量、数据与综合评分均满足执行条件"
+    readiness_reason.loc[quality_action_block & ~hard_filter] = (
+        "质量门槛未通过或数据不足，转为观察"
+    )
+    readiness_reason.loc[
+        chase.ge(CHASE_RISK_HIGH_THRESHOLD) & ~hard_filter
+    ] = "追高风险过高，转为观察"
     result["TradeReadinessReason"] = readiness_reason
+    result["DecisionReason"] = readiness_reason
+    operation_advice = _text_series(result, "OperationAdvice", "")
+    operation_advice.loc[
+        decision_state.eq("BLOCKED") & ~stale_data
+    ] = "当前存在硬风险条件，暂不参与。"
+    operation_advice.loc[stale_data] = "行情数据已过期，请刷新后再判断。"
+    operation_advice.loc[decision_state.eq("OBSERVE") & signal.eq("BUY_NOW")] = (
+        "价格已进入买入区间，但质量、过滤或生命周期条件未满足，继续观察。"
+    )
+    operation_advice.loc[decision_state.eq("OBSERVE") & signal.eq("BREAKOUT_CONFIRM")] = (
+        "突破技术状态成立，但执行门槛未全部满足，等待条件完善。"
+    )
+    operation_advice.loc[decision_state.eq("OBSERVE") & signal.eq("WAIT_PULLBACK")] = (
+        "等待价格回踩买入区间，不追高。"
+    )
+    operation_advice.loc[decision_state.eq("READY") & signal.eq("BUY_NOW")] = (
+        "价格处于买入区间且执行门槛满足，可按计划分批执行。"
+    )
+    result["OperationAdvice"] = operation_advice
     result["OpportunityStage"] = lifecycle
     result.loc[trap_observe, "OpportunityStage"] = "底部观察"
     result.loc[quality_action_block & ~trap_observe, "OpportunityStage"] = "观察"
@@ -731,20 +706,28 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     chase_factor = (
         1.0 - (chase / 100.0) * (1.0 - CHASE_RISK_MAX_PENALTY)
     ).clip(CHASE_RISK_MAX_PENALTY, 1.0)
-    data_confidence = (
-        (
-            0.90
-            + 0.06 * result["QualityDataCompleteness"]
-            + 0.04 * score_coverage.clip(0.0, 1.0)
-        ).clip(0.85, 1.0)
-        * freshness_factor
-    ).clip(DATA_FRESHNESS_STALE_FACTOR, 1.0)
+    stock_data_confidence = (
+        0.90
+        + 0.06 * result["QualityDataCompleteness"]
+        + 0.04 * score_coverage.clip(0.0, 1.0)
+    ).clip(0.85, 1.0)
+    etf_data_confidence = (0.96 + 0.04 * score_coverage.clip(0.0, 1.0)).clip(0.85, 1.0)
+    data_confidence = pd.Series(
+        np.where(quality_applicable, stock_data_confidence, etf_data_confidence),
+        index=result.index,
+    )
+    data_confidence = (data_confidence * freshness_factor).clip(
+        DATA_FRESHNESS_STALE_FACTOR, 1.0
+    )
     recency_factor = _number(
         result.get("SignalRecencyFactor", pd.Series(1.0, index=result.index)), 1.0
     ).clip(0.7, 1.0)
     recency_multiplier = 0.8 + 0.2 * recency_factor
     result["DataConfidenceFactor"] = data_confidence.round(4)
     result["ChaseRiskFactor"] = chase_factor.round(4)
+    decision_factor = decision_state.map(
+        {"READY": 1.0, "OBSERVE": 0.95, "BLOCKED": 0.75}
+    ).fillna(0.95)
     result["RankingScore"] = (
         base_score
         * entry_factor
@@ -752,6 +735,7 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         * chase_factor
         * data_confidence
         * recency_multiplier
+        * decision_factor
     ).round(4)
 
     score = _number(result["InstitutionalScore"], 0.0)
@@ -784,8 +768,11 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         percentile.ge(INSTITUTIONAL_TIER_A_PERCENTILE)
         & score.ge(INSTITUTIONAL_TIER_A_SCORE)
         & no_top_risk
-        & result["QualityDataCompleteness"].ge(
-            INSTITUTIONAL_TIER_MIN_DATA_CONFIDENCE
+        & (
+            ~quality_applicable
+            | result["QualityDataCompleteness"].ge(
+                INSTITUTIONAL_TIER_MIN_DATA_CONFIDENCE
+            )
         )
     ] = "A级机构启动"
     confirmed_quality_fail = ~result["QualityGate"] & ~is_etf
@@ -793,9 +780,18 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     tier.loc[trap.ge(VALUE_TRAP_RISK_THRESHOLD)] = INSTITUTIONAL_TIER_TRAP_LABEL
     tier.loc[signal.eq("AVOID") & tier.eq("A级机构启动")] = "B级观察"
     result["InstitutionalTier"] = tier
-    result["InstitutionalTierReason"] = "分位和绝对分均未达到门槛"
+    result["ResearchTier"] = tier.map(
+        {
+            "A级机构启动": "A",
+            "B级观察": "B",
+            "C级价值观察": "C",
+            INSTITUTIONAL_TIER_WAIT_LABEL: "WAIT",
+            INSTITUTIONAL_TIER_TRAP_LABEL: "TRAP",
+        }
+    ).fillna("WAIT")
+    result["InstitutionalTierReason"] = "分位和绝对分均未达到研究等级门槛"
     result.loc[tier.eq("A级机构启动"), "InstitutionalTierReason"] = (
-        "市场前10%且满足绝对质量、时效与信号门槛"
+        "市场前10%且满足研究质量、时效与信号门槛"
     )
     result.loc[tier.eq("B级观察"), "InstitutionalTierReason"] = (
         "市场前25%且满足绝对分门槛"

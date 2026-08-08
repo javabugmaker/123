@@ -962,8 +962,9 @@ class RegressionTests(TestCase):
         result = signal_lifecycle.finalize_signal_ranking(frame)
 
         self.assertFalse(result.loc[0, "QualityGate"])
-        self.assertEqual(result.loc[0, "EntrySignal"], "WAIT_PULLBACK")
-        self.assertIn("质量门槛", result.loc[0, "SignalAdjustmentReason"])
+        self.assertEqual(result.loc[0, "EntrySignal"], "BUY_NOW")
+        self.assertEqual(result.loc[0, "DecisionState"], "OBSERVE")
+        self.assertIn("质量门槛", result.loc[0, "DecisionReason"])
 
     def test_final_ranking_downgrades_high_chase_risk_breakout(self):
         frame = pd.DataFrame({
@@ -986,9 +987,9 @@ class RegressionTests(TestCase):
         result = signal_lifecycle.finalize_signal_ranking(frame)
 
         self.assertGreaterEqual(result.loc[0, "ChaseRiskScore"], 60.0)
-        self.assertEqual(result.loc[0, "EntrySignal"], "HOLD_WAIT")
-        self.assertIn("追高风险", result.loc[0, "SignalAdjustmentReason"])
-        self.assertEqual(result.loc[0, "OperationAdvice"], "暂缓操作，等待风险或趋势条件改善。")
+        self.assertEqual(result.loc[0, "EntrySignal"], "BREAKOUT_CONFIRM")
+        self.assertEqual(result.loc[0, "DecisionState"], "OBSERVE")
+        self.assertIn("追高风险", result.loc[0, "DecisionReason"])
     def test_resume_scan_restores_previous_results_with_missing_metrics(self):
         ticker = TickerInfo(ticker="000001.SZ")
         frame = pd.DataFrame({
@@ -1709,10 +1710,11 @@ class RegressionTests(TestCase):
 
         self.assertEqual(stronger.industry_momentum_60d, 0.0)
         self.assertEqual(stronger.industry_relative_strength, 10.0)
-        self.assertEqual(stronger.sector_confirmation_factor, 0.6)
+        self.assertEqual(stronger.sector_confirmation_factor, 0.9113)
         self.assertEqual(weaker.industry_momentum_60d, 10.0)
         self.assertEqual(weaker.industry_relative_strength, -10.0)
-        self.assertEqual(weaker.sector_confirmation_factor, 0.8)
+        self.assertEqual(weaker.sector_confirmation_factor, 0.8402)
+        self.assertGreater(stronger.sector_confirmation_factor, weaker.sector_confirmation_factor)
 
     def test_enrichment_blends_available_quality_score(self):
         result = ScanResult(
@@ -1902,6 +1904,7 @@ class RegressionTests(TestCase):
             pd.DataFrame({
                 "Ticker": ["000001.SZ"],
                 "Score": [80.0],
+                "EntrySignal": ["BREAKOUT_CONFIRM"],
                 "BreakoutQualityFactor": [0.2],
                 "PassedFilters": [True],
                 "SignalCount": [4],
@@ -2317,7 +2320,8 @@ class RegressionTests(TestCase):
         result = signal_lifecycle.finalize_signal_ranking(frame).set_index("Ticker")
         self.assertLess(result.loc["AVOID", "RankingScore"], result.loc["BUY", "RankingScore"])
         self.assertGreaterEqual(result.loc["CHASE", "ChaseRiskScore"], 60.0)
-        self.assertNotEqual(result.loc["CHASE", "EntrySignal"], "BUY_NOW")
+        self.assertEqual(result.loc["CHASE", "EntrySignal"], "BUY_NOW")
+        self.assertNotEqual(result.loc["CHASE", "DecisionState"], "READY")
 
     def test_breakout_requires_volume_and_flow_confirmation(self):
         weak = pd.DataFrame({
@@ -2344,9 +2348,10 @@ class RegressionTests(TestCase):
 
         result = signal_lifecycle.finalize_signal_ranking(frame).set_index("Ticker")
 
-        self.assertEqual(result.loc["WEAK_BREAKOUT", "EntrySignal"], "PRICE_BREAKOUT")
+        self.assertEqual(result.loc["WEAK_BREAKOUT", "EntrySignal"], "BREAKOUT_CONFIRM")
         self.assertFalse(result.loc["WEAK_BREAKOUT", "BreakoutVolumeConfirmed"])
         self.assertFalse(result.loc["WEAK_BREAKOUT", "BreakoutFlowConfirmed"])
+        self.assertEqual(result.loc["WEAK_BREAKOUT", "DecisionState"], "OBSERVE")
 
     def test_value_trap_and_legacy_frame_are_compatible(self):
         frame = pd.DataFrame({
@@ -2355,7 +2360,8 @@ class RegressionTests(TestCase):
             "RSI14": [55.0], "DistToLow52W": [20.0],
         })
         result = signal_lifecycle.finalize_signal_ranking(frame)
-        self.assertEqual(result.loc[0, "EntrySignal"], "AVOID")
+        self.assertEqual(result.loc[0, "EntrySignal"], "BUY_NOW")
+        self.assertEqual(result.loc[0, "DecisionState"], "BLOCKED")
         self.assertIn("RankingScore", result)
         self.assertIn("InstitutionHoldingStatus", result)
         self.assertIn("RankingScore", gui.DISPLAY_COLUMNS)
@@ -2392,7 +2398,8 @@ class RegressionTests(TestCase):
         result = signal_lifecycle.finalize_signal_ranking(frame).set_index("Ticker")
 
         self.assertEqual(result.loc["STALE", "DataFreshnessStatus"], "过期")
-        self.assertEqual(result.loc["STALE", "EntrySignal"], "HOLD_WAIT")
+        self.assertEqual(result.loc["STALE", "EntrySignal"], "BREAKOUT_CONFIRM")
+        self.assertEqual(result.loc["STALE", "DecisionState"], "BLOCKED")
         self.assertEqual(result.loc["STALE", "RankingEligibility"], "风险过滤")
         self.assertTrue(result.loc["STALE", "HardRiskFlag"])
         self.assertLessEqual(result.loc["STALE", "DataFreshnessFactor"], 0.5)
@@ -2409,9 +2416,10 @@ class RegressionTests(TestCase):
         result = signal_lifecycle.finalize_signal_ranking(frame).set_index("Ticker")
 
         self.assertFalse(result.loc["QUALITY_FAIL", "QualityGate"])
-        self.assertEqual(result.loc["QUALITY_FAIL", "EntrySignal"], "WAIT_PULLBACK")
+        self.assertEqual(result.loc["QUALITY_FAIL", "EntrySignal"], "BUY_NOW")
+        self.assertEqual(result.loc["QUALITY_FAIL", "DecisionState"], "OBSERVE")
         self.assertEqual(result.loc["QUALITY_FAIL", "RankingEligibility"], "观察")
-        self.assertIn("质量门槛", result.loc["QUALITY_FAIL", "SignalAdjustmentReason"])
+        self.assertIn("质量门槛", result.loc["QUALITY_FAIL", "DecisionReason"])
 
     def test_wait_pullback_remains_observation_not_trade_ready(self):
         frame = pd.DataFrame({

@@ -169,8 +169,12 @@ SCORING_WEIGHTS: Final[ScoringWeights] = ScoringWeights()
 TOP_N_REPORT: int = 50
 TOP_N_PARQUET: int = 200
 ETF_THEME_MAX_PER_TOP_LIST: Final[int] = 2
+STOCK_INDUSTRY_MAX_PER_TOP_LIST: Final[int] = 5
+SECTOR_CONFIRMATION_MIN_FACTOR: Final[float] = 0.72
+SECTOR_CONFIRMATION_INDUSTRY_WEIGHT: Final[float] = 0.45
+SECTOR_CONFIRMATION_RELATIVE_WEIGHT: Final[float] = 0.55
 
-SCORING_VERSION: str = "2026-08-08-v17-production-consistency"
+SCORING_VERSION: str = "2026-08-08-v18-decision-ranking-calibration"
 
 # Per-ticker historical evidence is only allowed to influence the composite
 # rank after more than a couple of independent observations.  This prevents a

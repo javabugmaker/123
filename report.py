@@ -31,11 +31,13 @@ from config import (
     INSTITUTIONAL_TIER_TRAP_LABEL,
     INSTITUTIONAL_TIER_WAIT_LABEL,
     ETF_THEME_MAX_PER_TOP_LIST,
+    STOCK_INDUSTRY_MAX_PER_TOP_LIST,
     OUTPUT_DIR,
     TOP_N_PARQUET,
     TOP_N_REPORT,
     VALUE_TRAP_RISK_THRESHOLD,
 )
+from classification import etf_theme_key
 from scanner import ScanReport, ScanResult
 from signal_lifecycle import enrich_signal_lifecycle, finalize_signal_ranking
 
@@ -165,7 +167,13 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "SmartMoneyStage": r.smart_money_stage,
                 "EntryScore": round(r.entry_score, 2) if np.isfinite(r.entry_score) else None,
                 "EntrySignal": r.entry_signal,
+                "RawEntrySignal": r.raw_entry_signal or r.entry_signal,
+                "DecisionState": r.decision_state,
+                "DecisionReason": r.decision_reason,
                 "EntryZone": r.entry_zone,
+                "EntryZoneDistancePct": round(r.entry_zone_distance_pct, 4) if np.isfinite(r.entry_zone_distance_pct) else None,
+                "EntryZoneDistanceATR": round(r.entry_zone_distance_atr, 4) if np.isfinite(r.entry_zone_distance_atr) else None,
+                "PullbackQualityScore": round(r.pullback_quality_score, 2) if np.isfinite(r.pullback_quality_score) else None,
                 "BreakoutBuyPrice": round(r.breakout_buy_price, 2) if np.isfinite(r.breakout_buy_price) else None,
                 "BreakoutVolumeRatio": round(r.breakout_volume_ratio, 4) if np.isfinite(r.breakout_volume_ratio) else None,
                 "BreakoutVolumeConfirmed": r.breakout_volume_confirmed,
@@ -215,6 +223,7 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "QualityGate": r.quality_gate,
                 "QualityReason": r.quality_reason,
                 "QualityDataAvailable": r.quality_data_available,
+                "QualityApplicable": r.quality_applicable,
                 "InstitutionHoldingStatus": r.quality_institution_holding_status,
                 "QualityDataCompleteness": round(r.quality_data_completeness, 4),
                 "QualityGateReason": r.quality_gate_reason,
@@ -259,6 +268,10 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "BacktestCacheHit": r.backtest_cache_hit,
                 "BacktestLastEvaluatedDate": r.backtest_last_evaluated_date,
                 "BacktestEngine": r.backtest_engine,
+                "BacktestStatus": r.backtest_status,
+                "GlobalCalibrationScore": round(r.global_calibration_score, 4) if np.isfinite(r.global_calibration_score) else None,
+                "GlobalCalibrationConfidence": round(r.global_calibration_confidence, 4),
+                "GlobalCalibrationLevel": r.global_calibration_level,
                 "UniverseType": r.universe_type,
                 "SurvivorshipBiasWarning": r.survivorship_bias_warning,
                 "TrendScore": round(r.score.trend, 2),
@@ -333,6 +346,11 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "HardRiskPenalty": round(r.hard_risk_penalty, 4),
                 "HardRiskReason": r.hard_risk_reason,
                 "RankingPenaltyReason": r.ranking_penalty_reason,
+                "DecisionState": r.decision_state,
+                "DecisionReason": r.decision_reason,
+                "TradeReadiness": r.trade_readiness or r.ranking_eligibility,
+                "ResearchTier": r.research_tier,
+                "ModelClassification": r.model_classification,
                 "SignalAdjustmentReason": r.signal_adjustment_reason,
                 "OpportunityStage": r.opportunity_stage,
                 "Error": r.error if r.error else "",
@@ -459,28 +477,26 @@ def _truthy(value: object) -> bool:
 def _etf_theme_key(row: pd.Series) -> str:
     if not (_truthy(row.get("IsETF", False)) or str(row.get("AssetType", "")).strip().lower() == "etf"):
         return ""
-    text = " ".join(
-        str(row.get(column, "") or "")
-        for column in ("Name", "Industry", "Sector")
-    ).upper()
-    for theme, keywords in _ETF_THEME_GROUPS:
-        if any(str(keyword).upper() in text for keyword in keywords):
-            return theme
-    fallback = re.sub(r"ETF|LOF|基金|指数|联接|交易型开放式", "", text, flags=re.IGNORECASE)
-    fallback = re.sub(r"[^0-9A-Z\u4e00-\u9fff]+", "", fallback).strip()
-    return fallback[:24] or str(row.get("Ticker", "")).strip().upper()
+    return etf_theme_key(
+        name=row.get("Name", ""),
+        industry=row.get("Industry", ""),
+        sector=row.get("Sector", ""),
+        ticker=row.get("Ticker", ""),
+    )
 
 
 def _diversify_ranked_candidates(
     frame: pd.DataFrame,
     limit: int,
     max_per_theme: int = ETF_THEME_MAX_PER_TOP_LIST,
+    max_per_stock_industry: int = STOCK_INDUSTRY_MAX_PER_TOP_LIST,
 ) -> pd.DataFrame:
     if frame.empty or limit <= 0:
         return frame.head(0).copy()
     working = frame.copy()
     working["ETFTheme"] = working.apply(_etf_theme_key, axis=1)
     theme_counts: dict[str, int] = {}
+    stock_industry_counts: dict[str, int] = {}
     selected: list[int] = []
     for index, row in working.iterrows():
         theme = str(row.get("ETFTheme", "") or "").strip()
@@ -488,6 +504,17 @@ def _diversify_ranked_candidates(
             if theme_counts.get(theme, 0) >= max(1, int(max_per_theme)):
                 continue
             theme_counts[theme] = theme_counts.get(theme, 0) + 1
+        else:
+            classification = str(
+                row.get("ModelClassification", "")
+                or row.get("Industry", "")
+                or row.get("Sector", "")
+                or ""
+            ).strip()
+            if classification and classification.lower() not in {"nan", "none"}:
+                if stock_industry_counts.get(classification, 0) >= max(1, int(max_per_stock_industry)):
+                    continue
+                stock_industry_counts[classification] = stock_industry_counts.get(classification, 0) + 1
         selected.append(index)
         if len(selected) >= int(limit):
             break

@@ -757,6 +757,9 @@ def entry_point(
             "volume_confirmed": False,
             "flow_confirmed": False,
             "price_breakout": False,
+            "zone_distance_pct": np.nan,
+            "zone_distance_atr": np.nan,
+            "pullback_quality": 0.0,
         }
     atr = atr if _is_finite(atr) and atr > 0 else price * 0.03
     # Define a forward-looking support zone.  Anchoring it around the current
@@ -769,6 +772,20 @@ def entry_point(
     high_zone = min(resistance, support_anchor + atr * 0.35)
     if high_zone < low_zone:
         high_zone = low_zone
+    if low_zone <= price <= high_zone:
+        zone_distance = 0.0
+    elif price > high_zone:
+        zone_distance = price - high_zone
+    else:
+        zone_distance = price - low_zone
+    zone_distance_pct = zone_distance / price * 100.0 if price > 0 else np.nan
+    zone_distance_atr = zone_distance / atr if atr > 0 else np.nan
+    if zone_distance == 0.0:
+        pullback_quality = 100.0
+    elif zone_distance > 0.0:
+        pullback_quality = _clamp(100.0 - max(zone_distance_atr, 0.0) * 30.0, 0.0, 100.0)
+    else:
+        pullback_quality = _clamp(65.0 - abs(zone_distance_atr) * 25.0, 0.0, 65.0)
     score = 0.0
     if _is_finite(ma20) and price >= ma20:
         score += 20.0
@@ -812,6 +829,9 @@ def entry_point(
         "volume_confirmed": volume_confirmed,
         "flow_confirmed": flow_confirmed,
         "price_breakout": price_breakout,
+        "zone_distance_pct": zone_distance_pct,
+        "zone_distance_atr": zone_distance_atr,
+        "pullback_quality": pullback_quality,
     }
 
 
