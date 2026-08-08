@@ -178,7 +178,7 @@ SECTOR_CONFIRMATION_RELATIVE_WEIGHT: Final[float] = 0.55
 BACKTEST_AUTO_EXACT_REFINEMENT: Final[bool] = True
 BACKTEST_EXACT_REFINEMENT_CANDIDATES: Final[int] = 150
 
-SCORING_VERSION: str = "2026-08-08-v19-exact-refinement-cross-asset"
+SCORING_VERSION: str = "2026-08-09-v20-ranking-integrity"
 
 # Per-ticker historical evidence is only allowed to influence the composite
 # rank after more than a couple of independent observations.  This prevents a
