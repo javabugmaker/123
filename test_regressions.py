@@ -916,13 +916,16 @@ class RegressionTests(TestCase):
         ):
             pd.DataFrame({
                 "Ticker": ["000001.SZ", "000002.SZ"],
-                "Score": [100.0, 60.0],
-                "InstitutionalScore": [100.0, 60.0],
+                "Score": [60.0, 100.0],
+                "InstitutionalScore": [60.0, 100.0],
                 "PassedFilters": [True, False],
                 "IsETF": [True, True],
                 "EntrySignal": ["WAIT_PULLBACK", "BREAKOUT_CONFIRM"],
                 "BreakoutVolumeConfirmed": [False, True],
                 "BreakoutFlowConfirmed": [False, True],
+                "SignalRecencyDays": [1, 1],
+                "SignalStartDate": ["2026-08-06", "2026-08-06"],
+                "DataAsOf": ["2026-08-07", "2026-08-07"],
             }).to_csv(
                 Path(temp_dir) / "AllResults.csv", index=False, encoding="utf-8-sig"
             )
@@ -943,7 +946,7 @@ class RegressionTests(TestCase):
                 Path(temp_dir) / "Top50EntryCandidates.csv", encoding="utf-8-sig"
             )
 
-        self.assertEqual(top["Ticker"].tolist(), ["000001.SZ", "000002.SZ"])
+        self.assertEqual(top["Ticker"].tolist(), ["000002.SZ", "000001.SZ"])
         self.assertEqual(top["OverallRank"].tolist(), [1, 2])
         self.assertEqual(trade_ready["Ticker"].tolist(), ["000002.SZ"])
         self.assertIn("000002.SZ", entry["Ticker"].tolist())
@@ -2436,9 +2439,9 @@ class RegressionTests(TestCase):
     def test_trade_ready_requires_complete_technical_data_and_minimum_institutional_score(self):
         frame = pd.DataFrame({
             "Ticker": ["LOW_COVERAGE", "LOW_SCORE", "VALID"],
-            "Score": [60.0, 24.9, 30.0],
-            "FinalScore": [60.0, 24.9, 30.0],
-            "InstitutionalScore": [60.0, 24.9, 30.0],
+            "Score": [60.0, 24.9, 70.0],
+            "FinalScore": [60.0, 24.9, 70.0],
+            "InstitutionalScore": [60.0, 24.9, 70.0],
             "EntrySignal": ["BREAKOUT_CONFIRM", "BUY_NOW", "BUY_NOW"],
             "BreakoutVolumeConfirmed": [True, False, False],
             "BreakoutFlowConfirmed": [True, False, False],
@@ -2446,6 +2449,7 @@ class RegressionTests(TestCase):
             "QualityDataCompleteness": [1.0, 1.0, 1.0],
             "ScoreCoverage": [0.40, 1.0, 1.0],
             "DataTradingAgeDays": [0, 0, 0],
+            "SignalRecencyDays": [1, 1, 1],
         })
 
         result = signal_lifecycle.finalize_signal_ranking(frame).set_index("Ticker")
