@@ -46,3 +46,4 @@ jobs:
           fi
           git commit -m "fix: restore live GUI scan progress and type safety"
           git push origin HEAD:agent/gui-progress-fix
+# validation trigger
