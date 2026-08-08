@@ -8,13 +8,26 @@ import pandas as pd
 
 import analytics
 from classification import etf_tracking_key, theme_cluster
+from config import (
+    BACKTEST_AUTO_EXACT_REFINEMENT,
+    BACKTEST_EXACT_REFINEMENT_CANDIDATES,
+    SCORING_VERSION,
+)
 from model_calibration import build_global_calibration, calibration_details_for_frame
+from performance_cache import BACKTEST_CACHE_VERSION, INDICATOR_CACHE_VERSION
 from report import _diversify_ranked_candidates
 from scanner import TickerInfo, scan_single_from_df
 from signal_lifecycle import finalize_signal_ranking
 
 
 class ModelV19RegressionTests(unittest.TestCase):
+    def test_v19_version_and_refinement_contract(self):
+        self.assertEqual(SCORING_VERSION, "2026-08-08-v19-exact-refinement-cross-asset")
+        self.assertEqual(INDICATOR_CACHE_VERSION, "v5")
+        self.assertEqual(BACKTEST_CACHE_VERSION, "v8")
+        self.assertTrue(BACKTEST_AUTO_EXACT_REFINEMENT)
+        self.assertGreaterEqual(BACKTEST_EXACT_REFINEMENT_CANDIDATES, 50)
+
     def test_etf_tracking_key_ignores_manager_name(self):
         self.assertEqual(etf_tracking_key(name="上证50ETF博时"), "上证50")
         self.assertEqual(etf_tracking_key(name="上证50ETF易方达"), "上证50")
@@ -57,6 +70,17 @@ class ModelV19RegressionTests(unittest.TestCase):
         self.assertEqual(result.loc["S1", "AssetPercentile"], 100.0)
         self.assertEqual(result.loc["E1", "AssetPercentile"], 100.0)
         self.assertGreater(result.loc["S1", "CrossAssetScore"], result.loc["S2", "CrossAssetScore"])
+
+    def test_cross_asset_normalization_does_not_rescue_missing_or_tiny_scores(self):
+        frame = pd.DataFrame([
+            {"Ticker":"ZERO","IsETF":False,"AssetType":"stock","InstitutionalScore":0.0,"FinalScore":0.0,"Score":0.0,"EntrySignal":"BUY_NOW","PassedFilters":True,"QualityApplicable":True,"QualityDataCompleteness":1.0,"QualityGate":True,"ScoreCoverage":1.0,"DataTradingAgeDays":0},
+            {"Ticker":"LOW","IsETF":False,"AssetType":"stock","InstitutionalScore":24.9,"FinalScore":24.9,"Score":24.9,"EntrySignal":"BUY_NOW","PassedFilters":True,"QualityApplicable":True,"QualityDataCompleteness":1.0,"QualityGate":True,"ScoreCoverage":1.0,"DataTradingAgeDays":0},
+            {"Ticker":"OK","IsETF":False,"AssetType":"stock","InstitutionalScore":30.0,"FinalScore":30.0,"Score":30.0,"EntrySignal":"BUY_NOW","PassedFilters":True,"QualityApplicable":True,"QualityDataCompleteness":1.0,"QualityGate":True,"ScoreCoverage":1.0,"DataTradingAgeDays":0},
+        ])
+        result = finalize_signal_ranking(frame).set_index("Ticker")
+        self.assertEqual(result.loc["ZERO", "CrossAssetScore"], 0.0)
+        self.assertEqual(result.loc["LOW", "CrossAssetScore"], 24.9)
+        self.assertEqual(result.loc["LOW", "RankingEligibility"], "观察")
 
     def test_diversity_keeps_one_etf_per_tracking_key(self):
         frame = pd.DataFrame([
