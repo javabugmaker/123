@@ -1,0 +1,48 @@
+name: Model V19 Materialize
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.head_ref == 'agent/model-v19-exact-refinement-cross-asset'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - name: Apply model v19 migration
+        run: |
+          python tools/model_v19_migrate.py
+          python tools/model_v19_postfix.py
+      - name: Compile
+        run: python -m compileall -q .
+      - name: Unit tests
+        env:
+          MPLBACKEND: Agg
+        run: python -m unittest discover -v
+      - name: Materialize validated source
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm tools/model_v19_migrate.py tools/model_v19_postfix.py .github/workflows/model-v19-materialize.yml
+          git add -A
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "refactor: model v19 exact refinement and cross-asset calibration"
+          git push origin HEAD:${{ github.head_ref }}
