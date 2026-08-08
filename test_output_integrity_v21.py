@@ -58,6 +58,7 @@ class OutputIntegrityV21Tests(unittest.TestCase):
             "DataTradingAgeDays": 0,
             "ValueTrapRisk": 0.0,
             "LifecycleStage": "趋势确认",
+            "SignalRecencyDays": 1,
         }
         blocked = finalize_signal_ranking(
             pd.DataFrame([{**base, "UniverseEligible": False}])

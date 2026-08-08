@@ -861,9 +861,70 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         "价值陷阱风险限制等级"
     )
 
+    # Final execution eligibility must agree with the research tier.  The
+    # technical gate above answers "is the signal executable?"; the tier gate
+    # answers "is the evidence strong enough to call it a recommendation?".
+    initially_ready = result["DecisionState"].eq("READY")
+    strong_ready = initially_ready & tier.eq("A级机构启动")
+    cautious_ready = (
+        initially_ready
+        & tier.eq("B级观察")
+        & signal.eq("BREAKOUT_CONFIRM")
+        & breakout_confirmation_ok
+    )
+    tier_demoted = initially_ready & ~(strong_ready | cautious_ready)
+
+    result.loc[cautious_ready, "DecisionState"] = "CAUTIOUS"
+    result.loc[tier_demoted, "DecisionState"] = "OBSERVE"
+    result["RankingEligibility"] = result["DecisionState"].map(
+        {
+            "READY": "推荐",
+            "CAUTIOUS": "谨慎候选",
+            "OBSERVE": "观察",
+            "BLOCKED": "风险过滤",
+        }
+    ).fillna("观察")
+    result["TradeReadiness"] = result["RankingEligibility"]
+    result.loc[cautious_ready, "TradeReadinessReason"] = (
+        "B级观察但量价资金突破确认，列为谨慎候选"
+    )
+    result.loc[tier_demoted, "TradeReadinessReason"] = (
+        "研究等级未达到A级执行门槛，转为观察"
+    )
+    result["DecisionReason"] = result["TradeReadinessReason"]
+    result.loc[cautious_ready, "OperationAdvice"] = (
+        "B级突破确认，仅列谨慎候选；控制仓位并等待进一步确认。"
+    )
+    result.loc[tier_demoted, "OperationAdvice"] = (
+        "技术买点存在，但研究等级不足以列为强推荐，继续观察。"
+    )
+
+    # RankingScore was calculated with READY=1.0 earlier. Reconcile the
+    # score with the final tier-aware state without recomputing independent
+    # technical components.
+    ranking_score_now = _number(result["RankingScore"], 0.0)
+    result.loc[cautious_ready, "RankingScore"] = (
+        ranking_score_now.loc[cautious_ready] * 0.94
+    ).round(4)
+    result.loc[tier_demoted, "RankingScore"] = (
+        ranking_score_now.loc[tier_demoted] * 0.88
+    ).round(4)
+    tier_penalty_reason = _text_series(result, "RankingPenaltyReason", "")
+    tier_penalty_reason = _append_reason(
+        tier_penalty_reason, cautious_ready, "B级仅列谨慎候选"
+    )
+    tier_penalty_reason = _append_reason(
+        tier_penalty_reason, tier_demoted, "研究等级未达A级执行门槛"
+    )
+    result["RankingPenaltyReason"] = tier_penalty_reason
+
     rank_reason = pd.Series("等待趋势与量能确认", index=result.index)
     rank_reason.loc[signal.eq("BUY_NOW")] = "回踩结构与趋势满足买点"
     rank_reason.loc[signal.eq("BREAKOUT_CONFIRM")] = "量价与资金确认突破"
+    rank_reason.loc[cautious_ready] = "B级量价资金突破确认，谨慎候选"
+    rank_reason.loc[tier_demoted & ~hard_filter] = (
+        "研究等级未达到A级执行门槛，转为观察"
+    )
     rank_reason.loc[
         signal.isin({"PRICE_BREAKOUT", "WAIT_VOLUME_CONFIRM"})
     ] = "价格突破，等待量能确认"

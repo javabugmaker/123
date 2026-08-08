@@ -25,6 +25,7 @@ _core.DISPLAY_COLUMNS = (
     "OverallRank",
     "Ticker",
     "Name",
+    "AssetType",
     "Sector",
     "Industry",
     "Close",
@@ -38,12 +39,7 @@ _core.DISPLAY_COLUMNS = (
     "InstitutionalScore",
     "FinalScore",
     "QualityGate",
-    "QualityDataAvailable",
-    "QualityDataCompleteness",
-    "BacktestSamples",
     "BacktestConfidenceTier",
-    "ValueTrapRisk",
-    "ChaseRiskScore",
     "PassedFilters",
     "TradeReadinessReason",
     "DataAsOf",
@@ -194,6 +190,36 @@ def _configure_filter_box(widget, variable, default: str, values: list[str], ena
 def _build_ui_v16(self) -> None:
     _original_build_ui(self)
 
+    # Keep the toolbar centered on actual decisions. Remove legacy side
+    # reports that duplicate information already available in row details.
+    actions = self.progress.master
+    for child in list(actions.winfo_children()):
+        try:
+            label = str(child.cget("text"))
+        except Exception:
+            continue
+        if label in {"风险榜", "市场概览", "连续信号"}:
+            child.destroy()
+        elif label == "生成前50名":
+            child.configure(
+                text="综合榜", command=lambda: self.load_csv("Top50Mixed.csv")
+            )
+        elif label == "交易就绪":
+            child.configure(text="强推荐")
+
+    _core.ttk.Button(
+        actions,
+        text="股票榜",
+        style="Quiet.TButton",
+        command=lambda: self.load_csv("Top50Stocks.csv"),
+    ).pack(side=_core.tk.LEFT, padx=(0, 6))
+    _core.ttk.Button(
+        actions,
+        text="ETF榜",
+        style="Quiet.TButton",
+        command=lambda: self.load_csv("Top50ETF.csv"),
+    ).pack(side=_core.tk.LEFT, padx=(0, 6))
+
     # Create the new filter state before ScannerGUI.__init__ loads the initial
     # result file. The legacy quality_filter remains intact but is no longer
     # shown because its derived label is not a reliable screening dimension.
@@ -264,7 +290,7 @@ def _build_ui_v16(self) -> None:
     self.eligibility_box = ttk.Combobox(
         filters,
         textvariable=self.eligibility_filter,
-        values=("全部资格", "推荐", "观察", "风险过滤"),
+        values=("全部资格", "推荐", "谨慎候选", "观察", "风险过滤"),
         state="readonly",
         width=9,
     )
@@ -325,13 +351,6 @@ def _build_ui_v16(self) -> None:
     ttk.Button(filters, text="刷新结果", command=self.refresh_results).grid(
         row=1, column=12, padx=(0, 6), pady=(8, 0), sticky=tk.W
     )
-
-    ttk.Label(
-        filters,
-        textvariable=self.market_overview,
-        style="Status.TLabel",
-        padding=(0, 8, 0, 0),
-    ).grid(row=2, column=0, columnspan=14, sticky=tk.W)
 
 
 def _update_filter_values_v16(self, headers: list[str], rows: list[list[str]]) -> None:

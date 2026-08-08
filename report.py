@@ -627,6 +627,37 @@ def refresh_candidate_exports(
         csv_path,
     )
 
+    # Keep TopN.csv as the compatibility alias while publishing explicit
+    # mixed / stock / ETF research lists so one asset class cannot hide the
+    # other in the GUI.
+    mixed_path = destination / f"Top{top_n_csv}Mixed.csv"
+    _atomic_write_csv(research_pool, mixed_path)
+
+    asset_type = ranked.get(
+        "AssetType", pd.Series("", index=ranked.index)
+    ).fillna("").astype(str).str.strip().str.lower()
+    is_etf_mask = ranked.get(
+        "IsETF", pd.Series(False, index=ranked.index)
+    ).map(_truthy) | asset_type.eq("etf")
+
+    stock_path = destination / f"Top{top_n_csv}Stocks.csv"
+    stock_pool = _diversify_ranked_candidates(
+        ranked.loc[~is_etf_mask], top_n_csv
+    )
+    _atomic_write_csv(stock_pool, stock_path)
+
+    etf_path = destination / f"Top{top_n_csv}ETF.csv"
+    etf_pool = _diversify_ranked_candidates(
+        ranked.loc[is_etf_mask], top_n_csv
+    )
+    _atomic_write_csv(etf_pool, etf_path)
+    logger.info(
+        "Exported split research lists: mixed=%d, stocks=%d, ETF=%d.",
+        len(research_pool),
+        len(stock_pool),
+        len(etf_pool),
+    )
+
     trade_ready_path = destination / f"Top{top_n_csv}TradeReady.csv"
     trade_ready = ranked.loc[
         ranked.get(
@@ -768,6 +799,9 @@ def export_all(
         full_csv = export_full_csv(results)
         full_parquet_path = export_full_parquet(results)
         for name in (
+            f"Top{top_n_csv}Mixed.csv",
+            f"Top{top_n_csv}Stocks.csv",
+            f"Top{top_n_csv}ETF.csv",
             f"Top{top_n_csv}Opportunity.csv",
             f"Top{top_n_csv}BreakoutCandidates.csv",
             f"Top{top_n_csv}EntryCandidates.csv",

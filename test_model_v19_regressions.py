@@ -21,8 +21,8 @@ from signal_lifecycle import finalize_signal_ranking
 
 
 class ModelV19RegressionTests(unittest.TestCase):
-    def test_v23_version_and_refinement_contract(self):
-        self.assertEqual(SCORING_VERSION, "2026-08-09-v23-research-integrity")
+    def test_v24_version_and_refinement_contract(self):
+        self.assertEqual(SCORING_VERSION, "2026-08-09-v24-decision-integrity")
         self.assertEqual(INDICATOR_CACHE_VERSION, "v5")
         self.assertEqual(BACKTEST_CACHE_VERSION, "v8")
         self.assertTrue(BACKTEST_AUTO_EXACT_REFINEMENT)

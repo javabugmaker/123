@@ -37,12 +37,13 @@ class RankingIntegrityV19Tests(unittest.TestCase):
             "DataAgeDays": 0,
             "DataTradingAgeDays": 0,
             "ValueTrapRisk": 0.0,
+            "SignalRecencyDays": 1,
         }
 
     def test_failed_quality_block_cannot_outrank_clean_ready_candidate(self):
         rows = [
             self._row("FAILED_TOP", 50.0, failed=True, quality_gate=False),
-            self._row("READY", 48.0),
+            self._row("READY", 52.0),
             self._row("S3", 46.0, signal="WAIT_PULLBACK"),
             self._row("S4", 44.0, signal="WAIT_PULLBACK"),
             self._row("S5", 42.0, signal="WAIT_PULLBACK"),
