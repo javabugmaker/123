@@ -11,6 +11,8 @@ import signal_lifecycle
 from config import SCORING_VERSION
 
 
+# These regressions are the public v24 contract: research tier and execution
+# status must agree, while stock/ETF research lists remain independently usable.
 class DecisionGuiV24Tests(TestCase):
     @staticmethod
     def _decision_frame() -> pd.DataFrame:
