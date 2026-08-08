@@ -30,8 +30,11 @@ jobs:
         run: |
           git fetch origin agent/research-integrity-v23
           git show origin/agent/research-integrity-v23:research_integrity_v23_migration.py > research_integrity_v23_migration.py
+          git show origin/agent/research-integrity-v23:research_integrity_v23_contract_patch.py > research_integrity_v23_contract_patch.py
       - name: Apply deterministic migration
-        run: python research_integrity_v23_migration.py
+        run: |
+          python research_integrity_v23_migration.py
+          python research_integrity_v23_contract_patch.py
       - name: Install migrated dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
       - name: Validate and publish verified implementation
