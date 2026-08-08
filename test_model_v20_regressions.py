@@ -10,14 +10,25 @@ from pandas.errors import PerformanceWarning
 
 import analytics
 import gui
-from config import ETF_MIN_PRICE, MIN_ETF_AVG_AMOUNT_60D, MIN_STOCK_AVG_AMOUNT_60D
+from config import (
+    ETF_MIN_PRICE,
+    MIN_ETF_AVG_AMOUNT_60D,
+    MIN_STOCK_AVG_AMOUNT_60D,
+    SCORING_VERSION,
+)
 from filters import filter_min_price, filter_min_volume
 from model_calibration import build_global_calibration
+from performance_cache import BACKTEST_CACHE_VERSION, INDICATOR_CACHE_VERSION
 from scanner import ScanResult
 from signal_lifecycle import finalize_signal_ranking
 
 
 class ModelV20RegressionTests(unittest.TestCase):
+    def test_v20_version_and_cache_contract(self):
+        self.assertEqual(SCORING_VERSION, "2026-08-08-v20-consistency-performance")
+        self.assertEqual(INDICATOR_CACHE_VERSION, "v5")
+        self.assertEqual(BACKTEST_CACHE_VERSION, "v9")
+
     def test_etf_uses_etf_price_floor_while_stock_keeps_stock_floor(self):
         frame = pd.DataFrame({"Close": [0.53]})
         self.assertGreater(0.53, ETF_MIN_PRICE)
