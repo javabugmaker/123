@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 ETF_THEME_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("医药医疗", ("创新药", "医疗", "医药", "生物科技", "生物医药", "医疗器械", "医疗设备")),
+    ("医药医疗", ("创新药", "医疗", "医药", "生物科技", "生物医药", "医疗器械", "医疗设备", "药ETF", "疫苗")),
     ("半导体芯片", ("半导体", "芯片", "集成电路")),
     ("人工智能", ("人工智能", "AI", "算力", "数据中心")),
     ("机器人", ("机器人", "人形机器人")),
@@ -16,10 +16,12 @@ ETF_THEME_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("新能源", ("新能源", "光伏", "风电", "储能", "电池")),
     ("券商", ("证券", "券商")),
     ("军工", ("军工", "国防")),
-    ("消费", ("消费", "白酒", "食品饮料")),
+    ("消费", ("消费", "白酒", "食品饮料", "酒ETF")),
     ("传媒游戏", ("传媒", "游戏")),
-    ("港股科技", ("恒生科技", "港股科技", "互联网")),
+    ("港股科技", ("恒生科技", "港股科技", "港股通科技", "互联网")),
     ("红利", ("红利", "高股息")),
+    ("现金流因子", ("自由现金流", "全指现金流", "中证现金流", "现金流ETF")),
+    ("货币现金管理", ("快钱", "天天金", "添益", "货币ETF", "现金管理")),
 )
 
 ETF_TRACKING_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -45,21 +47,25 @@ ETF_TRACKING_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 THEME_CLUSTER_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("医药医疗", ("化学制药", "中药", "生物制品", "医疗器械", "医疗服务", "医药", "医疗", "创新药", "生物科技")),
+    ("医药医疗", ("化学制药", "中药", "生物制品", "医疗器械", "医疗服务", "医药", "医疗", "创新药", "生物科技", "疫苗", "药ETF")),
     ("半导体电子", ("半导体", "芯片", "集成电路", "消费电子", "电子元件", "电子")),
     ("AI算力", ("人工智能", "算力", "数据中心", "服务器", "光模块")),
     ("新能源", ("新能源", "光伏", "风电", "储能", "电池", "锂电")),
     ("资源周期", ("有色", "铜", "铝", "黄金", "煤炭", "钢铁", "化工", "稀土", "锂")),
     ("金融", ("证券", "券商", "银行", "保险")),
-    ("大消费", ("消费", "白酒", "食品饮料", "家电", "零售", "旅游")),
+    ("大消费", ("消费", "白酒", "食品饮料", "家电", "零售", "旅游", "酒ETF")),
     ("军工高端制造", ("军工", "国防", "航空", "航天", "机器人", "机械设备")),
-    ("港股科技", ("恒生科技", "港股科技", "互联网")),
+    ("港股科技", ("恒生科技", "港股科技", "港股通科技", "互联网")),
     ("宽基指数", ("上证50", "沪深300", "中证500", "中证1000", "中证2000", "科创50", "科创100", "创业板")),
+    ("现金流因子", ("自由现金流", "全指现金流", "中证现金流", "现金流ETF")),
+    ("货币现金管理", ("快钱", "天天金", "添益", "货币ETF", "现金管理")),
 )
 
 _FUND_MANAGER_TOKENS = (
     "易方达", "华夏", "广发", "博时", "天弘", "南方", "嘉实", "富国", "国泰", "华泰柏瑞",
     "汇添富", "招商", "鹏华", "工银瑞信", "银华", "景顺长城", "摩根", "东财", "华安", "建信",
+    "华宝", "万家", "海富通", "大成", "平安", "华富", "中欧", "永赢", "国联安", "中银",
+    "融通", "前海开源", "长城", "长信", "交银施罗德", "诺安", "中金", "申万菱信",
 )
 
 
@@ -75,7 +81,32 @@ def safe_text(value: Any) -> str:
 
 
 def _classification_text(*values: Any) -> str:
-    return " ".join(value for value in (safe_text(item) for item in values) if value).upper()
+    unique: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        value = safe_text(item)
+        if not value:
+            continue
+        normalized = value.upper()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(value)
+    return " ".join(unique).upper()
+
+
+def _clean_etf_fallback(value: Any) -> str:
+    """Return one canonical fallback label without manager/suffix duplication."""
+    text = safe_text(value).upper()
+    if not text:
+        return ""
+    marker_positions = [position for marker in ("ETF", "LOF") if (position := text.find(marker)) >= 0]
+    if marker_positions:
+        text = text[: min(marker_positions)]
+    for token in _FUND_MANAGER_TOKENS:
+        text = text.replace(token.upper(), "")
+    text = re.sub(r"ETF|LOF|基金|指数|联接|交易型开放式|发起式", "", text, flags=re.IGNORECASE)
+    return re.sub(r"[^0-9A-Z\u4e00-\u9fff]+", "", text).strip()
 
 
 def etf_tracking_key(
@@ -90,12 +121,19 @@ def etf_tracking_key(
     for key, keywords in ETF_TRACKING_PATTERNS:
         if any(str(keyword).upper() in text for keyword in keywords):
             return key
-    fallback = text
-    for token in _FUND_MANAGER_TOKENS:
-        fallback = fallback.replace(token.upper(), "")
-    fallback = re.sub(r"ETF|LOF|基金|指数|联接|交易型开放式|发起式", "", fallback, flags=re.IGNORECASE)
-    fallback = re.sub(r"[^0-9A-Z\u4e00-\u9fff]+", "", fallback).strip()
-    return fallback[:24] or safe_text(ticker).upper()
+
+    # Prefer the product name before ETF/LOF. Chinese fund names commonly place
+    # the manager after that marker (for example ``港股通科技ETF万家``), and using
+    # name+sector together used to create values such as ``上海国企上海国企``.
+    name_fallback = _clean_etf_fallback(name)
+    if name_fallback:
+        return name_fallback[:24]
+
+    for candidate in (industry, sector):
+        fallback = _clean_etf_fallback(candidate)
+        if fallback:
+            return fallback[:24]
+    return safe_text(ticker).upper()
 
 
 def etf_theme_key(
@@ -136,7 +174,7 @@ def theme_cluster(
 ) -> str:
     text = _classification_text(name, industry, sector, classification)
     tracking = etf_tracking_key(name=name, industry=industry, sector=sector, ticker=ticker) if is_etf else ""
-    if tracking:
+    if tracking and tracking.upper() not in text:
         text = f"{text} {tracking}".strip()
     for cluster, keywords in THEME_CLUSTER_GROUPS:
         if any(str(keyword).upper() in text for keyword in keywords):
