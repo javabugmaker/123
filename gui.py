@@ -38,16 +38,10 @@ _core.DISPLAY_COLUMNS = (
     "InstitutionalScore",
     "FinalScore",
     "QualityGate",
-    "QualityDataAvailable",
-    "QualityDataCompleteness",
-    "BacktestSamples",
     "BacktestConfidenceTier",
     "ValueTrapRisk",
-    "ChaseRiskScore",
-    "PassedFilters",
-    "TradeReadinessReason",
     "DataAsOf",
-    "RankingReason",
+    "TradeReadinessReason",
 )
 
 _core.COLUMN_NAMES.update(
@@ -83,6 +77,24 @@ _core.COLUMN_NAMES.update(
         "GlobalCalibrationScore": "全局校准分",
         "GlobalCalibrationConfidence": "全局校准可信度",
         "GlobalCalibrationLevel": "全局校准层级",
+        "GlobalCalibrationSamples": "全局校准样本",
+        "GlobalCalibrationEffectiveSamples": "全局有效样本",
+        "GlobalCalibrationMeanExcess20D": "校准20日超额",
+        "GlobalCalibrationWinRate20D": "校准20日胜率",
+        "GlobalCalibrationStartDate": "校准起始日",
+        "GlobalCalibrationEndDate": "校准结束日",
+        "UniverseEligible": "基础准入",
+        "SignalConfirmed": "信号确认",
+        "FailedFilterCount": "未通过筛选数",
+        "FailedFilterNames": "未通过筛选",
+        "ATR50": "ATR50",
+        "ATRExpansion": "ATR扩张比",
+        "ATRExpansionSource": "ATR来源",
+        "BacktestStage": "回测阶段",
+        "ModelVersion": "模型版本",
+        "IndicatorCacheVersion": "指标缓存版本",
+        "BacktestCacheVersion": "回测缓存版本",
+        "PreBacktestInstitutionalScore": "回测前机构分",
     }
 )
 

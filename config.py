@@ -33,10 +33,14 @@ for _d in (CACHE_DIR, OUTPUT_DIR, LOG_DIR):
 # ======================================================================
 # Ticker & Market Filters
 # ======================================================================
-MIN_PRICE: float = 5.0  # Minimum close price (CNY) — ignore penny stocks
+MIN_STOCK_PRICE: float = 5.0  # A-share floor; not applicable to ETF unit prices
+MIN_PRICE: float = MIN_STOCK_PRICE  # compatibility alias
+ETF_MIN_PRICE: float = 0.10  # ETF units commonly trade below CNY 5 without implying penny-stock risk
 MAX_PRICE: float = 800.0  # Maximum close price for A-shares
-MIN_VOLUME: int = 200_000  # Minimum daily volume (shares)
-MIN_MARKET_CAP: float = 1e8  # Minimum market cap (CNY) — ignore micro-caps
+MIN_VOLUME: int = 200_000  # Compatibility fallback when Amount is unavailable
+MIN_STOCK_AVG_AMOUNT_60D: float = 1_000_000.0  # CNY average daily turnover
+MIN_ETF_AVG_AMOUNT_60D: float = 500_000.0  # CNY; ETF liquidity is evaluated independently
+MIN_MARKET_CAP: float = 1e8  # Minimum stock market cap (CNY); ETFs skip this gate
 EXCLUDED_SECURITY_KEYWORDS: tuple[str, ...] = (
     "债",
     "货币",
@@ -178,7 +182,7 @@ SECTOR_CONFIRMATION_RELATIVE_WEIGHT: Final[float] = 0.55
 BACKTEST_AUTO_EXACT_REFINEMENT: Final[bool] = True
 BACKTEST_EXACT_REFINEMENT_CANDIDATES: Final[int] = 150
 
-SCORING_VERSION: str = "2026-08-08-v19-exact-refinement-cross-asset"
+SCORING_VERSION: str = "2026-08-08-v20-consistency-performance"
 
 # Per-ticker historical evidence is only allowed to influence the composite
 # rank after more than a couple of independent observations.  This prevents a

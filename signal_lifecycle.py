@@ -536,6 +536,8 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     # Missing legacy columns are treated as compatible; explicit False/FAILED
     # values from current scans are authoritative.
     passed_filters = _bool_series(result, "PassedFilters", True)
+    universe_eligible = _bool_series(result, "UniverseEligible", True)
+    signal_confirmed = _bool_series(result, "SignalConfirmed", passed_filters)
     signal_status = _text_series(result, "SignalStatus", "").str.upper()
     lifecycle_failed = signal_status.eq("FAILED")
     hard_penalty.loc[avoid] = np.minimum(
@@ -610,8 +612,9 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     )
     result["RankingPenaltyReason"] = ranking_penalty_reason
 
-    filter_override = (
-        ~passed_filters
+    signal_override = (
+        universe_eligible
+        & ~signal_confirmed
         & signal.eq("BREAKOUT_CONFIRM")
         & _bool_series(result, "BreakoutVolumeConfirmed", False)
         & _bool_series(result, "BreakoutFlowConfirmed", False)
@@ -619,8 +622,13 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     )
     ranking_penalty_reason = _append_reason(
         ranking_penalty_reason,
-        filter_override,
-        "基础筛选未全通过，但量价资金突破满足严格覆盖条件",
+        ~universe_eligible,
+        "基础准入未通过，不允许进入交易就绪组",
+    )
+    ranking_penalty_reason = _append_reason(
+        ranking_penalty_reason,
+        signal_override,
+        "基础准入通过；量价资金突破覆盖普通信号确认不足",
     )
     result["RankingPenaltyReason"] = ranking_penalty_reason
 
@@ -634,7 +642,8 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     trade_ready = (
         signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
         & breakout_confirmation_ok
-        & (passed_filters | filter_override)
+        & universe_eligible
+        & (signal_confirmed | signal_override)
         & ~lifecycle_failed
         & ~stage_risk
         & ~trap_observe
@@ -669,8 +678,11 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     readiness_reason.loc[hard_filter] = "硬风险过滤，不纳入交易就绪组"
     readiness_reason.loc[lifecycle_failed & ~hard_filter] = "历史信号生命周期已失败，转为观察"
     readiness_reason.loc[
-        ~passed_filters & ~filter_override & ~hard_filter & ~lifecycle_failed
-    ] = "基础筛选未全通过，转为观察"
+        ~universe_eligible & ~hard_filter & ~lifecycle_failed
+    ] = "基础准入未通过，转为观察"
+    readiness_reason.loc[
+        universe_eligible & ~signal_confirmed & ~signal_override & ~hard_filter & ~lifecycle_failed
+    ] = "基础准入通过，但吸筹/结构信号确认不足，转为观察"
     readiness_reason.loc[active_signal & data_risk & ~hard_filter] = (
         "技术数据覆盖不足，转为观察"
     )
@@ -685,8 +697,9 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         & ~quality_action_block
         & ~trap_observe
         & ~lifecycle_failed
-        & (passed_filters | filter_override)
-    ] = "买点、质量、数据与综合评分均满足执行条件"
+        & universe_eligible
+        & (signal_confirmed | signal_override)
+    ] = "买点、基础准入、信号、质量、数据与综合评分均满足执行条件"
     readiness_reason.loc[quality_action_block & ~hard_filter] = (
         "质量门槛未通过或数据不足，转为观察"
     )
@@ -835,9 +848,12 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     rank_reason.loc[stale_data] = "行情数据已过期，风险过滤"
     rank_reason.loc[lifecycle_failed & ~stale_data] = "历史信号生命周期失败，转为观察"
     rank_reason.loc[
-        ~passed_filters & ~filter_override & ~lifecycle_failed & ~stale_data
-    ] = "基础筛选未全通过，转为观察"
-    rank_reason.loc[filter_override] = "量价资金确认突破，严格覆盖基础筛选缺口"
+        ~universe_eligible & ~lifecycle_failed & ~stale_data
+    ] = "基础准入未通过，转为观察"
+    rank_reason.loc[
+        universe_eligible & ~signal_confirmed & ~signal_override & ~lifecycle_failed & ~stale_data
+    ] = "基础准入通过，但信号确认不足，转为观察"
+    rank_reason.loc[signal_override] = "基础准入通过；量价资金确认突破覆盖普通信号确认不足"
     rank_reason.loc[active_signal & data_risk & ~hard_filter] = (
         "技术数据覆盖不足，转为观察"
     )

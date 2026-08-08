@@ -27,9 +27,12 @@ from config import (
     CMF_THRESHOLD,
     CONSOLIDATION_DAYS,
     CONSOLIDATION_MAX_RANGE_PCT,
+    ETF_MIN_PRICE,
     MAX_PRICE,
+    MIN_ETF_AVG_AMOUNT_60D,
     MIN_MARKET_CAP,
-    MIN_PRICE,
+    MIN_STOCK_AVG_AMOUNT_60D,
+    MIN_STOCK_PRICE,
     MIN_VOLUME,
     OBV_DIVERGENCE_LOOKBACK,
     VOLUME_ACCUM_MIN_DAYS,
@@ -58,33 +61,55 @@ class FilterResult:
 # ======================================================================
 
 
-def filter_min_price(df: pd.DataFrame) -> FilterResult:
-    """Reject if latest close is outside the configured price range."""
+def filter_min_price(df: pd.DataFrame, *, is_etf: bool = False) -> FilterResult:
+    """Reject invalid prices using asset-specific floors.
+
+    The CNY 5 stock floor is a micro/penny-stock heuristic and must not be
+    applied to ETF unit NAV prices, which commonly trade below CNY 5.
+    """
     close = pd.to_numeric(df["Close"], errors="coerce")
     if close.empty or pd.isna(close.iloc[-1]) or close.iloc[-1] <= 0:
         return FilterResult(passed=False, reason="最新收盘价无效")
     close_value = float(close.iloc[-1])
-    passed = MIN_PRICE <= close_value <= MAX_PRICE
+    minimum = float(ETF_MIN_PRICE if is_etf else MIN_STOCK_PRICE)
+    maximum = float(MAX_PRICE)
+    passed = minimum <= close_value <= maximum
+    asset = "ETF" if is_etf else "股票"
     return FilterResult(
         passed=passed,
-        reason=f"收盘价 {close_value:.2f} 元，要求范围 {MIN_PRICE:.2f}-{MAX_PRICE:.2f} 元",
-        details={"close": close_value},
+        reason=f"{asset}收盘价 {close_value:.2f} 元，要求范围 {minimum:.2f}-{maximum:.2f} 元",
+        details={"close": close_value, "minimum": minimum, "asset_type": "etf" if is_etf else "stock"},
     )
 
 
-def filter_min_volume(df: pd.DataFrame) -> FilterResult:
-    """Reject if average daily volume (60d) is below MIN_VOLUME."""
-    volume = pd.to_numeric(df["Volume"], errors="coerce").replace(
-        [np.inf, -np.inf], np.nan
-    )
+def filter_min_volume(df: pd.DataFrame, *, is_etf: bool = False) -> FilterResult:
+    """Liquidity gate: prefer 60-day average turnover Amount over share volume.
+
+    Share counts are not comparable across a CNY 0.5 ETF and a CNY 100 stock.
+    TickFlow normally provides Amount; legacy/synthetic frames fall back to the
+    historical MIN_VOLUME contract.
+    """
+    if "Amount" in df.columns:
+        amount = pd.to_numeric(df["Amount"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        avg_amount = amount.rolling(60, min_periods=30).mean().iloc[-1]
+        if np.isfinite(avg_amount):
+            threshold = float(MIN_ETF_AVG_AMOUNT_60D if is_etf else MIN_STOCK_AVG_AMOUNT_60D)
+            passed = float(avg_amount) >= threshold
+            return FilterResult(
+                passed=passed,
+                reason=f"60日平均成交额 {avg_amount:,.0f} {'>=' if passed else '<'} {threshold:,.0f} 元",
+                details={"avg_amount_60": float(avg_amount), "liquidity_metric": "amount", "threshold": threshold},
+            )
+
+    volume = pd.to_numeric(df["Volume"], errors="coerce").replace([np.inf, -np.inf], np.nan)
     vol_avg = volume.rolling(60, min_periods=30).mean().iloc[-1]
     if not np.isfinite(vol_avg):
-        return FilterResult(passed=False, reason="成交量数据不足或无效")
+        return FilterResult(passed=False, reason="成交额/成交量数据不足或无效")
     passed = float(vol_avg) >= MIN_VOLUME
     return FilterResult(
         passed=passed,
-        reason=f"AvgVol {vol_avg:,.0f} {'>=' if passed else '<'} MIN_VOLUME {MIN_VOLUME:,}",
-        details={"avg_volume_60": float(vol_avg)},
+        reason=f"AvgVol {vol_avg:,.0f} {'>=' if passed else '<'} MIN_VOLUME {MIN_VOLUME:,}（Amount缺失回退）",
+        details={"avg_volume_60": float(vol_avg), "liquidity_metric": "volume_fallback"},
     )
 
 
@@ -589,6 +614,7 @@ def run_all_filters(
     df: pd.DataFrame,
     market_cap: float | None = None,
     require_market_cap: bool = True,
+    is_etf: bool = False,
 ) -> AllFilterResults:
     """
     Run every filter against *df*.
@@ -596,8 +622,8 @@ def run_all_filters(
     Returns an AllFilterResults struct — call .all_passed() for the go/no-go.
     """
     return AllFilterResults(
-        min_price=filter_min_price(df),
-        min_volume=filter_min_volume(df),
+        min_price=filter_min_price(df, is_etf=is_etf),
+        min_volume=filter_min_volume(df, is_etf=is_etf),
         min_market_cap=filter_min_market_cap(market_cap, required=require_market_cap),
         sufficient_history=filter_sufficient_history(df),
         bear_market=filter_bear_market(df),

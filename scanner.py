@@ -438,6 +438,7 @@ def scan_single_from_df(
             df,
             market_cap=market_cap,
             require_market_cap=not ticker_info.is_etf,
+            is_etf=ticker_info.is_etf,
         )
         passed = filter_results.all_passed()
         filter_map = {

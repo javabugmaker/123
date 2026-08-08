@@ -214,6 +214,26 @@ def _finite_float(value: Any, default: float = np.nan) -> float:
     return parsed if np.isfinite(parsed) else default
 
 
+def _latest_atr_from_ohlc(frame: pd.DataFrame, period: int) -> float:
+    if frame is None or len(frame) < period or not {"High", "Low", "Close"}.issubset(frame.columns):
+        return np.nan
+    high = pd.to_numeric(frame["High"], errors="coerce")
+    low = pd.to_numeric(frame["Low"], errors="coerce")
+    close = pd.to_numeric(frame["Close"], errors="coerce")
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        [high - low, (high - previous_close).abs(), (low - previous_close).abs()], axis=1
+    ).max(axis=1)
+    return _finite_float(true_range.rolling(period, min_periods=period).mean().iloc[-1])
+
+
+def _non_exact_tickers(frame: pd.DataFrame) -> list[str]:
+    if frame is None or frame.empty or "Ticker" not in frame:
+        return []
+    mode = frame.get("BacktestMode", pd.Series("", index=frame.index)).fillna("").astype(str).str.upper()
+    return frame.loc[~mode.eq("EXACT"), "Ticker"].dropna().astype(str).drop_duplicates().tolist()
+
+
 def _quality_adjusted_score(
     score: float,
     quality_score: Any,
@@ -475,11 +495,27 @@ def _enrich_one_result(
     result.recent_return_20d = _safe_return(enriched["Close"], 20)
     atr14 = _finite_float(enriched["ATR14"].iloc[-1]) if "ATR14" in enriched else np.nan
     atr50 = _finite_float(enriched["ATR50"].iloc[-1]) if "ATR50" in enriched else np.nan
+    source = "indicator"
+    if not np.isfinite(atr14):
+        atr14 = _finite_float(getattr(result, "atr14", np.nan))
+        source = "scanner" if np.isfinite(atr14) else source
+    if not np.isfinite(atr50):
+        atr50 = _finite_float(getattr(result, "atr50", np.nan))
+        source = "scanner" if np.isfinite(atr50) else source
+    if not np.isfinite(atr14):
+        atr14 = _latest_atr_from_ohlc(enriched, 14)
+        source = "ohlc_fallback"
+    if not np.isfinite(atr50):
+        atr50 = _latest_atr_from_ohlc(enriched, 50)
+        source = "ohlc_fallback"
+    result.atr14 = atr14
+    result.atr50 = atr50
     result.atr_expansion = (
         atr14 / atr50
         if np.isfinite(atr14) and np.isfinite(atr50) and atr50 > 0
-        else np.nan
+        else _finite_float(getattr(result, "atr_expansion", np.nan))
     )
+    result.atr_expansion_source = source if np.isfinite(result.atr_expansion) else "unavailable"
     relative = _safe_return(enriched["Close"], 60)
     result.filter_details["market_regime"] = regime
     result.filter_details["market_regime_reason"] = regime_reason
@@ -1733,7 +1769,7 @@ def _expand_legacy_backtest_metrics(
     )
 
 
-def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
+def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50, _reconcile_depth: int = 0) -> None:
     path = OUTPUT_DIR / "AllResults.csv"
     if not path.exists() or not summary.by_ticker:
         return
@@ -1788,10 +1824,15 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
             # Keep full-market peer calibration; exact Top candidates only replace
             # per-ticker evidence and must not redefine the global peer prior.
 
-    prior_institutional_score = pd.to_numeric(
-        frame.get("InstitutionalScore", pd.Series(np.nan, index=frame.index)),
-        errors="coerce",
-    )
+    baseline_column = "PreBacktestInstitutionalScore"
+    if baseline_column in frame:
+        prior_institutional_score = pd.to_numeric(frame[baseline_column], errors="coerce")
+    else:
+        prior_institutional_score = pd.to_numeric(
+            frame.get("InstitutionalScore", pd.Series(np.nan, index=frame.index)),
+            errors="coerce",
+        )
+        frame[baseline_column] = prior_institutional_score
     metric_columns = {
         "samples": "BacktestSamples",
         "effective_samples": "BacktestEffectiveSamples",
@@ -1905,14 +1946,16 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         how="left",
         validate="one_to_one",
     )
-    for column in (
-        "BacktestSamples",
-        "BacktestEffectiveSamples",
-        "BacktestScore",
-        *metric_columns.values(),
-    ):
-        if column not in frame:
-            frame[column] = np.nan
+    required_metric_columns = list(dict.fromkeys((
+        "BacktestSamples", "BacktestEffectiveSamples", "BacktestScore", *metric_columns.values()
+    )))
+    missing_metric_columns = [column for column in required_metric_columns if column not in frame]
+    if missing_metric_columns:
+        frame = pd.concat(
+            [frame, pd.DataFrame(np.nan, index=frame.index, columns=missing_metric_columns)], axis=1
+        )
+    # Consolidate pandas blocks once before the derived ranking columns are added.
+    frame = frame.copy()
 
     observed = pd.to_numeric(frame["BacktestSamples"], errors="coerce").fillna(0.0)
     frame["BacktestMode"] = (
@@ -1923,9 +1966,14 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         frame.get("BacktestEngine", pd.Series("", index=frame.index))
         .fillna("").astype(str).str.strip().replace("", str(summary.engine))
     )
-    frame["BacktestCacheHit"] = frame.get(
+    cache_hit_raw = frame.get(
         "BacktestCacheHit", pd.Series(False, index=frame.index)
-    ).fillna(False).astype(bool)
+    )
+    if not isinstance(cache_hit_raw, pd.Series):
+        cache_hit_raw = pd.Series(cache_hit_raw, index=frame.index)
+    frame["BacktestCacheHit"] = (
+        cache_hit_raw.astype(str).str.strip().str.lower().isin({"true", "1", "yes", "y", "是"})
+    )
     frame["BacktestStatus"] = np.where(observed.gt(0.0), "SAMPLES", "NO_SIGNAL_SAMPLES")
     if "BacktestStage" not in frame:
         frame["BacktestStage"] = np.where(
@@ -1991,15 +2039,21 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     )
     peer_score = calibration_details["score"]
     peer_confidence = calibration_details["confidence"]
-    frame["GlobalCalibrationScore"] = peer_score.round(4)
-    frame["GlobalCalibrationConfidence"] = peer_confidence.round(4)
-    frame["GlobalCalibrationLevel"] = calibration_details["level"].astype(str)
-    frame["GlobalCalibrationSamples"] = calibration_details["samples"].astype(int)
-    frame["GlobalCalibrationEffectiveSamples"] = calibration_details["effective_samples"].round(4)
-    frame["GlobalCalibrationMeanExcess20D"] = calibration_details["mean_net_excess20"].round(4)
-    frame["GlobalCalibrationWinRate20D"] = calibration_details["win_rate_net_excess20"].round(4)
-    frame["GlobalCalibrationStartDate"] = calibration_details["start_date"].astype(str)
-    frame["GlobalCalibrationEndDate"] = calibration_details["end_date"].astype(str)
+    calibration_columns = pd.DataFrame({
+        "GlobalCalibrationScore": peer_score.round(4),
+        "GlobalCalibrationConfidence": peer_confidence.round(4),
+        "GlobalCalibrationLevel": calibration_details["level"].astype(str),
+        "GlobalCalibrationSamples": calibration_details["samples"].astype(int),
+        "GlobalCalibrationEffectiveSamples": calibration_details["effective_samples"].round(4),
+        "GlobalCalibrationMeanExcess20D": calibration_details["mean_net_excess20"].round(4),
+        "GlobalCalibrationWinRate20D": calibration_details["win_rate_net_excess20"].round(4),
+        "GlobalCalibrationStartDate": calibration_details["start_date"].astype(str),
+        "GlobalCalibrationEndDate": calibration_details["end_date"].astype(str),
+    }, index=frame.index)
+    frame = pd.concat([
+        frame.drop(columns=[column for column in calibration_columns.columns if column in frame], errors="ignore"),
+        calibration_columns,
+    ], axis=1).copy()
     peer_available = peer_confidence.gt(0.0)
     peer_anchor = peer_score.where(peer_available, BACKTEST_NEUTRAL_SCORE)
     frame["BacktestAdjustedScore"] = (
@@ -2167,12 +2221,65 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         prior_institutional_score.notna(), legacy_institutional
     ).round(4)
 
-    frame = finalize_signal_ranking(frame)
+    # One consolidation before lifecycle/ranking avoids pandas block-fragmentation
+    # warnings on the 200+ column production result frame.
+    frame = finalize_signal_ranking(frame.copy())
     frame.to_csv(path, index=False, encoding="utf-8-sig")
     from report import refresh_candidate_exports
 
-    refresh_candidate_exports(frame, top_n_csv=top_n, output_dir=OUTPUT_DIR)
+    top_csv_path, _top_parquet_path, _ranked = refresh_candidate_exports(
+        frame, top_n_csv=top_n, output_dir=OUTPUT_DIR
+    )
     frame.to_parquet(OUTPUT_DIR / "AllResults.parquet", index=False)
+
+    # Diversity and exact re-ranking can pull a previously unrefined ticker into
+    # the final TopN. Reconcile those few rows and rerank until the public TopN
+    # is entirely EXACT (bounded to avoid pathological loops).
+    if BACKTEST_AUTO_EXACT_REFINEMENT and _reconcile_depth < 3 and top_csv_path.exists():
+        try:
+            top_frame = pd.read_csv(top_csv_path, encoding="utf-8-sig")
+        except (OSError, UnicodeError, pd.errors.ParserError):
+            top_frame = pd.DataFrame()
+        reconcile_tickers = _non_exact_tickers(top_frame)
+        if reconcile_tickers:
+            logger.info(
+                "Final Top%d exact reconciliation: %d ticker(s) still not EXACT.",
+                top_n, len(reconcile_tickers),
+            )
+            exact = run_historical_backtest(
+                reconcile_tickers, source="tickflow", objective=summary.objective,
+                benchmark=summary.benchmark, commission=summary.commission,
+                stamp_duty=summary.stamp_duty, slippage=summary.slippage,
+                test_ratio=summary.test_ratio, validation_ratio=summary.validation_ratio,
+                mode="exact",
+            )
+            exact_rows = list(exact.by_ticker or [])
+            top_signal = dict(zip(
+                top_frame.get("Ticker", pd.Series(dtype=str)).astype(str),
+                top_frame.get("EntrySignal", pd.Series("UNKNOWN", index=top_frame.index)).fillna("UNKNOWN").astype(str).str.upper(),
+            ))
+            exact_keys = {(str(row.get("ticker", "")), str(row.get("entry_signal", "")).upper()) for row in exact_rows}
+            for ticker in reconcile_tickers:
+                key = (ticker, top_signal.get(ticker, "UNKNOWN"))
+                if key not in exact_keys:
+                    exact_rows.append({
+                        "ticker": ticker, "entry_signal": key[1], "samples": 0,
+                        "effective_samples": 0.0, "backtest_score": BACKTEST_NEUTRAL_SCORE,
+                        "backtest_mode": "EXACT", "backtest_cache_hit": False,
+                        "backtest_last_evaluated_date": exact.split_dates.get("global_end") or "",
+                        "backtest_engine": exact.engine,
+                    })
+            for row in exact_rows:
+                row["backtest_mode"] = "EXACT"
+                row["backtest_stage"] = "FINAL_EXACT_RECONCILIATION"
+            targets = set(reconcile_tickers)
+            summary.by_ticker = [
+                row for row in summary.by_ticker
+                if str(row.get("ticker", "")) not in targets
+            ] + exact_rows
+            summary.mode = "reconciled"
+            summary.engine = f"{summary.engine}+final-exact:{exact.engine}"
+            return apply_backtest_ranking(summary, top_n=top_n, _reconcile_depth=_reconcile_depth + 1)
 
 
 def _spearman(frame: pd.DataFrame, target: str) -> float:

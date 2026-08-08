@@ -19,6 +19,17 @@ SCORE_BUCKET_EDGES: tuple[float, ...] = (-np.inf, 40.0, 50.0, 60.0, 70.0, 80.0, 
 SCORE_BUCKET_LABELS: tuple[str, ...] = ("<40", "40-50", "50-60", "60-70", "70-80", ">=80")
 SETUP_BUCKET_EDGES: tuple[float, ...] = (-np.inf, 40.0, 55.0, 70.0, np.inf)
 SETUP_BUCKET_LABELS: tuple[str, ...] = ("<40", "40-55", "55-70", ">=70")
+CALIBRATION_LEVEL_CONFIDENCE_CAPS: dict[str, float] = {
+    "asset_signal_regime_score_setup": 1.00,
+    "asset_signal_regime_score": 0.97,
+    "asset_signal_regime": 0.93,
+    "asset_signal_bucket": 0.90,
+    "asset_signal": 0.87,
+    "signal_bucket": 0.82,
+    "signal": 0.78,
+    "asset": 0.72,
+    "global": 0.70,
+}
 
 
 @dataclass(frozen=True)
@@ -127,10 +138,38 @@ def _prepare_samples(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def _calibration_score(mean_excess: float, win_rate: float, effective_samples: float, min_samples: int) -> tuple[float, float]:
+def _calibration_confidence(
+    effective_samples: float,
+    min_samples: int,
+    level: str,
+    start_date: pd.Timestamp | None = None,
+    end_date: pd.Timestamp | None = None,
+) -> float:
+    if not np.isfinite(effective_samples) or effective_samples <= 0:
+        return 0.0
+    scale = max(float(min_samples) * 2.5, 1.0)
+    sample_confidence = 1.0 - float(np.exp(-float(effective_samples) / scale))
+    level_cap = float(CALIBRATION_LEVEL_CONFIDENCE_CAPS.get(str(level), 0.70))
+    time_factor = 0.85
+    if start_date is not None and end_date is not None and pd.notna(start_date) and pd.notna(end_date):
+        span_days = max(0.0, float((pd.Timestamp(end_date) - pd.Timestamp(start_date)).days))
+        time_factor = 0.70 + 0.30 * float(np.clip(span_days / (365.25 * 3.0), 0.0, 1.0))
+    return round(float(np.clip(sample_confidence * level_cap * time_factor, 0.0, level_cap)), 4)
+
+
+def _calibration_score(
+    mean_excess: float,
+    win_rate: float,
+    effective_samples: float,
+    min_samples: int,
+    *,
+    confidence: float | None = None,
+) -> tuple[float, float]:
     if not np.isfinite(mean_excess) or not np.isfinite(win_rate) or effective_samples <= 0:
         return 50.0, 0.0
-    confidence = float(np.clip(effective_samples / max(float(min_samples) * 2.0, 1.0), 0.0, 1.0))
+    if confidence is None:
+        confidence = float(np.clip(effective_samples / max(float(min_samples) * 2.0, 1.0), 0.0, 1.0))
+    confidence = float(np.clip(confidence, 0.0, 1.0))
     raw = 50.0 + float(np.clip(mean_excess, -10.0, 10.0)) * 3.0 + float(np.clip(win_rate - 0.5, -0.3, 0.3)) * 40.0
     score = 50.0 + (float(np.clip(raw, 0.0, 100.0)) - 50.0) * confidence
     return round(score, 4), round(confidence, 4)
@@ -181,7 +220,12 @@ def build_global_calibration(
             mean20 = _weighted_mean(group["net_excess20"], weights)
             mean60 = _weighted_mean(group["net_excess60"], weights)
             win20 = _weighted_rate(group["net_excess20"], weights)
-            score, confidence = _calibration_score(mean20, win20, effective, min_samples)
+            start_date = group["entry_date"].min() if group["entry_date"].notna().any() else None
+            end_date = group["entry_date"].max() if group["entry_date"].notna().any() else None
+            confidence = _calibration_confidence(effective, min_samples, level, start_date, end_date)
+            score, confidence = _calibration_score(
+                mean20, win20, effective, min_samples, confidence=confidence
+            )
             if not isinstance(key_values, tuple):
                 key_values = (key_values,)
             row: dict[str, Any] = {

@@ -6,19 +6,13 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: write
-
 jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout feature branch
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: agent/model-v20-consistency-performance
-          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -26,68 +20,9 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
-      - name: Repair migration anchor
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('tools/model_v20_migrate.py')
-          lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
-          target = None
-          for i, line in enumerate(lines):
-              if '"gui_core.py"' not in line:
-                  continue
-              start = max(0, i - 1)
-              end = None
-              for j in range(i + 1, min(len(lines), i + 20)):
-                  if lines[j].strip() == ')':
-                      end = j + 1
-                      break
-              if end is None:
-                  continue
-              block = ''.join(lines[start:end])
-              if '"ATR14"' in block and '"MA20"' in block:
-                  target = (start, end)
-                  break
-          if target is None:
-              raise SystemExit('GUI ATR migration block not found structurally')
-          replacement = '''replace_once(
-              "gui_core.py",
-              \'\'\'            "StructureScore",\n            "WyckoffPhase",\n\'\'\',
-              \'\'\'            "StructureScore",\n            "ATR14",\n            "ATR50",\n            "ATRExpansion",\n            "ATRExpansionSource",\n            "WyckoffPhase",\n\'\'\',
-          )\n'''.splitlines(keepends=True)
-          start, end = target
-          lines[start:end] = replacement
-          path.write_text(''.join(lines), encoding='utf-8')
-          PY
-      - name: Apply model v20 migration
-        run: |
-          python tools/model_v20_migrate.py
-          python tools/model_v20_postfix.py
       - name: Compile
         run: python -m compileall -q .
       - name: Unit tests
-        id: regression
-        continue-on-error: true
         env:
           MPLBACKEND: Agg
-        run: python -m unittest discover -v 2>&1 | tee /tmp/v20-tests.log
-      - name: Summarize failures
-        if: steps.regression.outcome == 'failure'
-        run: |
-          echo '=== FAILURE INDEX ==='
-          grep -nE '^(FAIL|ERROR):|AssertionError|FAILED \(' /tmp/v20-tests.log || true
-          echo '=== LOG TAIL ==='
-          tail -n 220 /tmp/v20-tests.log
-      - name: Stop on regression failure
-        if: steps.regression.outcome == 'failure'
-        run: exit 1
-      - name: Materialize validated source
-        run: |
-          git show origin/main:.github/workflows/tests.yml > .github/workflows/tests.yml
-          rm -f tools/model_v20_migrate.py tools/model_v20_postfix.py
-          rm -f .github/workflows/model-v20-materialize.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "refactor: model v20 consistency and performance"
-          git push origin HEAD:agent/model-v20-consistency-performance
+        run: python -m unittest discover -v
