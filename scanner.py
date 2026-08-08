@@ -478,6 +478,13 @@ def scan_single_from_df(
             filter_results.volume_accumulation.details.get("consecutive_days", 0)
         )
         quality = get_quality(ticker, is_etf=ticker_info.is_etf)
+        resolved_industry = str(
+            ticker_info.industry or getattr(quality, "industry", "") or ""
+        ).strip()
+        # TickFlow Free metadata does not consistently expose a separate sector.
+        # Reuse the verified fundamental industry as a fallback instead of leaving
+        # both classification fields blank.
+        resolved_sector = str(ticker_info.sector or resolved_industry or "").strip()
         breakout = _parse_float(getattr(sb, "breakout_score", np.nan), 0.0)
         trap = _parse_float(getattr(sb, "value_trap_risk", np.nan), 0.0)
         entry = entry_point(
@@ -506,8 +513,8 @@ def scan_single_from_df(
         return ScanResult(
             ticker=ticker,
             name=ticker_info.name,
-            sector=ticker_info.sector,
-            industry=ticker_info.industry,
+            sector=resolved_sector,
+            industry=resolved_industry,
             is_etf=ticker_info.is_etf,
             asset_type=ticker_info.asset_type,
             close=close,

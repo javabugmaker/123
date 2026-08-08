@@ -24,6 +24,7 @@ FUNDAMENTAL_FACTOR_COLUMNS = tuple(
 @dataclass(frozen=True)
 class FundamentalQuality:
     ticker: str
+    industry: str = ""
     roe: float = np.nan
     gross_margin: float = np.nan
     institution_holding_trend: Any = None
@@ -110,6 +111,7 @@ def _institution_holding_status(trend: Any, periods: float) -> str:
 def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> FundamentalQuality:
     values = row.to_dict() if isinstance(row, pd.Series) else row
     normalized_ticker = _ticker(values.get("Ticker", ticker))
+    industry = str(values.get("Industry", "") or "").strip()
     numeric = {
         column: _number(values.get(column)) for column in FUNDAMENTAL_FACTOR_COLUMNS
     }
@@ -174,13 +176,44 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
         reason_parts.append("全部通过")
     reason = "；".join(reason_parts)
 
-    # Unknown factors must not disappear from the denominator and turn one
-    # observed passing factor into a false 100/100 quality score. Shrink the
-    # observed pass-rate toward neutral (50) according to data completeness.
-    if passed or failed:
-        observed_pass_rate = len(passed) / (len(passed) + len(failed)) * 100.0
+    # Keep the boolean gate conservative, but make the ranking score continuous.
+    # Missing evidence is shrunk toward neutral rather than disappearing from the
+    # denominator, while stronger ROE/margin/profit trends retain cross-sectional
+    # dispersion instead of collapsing most names into 75/87.5/100 buckets.
+    weighted_points = 0.0
+    available_weight = 0.0
+    if roe_available:
+        weighted_points += float(np.clip(numeric["ROE"] / 20.0, 0.0, 1.0)) * 25.0
+        available_weight += 25.0
+    if gross_margin_available:
+        weighted_points += float(
+            np.clip(1.0 - numeric["IndustryGrossMarginPercentile"], 0.0, 1.0)
+        ) * 20.0
+        available_weight += 20.0
+    if profit_available:
+        y1, y2, y3 = (
+            numeric["NetProfitY1"],
+            numeric["NetProfitY2"],
+            numeric["NetProfitY3"],
+        )
+        growth_values: list[float] = []
+        if abs(y2) > 1e-9:
+            growth_values.append((y1 - y2) / abs(y2))
+        if abs(y3) > 1e-9:
+            growth_values.append((y2 - y3) / abs(y3))
+        mean_growth = float(np.mean(growth_values)) if growth_values else 0.0
+        profit_strength = float(np.clip(0.5 + mean_growth / 0.50, 0.0, 1.0))
+        weighted_points += profit_strength * 25.0
+        available_weight += 25.0
+    if holding_available:
+        weighted_points += 15.0 if holding_status == "PASS" else 0.0
+        available_weight += 15.0
+
+    if available_weight > 0:
+        observed_score = weighted_points / available_weight * 100.0
+        shrunk_factor_score = 50.0 + (observed_score - 50.0) * completeness
         quality_score = round(
-            50.0 + (observed_pass_rate - 50.0) * completeness,
+            float(np.clip(shrunk_factor_score, 0.0, 100.0)),
             4,
         )
     else:
@@ -188,6 +221,7 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
 
     return FundamentalQuality(
         ticker=normalized_ticker,
+        industry=industry,
         roe=numeric["ROE"],
         gross_margin=numeric["GrossMargin"],
         institution_holding_trend=trend,

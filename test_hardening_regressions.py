@@ -44,7 +44,7 @@ class HardeningRegressionTests(unittest.TestCase):
             }
         )
         self.assertEqual(quality.quality_data_completeness, 0.25)
-        self.assertAlmostEqual(quality.quality_score, 62.5)
+        self.assertAlmostEqual(quality.quality_score, 52.5)
         self.assertLess(quality.quality_score, 100.0)
 
     def test_score_coverage_caps_final_score(self) -> None:
