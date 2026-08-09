@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,8 +56,10 @@ class V27GuiPipelineTests(unittest.TestCase):
                 workers=4,
                 mode="exact",
             )
+        expected_workers = min(4, max(1, (os.cpu_count() or 2) - 1), len(tickers))
         self.assertEqual(summary.engine, "thread")
-        self.assertEqual(summary.worker_count, 4)
+        self.assertEqual(summary.worker_count, expected_workers)
+        self.assertGreaterEqual(summary.worker_count, 2)
         self.assertEqual(worker.call_count, 4)
 
     def test_single_ticker_remains_sequential_to_preserve_exact_semantics(self):
