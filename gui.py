@@ -28,11 +28,11 @@ _core.DATA_SOURCE_HINTS["TickFlow Free"] = "行情：TickFlow Free（日K / 标�
 # detail dialog/right-side decision card.  Two derived columns are appended
 # in-memory after a CSV is loaded.
 _core.DISPLAY_COLUMNS = (
-    "OverallRank",
+    "DisplayRank",
     "Ticker",
     "Name",
     "AssetType",
-    "Industry",
+    "IndustryTopic",
     "Close",
     "EntrySignal",
     "SignalStatus",
@@ -47,6 +47,8 @@ _core.DISPLAY_COLUMNS = (
 
 _core.COLUMN_NAMES.update(
     {
+        "DisplayRank": "榜单排名",
+        "IndustryTopic": "行业 / 主题",
         "Close": "当日收盘价",
         "EntrySignal": "当前买点",
         "SignalStatus": "近期买点",
@@ -91,6 +93,8 @@ _core.COLUMN_NAMES.update(
 
 _core.COLUMN_WIDTHS.update(
     {
+        "DisplayRank": 68,
+        "IndustryTopic": 112,
         "OverallRank": 62,
         "Ticker": 92,
         "Name": 112,
@@ -428,7 +432,7 @@ def _build_ui_v26(self) -> None:
         ("推荐", self.card_recommended, "#166534"),
         ("谨慎候选", self.card_cautious, "#92400e"),
         ("新买点", self.card_new, "#1d4ed8"),
-        ("当前结果", self.card_total, "#334e68"),
+        ("资产结构", self.card_total, "#334e68"),
     )
     for column, (title, variable, accent) in enumerate(card_specs):
         card = ctk.CTkFrame(cards, corner_radius=10, fg_color="#ffffff")
@@ -466,7 +470,7 @@ def _build_ui_v26(self) -> None:
     )
     self.asset_box.grid(row=0, column=1, padx=(0, 10), sticky="w")
 
-    _panel_label(top_filters, "行业", row=0, column=2, padx=(0, 4), sticky="w")
+    _panel_label(top_filters, "行业 / 主题", row=0, column=2, padx=(0, 4), sticky="w")
     self.industry_box = ttk.Combobox(top_filters, textvariable=self.industry_filter, state="readonly", width=14)
     self.industry_box.grid(row=0, column=3, padx=(0, 10), sticky="w")
 
@@ -635,7 +639,9 @@ def _build_ui_v26(self) -> None:
         ("参考买点", self.detail_buy),
         ("止损位", self.detail_stop),
         ("交易资格", self.detail_eligibility),
+        ("榜单 / 全局", self.detail_rank),
         ("排序 / 机构", self.detail_score),
+        ("回测证据", self.detail_backtest),
     ):
         row = ctk.CTkFrame(detail, fg_color="transparent")
         row.pack(fill=tk.X, padx=18, pady=4)
@@ -786,6 +792,21 @@ def _update_filter_values_v26(self, headers: list[str], rows: list[list[str]]) -
         score_enabled,
     )
 
+    # v28: the visible industry filter follows the same stock-industry / ETF-theme
+    # projection as the table instead of showing an empty Industry for ETFs.
+    topic_index = indexes.get("IndustryTopic")
+    if topic_index is not None:
+        topics = sorted(
+            {
+                self._cell_text(row[topic_index])
+                for row in rows
+                if len(row) > topic_index and self._cell_text(row[topic_index])
+            }
+        )
+        self.industry_box["values"] = ["全部行业", *topics]
+        if self.industry_filter.get() not in self.industry_box["values"]:
+            self.industry_filter.set("全部行业")
+
 
 def _update_filter_values_v16(self, headers: list[str], rows: list[list[str]]) -> None:
     _update_filter_values_v26(self, headers, rows)
@@ -799,7 +820,23 @@ def _row_matches_filters_v26(
     search_text: str | None = None,
     filter_values: Sequence[str] | None = None,
 ) -> bool:
-    legacy_values = tuple(filter_values[:6]) if filter_values is not None else None
+    if filter_values is not None:
+        values = list(filter_values[:6])
+        while len(values) < 6:
+            values.append("")
+        industry_value = values[1] or "全部行业"
+        values[1] = "全部行业"
+        legacy_values = tuple(values)
+    else:
+        industry_value = _read_filter(self, "industry_filter", "全部行业")
+        legacy_values = (
+            _read_filter(self, "sector_filter", "全部板块"),
+            "全部行业",
+            _read_filter(self, "quality_filter", "全部质量"),
+            _read_filter(self, "stage_filter", "全部阶段"),
+            _read_filter(self, "entry_filter", "全部买点"),
+            _read_filter(self, "eligibility_filter", "全部资格"),
+        )
     if not _original_row_matches_filters(self, indexes, row, query, search_text, legacy_values):
         return False
 
@@ -811,6 +848,10 @@ def _row_matches_filters_v26(
         score_value = _read_filter(self, "score_filter", "全部分数")
 
     padded = row if len(row) >= len(self._csv_headers) else row + [""] * (len(self._csv_headers) - len(row))
+    if industry_value != "全部行业":
+        topic = _value_for(indexes, padded, "IndustryTopic") or _value_for(indexes, padded, "Industry")
+        if topic != industry_value:
+            return False
     asset = _asset_label(indexes, padded)
     if asset_value != "全部类型" and asset != asset_value:
         return False
@@ -924,7 +965,9 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.detail_buy = tk.StringVar(master=root, value="-")
         self.detail_stop = tk.StringVar(master=root, value="-")
         self.detail_eligibility = tk.StringVar(master=root, value="-")
+        self.detail_rank = tk.StringVar(master=root, value="-")
         self.detail_score = tk.StringVar(master=root, value="-")
+        self.detail_backtest = tk.StringVar(master=root, value="-")
         self.detail_reason = tk.StringVar(master=root, value="双击可查看完整研究字段。")
         self._nav_buttons: dict[str, object] = {}
         self._active_nav = "mixed"
@@ -1127,10 +1170,34 @@ class DecisionScannerGUI(_core.ScannerGUI):
         return False
 
     # Derived display fields --------------------------------------------------
+    @staticmethod
+    def _compact_price_range(value: str) -> str:
+        text = str(value or "").strip()
+        match = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)\s*[-~～—–]\s*(-?\d+(?:\.\d+)?)\s*", text)
+        if not match:
+            return text
+        try:
+            left = float(match.group(1))
+            right = float(match.group(2))
+        except ValueError:
+            return text
+        return match.group(1) if abs(left - right) <= 1e-12 else text
+
+    @staticmethod
+    def _compact_institution_tier(value: str) -> str:
+        text = str(value or "").strip()
+        return {
+            "A级机构启动": "A",
+            "B级观察": "B",
+            "C级价值观察": "C",
+            "D级等待确认": "D",
+            "D级陷阱池": "D陷阱",
+        }.get(text, text)
+
     def _ensure_derived_columns(self) -> None:
         if not self._csv_headers:
             return
-        for column in ("ReferenceBuyPrice", "InstitutionalStrength"):
+        for column in ("DisplayRank", "IndustryTopic", "ReferenceBuyPrice", "InstitutionalStrength"):
             if column not in self._csv_headers:
                 self._csv_headers.append(column)
                 for row in self._csv_rows:
@@ -1139,12 +1206,27 @@ class DecisionScannerGUI(_core.ScannerGUI):
         for row in self._csv_rows:
             if len(row) < len(self._csv_headers):
                 row.extend([""] * (len(self._csv_headers) - len(row)))
+            pool_rank = _value_for(indexes, row, "ResearchPoolRank")
+            overall_rank = _value_for(indexes, row, "OverallRank")
+            row[indexes["DisplayRank"]] = pool_rank or overall_rank
+
+            asset = _asset_label(indexes, row)
+            industry = _value_for(indexes, row, "Industry")
+            etf_theme = _value_for(indexes, row, "ETFTheme")
+            classification = _value_for(indexes, row, "ModelClassification")
+            sector = _value_for(indexes, row, "Sector")
+            row[indexes["IndustryTopic"]] = (
+                (etf_theme or classification or sector or industry)
+                if asset == "ETF"
+                else (industry or classification or sector)
+            )
+
             signal = _value_for(indexes, row, "EntrySignal").strip().upper()
-            entry_zone = _value_for(indexes, row, "EntryZone")
-            breakout = _value_for(indexes, row, "BreakoutBuyPrice")
+            entry_zone = self._compact_price_range(_value_for(indexes, row, "EntryZone"))
+            breakout = self._compact_price_range(_value_for(indexes, row, "BreakoutBuyPrice"))
             reference = breakout if signal == "BREAKOUT_CONFIRM" and breakout else entry_zone or breakout
             row[indexes["ReferenceBuyPrice"]] = reference
-            tier = _value_for(indexes, row, "InstitutionalTier")
+            tier = self._compact_institution_tier(_value_for(indexes, row, "InstitutionalTier"))
             score = _value_for(indexes, row, "InstitutionalScore")
             if tier and score:
                 strength = f"{tier} · {self._format_table_value('InstitutionalScore', score)}"
@@ -1153,6 +1235,8 @@ class DecisionScannerGUI(_core.ScannerGUI):
             row[indexes["InstitutionalStrength"]] = strength
         self._csv_indexes = indexes
         self._csv_search_text = [" ".join(map(self._cell_text, row)).casefold() for row in self._csv_rows]
+        if hasattr(self, "industry_box"):
+            _update_filter_values_v26(self, self._csv_headers, self._csv_rows)
 
     def _set_display_columns_for_file(self, filename: str) -> None:
         columns = list(_core.DISPLAY_COLUMNS)
@@ -1199,7 +1283,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         if ticker_index is None:
             return
         visible = set(self.filtered_tickers)
-        recommended = cautious = new_signals = 0
+        recommended = cautious = new_signals = stocks = etfs = 0
         for row in self._csv_rows:
             if len(row) <= ticker_index:
                 continue
@@ -1208,13 +1292,19 @@ class DecisionScannerGUI(_core.ScannerGUI):
                 continue
             eligibility = _value_for(indexes, row, "RankingEligibility")
             status = _value_for(indexes, row, "SignalStatus").strip().upper()
+            asset = _asset_label(indexes, row)
             recommended += eligibility == "推荐"
             cautious += eligibility == "谨慎候选"
             new_signals += status == "NEW"
+            stocks += asset == "股票"
+            etfs += asset == "ETF"
         self.card_recommended.set(str(recommended))
         self.card_cautious.set(str(cautious))
         self.card_new.set(str(new_signals))
-        self.card_total.set(str(len(self.filtered_tickers)))
+        if stocks or etfs:
+            self.card_total.set(f"股票 {stocks} · ETF {etfs}")
+        else:
+            self.card_total.set(str(len(self.filtered_tickers)))
 
     def _selected_detail(self) -> dict[str, str]:
         selection = self.table.selection()
@@ -1232,7 +1322,9 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.detail_buy.set("-")
         self.detail_stop.set("-")
         self.detail_eligibility.set("-")
+        self.detail_rank.set("-")
         self.detail_score.set("-")
+        self.detail_backtest.set("-")
         self.detail_reason.set("双击可查看完整研究字段。")
 
     def _update_decision_card(self, _event=None) -> None:
@@ -1256,14 +1348,26 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.detail_stop.set(self._format_table_value("StopLoss", data.get("StopLoss", "")) or "-")
         eligibility = data.get("RankingEligibility", "") or "-"
         self.detail_eligibility.set(eligibility)
+        display_rank = self._format_table_value("ResearchPoolRank", data.get("ResearchPoolRank", ""))
+        overall_rank = self._format_table_value("OverallRank", data.get("OverallRank", ""))
+        self.detail_rank.set(f"{display_rank or '-'} / {overall_rank or '-'}")
         ranking = self._format_table_value("RankingScore", data.get("RankingScore", "")) or "-"
         strength = data.get("InstitutionalStrength", "")
         if not strength:
-            tier = data.get("InstitutionalTier", "")
+            tier = self._compact_institution_tier(data.get("InstitutionalTier", ""))
             institution_score = self._format_table_value("InstitutionalScore", data.get("InstitutionalScore", ""))
             strength = " · ".join(value for value in (tier, institution_score) if value)
         self.detail_score.set(f"{ranking} / {strength or '-'}")
-        self.detail_reason.set(data.get("TradeReadinessReason", "") or data.get("RankingReason", "") or "暂无额外执行说明。")
+        mode = str(data.get("BacktestMode", "") or "").strip().upper()
+        samples_value = self._numeric_value(data.get("BacktestSamples", ""))
+        samples = int(samples_value) if samples_value is not None else 0
+        confidence = str(data.get("BacktestConfidenceTier", "") or "").strip() or "未评估"
+        backtest_parts = [value for value in (mode, f"{samples}样本", confidence) if value]
+        self.detail_backtest.set(" · ".join(backtest_parts) or "-")
+        reason = data.get("TradeReadinessReason", "") or data.get("RankingReason", "") or "暂无额外执行说明。"
+        if confidence == "样本不足":
+            reason = f"{reason}\n\n历史样本不足，回测暂不作为主要排序依据。"
+        self.detail_reason.set(reason)
         if eligibility == "推荐":
             self.detail_signal_label.configure(fg_color="#ecfdf3", text_color="#166534")
         elif eligibility == "谨慎候选":

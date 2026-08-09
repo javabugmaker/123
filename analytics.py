@@ -1750,6 +1750,100 @@ def _expand_legacy_backtest_metrics(
     )
 
 
+
+def _minimum_fast_samples_for_exact_refinement() -> int:
+    """Evidence floor for promoting a FAST candidate into expensive EXACT work.
+
+    FAST intentionally samples signals more sparsely than EXACT.  Scale the
+    ranking evidence floor by the cooldown ratio so a candidate that has a
+    realistic chance of reaching the normal ten-sample ranking floor is still
+    eligible for refinement, while one-off signals are not recomputed exactly.
+    """
+    fast_cooldown = max(1, int(BACKTEST_FAST_COOLDOWN_DAYS))
+    exact_cooldown = max(1, int(BACKTEST_SIGNAL_COOLDOWN_DAYS))
+    return max(
+        1,
+        int(np.ceil(float(BACKTEST_MIN_SAMPLES_FOR_RANKING) * exact_cooldown / fast_cooldown)),
+    )
+
+
+def _select_exact_refinement_pool(
+    frame: pd.DataFrame,
+    fast_rows: list[dict[str, Any]],
+    top_n: int = 50,
+) -> pd.DataFrame:
+    """Select only evidence-qualified, decision-relevant EXACT candidates."""
+    if frame.empty:
+        return frame.head(0).copy()
+
+    working = frame.copy()
+    working["_CurrentSignal"] = (
+        working.get("EntrySignal", pd.Series("UNKNOWN", index=working.index))
+        .fillna("UNKNOWN").astype(str).str.upper()
+    )
+    working["_Eligibility"] = (
+        working.get("RankingEligibility", pd.Series("观察", index=working.index))
+        .fillna("观察").astype(str).str.strip()
+    )
+    working["_RefineMetric"] = pd.to_numeric(
+        working.get(
+            "RankingScore",
+            working.get("InstitutionalScore", working.get("FinalScore", pd.Series(np.nan, index=working.index))),
+        ),
+        errors="coerce",
+    ).replace([np.inf, -np.inf], np.nan).fillna(-np.inf)
+
+    by_key: dict[tuple[str, str], int] = {}
+    by_ticker: dict[str, int] = {}
+    for row in fast_rows:
+        ticker = str(row.get("ticker", "")).strip()
+        if not ticker:
+            continue
+        signal = str(row.get("entry_signal", "UNKNOWN")).strip().upper() or "UNKNOWN"
+        try:
+            samples = max(0, int(float(row.get("samples", 0) or 0)))
+        except (TypeError, ValueError):
+            samples = 0
+        by_key[(ticker, signal)] = max(samples, by_key.get((ticker, signal), 0))
+        by_ticker[ticker] = max(samples, by_ticker.get(ticker, 0))
+
+    fast_samples: list[int] = []
+    for ticker, signal in zip(
+        working.get("Ticker", pd.Series("", index=working.index)).fillna("").astype(str),
+        working["_CurrentSignal"],
+    ):
+        fast_samples.append(by_key.get((ticker, signal), by_ticker.get(ticker, 0)))
+    working["_FastSamples"] = fast_samples
+
+    ranked = (
+        working.loc[~working["_Eligibility"].eq("风险过滤")]
+        .sort_values("_RefineMetric", ascending=False, kind="mergesort")
+        .copy()
+    )
+    if ranked.empty:
+        return ranked
+    ranked["_RefineRank"] = np.arange(1, len(ranked) + 1)
+    ranked["_PriorityEligibility"] = ranked["_Eligibility"].isin({"推荐", "谨慎候选"})
+    minimum_fast_samples = _minimum_fast_samples_for_exact_refinement()
+    top_limit = max(1, int(top_n))
+    candidate_cap = max(
+        1,
+        min(int(BACKTEST_EXACT_REFINEMENT_CANDIDATES), top_limit),
+    )
+    selected = ranked.loc[
+        ranked["_FastSamples"].ge(minimum_fast_samples)
+        & (ranked["_PriorityEligibility"] | ranked["_RefineRank"].le(top_limit))
+    ].copy()
+    return (
+        selected.sort_values(
+            ["_PriorityEligibility", "_RefineMetric"],
+            ascending=[False, False],
+            kind="mergesort",
+        )
+        .head(candidate_cap)
+        .copy()
+    )
+
 def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     path = OUTPUT_DIR / "AllResults.csv"
     if not path.exists() or not summary.by_ticker:
@@ -1757,20 +1851,17 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     frame = pd.read_csv(path, encoding="utf-8-sig", low_memory=False).copy()
     original_mode = str(summary.mode or "").strip().lower()
     if original_mode == "fast" and BACKTEST_AUTO_EXACT_REFINEMENT:
-        rank_metric = pd.to_numeric(
-            frame.get("RankingScore", frame.get("InstitutionalScore", frame.get("FinalScore"))),
-            errors="coerce",
-        ).fillna(-np.inf)
-        eligible = ~frame.get("RankingEligibility", pd.Series("观察", index=frame.index)).fillna("观察").eq("风险过滤")
-        pool = (
-            frame.assign(_RefineMetric=rank_metric)
-            .loc[eligible]
-            .sort_values("_RefineMetric", ascending=False, kind="mergesort")
-            .head(max(1, int(BACKTEST_EXACT_REFINEMENT_CANDIDATES)))
-        )
+        fast_rows = list(summary.by_ticker or [])
+        pool = _select_exact_refinement_pool(frame, fast_rows, top_n=top_n)
         refine_tickers = pool.get("Ticker", pd.Series(dtype=str)).dropna().astype(str).tolist()
         if refine_tickers:
-            logger.info("FAST screen complete; exact-refining %d candidates.", len(refine_tickers))
+            logger.info(
+                "FAST screen complete; exact-refining %d evidence-qualified candidates "
+                "(min FAST samples=%d, cap=%d).",
+                len(refine_tickers),
+                _minimum_fast_samples_for_exact_refinement(),
+                min(int(BACKTEST_EXACT_REFINEMENT_CANDIDATES), max(1, int(top_n))),
+            )
             exact = run_historical_backtest(
                 refine_tickers, source="tickflow", objective=summary.objective,
                 benchmark=summary.benchmark, commission=summary.commission,
