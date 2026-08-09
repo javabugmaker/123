@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# Final connector-authored CI trigger; product behavior is covered below.
 import csv
 import tempfile
 import unittest
