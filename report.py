@@ -36,6 +36,7 @@ from config import (
     THEME_CLUSTER_SOFT_PENALTY,
     SCORING_VERSION,
     OUTPUT_DIR,
+    PIPELINE_VERSION,
     TOP_N_PARQUET,
     TOP_N_REPORT,
     VALUE_TRAP_RISK_THRESHOLD,
@@ -376,6 +377,7 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "OpportunityStage": r.opportunity_stage,
                 "Error": r.error if r.error else "",
                 "ModelVersion": SCORING_VERSION,
+                "PipelineVersion": PIPELINE_VERSION,
                 "IndicatorCacheVersion": INDICATOR_CACHE_VERSION,
                 "BacktestCacheVersion": BACKTEST_CACHE_VERSION,
                 "RunId": run_id,
@@ -599,6 +601,56 @@ def _sort_export_rows(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataF
     return frame.sort_values(available, ascending=False, kind="mergesort")
 
 
+
+DECISION_RESULT_COLUMNS: tuple[str, ...] = (
+    "Ticker", "Name", "Sector", "Industry", "ETFTheme", "IsETF", "AssetType",
+    "ModelClassification", "ThemeCluster", "Close", "EntrySignal", "SignalStatus",
+    "SignalDays", "EntryZone", "BreakoutBuyPrice", "StopLoss", "RankingEligibility",
+    "RankingScore", "ResearchPoolRank", "OverallRank", "InstitutionalTier",
+    "InstitutionalScore", "TradeReadinessReason", "RankingReason", "DecisionState",
+    "BacktestRunMode", "BacktestMode", "BacktestStage", "BacktestSamples",
+    "BacktestStatus", "BacktestConfidenceTier", "BacktestRequested",
+    "BacktestEligibleForRanking", "BacktestSkipReason", "BacktestCacheHit",
+    "DataAsOf", "DataTradingAgeDays", "RunId", "ModelVersion", "PipelineVersion",
+)
+
+
+def _decision_projection(frame: pd.DataFrame) -> pd.DataFrame:
+    working = frame.copy()
+    if "ETFTheme" not in working:
+        working["ETFTheme"] = ""
+    missing_theme = working["ETFTheme"].fillna("").astype(str).str.strip().eq("")
+    if missing_theme.any():
+        inferred = working.loc[missing_theme].apply(_etf_theme_key, axis=1)
+        ticker = working.loc[missing_theme].get(
+            "Ticker", pd.Series("", index=working.loc[missing_theme].index)
+        ).fillna("").astype(str).str.strip()
+        classification = working.loc[missing_theme].get(
+            "ModelClassification", pd.Series("", index=working.loc[missing_theme].index)
+        ).fillna("").astype(str).str.strip()
+        # A generic ETF name can make the classification helper fall through to
+        # the ticker itself.  That is provenance, not a useful user-facing theme.
+        # Prefer the model classification in that boundary case.
+        inferred_text = inferred.fillna("").astype(str).str.strip()
+        generic = inferred_text.eq("") | inferred_text.eq(ticker)
+        inferred_text = inferred_text.where(~generic | classification.eq(""), classification)
+        working.loc[missing_theme, "ETFTheme"] = inferred_text
+    return working.reindex(columns=DECISION_RESULT_COLUMNS)
+
+
+def write_decision_results(
+    frame: pd.DataFrame, output_dir: Path | None = None
+) -> Path:
+    destination = output_dir if output_dir is not None else OUTPUT_DIR
+    path = destination / "DecisionResults.csv"
+    decision = _decision_projection(frame)
+    _atomic_write_csv(decision, path)
+    logger.info(
+        "Exported lightweight decision surface: %d rows / %d columns to %s",
+        len(decision), len(decision.columns), path,
+    )
+    return path
+
 def refresh_candidate_exports(
     frame: pd.DataFrame,
     top_n_csv: int = TOP_N_REPORT,
@@ -611,11 +663,17 @@ def refresh_candidate_exports(
     ranked["ModelVersion"] = ranked.get("ModelVersion", pd.Series(SCORING_VERSION, index=ranked.index)).replace("", SCORING_VERSION).fillna(SCORING_VERSION)
     ranked["IndicatorCacheVersion"] = ranked.get("IndicatorCacheVersion", pd.Series(INDICATOR_CACHE_VERSION, index=ranked.index)).replace("", INDICATOR_CACHE_VERSION).fillna(INDICATOR_CACHE_VERSION)
     ranked["BacktestCacheVersion"] = ranked.get("BacktestCacheVersion", pd.Series(BACKTEST_CACHE_VERSION, index=ranked.index)).replace("", BACKTEST_CACHE_VERSION).fillna(BACKTEST_CACHE_VERSION)
+    ranked["PipelineVersion"] = ranked.get("PipelineVersion", pd.Series(PIPELINE_VERSION, index=ranked.index)).replace("", PIPELINE_VERSION).fillna(PIPELINE_VERSION)
     if "BacktestStage" in ranked:
         ranked["CandidateGenerationStage"] = np.where(
             ranked["BacktestStage"].fillna("").astype(str).eq("EXACT_REFINEMENT"),
             "EXACT_REFINED", "FAST_SCREEN"
         )
+
+    # The GUI's all-results view reads this compact projection instead of the
+    # 200+ column research audit CSV.  AllResults.parquet remains the complete
+    # machine-readable research artifact.
+    write_decision_results(ranked, destination)
 
     csv_path = destination / f"Top{top_n_csv}.csv"
     research_pool = _diversify_ranked_candidates(ranked, top_n_csv)
@@ -798,6 +856,7 @@ def export_all(
         parquet_path = export_top_parquet(results, n=top_n_parquet)
         full_csv = export_full_csv(results)
         full_parquet_path = export_full_parquet(results)
+        write_decision_results(df, OUTPUT_DIR)
         for name in (
             f"Top{top_n_csv}Mixed.csv",
             f"Top{top_n_csv}Stocks.csv",

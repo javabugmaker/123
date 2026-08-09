@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -29,7 +31,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from analytics import apply_backtest_ranking, enrich_results, run_historical_backtest
+from analytics import BacktestSummary, apply_backtest_ranking, enrich_results, run_historical_backtest
 from config import (
     CACHE_DIR,
     FUNDAMENTAL_REFRESH_FORCE,
@@ -297,6 +299,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     if requested_mode != "auto":
         backtest_kwargs["mode"] = requested_mode
     summary = run_historical_backtest(unique_tickers, **backtest_kwargs)
+    summary.requested_tickers = list(unique_tickers)
     if all_results:
         summary.universe_type = "cache_plus_current_pool"
         summary.survivorship_bias_warning = True
@@ -309,6 +312,19 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         )
         return 2
     apply_backtest_ranking(summary, top_n=TOP_N_REPORT)
+    # run_historical_backtest writes an initial summary before EXACT refinement.
+    # Persist it again after ranking so HYBRID/provenance/performance counters are
+    # the final values consumed by the daily manifest and GUI.  Some compatibility
+    # tests intentionally replace the engine with a Mock; those are not real
+    # BacktestSummary objects and must not create a fake JSON artifact.
+    if isinstance(summary, BacktestSummary):
+        summary_path = OUTPUT_DIR / "BacktestSummary.json"
+        temporary_summary = summary_path.with_name(".BacktestSummary.json.tmp")
+        temporary_summary.write_text(
+            json.dumps(summary.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(temporary_summary, summary_path)
     logger.info(
         "Backtest complete: mode=%s, %d test samples, %d all samples, 20d win rate %.1f%%, average return %.2f%%, 60d average return %.2f%%.",
         str(getattr(summary, "mode", requested_mode)).upper(),

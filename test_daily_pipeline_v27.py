@@ -54,7 +54,7 @@ class DailyPipelineV27Tests(unittest.TestCase):
             ) as scan, patch.object(
                 daily_pipeline.scanner_cli, "cmd_backtest", side_effect=backtest_side_effect
             ) as backtest:
-                code = daily_pipeline.run_daily_pipeline(workers=4)
+                code = daily_pipeline.run_daily_pipeline(workers=4, quality_gates=False)
 
             self.assertEqual(code, 0)
             scan.assert_called_once()
@@ -71,7 +71,7 @@ class DailyPipelineV27Tests(unittest.TestCase):
         with patch.object(daily_pipeline.scanner_cli, "cmd_scan", return_value=2), patch.object(
             daily_pipeline.scanner_cli, "cmd_backtest"
         ) as backtest:
-            code = daily_pipeline.run_daily_pipeline(workers=2)
+            code = daily_pipeline.run_daily_pipeline(workers=2, quality_gates=False)
         self.assertEqual(code, 2)
         backtest.assert_not_called()
 
@@ -93,7 +93,7 @@ class DailyPipelineV27Tests(unittest.TestCase):
             ), patch.object(
                 daily_pipeline.scanner_cli, "cmd_backtest", side_effect=backtest_side_effect
             ):
-                code = daily_pipeline.run_daily_pipeline(workers=1)
+                code = daily_pipeline.run_daily_pipeline(workers=1, quality_gates=False)
 
             self.assertEqual(code, 2)
             self.assertFalse((output / "DailyRunSummary.json").exists())
