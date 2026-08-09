@@ -25,7 +25,7 @@ class GuiWorkstationV26Tests(unittest.TestCase):
         self.assertEqual(gui.COLUMN_NAMES["InstitutionalStrength"], "机构强度")
 
     def test_top50_stock_and_etf_are_first_class_navigation(self):
-        source = inspect.getsource(gui.DecisionScannerGUI._build_ui)
+        source = inspect.getsource(gui.DecisionScannerGUI._build_ui_navigation)
         self.assertIn("综合 Top50", source)
         self.assertIn("股票 Top50", source)
         self.assertIn("ETF Top50", source)
@@ -35,7 +35,7 @@ class GuiWorkstationV26Tests(unittest.TestCase):
         self.assertEqual(gui.NAV_FILES["etf"], "Top50ETF.csv")
 
     def test_scan_and_backtest_remain_primary_actions(self):
-        source = inspect.getsource(gui.DecisionScannerGUI._build_ui)
+        source = inspect.getsource(gui.DecisionScannerGUI._build_ui_controls)
         self.assertIn("▶ 开始扫描", source)
         self.assertIn("▶ 运行回测", source)
         self.assertIn("■ 停止", source)
@@ -44,7 +44,7 @@ class GuiWorkstationV26Tests(unittest.TestCase):
         self.assertIn("完整刷新", source)
 
     def test_backtest_scope_matches_high_frequency_workflow(self):
-        source = inspect.getsource(gui.DecisionScannerGUI._build_ui)
+        source = inspect.getsource(gui.DecisionScannerGUI._build_ui_footer)
         for label in (
             "当前页面",
             "当前筛选",
@@ -58,7 +58,14 @@ class GuiWorkstationV26Tests(unittest.TestCase):
             self.assertIn(label, source)
 
     def test_engineering_controls_and_log_are_collapsible(self):
-        source = inspect.getsource(gui.DecisionScannerGUI._build_ui)
+        source = "\n".join(
+            inspect.getsource(method)
+            for method in (
+                gui.DecisionScannerGUI._build_ui_controls,
+                gui.DecisionScannerGUI._build_ui_filters,
+                gui.DecisionScannerGUI._build_ui_footer,
+            )
+        )
         self.assertIn("高级设置", source)
         self.assertIn("更多筛选", source)
         self.assertIn("日志 ›", source)

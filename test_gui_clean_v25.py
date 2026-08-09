@@ -22,7 +22,7 @@ class GuiCleanV25Tests(unittest.TestCase):
         self.assertEqual(gui.COLUMN_NAMES["SignalDays"], "持续天数")
 
     def test_filter_bar_drops_fundamental_and_backtest_controls(self):
-        source = inspect.getsource(gui._build_ui_v16)
+        source = inspect.getsource(gui.DecisionScannerGUI._build_ui_filters)
         self.assertNotIn("fundamental_filter", source)
         self.assertNotIn("backtest_filter", source)
         self.assertNotIn("fundamental_box", source)
@@ -35,15 +35,15 @@ class GuiCleanV25Tests(unittest.TestCase):
     def test_recent_entry_status_is_human_readable(self):
         instance = gui.DecisionScannerGUI.__new__(gui.DecisionScannerGUI)
         self.assertEqual(
-            gui._format_table_value_v16(instance, "SignalStatus", "NEW"),
+            instance._format_table_value("SignalStatus", "NEW"),
             "新出现",
         )
         self.assertEqual(
-            gui._format_table_value_v16(instance, "SignalStatus", "ACTIVE"),
+            instance._format_table_value("SignalStatus", "ACTIVE"),
             "持续有效",
         )
         self.assertEqual(
-            gui._format_table_value_v16(instance, "SignalStatus", "FAILED"),
+            instance._format_table_value("SignalStatus", "FAILED"),
             "已失效",
         )
 

@@ -17,7 +17,7 @@ import gui
 
 class V27GuiPipelineTests(unittest.TestCase):
     def test_daily_pipeline_is_first_class_gui_action(self):
-        source = inspect.getsource(gui.DecisionScannerGUI._build_ui)
+        source = inspect.getsource(gui.DecisionScannerGUI._build_ui_controls)
         self.assertIn("⚡ 今日一键更新", source)
         self.assertIn("command=self.start_daily_pipeline", source)
         method = inspect.getsource(gui.DecisionScannerGUI.start_daily_pipeline)

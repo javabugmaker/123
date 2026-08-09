@@ -180,7 +180,7 @@ BACKTEST_EXACT_REFINEMENT_CANDIDATES: Final[int] = 150
 
 SCORING_VERSION: str = "2026-08-09-v24-decision-integrity"
 # Engineering versions are intentionally separate from the scoring model.
-PIPELINE_VERSION: str = "2026-08-09-v30-fast-workstation"
+PIPELINE_VERSION: str = "2026-08-10-v31-stock-universe-integrity"
 GUI_VERSION: str = "2026-08-09-v30-workstation"
 BACKTEST_PROVENANCE_VERSION: str = "2026-08-09-v30"
 
@@ -191,6 +191,8 @@ DAILY_MIN_STOCK_COUNT: Final[int] = 1500
 DAILY_MIN_ETF_COUNT: Final[int] = 150
 DAILY_MIN_FRESH_RATIO: Final[float] = 0.90
 DAILY_RELATIVE_UNIVERSE_FLOOR: Final[float] = 0.60
+DAILY_MIN_VALID_STOCK_RATIO: Final[float] = 0.60
+DAILY_MIN_VALID_ETF_RATIO: Final[float] = 0.60
 
 # Per-ticker historical evidence is only allowed to influence the composite
 # rank after more than a couple of independent observations.  This prevents a

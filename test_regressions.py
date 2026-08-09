@@ -292,7 +292,7 @@ class RegressionTests(TestCase):
         root = Mock()
         root.after.return_value = "log-job"
         variable = Mock()
-        with patch("gui.tk.StringVar", return_value=variable), patch("gui.tk.BooleanVar", return_value=variable), patch.object(gui.ScannerGUI, "_configure_style"), patch.object(gui.ScannerGUI, "_build_ui"), patch.object(gui.ScannerGUI, "_load_best_available_results") as load_results:
+        with patch("gui._core.tk.StringVar", return_value=variable), patch("gui._core.tk.BooleanVar", return_value=variable), patch.object(gui.ScannerGUI, "_configure_style"), patch.object(gui.ScannerGUI, "_build_ui"), patch.object(gui.ScannerGUI, "_load_best_available_results") as load_results:
             gui.ScannerGUI(root)
 
         root.protocol.assert_called_once()
@@ -304,9 +304,9 @@ class RegressionTests(TestCase):
 
         scanner.clear_log()
 
-        scanner.log_text.configure.assert_any_call(state=gui.tk.NORMAL)
-        scanner.log_text.delete.assert_called_once_with("1.0", gui.tk.END)
-        scanner.log_text.configure.assert_called_with(state=gui.tk.DISABLED)
+        scanner.log_text.configure.assert_any_call(state=gui._core.tk.NORMAL)
+        scanner.log_text.delete.assert_called_once_with("1.0", gui._core.tk.END)
+        scanner.log_text.configure.assert_called_with(state=gui._core.tk.DISABLED)
 
     def test_gui_clear_filters_restores_default_values_and_refreshes_rows(self):
         scanner = object.__new__(gui.ScannerGUI)
@@ -349,11 +349,11 @@ class RegressionTests(TestCase):
         scanner.cancel_button = Mock()
         scanner.status = Mock()
 
-        with patch("gui.messagebox.askyesno", return_value=True):
+        with patch("gui._core.messagebox.askyesno", return_value=True):
             scanner.cancel_running_task()
 
         scanner.process.terminate.assert_called_once_with()
-        scanner.cancel_button.configure.assert_called_once_with(state=gui.tk.DISABLED)
+        scanner.cancel_button.configure.assert_called_once_with(state=gui._core.tk.DISABLED)
         scanner.status.set.assert_called_once_with("正在取消任务")
         self.assertTrue(scanner._cancel_requested)
 
@@ -364,7 +364,7 @@ class RegressionTests(TestCase):
         scanner._cancel_process = Mock()
         scanner._close_when_stopped = Mock()
 
-        with patch("gui.messagebox.askyesno", return_value=False):
+        with patch("gui._core.messagebox.askyesno", return_value=False):
             scanner.on_close()
 
         scanner._shutdown.assert_not_called()
@@ -615,7 +615,7 @@ class RegressionTests(TestCase):
         scanner.status = Mock()
         scanner._clear_result_view = Mock(wraps=scanner._clear_result_view)
 
-        with TemporaryDirectory() as temp_dir, patch("gui.OUTPUT_DIR", Path(temp_dir)), patch("gui.messagebox.showerror") as showerror:
+        with TemporaryDirectory() as temp_dir, patch("gui.OUTPUT_DIR", Path(temp_dir)), patch("gui._core.messagebox.showerror") as showerror:
             (Path(temp_dir) / "AllResults.csv").write_bytes(b"\xff\xfe")
             self.assertFalse(scanner.load_csv("AllResults.csv"))
 
@@ -2147,7 +2147,7 @@ class RegressionTests(TestCase):
         scanner._atomic_write_text = Mock()
         expected = scanner.filtered_tickers
 
-        with patch("gui.threading.Thread") as thread, patch("gui.messagebox.showerror") as showerror:
+        with patch("gui._core.threading.Thread") as thread, patch("gui._core.messagebox.showerror") as showerror:
             scanner.start_backtest()
 
         self.assertEqual(scanner._atomic_write_text.call_args.args[1], "\n".join(expected) + "\n")
@@ -2166,7 +2166,7 @@ class RegressionTests(TestCase):
         scanner.run_process = Mock()
         scanner._atomic_write_text = Mock()
 
-        with patch("gui.threading.Thread") as thread, patch("gui.messagebox.showerror") as showerror:
+        with patch("gui._core.threading.Thread") as thread, patch("gui._core.messagebox.showerror") as showerror:
             scanner.start_backtest()
 
         self.assertEqual(scanner._atomic_write_text.call_args.args[1].count("\n"), 49)

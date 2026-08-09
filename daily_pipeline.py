@@ -25,6 +25,8 @@ from config import (
     DAILY_MIN_FRESH_RATIO,
     DAILY_MIN_STOCK_COUNT,
     DAILY_MIN_UNIVERSE_TOTAL,
+    DAILY_MIN_VALID_ETF_RATIO,
+    DAILY_MIN_VALID_STOCK_RATIO,
     DAILY_RELATIVE_UNIVERSE_FLOOR,
     OUTPUT_DIR,
     PIPELINE_VERSION,
@@ -126,6 +128,12 @@ def _csv_profile(path: Path, expected_date: str) -> dict[str, object]:
         "rows": 0,
         "stocks": 0,
         "etfs": 0,
+        "valid_rows": 0,
+        "valid_stocks": 0,
+        "valid_etfs": 0,
+        "error_rows": 0,
+        "valid_stock_ratio": 0.0,
+        "valid_etf_ratio": 0.0,
         "fresh_rows": 0,
         "fresh_ratio": 0.0,
         "run_ids": [],
@@ -134,6 +142,7 @@ def _csv_profile(path: Path, expected_date: str) -> dict[str, object]:
         return profile
     run_ids: set[str] = set()
     rows = stocks = etfs = fresh = 0
+    valid_rows = valid_stocks = valid_etfs = error_rows = 0
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as file:
             for row in csv.DictReader(file):
@@ -141,10 +150,20 @@ def _csv_profile(path: Path, expected_date: str) -> dict[str, object]:
                     continue
                 rows += 1
                 asset = str(row.get("AssetType", "")).strip().lower()
-                if asset == "etf" or _truthy(row.get("IsETF", False)):
+                row_is_etf = asset == "etf" or _truthy(row.get("IsETF", False))
+                if row_is_etf:
                     etfs += 1
                 else:
                     stocks += 1
+                has_error = bool(str(row.get("Error", "")).strip())
+                if has_error:
+                    error_rows += 1
+                else:
+                    valid_rows += 1
+                    if row_is_etf:
+                        valid_etfs += 1
+                    else:
+                        valid_stocks += 1
                 if str(row.get("DataAsOf", "")).strip() == expected_date:
                     fresh += 1
                 run_id = str(row.get("RunId", "")).strip()
@@ -157,6 +176,12 @@ def _csv_profile(path: Path, expected_date: str) -> dict[str, object]:
             "rows": rows,
             "stocks": stocks,
             "etfs": etfs,
+            "valid_rows": valid_rows,
+            "valid_stocks": valid_stocks,
+            "valid_etfs": valid_etfs,
+            "error_rows": error_rows,
+            "valid_stock_ratio": round(valid_stocks / stocks, 4) if stocks else 0.0,
+            "valid_etf_ratio": round(valid_etfs / etfs, 4) if etfs else 0.0,
             "fresh_rows": fresh,
             "fresh_ratio": round(fresh / rows, 4) if rows else 0.0,
             "run_ids": sorted(run_ids),
@@ -177,6 +202,14 @@ def _quality_gate_errors(
     total = int(scan_profile.get("rows", 0) or 0)
     stocks = int(scan_profile.get("stocks", 0) or 0)
     etfs = int(scan_profile.get("etfs", 0) or 0)
+    valid_stocks = int(scan_profile.get("valid_stocks", stocks) or 0)
+    valid_etfs = int(scan_profile.get("valid_etfs", etfs) or 0)
+    valid_stock_ratio = float(
+        scan_profile.get("valid_stock_ratio", valid_stocks / max(1, stocks)) or 0.0
+    )
+    valid_etf_ratio = float(
+        scan_profile.get("valid_etf_ratio", valid_etfs / max(1, etfs)) or 0.0
+    )
     fresh_ratio = float(scan_profile.get("fresh_ratio", 0.0) or 0.0)
     if total < int(DAILY_MIN_UNIVERSE_TOTAL):
         errors.append(f"有效标的仅 {total}，低于安全下限 {DAILY_MIN_UNIVERSE_TOTAL}")
@@ -184,6 +217,22 @@ def _quality_gate_errors(
         errors.append(f"股票仅 {stocks}，低于安全下限 {DAILY_MIN_STOCK_COUNT}")
     if etfs < int(DAILY_MIN_ETF_COUNT):
         errors.append(f"ETF仅 {etfs}，低于安全下限 {DAILY_MIN_ETF_COUNT}")
+    if valid_stocks < int(DAILY_MIN_STOCK_COUNT):
+        errors.append(
+            f"有效股票仅 {valid_stocks}/{stocks}，低于安全下限 {DAILY_MIN_STOCK_COUNT}"
+        )
+    if stocks and valid_stock_ratio < float(DAILY_MIN_VALID_STOCK_RATIO):
+        errors.append(
+            f"股票有效率 {valid_stock_ratio:.1%}，低于 {DAILY_MIN_VALID_STOCK_RATIO:.0%}"
+        )
+    if valid_etfs < int(DAILY_MIN_ETF_COUNT):
+        errors.append(
+            f"有效ETF仅 {valid_etfs}/{etfs}，低于安全下限 {DAILY_MIN_ETF_COUNT}"
+        )
+    if etfs and valid_etf_ratio < float(DAILY_MIN_VALID_ETF_RATIO):
+        errors.append(
+            f"ETF有效率 {valid_etf_ratio:.1%}，低于 {DAILY_MIN_VALID_ETF_RATIO:.0%}"
+        )
     if fresh_ratio < float(DAILY_MIN_FRESH_RATIO):
         errors.append(
             f"最新交易日覆盖率 {fresh_ratio:.1%}，低于 {DAILY_MIN_FRESH_RATIO:.0%}"
@@ -215,11 +264,28 @@ def _final_output_errors(
     data_run_id = scan_ids[0] if len(scan_ids) == 1 else ""
     if quality_gates and len(scan_ids) != 1:
         errors.append(f"AllResults RunId 不唯一：{scan_ids or 'missing'}")
+    expected_split_rows = {
+        "Top50Mixed.csv": min(
+            int(TOP_N_REPORT), int(scan_profile.get("valid_rows", 0) or 0)
+        ),
+        "Top50Stocks.csv": min(
+            int(TOP_N_REPORT), int(scan_profile.get("valid_stocks", 0) or 0)
+        ),
+        "Top50ETF.csv": min(
+            int(TOP_N_REPORT), int(scan_profile.get("valid_etfs", 0) or 0)
+        ),
+    }
     for name in FINAL_OUTPUTS:
         profile = profiles.get(name, {})
-        if int(profile.get("rows", 0) or 0) <= 0:
+        rows = int(profile.get("rows", 0) or 0)
+        if rows <= 0:
             errors.append(f"{name} 缺失或为空")
             continue
+        expected_rows = expected_split_rows.get(name, 0)
+        if quality_gates and expected_rows and rows < expected_rows:
+            errors.append(
+                f"{name} 仅 {rows} 条，当前有效标的足以生成 {expected_rows} 条"
+            )
         if quality_gates:
             fresh_ratio = float(profile.get("fresh_ratio", 0.0) or 0.0)
             if fresh_ratio < float(DAILY_MIN_FRESH_RATIO):

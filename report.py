@@ -166,6 +166,13 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "RankingEligibility": r.ranking_eligibility,
                 "RankingReason": r.ranking_reason,
                 "Close": r.close,
+                "MarketCap": r.filter_details.get("market_cap"),
+                "MarketCapDataAvailable": bool(
+                    r.filter_details.get("market_cap_available", False)
+                ),
+                "MarketCapPassed": bool(
+                    r.filter_details.get("min_market_cap", False)
+                ),
                 "Score": round(r.score.total, 2),
                 "BaseScore": round(r.base_score, 2) if np.isfinite(r.base_score) else None,
                 "TriggerScore": round(r.trigger_score, 2) if np.isfinite(r.trigger_score) else None,
