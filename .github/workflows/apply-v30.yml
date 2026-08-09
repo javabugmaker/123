@@ -33,6 +33,19 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
 
+      - name: Harden migration marker
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("tools/apply_v30_performance_workstation.py")
+          text = path.read_text(encoding="utf-8")
+          old = 'end = text.find("\\ndef _sort_export_rows(\\n", start)'
+          new = 'end = text.find("\\ndef _sort_export_rows(", start)'
+          if old not in text:
+              raise SystemExit("v30 marker to patch was not found")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
       - name: Apply v30 patch
         run: python tools/apply_v30_performance_workstation.py
 
