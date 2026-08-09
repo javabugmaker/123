@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,10 +14,10 @@ report_path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 config_path = ROOT / "config.py"
 config_text = config_path.read_text(encoding="utf-8")
-pattern = re.compile(r'^(PIPELINE_VERSION\\s*(?::[^=]+)?=\\s*)["\\\'][^"\\\']+["\\\']', re.MULTILINE)
-config_text, count = pattern.subn(r'\\1"2026-08-10-v32-asset-top50-ranking"', config_text, count=1)
-if count != 1:
+old_version = 'PIPELINE_VERSION: str = "2026-08-10-v31-stock-universe-integrity"'
+new_version = 'PIPELINE_VERSION: str = "2026-08-10-v32-asset-top50-ranking"'
+if old_version not in config_text:
     raise RuntimeError("PIPELINE_VERSION assignment not found")
-config_path.write_text(config_text, encoding="utf-8")
+config_path.write_text(config_text.replace(old_version, new_version, 1), encoding="utf-8")
 
 print("v32 migration applied")
