@@ -7,6 +7,8 @@ import pandas as pd
 import analytics
 import gui
 
+# Connector-gated v28 cross-platform CI.
+
 
 class V28GuiBacktestTests(unittest.TestCase):
     def test_main_table_uses_display_rank_and_industry_topic(self):
