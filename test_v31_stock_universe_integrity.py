@@ -16,6 +16,9 @@ from downloader import TickerInfo
 from filters import AllFilterResults, FilterResult
 from score import ScoreBreakdown
 
+# Final connector-origin commit: keep the v31 stock-universe integrity contract
+# on the standard Ubuntu/Windows regression matrix before merge.
+
 
 class V31StockUniverseIntegrityTests(unittest.TestCase):
     def test_small_tickflow_share_metadata_is_normalized_from_10k_scale(self):
