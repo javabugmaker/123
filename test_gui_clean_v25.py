@@ -5,6 +5,8 @@ import unittest
 
 import gui
 
+# v25 contract: the GUI is a trading-decision surface, not a research audit table.
+
 
 class GuiCleanV25Tests(unittest.TestCase):
     def test_main_table_replaces_research_diagnostics_with_recent_entry_state(self):
