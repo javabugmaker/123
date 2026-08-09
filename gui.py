@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-"""Decision-focused Tkinter GUI entrypoint.
+"""High-frequency decision workstation GUI.
 
-``gui_core.py`` keeps the stable implementation and compatibility surface.
-This layer owns the decision-oriented presentation and the richer result
-filters so GUI changes do not disturb the scanner/backtest engine.
+``gui_core.py`` remains the stable scanner/backtest implementation.  This
+module owns the v26 presentation layer: a CustomTkinter shell, independent
+stock/ETF Top50 views, first-class scan/backtest actions, a compact decision
+card, and collapsible engineering controls/logs.
 """
 
+import csv
 import re
 from collections.abc import Sequence
 from pathlib import Path
+
+import customtkinter as ctk
 
 import gui_core as _core
 
@@ -20,7 +24,9 @@ OUTPUT_DIR = _core.OUTPUT_DIR
 _core.DATA_SOURCE_HINTS.clear()
 _core.DATA_SOURCE_HINTS["TickFlow Free"] = "行情：TickFlow Free（日K / 标的池）"
 
-# Main table: trading decision first. Diagnostics remain in CSV/detail view.
+# The main table is intentionally compact.  Long diagnostics stay in the
+# detail dialog/right-side decision card.  Two derived columns are appended
+# in-memory after a CSV is loaded.
 _core.DISPLAY_COLUMNS = (
     "OverallRank",
     "Ticker",
@@ -31,15 +37,12 @@ _core.DISPLAY_COLUMNS = (
     "EntrySignal",
     "SignalStatus",
     "SignalDays",
-    "EntryZone",
-    "BreakoutBuyPrice",
+    "ReferenceBuyPrice",
     "StopLoss",
     "RankingEligibility",
     "RankingScore",
-    "InstitutionalTier",
-    "InstitutionalScore",
+    "InstitutionalStrength",
     "TradeReadinessReason",
-    "DataAsOf",
 )
 
 _core.COLUMN_NAMES.update(
@@ -48,7 +51,9 @@ _core.COLUMN_NAMES.update(
         "EntrySignal": "当前买点",
         "SignalStatus": "近期买点",
         "SignalDays": "持续天数",
+        "ReferenceBuyPrice": "参考买点",
         "RankingScore": "排序分",
+        "InstitutionalStrength": "机构强度",
         "InstitutionalTier": "机构等级",
         "InstitutionalScore": "机构分",
         "EntryZone": "回调买点",
@@ -86,39 +91,50 @@ _core.COLUMN_NAMES.update(
 
 _core.COLUMN_WIDTHS.update(
     {
-        "OverallRank": 64,
-        "Ticker": 90,
-        "Name": 104,
-        "Sector": 92,
-        "Industry": 106,
-        "Close": 86,
-        "EntrySignal": 112,
-        "SignalStatus": 82,
-        "SignalDays": 72,
-        "EntryZone": 104,
-        "BreakoutBuyPrice": 88,
-        "StopLoss": 72,
-        "RankingEligibility": 74,
-        "RankingScore": 82,
-        "InstitutionalTier": 92,
-        "InstitutionalScore": 78,
-        "FinalScore": 76,
-        "QualityGate": 84,
-        "QualityDataAvailable": 82,
-        "QualityDataCompleteness": 96,
+        "OverallRank": 62,
+        "Ticker": 92,
+        "Name": 112,
+        "AssetType": 58,
+        "Industry": 110,
+        "Close": 88,
+        "EntrySignal": 104,
+        "SignalStatus": 86,
+        "SignalDays": 68,
+        "ReferenceBuyPrice": 112,
+        "StopLoss": 78,
+        "RankingEligibility": 82,
+        "RankingScore": 78,
+        "InstitutionalStrength": 102,
     }
 )
 
+NAV_FILES = {
+    "mixed": "Top50Mixed.csv",
+    "stocks": "Top50Stocks.csv",
+    "etf": "Top50ETF.csv",
+    "ready": "Top50TradeReady.csv",
+    "all": "AllResults.csv",
+}
+NAV_TITLES = {
+    "mixed": "综合 Top50",
+    "stocks": "股票 Top50",
+    "etf": "ETF Top50",
+    "ready": "强推荐",
+    "new": "新买点",
+    "all": "全部结果",
+}
+BACKTEST_SCOPE_FILES = {
+    "股票 Top50": "Top50Stocks.csv",
+    "ETF Top50": "Top50ETF.csv",
+    "综合 Top50": "Top50Mixed.csv",
+    "强推荐": "Top50TradeReady.csv",
+}
 
-# ---------------------------------------------------------------------------
-# Result-filter rebuild
-# ---------------------------------------------------------------------------
-
-_original_build_ui = _core.ScannerGUI._build_ui
 _original_update_filter_values = _core.ScannerGUI._update_filter_values
 _original_row_matches_filters = _core.ScannerGUI._row_matches_filters
 _original_clear_filters = _core.ScannerGUI.clear_filters
 _original_format_table_value = _core.ScannerGUI._format_table_value
+_original_render_cached_rows = _core.ScannerGUI._render_cached_rows
 
 
 def _read_filter(self, attribute: str, default: str) -> str:
@@ -154,154 +170,569 @@ def _configure_filter_box(widget, variable, default: str, values: list[str], ena
     widget.configure(state="readonly" if enabled else "disabled")
 
 
-def _build_ui_v16(self) -> None:
-    _original_build_ui(self)
+def _panel_label(parent, text: str, **grid_kwargs):
+    label = _core.ttk.Label(parent, text=text, style="Panel.TLabel")
+    label.grid(**grid_kwargs)
+    return label
 
-    # Keep the toolbar centered on actionable research lists.
-    actions = self.progress.master
-    for child in list(actions.winfo_children()):
-        try:
-            label = str(child.cget("text"))
-        except Exception:
-            continue
-        if label in {"风险榜", "市场概览", "连续信号"}:
-            child.destroy()
-        elif label == "生成前50名":
-            child.configure(text="综合榜", command=lambda: self.load_csv("Top50Mixed.csv"))
-        elif label == "交易就绪":
-            child.configure(text="强推荐")
 
-    _core.ttk.Button(
-        actions,
-        text="股票榜",
-        style="Quiet.TButton",
-        command=lambda: self.load_csv("Top50Stocks.csv"),
-    ).pack(side=_core.tk.LEFT, padx=(0, 6))
-    _core.ttk.Button(
-        actions,
-        text="ETF榜",
-        style="Quiet.TButton",
-        command=lambda: self.load_csv("Top50ETF.csv"),
-    ).pack(side=_core.tk.LEFT, padx=(0, 6))
+def _build_ui_v26(self) -> None:
+    tk = _core.tk
+    ttk = _core.ttk
 
-    # Only keep filters that change an actual trading decision.
+    self.root.title("InstitutionScanner · 机构交易决策台")
+    self.root.geometry("1520x920")
+    self.root.minsize(1180, 720)
+
+    style = ttk.Style()
+    style.configure("Panel.TLabel", background="#ffffff", foreground="#334e68")
+    style.configure("Panel.TCheckbutton", background="#ffffff", foreground="#334e68")
+    style.configure("Compact.Treeview", rowheight=28, font=("Microsoft YaHei UI", 9))
+    style.configure(
+        "Compact.Treeview.Heading",
+        font=("Microsoft YaHei UI", 9, "bold"),
+        background="#eef4fb",
+        foreground="#17324d",
+        padding=(8, 8),
+    )
+
+    # Header -----------------------------------------------------------------
+    header = ctk.CTkFrame(self.root, corner_radius=0, fg_color="#17324d")
+    header.pack(fill=tk.X)
+    header.grid_columnconfigure(0, weight=1)
+    title_box = ctk.CTkFrame(header, fg_color="transparent")
+    title_box.grid(row=0, column=0, padx=24, pady=15, sticky="w")
+    ctk.CTkLabel(
+        title_box,
+        text="InstitutionScanner",
+        font=("Microsoft YaHei UI", 22, "bold"),
+        text_color="#ffffff",
+    ).pack(anchor="w")
+    ctk.CTkLabel(
+        title_box,
+        text="A股 / ETF · 买点 · 机构强度 · 交易决策",
+        font=("Microsoft YaHei UI", 10),
+        text_color="#cbd9e8",
+    ).pack(anchor="w", pady=(2, 0))
+    header_right = ctk.CTkFrame(header, fg_color="transparent")
+    header_right.grid(row=0, column=1, padx=24, pady=15, sticky="e")
+    ctk.CTkLabel(
+        header_right,
+        text="● TickFlow Free",
+        text_color="#a7f3d0",
+        font=("Microsoft YaHei UI", 10, "bold"),
+    ).pack(side=tk.LEFT, padx=(0, 10))
+    ctk.CTkLabel(
+        header_right,
+        textvariable=self.status,
+        fg_color="#244864",
+        corner_radius=8,
+        height=32,
+        text_color="#e6f2ff",
+        font=("Microsoft YaHei UI", 9, "bold"),
+    ).pack(side=tk.LEFT)
+
+    # Primary operations ------------------------------------------------------
+    controls = ctk.CTkFrame(self.root, corner_radius=12, fg_color="#ffffff")
+    controls.pack(fill=tk.X, padx=18, pady=(14, 8))
+    controls.grid_columnconfigure(5, weight=1)
+
+    ctk.CTkLabel(controls, text="扫描范围", text_color="#334e68").grid(
+        row=0, column=0, padx=(16, 6), pady=14, sticky="w"
+    )
+    self.scope_menu = ctk.CTkOptionMenu(
+        controls,
+        variable=self.scope,
+        values=["全部股票和ETF", "仅股票", "仅ETF"],
+        width=150,
+    )
+    self.scope_menu.grid(row=0, column=1, padx=(0, 16), pady=14, sticky="w")
+
+    ctk.CTkLabel(controls, text="扫描模式", text_color="#334e68").grid(
+        row=0, column=2, padx=(0, 6), pady=14, sticky="w"
+    )
+    self.scan_mode_menu = ctk.CTkOptionMenu(
+        controls,
+        variable=self.scan_mode,
+        values=["快速", "标准", "完整刷新", "自定义"],
+        command=self._scan_mode_changed,
+        width=118,
+    )
+    self.scan_mode_menu.grid(row=0, column=3, padx=(0, 16), pady=14, sticky="w")
+
+    ctk.CTkLabel(controls, text="指定代码", text_color="#334e68").grid(
+        row=0, column=4, padx=(0, 6), pady=14, sticky="w"
+    )
+    self.ticker_entry = ctk.CTkEntry(
+        controls,
+        textvariable=self.tickers,
+        placeholder_text="588000.SH,000001.SZ",
+        width=260,
+    )
+    self.ticker_entry.grid(row=0, column=5, padx=(0, 16), pady=14, sticky="ew")
+
+    self.start_button = ctk.CTkButton(
+        controls,
+        text="▶ 开始扫描",
+        command=self.start_scan,
+        width=126,
+        height=38,
+        font=("Microsoft YaHei UI", 10, "bold"),
+    )
+    self.start_button.grid(row=0, column=6, padx=(0, 8), pady=12)
+    self.backtest_button = ctk.CTkButton(
+        controls,
+        text="▶ 运行回测",
+        command=self.start_backtest,
+        width=126,
+        height=38,
+        fg_color="#0f766e",
+        hover_color="#115e59",
+        font=("Microsoft YaHei UI", 10, "bold"),
+    )
+    self.backtest_button.grid(row=0, column=7, padx=(0, 8), pady=12)
+    self.cancel_button = ctk.CTkButton(
+        controls,
+        text="■ 停止",
+        command=self.cancel_running_task,
+        state=tk.DISABLED,
+        width=84,
+        height=38,
+        fg_color="#64748b",
+        hover_color="#475569",
+    )
+    self.cancel_button.grid(row=0, column=8, padx=(0, 8), pady=12)
+    ctk.CTkButton(
+        controls,
+        text="⚙ 高级设置",
+        command=self._toggle_advanced,
+        width=106,
+        height=38,
+        fg_color="transparent",
+        hover_color="#eef4fb",
+        text_color="#334e68",
+        border_width=1,
+        border_color="#d7e2ee",
+    ).grid(row=0, column=9, padx=(0, 16), pady=12)
+
+    self.advanced_frame = ctk.CTkFrame(controls, fg_color="#f8fafc", corner_radius=8)
+    self.advanced_frame.grid(row=1, column=0, columnspan=10, padx=14, pady=(0, 14), sticky="ew")
+    self.advanced_frame.grid_remove()
+    self.source_box = ttk.Combobox(
+        self.advanced_frame,
+        textvariable=self.data_source,
+        values=("TickFlow Free",),
+        state="disabled",
+        width=14,
+    )
+    self.source_box.grid(row=0, column=0, padx=(12, 8), pady=10, sticky="w")
+    ctk.CTkLabel(
+        self.advanced_frame,
+        text="行情：TickFlow Free · 基本面：AkShare（低频缓存）",
+        text_color="#64748b",
+    ).grid(row=0, column=1, padx=(0, 18), pady=10, sticky="w")
+    ctk.CTkCheckBox(
+        self.advanced_frame,
+        text="优先缓存",
+        variable=self.cache_first,
+        command=self._advanced_changed,
+    ).grid(row=0, column=2, padx=8, pady=10, sticky="w")
+    ctk.CTkCheckBox(
+        self.advanced_frame,
+        text="强制重新下载",
+        variable=self.force_download,
+        command=self._advanced_changed,
+    ).grid(row=0, column=3, padx=8, pady=10, sticky="w")
+    ctk.CTkCheckBox(
+        self.advanced_frame,
+        text="不使用断点",
+        variable=self.no_resume,
+        command=self._advanced_changed,
+    ).grid(row=0, column=4, padx=8, pady=10, sticky="w")
+    ctk.CTkCheckBox(
+        self.advanced_frame,
+        text="刷新基本面",
+        variable=self.refresh_fundamentals,
+        command=self._advanced_changed,
+    ).grid(row=0, column=5, padx=8, pady=10, sticky="w")
+    ctk.CTkCheckBox(
+        self.advanced_frame,
+        text="扫描完成后回测强推荐",
+        variable=self.auto_backtest_recommended,
+    ).grid(row=0, column=6, padx=(8, 12), pady=10, sticky="w")
+
+    # Navigation --------------------------------------------------------------
+    nav = ctk.CTkFrame(self.root, corner_radius=10, fg_color="#ffffff")
+    nav.pack(fill=tk.X, padx=18, pady=(0, 8))
+    nav_items = (
+        ("mixed", "综合 Top50"),
+        ("stocks", "股票 Top50"),
+        ("etf", "ETF Top50"),
+        ("ready", "强推荐"),
+        ("new", "新买点"),
+        ("all", "全部结果"),
+    )
+    for key, label in nav_items:
+        button = ctk.CTkButton(
+            nav,
+            text=label,
+            width=104,
+            height=34,
+            fg_color="transparent",
+            hover_color="#eaf2fb",
+            text_color="#334e68",
+            command=lambda nav_key=key: self._load_navigation(nav_key),
+        )
+        button.pack(side=tk.LEFT, padx=(8 if key == "mixed" else 2, 2), pady=8)
+        self._nav_buttons[key] = button
+    ctk.CTkButton(
+        nav,
+        text="↻ 刷新",
+        width=82,
+        height=34,
+        fg_color="transparent",
+        hover_color="#eaf2fb",
+        text_color="#334e68",
+        command=self.refresh_results,
+    ).pack(side=tk.RIGHT, padx=(2, 10), pady=8)
+    ctk.CTkButton(
+        nav,
+        text="结果目录",
+        width=86,
+        height=34,
+        fg_color="transparent",
+        hover_color="#eaf2fb",
+        text_color="#334e68",
+        command=self.open_output,
+    ).pack(side=tk.RIGHT, padx=2, pady=8)
+
+    # Snapshot cards ----------------------------------------------------------
+    cards = ctk.CTkFrame(self.root, fg_color="transparent")
+    cards.pack(fill=tk.X, padx=18, pady=(0, 8))
+    for column in range(4):
+        cards.grid_columnconfigure(column, weight=1, uniform="cards")
+    card_specs = (
+        ("推荐", self.card_recommended, "#166534"),
+        ("谨慎候选", self.card_cautious, "#92400e"),
+        ("新买点", self.card_new, "#1d4ed8"),
+        ("当前结果", self.card_total, "#334e68"),
+    )
+    for column, (title, variable, accent) in enumerate(card_specs):
+        card = ctk.CTkFrame(cards, corner_radius=10, fg_color="#ffffff")
+        card.grid(row=0, column=column, padx=(0 if column == 0 else 5, 0 if column == 3 else 5), sticky="ew")
+        ctk.CTkLabel(card, text=title, text_color="#64748b", font=("Microsoft YaHei UI", 9)).pack(
+            anchor="w", padx=16, pady=(10, 0)
+        )
+        ctk.CTkLabel(
+            card,
+            textvariable=variable,
+            text_color=accent,
+            font=("Microsoft YaHei UI", 20, "bold"),
+        ).pack(anchor="w", padx=16, pady=(0, 10))
+
+    # Filters -----------------------------------------------------------------
+    filters_root = ctk.CTkFrame(self.root, corner_radius=10, fg_color="#ffffff")
+    filters_root.pack(fill=tk.X, padx=18, pady=(0, 8))
+    top_filters = ctk.CTkFrame(filters_root, fg_color="transparent")
+    top_filters.pack(fill=tk.X, padx=12, pady=10)
+
     if not hasattr(self, "asset_filter"):
-        self.asset_filter = _core.tk.StringVar(value="全部类型")
-        self.tier_filter = _core.tk.StringVar(value="全部等级")
-        self.score_filter = _core.tk.StringVar(value="全部分数")
+        self.asset_filter = tk.StringVar(value="全部类型")
+        self.tier_filter = tk.StringVar(value="全部等级")
+        self.score_filter = tk.StringVar(value="全部分数")
         for variable in (self.asset_filter, self.tier_filter, self.score_filter):
             variable.trace_add("write", self._schedule_filter_refresh)
 
-    filters = self.sector_box.master
-    for child in filters.winfo_children():
-        child.destroy()
-    for column in range(12):
-        filters.columnconfigure(column, weight=0)
-    filters.columnconfigure(9, weight=1)
-
-    ttk = _core.ttk
-    tk = _core.tk
-
-    ttk.Label(filters, text="类型").grid(row=0, column=0, padx=(0, 4), sticky=tk.W)
+    _panel_label(top_filters, "类型", row=0, column=0, padx=(0, 4), sticky="w")
     self.asset_box = ttk.Combobox(
-        filters,
+        top_filters,
         textvariable=self.asset_filter,
         values=("全部类型", "股票", "ETF"),
         state="readonly",
         width=9,
     )
-    self.asset_box.grid(row=0, column=1, padx=(0, 10), sticky=tk.W)
+    self.asset_box.grid(row=0, column=1, padx=(0, 10), sticky="w")
 
-    ttk.Label(filters, text="行业").grid(row=0, column=2, padx=(0, 4), sticky=tk.W)
-    self.industry_box = ttk.Combobox(
-        filters,
-        textvariable=self.industry_filter,
-        state="readonly",
-        width=14,
-    )
-    self.industry_box.grid(row=0, column=3, padx=(0, 10), sticky=tk.W)
+    _panel_label(top_filters, "行业", row=0, column=2, padx=(0, 4), sticky="w")
+    self.industry_box = ttk.Combobox(top_filters, textvariable=self.industry_filter, state="readonly", width=14)
+    self.industry_box.grid(row=0, column=3, padx=(0, 10), sticky="w")
 
-    ttk.Label(filters, text="买点").grid(row=0, column=4, padx=(0, 4), sticky=tk.W)
-    self.entry_box = ttk.Combobox(
-        filters,
-        textvariable=self.entry_filter,
-        state="readonly",
-        width=15,
-    )
-    self.entry_box.grid(row=0, column=5, padx=(0, 10), sticky=tk.W)
+    _panel_label(top_filters, "买点", row=0, column=4, padx=(0, 4), sticky="w")
+    self.entry_box = ttk.Combobox(top_filters, textvariable=self.entry_filter, state="readonly", width=15)
+    self.entry_box.grid(row=0, column=5, padx=(0, 10), sticky="w")
 
-    ttk.Label(filters, text="资格").grid(row=0, column=6, padx=(0, 4), sticky=tk.W)
+    _panel_label(top_filters, "资格", row=0, column=6, padx=(0, 4), sticky="w")
     self.eligibility_box = ttk.Combobox(
-        filters,
+        top_filters,
         textvariable=self.eligibility_filter,
         values=("全部资格", "推荐", "谨慎候选", "观察", "风险过滤"),
         state="readonly",
-        width=9,
+        width=10,
     )
-    self.eligibility_box.grid(row=0, column=7, padx=(0, 10), sticky=tk.W)
+    self.eligibility_box.grid(row=0, column=7, padx=(0, 10), sticky="w")
 
-    ttk.Label(filters, text="板块").grid(
-        row=1, column=0, padx=(0, 4), pady=(8, 0), sticky=tk.W
-    )
-    self.sector_box = ttk.Combobox(
-        filters,
-        textvariable=self.sector_filter,
-        state="readonly",
-        width=12,
-    )
-    self.sector_box.grid(row=1, column=1, padx=(0, 10), pady=(8, 0), sticky=tk.W)
-    self.sector_box.bind("<<ComboboxSelected>>", self._sector_changed)
-
-    ttk.Label(filters, text="资金阶段").grid(
-        row=1, column=2, padx=(0, 4), pady=(8, 0), sticky=tk.W
-    )
-    self.stage_box = ttk.Combobox(
-        filters,
-        textvariable=self.stage_filter,
-        state="readonly",
-        width=12,
-    )
-    self.stage_box.grid(row=1, column=3, padx=(0, 10), pady=(8, 0), sticky=tk.W)
-
-    ttk.Label(filters, text="机构等级").grid(
-        row=1, column=4, padx=(0, 4), pady=(8, 0), sticky=tk.W
-    )
-    self.tier_box = ttk.Combobox(
-        filters,
-        textvariable=self.tier_filter,
-        state="readonly",
-        width=12,
-    )
-    self.tier_box.grid(row=1, column=5, padx=(0, 10), pady=(8, 0), sticky=tk.W)
-
-    ttk.Label(filters, text="最低分").grid(
-        row=1, column=6, padx=(0, 4), pady=(8, 0), sticky=tk.W
-    )
+    _panel_label(top_filters, "最低分", row=0, column=8, padx=(0, 4), sticky="w")
     self.score_box = ttk.Combobox(
-        filters,
+        top_filters,
         textvariable=self.score_filter,
         values=("全部分数", "≥25", "≥30", "≥35", "≥40", "≥50"),
         state="readonly",
         width=9,
     )
-    self.score_box.grid(row=1, column=7, padx=(0, 10), pady=(8, 0), sticky=tk.W)
+    self.score_box.grid(row=0, column=9, padx=(0, 10), sticky="w")
 
-    ttk.Label(filters, text="搜索").grid(
-        row=1, column=8, padx=(0, 4), pady=(8, 0), sticky=tk.W
+    _panel_label(top_filters, "搜索", row=0, column=10, padx=(0, 4), sticky="w")
+    top_filters.grid_columnconfigure(11, weight=1)
+    self.search_entry = ttk.Entry(top_filters, textvariable=self.search, width=24)
+    self.search_entry.grid(row=0, column=11, padx=(0, 8), sticky="ew")
+    ctk.CTkButton(
+        top_filters,
+        text="更多筛选",
+        width=82,
+        height=30,
+        fg_color="transparent",
+        hover_color="#eef4fb",
+        text_color="#334e68",
+        border_width=1,
+        border_color="#d7e2ee",
+        command=self._toggle_more_filters,
+    ).grid(row=0, column=12, padx=(0, 6))
+    ctk.CTkButton(top_filters, text="重置", width=62, height=30, command=self.clear_filters).grid(
+        row=0, column=13, padx=(0, 6)
     )
-    self.search_entry = ttk.Entry(filters, textvariable=self.search, width=24)
-    self.search_entry.grid(
-        row=1, column=9, padx=(0, 8), pady=(8, 0), sticky=tk.EW
+    ctk.CTkButton(
+        top_filters,
+        text="刷新",
+        width=62,
+        height=30,
+        fg_color="#64748b",
+        hover_color="#475569",
+        command=self.refresh_results,
+    ).grid(row=0, column=14)
+
+    self.filter_more_frame = ctk.CTkFrame(filters_root, fg_color="#f8fafc", corner_radius=8)
+    self.sector_box = ttk.Combobox(
+        self.filter_more_frame, textvariable=self.sector_filter, state="readonly", width=14
     )
-    ttk.Button(filters, text="重置", command=self.clear_filters).grid(
-        row=1, column=10, padx=(0, 6), pady=(8, 0), sticky=tk.W
+    self.stage_box = ttk.Combobox(
+        self.filter_more_frame, textvariable=self.stage_filter, state="readonly", width=14
     )
-    ttk.Button(filters, text="刷新", command=self.refresh_results).grid(
-        row=1, column=11, padx=(0, 6), pady=(8, 0), sticky=tk.W
+    self.tier_box = ttk.Combobox(
+        self.filter_more_frame, textvariable=self.tier_filter, state="readonly", width=12
     )
+    _panel_label(self.filter_more_frame, "板块", row=0, column=0, padx=(12, 4), pady=10, sticky="w")
+    self.sector_box.grid(row=0, column=1, padx=(0, 16), pady=10, sticky="w")
+    self.sector_box.bind("<<ComboboxSelected>>", self._sector_changed)
+    _panel_label(self.filter_more_frame, "资金阶段", row=0, column=2, padx=(0, 4), pady=10, sticky="w")
+    self.stage_box.grid(row=0, column=3, padx=(0, 16), pady=10, sticky="w")
+    _panel_label(self.filter_more_frame, "机构等级", row=0, column=4, padx=(0, 4), pady=10, sticky="w")
+    self.tier_box.grid(row=0, column=5, padx=(0, 12), pady=10, sticky="w")
+
+    # Main result area --------------------------------------------------------
+    body = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+    body.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 8))
+
+    table_frame = ctk.CTkFrame(body, corner_radius=10, fg_color="#ffffff")
+    table_frame.grid_rowconfigure(2, weight=1)
+    table_frame.grid_columnconfigure(0, weight=1)
+    result_bar = ctk.CTkFrame(table_frame, fg_color="transparent")
+    result_bar.grid(row=0, column=0, columnspan=2, padx=14, pady=(10, 4), sticky="ew")
+    result_bar.grid_columnconfigure(1, weight=1)
+    ctk.CTkLabel(
+        result_bar,
+        textvariable=self.view_title,
+        font=("Microsoft YaHei UI", 14, "bold"),
+        text_color="#17324d",
+    ).grid(row=0, column=0, sticky="w")
+    ctk.CTkLabel(
+        result_bar,
+        textvariable=self.result_summary,
+        font=("Microsoft YaHei UI", 9),
+        text_color="#64748b",
+    ).grid(row=0, column=1, padx=(12, 0), sticky="w")
+
+    pagination = ctk.CTkFrame(table_frame, fg_color="transparent")
+    pagination.grid(row=1, column=0, columnspan=2, padx=14, pady=(0, 6), sticky="e")
+    self.previous_page_button = ctk.CTkButton(
+        pagination,
+        text="上一页",
+        width=70,
+        height=28,
+        fg_color="#eaf2fb",
+        hover_color="#dbeafe",
+        text_color="#334e68",
+        command=self._show_previous_page,
+    )
+    self.previous_page_button.pack(side=tk.LEFT, padx=(0, 6))
+    ctk.CTkLabel(pagination, textvariable=self.page_summary, text_color="#64748b").pack(side=tk.LEFT)
+    self.next_page_button = ctk.CTkButton(
+        pagination,
+        text="下一页",
+        width=70,
+        height=28,
+        fg_color="#eaf2fb",
+        hover_color="#dbeafe",
+        text_color="#334e68",
+        command=self._show_next_page,
+    )
+    self.next_page_button.pack(side=tk.LEFT, padx=(6, 0))
+
+    self.table = ttk.Treeview(table_frame, show="headings", selectmode="browse", style="Compact.Treeview")
+    self.table.tag_configure("eligibility-recommended", background="#ecfdf3", foreground="#166534")
+    self.table.tag_configure("eligibility-cautious", background="#fffbeb", foreground="#92400e")
+    self.table.tag_configure("risk-filter", background="#fef2f2", foreground="#991b1b")
+    self.table.tag_configure("eligibility-observe", background="#ffffff", foreground="#334e68")
+    ybar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.table.yview)
+    xbar = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self.table.xview)
+    self.table.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
+    self.table.grid(row=2, column=0, sticky="nsew", padx=(10, 0), pady=(0, 4))
+    ybar.grid(row=2, column=1, sticky="ns", pady=(0, 4))
+    xbar.grid(row=3, column=0, sticky="ew", padx=(10, 0), pady=(0, 10))
+    self.table.bind("<<TreeviewSelect>>", self._update_decision_card)
+    self.table.bind("<Double-1>", self.show_selected_detail)
+    self.table.bind("<Return>", self.show_selected_detail)
+
+    # Right-side decision card ------------------------------------------------
+    detail = ctk.CTkFrame(body, width=310, corner_radius=10, fg_color="#ffffff")
+    detail.pack_propagate(False)
+    ctk.CTkLabel(detail, text="当前标的", text_color="#64748b", font=("Microsoft YaHei UI", 9)).pack(
+        anchor="w", padx=18, pady=(18, 2)
+    )
+    ctk.CTkLabel(
+        detail,
+        textvariable=self.detail_title,
+        text_color="#17324d",
+        font=("Microsoft YaHei UI", 18, "bold"),
+    ).pack(anchor="w", padx=18)
+    ctk.CTkLabel(detail, textvariable=self.detail_subtitle, text_color="#64748b").pack(
+        anchor="w", padx=18, pady=(0, 14)
+    )
+    self.detail_signal_label = ctk.CTkLabel(
+        detail,
+        textvariable=self.detail_signal,
+        fg_color="#eaf2fb",
+        corner_radius=8,
+        text_color="#1d4ed8",
+        font=("Microsoft YaHei UI", 12, "bold"),
+        height=36,
+    )
+    self.detail_signal_label.pack(fill=tk.X, padx=18, pady=(0, 14))
+    for label, variable in (
+        ("近期状态", self.detail_recent),
+        ("参考买点", self.detail_buy),
+        ("止损位", self.detail_stop),
+        ("交易资格", self.detail_eligibility),
+        ("排序 / 机构", self.detail_score),
+    ):
+        row = ctk.CTkFrame(detail, fg_color="transparent")
+        row.pack(fill=tk.X, padx=18, pady=4)
+        ctk.CTkLabel(row, text=label, text_color="#64748b", width=82, anchor="w").pack(side=tk.LEFT)
+        ctk.CTkLabel(
+            row,
+            textvariable=variable,
+            text_color="#17324d",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            anchor="e",
+        ).pack(side=tk.RIGHT, fill=tk.X, expand=True)
+    ctk.CTkLabel(detail, text="执行说明", text_color="#64748b").pack(
+        anchor="w", padx=18, pady=(16, 4)
+    )
+    ctk.CTkLabel(
+        detail,
+        textvariable=self.detail_reason,
+        text_color="#334e68",
+        justify="left",
+        anchor="nw",
+        wraplength=270,
+    ).pack(fill=tk.X, padx=18)
+    detail_actions = ctk.CTkFrame(detail, fg_color="transparent")
+    detail_actions.pack(side=tk.BOTTOM, fill=tk.X, padx=18, pady=18)
+    ctk.CTkButton(
+        detail_actions,
+        text="回测此标的",
+        width=118,
+        command=self._backtest_selected,
+        fg_color="#0f766e",
+        hover_color="#115e59",
+    ).pack(side=tk.LEFT)
+    ctk.CTkButton(
+        detail_actions,
+        text="完整详情",
+        width=110,
+        command=self.show_selected_detail,
+        fg_color="#64748b",
+        hover_color="#475569",
+    ).pack(side=tk.RIGHT)
+
+    body.add(table_frame, weight=5)
+    body.add(detail, weight=1)
+
+    # Footer / backtest scope -------------------------------------------------
+    footer = ctk.CTkFrame(self.root, corner_radius=10, fg_color="#ffffff")
+    footer.pack(fill=tk.X, padx=18, pady=(0, 12))
+    self.footer_frame = footer
+    ctk.CTkLabel(footer, text="回测范围", text_color="#64748b").pack(side=tk.LEFT, padx=(14, 6), pady=9)
+    self.backtest_scope_menu = ctk.CTkOptionMenu(
+        footer,
+        variable=self.backtest_scope,
+        values=["当前页面", "当前筛选", "股票 Top50", "ETF Top50", "综合 Top50", "强推荐", "新买点", "当前选中标的"],
+        width=136,
+    )
+    self.backtest_scope_menu.pack(side=tk.LEFT, pady=9)
+    self.progress = ttk.Progressbar(footer, mode="indeterminate", length=220)
+    self.progress.pack(side=tk.LEFT, padx=14, pady=9)
+    ctk.CTkLabel(footer, textvariable=self.page_summary, text_color="#64748b").pack(side=tk.RIGHT, padx=(10, 6), pady=9)
+    self.log_toggle_button = ctk.CTkButton(
+        footer,
+        text="日志 ›",
+        width=74,
+        height=30,
+        fg_color="transparent",
+        hover_color="#eef4fb",
+        text_color="#334e68",
+        command=self._toggle_log,
+    )
+    self.log_toggle_button.pack(side=tk.RIGHT, padx=(6, 12), pady=7)
+
+    self.log_panel = ctk.CTkFrame(self.root, corner_radius=10, fg_color="#17212b")
+    log_header = ctk.CTkFrame(self.log_panel, fg_color="transparent")
+    log_header.pack(fill=tk.X, padx=10, pady=(8, 0))
+    ctk.CTkLabel(log_header, text="运行日志", text_color="#d5e4f2", font=("Microsoft YaHei UI", 10, "bold")).pack(side=tk.LEFT)
+    ctk.CTkButton(
+        log_header,
+        text="清空",
+        width=58,
+        height=26,
+        fg_color="#334155",
+        hover_color="#475569",
+        command=self.clear_log,
+    ).pack(side=tk.RIGHT)
+    self.log_text = tk.Text(
+        self.log_panel,
+        height=7,
+        wrap=tk.NONE,
+        state=tk.DISABLED,
+        bg="#17212b",
+        fg="#d5e4f2",
+        insertbackground="white",
+        relief=tk.FLAT,
+        padx=12,
+        pady=8,
+        font=("Consolas", 9),
+    )
+    self.log_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 8))
+
+    self.market_overview = tk.StringVar(value="市场概览：等待结果")
+    self._set_active_nav("mixed")
 
 
-def _update_filter_values_v16(self, headers: list[str], rows: list[list[str]]) -> None:
+# v25 source-inspection compatibility.  The real implementation is v26.
+def _build_ui_v16(self) -> None:
+    """Compatibility wrapper: 最低分 · 重置 · 刷新 are provided by v26."""
+    _build_ui_v26(self)
+
+
+def _update_filter_values_v26(self, headers: list[str], rows: list[list[str]]) -> None:
     _original_update_filter_values(self, headers, rows)
     indexes = {header: index for index, header in enumerate(headers)}
 
@@ -319,7 +750,7 @@ def _update_filter_values_v16(self, headers: list[str], rows: list[list[str]]) -
         bool(asset_values),
     )
 
-    tiers = []
+    tiers: list[str] = []
     if "InstitutionalTier" in indexes:
         tier_index = indexes["InstitutionalTier"]
         tiers = sorted(
@@ -329,17 +760,10 @@ def _update_filter_values_v16(self, headers: list[str], rows: list[list[str]]) -
                 if len(row) > tier_index and self._cell_text(row[tier_index])
             }
         )
-    _configure_filter_box(
-        self.tier_box,
-        self.tier_filter,
-        "全部等级",
-        tiers,
-        bool(tiers),
-    )
+    _configure_filter_box(self.tier_box, self.tier_filter, "全部等级", tiers, bool(tiers))
 
     score_enabled = any(
-        column in indexes
-        for column in ("RankingScore", "InstitutionalScore", "FinalScore", "Score")
+        column in indexes for column in ("RankingScore", "InstitutionalScore", "FinalScore", "Score")
     )
     _configure_filter_box(
         self.score_box,
@@ -350,7 +774,11 @@ def _update_filter_values_v16(self, headers: list[str], rows: list[list[str]]) -
     )
 
 
-def _row_matches_filters_v16(
+def _update_filter_values_v16(self, headers: list[str], rows: list[list[str]]) -> None:
+    _update_filter_values_v26(self, headers, rows)
+
+
+def _row_matches_filters_v26(
     self,
     indexes: dict[str, int],
     row: list[str],
@@ -358,16 +786,8 @@ def _row_matches_filters_v16(
     search_text: str | None = None,
     filter_values: Sequence[str] | None = None,
 ) -> bool:
-    # Core owns search/sector/industry/legacy-quality/stage/entry/eligibility.
     legacy_values = tuple(filter_values[:6]) if filter_values is not None else None
-    if not _original_row_matches_filters(
-        self,
-        indexes,
-        row,
-        query,
-        search_text,
-        legacy_values,
-    ):
+    if not _original_row_matches_filters(self, indexes, row, query, search_text, legacy_values):
         return False
 
     if filter_values is not None and len(filter_values) >= 9:
@@ -377,19 +797,11 @@ def _row_matches_filters_v16(
         tier_value = _read_filter(self, "tier_filter", "全部等级")
         score_value = _read_filter(self, "score_filter", "全部分数")
 
-    padded = (
-        row
-        if len(row) >= len(self._csv_headers)
-        else row + [""] * (len(self._csv_headers) - len(row))
-    )
-    asset_label = _asset_label(indexes, padded)
-
-    if asset_value != "全部类型" and asset_label != asset_value:
+    padded = row if len(row) >= len(self._csv_headers) else row + [""] * (len(self._csv_headers) - len(row))
+    asset = _asset_label(indexes, padded)
+    if asset_value != "全部类型" and asset != asset_value:
         return False
-    if (
-        tier_value != "全部等级"
-        and _value_for(indexes, padded, "InstitutionalTier") != tier_value
-    ):
+    if tier_value != "全部等级" and _value_for(indexes, padded, "InstitutionalTier") != tier_value:
         return False
 
     if score_value != "全部分数":
@@ -404,10 +816,19 @@ def _row_matches_filters_v16(
                 break
         if ranking_value is None or ranking_value < threshold:
             return False
+
+    if getattr(self, "_new_signal_only", False):
+        if _value_for(indexes, padded, "SignalStatus").strip().upper() != "NEW":
+            return False
     return True
 
 
-def _clear_filters_v16(self) -> None:
+def _row_matches_filters_v16(*args, **kwargs) -> bool:
+    return _row_matches_filters_v26(*args, **kwargs)
+
+
+def _clear_filters_v26(self) -> None:
+    self._new_signal_only = False
     for attribute, default in (
         ("asset_filter", "全部类型"),
         ("tier_filter", "全部等级"),
@@ -419,12 +840,15 @@ def _clear_filters_v16(self) -> None:
     _original_clear_filters(self)
 
 
-def _format_table_value_v16(self, column: str, value: str) -> str:
+def _clear_filters_v16(self) -> None:
+    _clear_filters_v26(self)
+
+
+def _format_table_value_v26(self, column: str, value: str) -> str:
     text = self._cell_text(value)
     if column == "SignalStatus":
         if self._is_missing_text(text):
             return "-"
-        status = text.strip().upper()
         return {
             "NEW": "新出现",
             "ACTIVE": "持续有效",
@@ -432,39 +856,72 @@ def _format_table_value_v16(self, column: str, value: str) -> str:
             "FAILED": "已失效",
             "EXPIRED": "已失效",
             "INACTIVE": "已结束",
-        }.get(status, text)
+        }.get(text.strip().upper(), text)
     return _original_format_table_value(self, column, value)
 
 
-# ---------------------------------------------------------------------------
-# Decision-focused overview / summary
-# ---------------------------------------------------------------------------
+def _format_table_value_v16(self, column: str, value: str) -> str:
+    return _format_table_value_v26(self, column, value)
+
 
 def _update_market_overview_decision(self, rows, indexes) -> None:
     if not hasattr(self, "market_overview"):
         return
-    total, _active, _confirmed, breakout, actionable, average = (
-        self._market_overview_values(rows, indexes)
-    )
+    total, _active, _confirmed, breakout, actionable, average = self._market_overview_values(rows, indexes)
     self.market_overview.set(
         f"概览：{total} 只 · 启动 {breakout} · 可交易 {actionable} · 最终均分 {average:.1f}"
     )
 
 
-_original_render_cached_rows = _core.ScannerGUI._render_cached_rows
-
-
-def _render_cached_rows_decision(self) -> bool:
+def _render_cached_rows_v26(self) -> bool:
     rendered = _original_render_cached_rows(self)
-    if rendered and hasattr(self, "result_summary"):
-        summary = self.result_summary.get()
-        summary = re.sub(r" · 过期 \d+", "", summary)
+    if not rendered:
+        return False
+    if hasattr(self, "result_summary"):
+        summary = re.sub(r" · 过期 \d+", "", self.result_summary.get())
+        summary = summary.replace("当前文件：", "")
         self.result_summary.set(summary)
-    return rendered
+    if hasattr(self, "card_recommended"):
+        self._update_dashboard_cards()
+    if hasattr(self, "detail_title") and hasattr(self, "table"):
+        self._reset_decision_card_if_needed()
+    return True
 
 
 class DecisionScannerGUI(_core.ScannerGUI):
-    """Decision-oriented GUI implemented through normal inheritance."""
+    """CustomTkinter workstation on top of the stable scanner/backtest core."""
+
+    def __init__(self, root) -> None:
+        tk = _core.tk
+        self.scan_mode = tk.StringVar(master=root, value="快速")
+        self.backtest_scope = tk.StringVar(master=root, value="当前页面")
+        self.auto_backtest_recommended = tk.BooleanVar(master=root, value=False)
+        self.view_title = tk.StringVar(master=root, value="综合 Top50")
+        self.card_recommended = tk.StringVar(master=root, value="0")
+        self.card_cautious = tk.StringVar(master=root, value="0")
+        self.card_new = tk.StringVar(master=root, value="0")
+        self.card_total = tk.StringVar(master=root, value="0")
+        self.detail_title = tk.StringVar(master=root, value="选择一个标的")
+        self.detail_subtitle = tk.StringVar(master=root, value="从左侧列表查看交易决策")
+        self.detail_signal = tk.StringVar(master=root, value="等待选择")
+        self.detail_recent = tk.StringVar(master=root, value="-")
+        self.detail_buy = tk.StringVar(master=root, value="-")
+        self.detail_stop = tk.StringVar(master=root, value="-")
+        self.detail_eligibility = tk.StringVar(master=root, value="-")
+        self.detail_score = tk.StringVar(master=root, value="-")
+        self.detail_reason = tk.StringVar(master=root, value="双击可查看完整研究字段。")
+        self._nav_buttons: dict[str, object] = {}
+        self._active_nav = "mixed"
+        self._new_signal_only = False
+        self._advanced_visible = False
+        self._more_filters_visible = False
+        self._log_visible = False
+        super().__init__(root)
+        self._scan_mode_changed(self.scan_mode.get())
+        self.root.bind("<Control-r>", lambda _event: self.start_scan())
+        self.root.bind("<Control-b>", lambda _event: self.start_backtest())
+        for key, shortcut in zip(("mixed", "stocks", "etf", "ready", "new", "all"), "123456"):
+            self.root.bind(f"<Control-Key-{shortcut}>", lambda _event, nav_key=key: self._load_navigation(nav_key))
 
     def _call_core_with_legacy_output_dir(self, method, *args, **kwargs):
         previous = _core.OUTPUT_DIR
@@ -474,29 +931,11 @@ class DecisionScannerGUI(_core.ScannerGUI):
         finally:
             _core.OUTPUT_DIR = previous
 
-    def load_csv(self, filename: str) -> bool:
-        return self._call_core_with_legacy_output_dir(_core.ScannerGUI.load_csv, filename)
-
-    def _csv_has_results(self, filename: str) -> bool:
-        return self._call_core_with_legacy_output_dir(
-            _core.ScannerGUI._csv_has_results, filename
-        )
-
-    def _load_best_available_results(self) -> bool:
-        return self._call_core_with_legacy_output_dir(
-            _core.ScannerGUI._load_best_available_results
-        )
-
-    def _write_top50_csv(self, tickers: list[str]) -> Path:
-        return self._call_core_with_legacy_output_dir(
-            _core.ScannerGUI._write_top50_csv, tickers
-        )
-
     def _build_ui(self) -> None:
-        _build_ui_v16(self)
+        _build_ui_v26(self)
 
     def _update_filter_values(self, headers: list[str], rows: list[list[str]]) -> None:
-        _update_filter_values_v16(self, headers, rows)
+        _update_filter_values_v26(self, headers, rows)
 
     def _row_matches_filters(
         self,
@@ -506,31 +945,402 @@ class DecisionScannerGUI(_core.ScannerGUI):
         search_text: str | None = None,
         filter_values: Sequence[str] | None = None,
     ) -> bool:
-        return _row_matches_filters_v16(
-            self, indexes, row, query, search_text, filter_values
-        )
+        return _row_matches_filters_v26(self, indexes, row, query, search_text, filter_values)
 
     def clear_filters(self) -> None:
-        _clear_filters_v16(self)
+        _clear_filters_v26(self)
 
     def _format_table_value(self, column: str, value: str) -> str:
-        return _format_table_value_v16(self, column, value)
+        return _format_table_value_v26(self, column, value)
 
     def _update_market_overview(self, rows, indexes) -> None:
         _update_market_overview_decision(self, rows, indexes)
 
     def _render_cached_rows(self) -> bool:
-        return _render_cached_rows_decision(self)
+        return _render_cached_rows_v26(self)
+
+    def _quality_tag(self, quality: str) -> str:
+        # Preserve the historical method contract.  v26 intentionally does
+        # not configure these tags, so eligibility remains the only row color.
+        return _core.ScannerGUI._quality_tag(self, quality)
+
+    def _entry_tag(self, signal: str) -> str:
+        return _core.ScannerGUI._entry_tag(self, signal)
+
+    def _risk_tag(self, values: list[str], indexes: dict[str, int]) -> str:
+        eligibility = _value_for(indexes, values, "RankingEligibility")
+        if eligibility == "推荐":
+            return "eligibility-recommended"
+        if eligibility == "谨慎候选":
+            return "eligibility-cautious"
+        if eligibility == "风险过滤":
+            return "risk-filter"
+        return "eligibility-observe"
+
+    # Layout toggles ----------------------------------------------------------
+    def _toggle_advanced(self) -> None:
+        self._advanced_visible = not self._advanced_visible
+        if self._advanced_visible:
+            self.advanced_frame.grid()
+        else:
+            self.advanced_frame.grid_remove()
+
+    def _toggle_more_filters(self) -> None:
+        self._more_filters_visible = not self._more_filters_visible
+        if self._more_filters_visible:
+            self.filter_more_frame.pack(fill=_core.tk.X, padx=12, pady=(0, 10))
+        else:
+            self.filter_more_frame.pack_forget()
+
+    def _toggle_log(self) -> None:
+        self._log_visible = not self._log_visible
+        if self._log_visible:
+            self.log_panel.pack(fill=_core.tk.X, padx=18, pady=(0, 12))
+            self.log_toggle_button.configure(text="日志 ⌄")
+        else:
+            self.log_panel.pack_forget()
+            self.log_toggle_button.configure(text="日志 ›")
+
+    def _show_log_for_error(self) -> None:
+        if not self._log_visible:
+            self._toggle_log()
+
+    # Scan modes --------------------------------------------------------------
+    def _scan_mode_changed(self, choice: str) -> None:
+        if choice == "快速":
+            self.cache_first.set(True)
+            self.force_download.set(False)
+            self.no_resume.set(False)
+        elif choice == "标准":
+            self.cache_first.set(False)
+            self.force_download.set(False)
+            self.no_resume.set(False)
+        elif choice == "完整刷新":
+            self.cache_first.set(False)
+            self.force_download.set(True)
+            self.no_resume.set(True)
+
+    def _advanced_changed(self) -> None:
+        self.scan_mode.set("自定义")
+
+    def start_scan(self) -> None:
+        if self.scan_running:
+            return _core.ScannerGUI.start_scan(self)
+        self._scan_mode_changed(self.scan_mode.get())
+        self.backtest_button.configure(state=_core.tk.DISABLED)
+        self.start_button.configure(text="扫描运行中")
+        _core.ScannerGUI.start_scan(self)
+        if not self.scan_running:
+            self.backtest_button.configure(state=_core.tk.NORMAL)
+            self.start_button.configure(text="▶ 开始扫描")
+
+    # Navigation --------------------------------------------------------------
+    def _set_active_nav(self, key: str) -> None:
+        self._active_nav = key
+        for nav_key, button in self._nav_buttons.items():
+            if nav_key == key:
+                button.configure(fg_color="#1677ff", hover_color="#0f6ad8", text_color="#ffffff")
+            else:
+                button.configure(fg_color="transparent", hover_color="#eaf2fb", text_color="#334e68")
+        if key in NAV_TITLES:
+            self.view_title.set(NAV_TITLES[key])
+
+    def _load_navigation(self, key: str) -> None:
+        self._new_signal_only = key == "new"
+        if key == "new":
+            filename = "AllResults.csv"
+        else:
+            filename = NAV_FILES[key]
+        if self.load_csv(filename, preserve_new_signal=(key == "new")):
+            self._set_active_nav(key)
+
+    def _infer_nav_key(self, filename: str) -> str | None:
+        for key, value in NAV_FILES.items():
+            if value == filename:
+                return key
+        if filename == "Top50.csv":
+            return "mixed"
+        return None
+
+    def _load_best_available_results(self) -> bool:
+        for filename in ("Top50Mixed.csv", "Top50Stocks.csv", "Top50ETF.csv", "Top50.csv", "AllResults.csv"):
+            if self._csv_has_results(filename):
+                return self.load_csv(filename)
+        return False
+
+    # Derived display fields --------------------------------------------------
+    def _ensure_derived_columns(self) -> None:
+        if not self._csv_headers:
+            return
+        for column in ("ReferenceBuyPrice", "InstitutionalStrength"):
+            if column not in self._csv_headers:
+                self._csv_headers.append(column)
+                for row in self._csv_rows:
+                    row.append("")
+        indexes = {header: index for index, header in enumerate(self._csv_headers)}
+        for row in self._csv_rows:
+            if len(row) < len(self._csv_headers):
+                row.extend([""] * (len(self._csv_headers) - len(row)))
+            signal = _value_for(indexes, row, "EntrySignal").strip().upper()
+            entry_zone = _value_for(indexes, row, "EntryZone")
+            breakout = _value_for(indexes, row, "BreakoutBuyPrice")
+            reference = breakout if signal == "BREAKOUT_CONFIRM" and breakout else entry_zone or breakout
+            row[indexes["ReferenceBuyPrice"]] = reference
+            tier = _value_for(indexes, row, "InstitutionalTier")
+            score = _value_for(indexes, row, "InstitutionalScore")
+            if tier and score:
+                strength = f"{tier} · {self._format_table_value('InstitutionalScore', score)}"
+            else:
+                strength = tier or score
+            row[indexes["InstitutionalStrength"]] = strength
+        self._csv_indexes = indexes
+        self._csv_search_text = [" ".join(map(self._cell_text, row)).casefold() for row in self._csv_rows]
+
+    def _set_display_columns_for_file(self, filename: str) -> None:
+        columns = list(_core.DISPLAY_COLUMNS)
+        # Keep TradeReadinessReason in the public compatibility contract, but
+        # move the long explanation out of the real table into the decision card.
+        if "TradeReadinessReason" in columns:
+            columns.remove("TradeReadinessReason")
+        if filename in {"Top50Stocks.csv", "Top50ETF.csv"} and "AssetType" in columns:
+            columns.remove("AssetType")
+        self._display_headers = [column for column in columns if column in self._csv_headers]
+        self._display_indexes = [self._csv_indexes[column] for column in self._display_headers]
+        self._table_headers = ()
+
+    def load_csv(self, filename: str, preserve_new_signal: bool = False) -> bool:
+        if not preserve_new_signal:
+            self._new_signal_only = False
+        loaded = self._call_core_with_legacy_output_dir(_core.ScannerGUI.load_csv, filename)
+        if not loaded:
+            return False
+        # Older callers/tests intentionally construct the GUI without __init__.
+        # In that compatibility path the core load/render is already complete.
+        if not hasattr(self, "view_title"):
+            return loaded
+        self._ensure_derived_columns()
+        self._set_display_columns_for_file(filename)
+        rendered = _render_cached_rows_v26(self)
+        key = self._infer_nav_key(filename)
+        if preserve_new_signal:
+            key = "new"
+        if key:
+            self._set_active_nav(key)
+        return rendered
+
+    def _csv_has_results(self, filename: str) -> bool:
+        return self._call_core_with_legacy_output_dir(_core.ScannerGUI._csv_has_results, filename)
+
+    def _write_top50_csv(self, tickers: list[str]) -> Path:
+        return self._call_core_with_legacy_output_dir(_core.ScannerGUI._write_top50_csv, tickers)
+
+    # Dashboard cards / decision card ----------------------------------------
+    def _update_dashboard_cards(self) -> None:
+        indexes = getattr(self, "_csv_indexes", {})
+        ticker_index = indexes.get("Ticker")
+        if ticker_index is None:
+            return
+        visible = set(self.filtered_tickers)
+        recommended = cautious = new_signals = 0
+        for row in self._csv_rows:
+            if len(row) <= ticker_index:
+                continue
+            ticker = self._cell_text(row[ticker_index]).upper()
+            if ticker not in visible:
+                continue
+            eligibility = _value_for(indexes, row, "RankingEligibility")
+            status = _value_for(indexes, row, "SignalStatus").strip().upper()
+            recommended += eligibility == "推荐"
+            cautious += eligibility == "谨慎候选"
+            new_signals += status == "NEW"
+        self.card_recommended.set(str(recommended))
+        self.card_cautious.set(str(cautious))
+        self.card_new.set(str(new_signals))
+        self.card_total.set(str(len(self.filtered_tickers)))
+
+    def _selected_detail(self) -> dict[str, str]:
+        selection = self.table.selection()
+        if not selection:
+            return {}
+        return self._row_details.get(selection[0], {})
+
+    def _reset_decision_card_if_needed(self) -> None:
+        if self.table.selection():
+            return
+        self.detail_title.set("选择一个标的")
+        self.detail_subtitle.set("从左侧列表查看交易决策")
+        self.detail_signal.set("等待选择")
+        self.detail_recent.set("-")
+        self.detail_buy.set("-")
+        self.detail_stop.set("-")
+        self.detail_eligibility.set("-")
+        self.detail_score.set("-")
+        self.detail_reason.set("双击可查看完整研究字段。")
+
+    def _update_decision_card(self, _event=None) -> None:
+        data = self._selected_detail()
+        if not data:
+            self._reset_decision_card_if_needed()
+            return
+        ticker = data.get("Ticker", "")
+        name = data.get("Name", "")
+        self.detail_title.set(name or ticker or "当前标的")
+        self.detail_subtitle.set(ticker)
+        signal = self._format_table_value("EntrySignal", data.get("EntrySignal", "")) or "-"
+        recent = self._format_table_value("SignalStatus", data.get("SignalStatus", "")) or "-"
+        days = self._format_table_value("SignalDays", data.get("SignalDays", ""))
+        if days and days not in {"0", "0.00"}:
+            recent = f"{recent} · {days}天"
+        reference = data.get("ReferenceBuyPrice", "") or data.get("EntryZone", "") or data.get("BreakoutBuyPrice", "")
+        self.detail_signal.set(signal)
+        self.detail_recent.set(recent)
+        self.detail_buy.set(reference or "-")
+        self.detail_stop.set(self._format_table_value("StopLoss", data.get("StopLoss", "")) or "-")
+        eligibility = data.get("RankingEligibility", "") or "-"
+        self.detail_eligibility.set(eligibility)
+        ranking = self._format_table_value("RankingScore", data.get("RankingScore", "")) or "-"
+        strength = data.get("InstitutionalStrength", "")
+        if not strength:
+            tier = data.get("InstitutionalTier", "")
+            institution_score = self._format_table_value("InstitutionalScore", data.get("InstitutionalScore", ""))
+            strength = " · ".join(value for value in (tier, institution_score) if value)
+        self.detail_score.set(f"{ranking} / {strength or '-'}")
+        self.detail_reason.set(data.get("TradeReadinessReason", "") or data.get("RankingReason", "") or "暂无额外执行说明。")
+        if eligibility == "推荐":
+            self.detail_signal_label.configure(fg_color="#ecfdf3", text_color="#166534")
+        elif eligibility == "谨慎候选":
+            self.detail_signal_label.configure(fg_color="#fffbeb", text_color="#92400e")
+        elif eligibility == "风险过滤":
+            self.detail_signal_label.configure(fg_color="#fef2f2", text_color="#991b1b")
+        else:
+            self.detail_signal_label.configure(fg_color="#eaf2fb", text_color="#1d4ed8")
+
+    # Backtest workflow -------------------------------------------------------
+    def _tickers_from_output_file(self, filename: str) -> list[str]:
+        path = OUTPUT_DIR / filename
+        if not path.exists():
+            return []
+        try:
+            with path.open("r", encoding="utf-8-sig", newline="") as file:
+                reader = csv.DictReader(file)
+                return list(
+                    dict.fromkeys(
+                        str(row.get("Ticker", "")).strip().upper()
+                        for row in reader
+                        if str(row.get("Ticker", "")).strip()
+                    )
+                )
+        except (OSError, UnicodeError, csv.Error):
+            return []
+
+    def _visible_page_tickers(self) -> list[str]:
+        columns = list(self.table["columns"])
+        if "Ticker" not in columns:
+            return []
+        index = columns.index("Ticker")
+        return [
+            str(self.table.item(item, "values")[index]).strip().upper()
+            for item in self.table.get_children()
+            if len(self.table.item(item, "values")) > index
+            and str(self.table.item(item, "values")[index]).strip()
+        ]
+
+    def _resolve_backtest_tickers(self) -> list[str]:
+        scope_var = getattr(self, "backtest_scope", None)
+        scope = scope_var.get() if scope_var is not None else "当前筛选"
+        if scope == "当前页面":
+            return self._visible_page_tickers()
+        if scope == "当前筛选":
+            return list(dict.fromkeys(self.filtered_tickers))
+        if scope in BACKTEST_SCOPE_FILES:
+            return self._tickers_from_output_file(BACKTEST_SCOPE_FILES[scope])
+        if scope == "新买点":
+            indexes = getattr(self, "_csv_indexes", {})
+            ticker_index = indexes.get("Ticker")
+            status_index = indexes.get("SignalStatus")
+            if ticker_index is None or status_index is None:
+                return []
+            return list(
+                dict.fromkeys(
+                    self._cell_text(row[ticker_index]).upper()
+                    for row in self._csv_rows
+                    if len(row) > max(ticker_index, status_index)
+                    and self._cell_text(row[ticker_index])
+                    and self._cell_text(row[status_index]).strip().upper() == "NEW"
+                )
+            )
+        if scope == "当前选中标的":
+            data = self._selected_detail()
+            ticker = str(data.get("Ticker", "")).strip().upper()
+            return [ticker] if ticker else []
+        return []
+
+    def _start_backtest_for_tickers(self, tickers: list[str]) -> None:
+        tickers = list(dict.fromkeys(ticker for ticker in tickers if ticker))
+        if not tickers:
+            _core.messagebox.showerror("无法运行回测", "当前回测范围没有有效标的。")
+            return
+        previous = list(self.filtered_tickers)
+        self.filtered_tickers = tickers
+        backtest_button = getattr(self, "backtest_button", None)
+        if backtest_button is not None:
+            backtest_button.configure(state=_core.tk.DISABLED, text="回测运行中")
+        try:
+            _core.ScannerGUI.start_backtest(self)
+        finally:
+            self.filtered_tickers = previous
+        if not self.scan_running and backtest_button is not None:
+            backtest_button.configure(state=_core.tk.NORMAL, text="▶ 运行回测")
+
+    def start_backtest(self) -> None:
+        if self.scan_running:
+            return _core.ScannerGUI.start_backtest(self)
+        self._start_backtest_for_tickers(self._resolve_backtest_tickers())
+
+    def _backtest_selected(self) -> None:
+        data = self._selected_detail()
+        ticker = str(data.get("Ticker", "")).strip().upper()
+        self._start_backtest_for_tickers([ticker] if ticker else [])
+
+    # Task completion ---------------------------------------------------------
+    def scan_finished(self, code: int) -> None:
+        was_backtest = self.backtest_running
+        _core.ScannerGUI.scan_finished(self, code)
+        self.start_button.configure(state=_core.tk.NORMAL, text="▶ 开始扫描")
+        self.backtest_button.configure(state=_core.tk.NORMAL, text="▶ 运行回测")
+        if code == 0 and not was_backtest and self.auto_backtest_recommended.get():
+            tickers = self._tickers_from_output_file("Top50TradeReady.csv")
+            if tickers:
+                self.root.after(200, lambda values=tickers: self._start_backtest_for_tickers(values))
+
+    def scan_failed(self, error: str) -> None:
+        _core.ScannerGUI.scan_failed(self, error)
+        self.start_button.configure(state=_core.tk.NORMAL, text="▶ 开始扫描")
+        self.backtest_button.configure(state=_core.tk.NORMAL, text="▶ 运行回测")
+        self._show_log_for_error()
+
+    def append_log(self, text: str) -> None:
+        _core.ScannerGUI.append_log(self, text)
+        lowered = text.casefold()
+        if "traceback" in lowered or "异常" in text or "启动失败" in text:
+            self._show_log_for_error()
 
 
 # Preserve the historical import surface without mutating gui_core.ScannerGUI.
 ScannerGUI = DecisionScannerGUI
 
+
 def main() -> None:
-    _core.main(gui_class=DecisionScannerGUI)
+    ctk.set_appearance_mode("light")
+    ctk.set_default_color_theme("blue")
+    root = ctk.CTk()
+    DecisionScannerGUI(root)
+    root.mainloop()
+
 
 def __getattr__(name: str):
     return getattr(_core, name)
+
 
 if __name__ == "__main__":
     main()
