@@ -5,6 +5,8 @@ import unittest
 
 import gui
 
+# Normal connector commit used to gate the final cross-platform PR CI.
+
 
 class GuiWorkstationV26Tests(unittest.TestCase):
     def test_compact_table_uses_derived_decision_columns(self):
