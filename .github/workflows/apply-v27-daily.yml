@@ -1,5 +1,6 @@
 name: Apply v27 Daily Pipeline
 
+# trigger: v27 daily pipeline migration
 on:
   push:
     branches:
