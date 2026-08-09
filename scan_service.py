@@ -9,6 +9,7 @@ result, which prevents their execution paths from drifting apart.
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -43,6 +44,11 @@ class ScanExecutionResult:
     full_parquet: Path
     stock_count: int
     etf_count: int
+    prepare_seconds: float = 0.0
+    fundamentals_seconds: float = 0.0
+    scan_seconds: float = 0.0
+    export_seconds: float = 0.0
+    elapsed_seconds: float = 0.0
 
 
 BuildUniverseFn = Callable[..., tuple[list[TickerInfo], list[TickerInfo]]]
@@ -177,6 +183,8 @@ def execute_scan(
 ) -> ScanExecutionResult:
     """Execute one complete scan through the shared application path."""
     log = logger or logging.getLogger("institution_scanner")
+    execution_started = time.perf_counter()
+    prepare_started = time.perf_counter()
     _emit_progress(progress_callback, "prepare", 0, 0, "正在准备股票池")
     stocks, etfs = prepare_universe(
         request,
@@ -190,6 +198,8 @@ def execute_scan(
         0,
         f"股票池准备完成：股票 {len(stocks)} · ETF {len(etfs)}；正在检查基本面",
     )
+    prepare_seconds = time.perf_counter() - prepare_started
+    fundamentals_started = time.perf_counter()
     if refresh_policy_fn is not None:
         refresh_policy_fn(stocks, request.refresh_fundamentals, log)
     else:
@@ -200,6 +210,8 @@ def execute_scan(
             fundamental_path_fn=fundamental_path_fn,
             refresh_fundamentals_fn=refresh_fundamentals_fn,
         )
+    fundamentals_seconds = time.perf_counter() - fundamentals_started
+    scan_started = time.perf_counter()
     report = run_scan_fn(
         stock_universe=stocks,
         etf_universe=etfs,
@@ -210,6 +222,8 @@ def execute_scan(
         progress_callback=progress_callback,
         cancel_event=cancel_event,
     )
+    scan_seconds = time.perf_counter() - scan_started
+    export_started = time.perf_counter()
     _emit_progress(
         progress_callback, "export", 0, len(report.results), "正在写入 CSV / Parquet 结果"
     )
@@ -226,6 +240,8 @@ def execute_scan(
         len(report.results),
         "结果文件写入完成",
     )
+    export_seconds = time.perf_counter() - export_started
+    elapsed_seconds = time.perf_counter() - execution_started
     return ScanExecutionResult(
         report=report,
         top_csv=top_csv,
@@ -234,4 +250,9 @@ def execute_scan(
         full_parquet=full_parquet,
         stock_count=len(stocks),
         etf_count=len(etfs),
+        prepare_seconds=prepare_seconds,
+        fundamentals_seconds=fundamentals_seconds,
+        scan_seconds=scan_seconds,
+        export_seconds=export_seconds,
+        elapsed_seconds=elapsed_seconds,
     )

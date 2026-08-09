@@ -175,6 +175,10 @@ class BacktestSummary:
     no_signal_ticker_count: int = 0
     ranking_eligible_ticker_count: int = 0
     cache_hit_rate: float = 0.0
+    calibration_lookup_elapsed_seconds: float = 0.0
+    ranking_compute_elapsed_seconds: float = 0.0
+    persistence_elapsed_seconds: float = 0.0
+    postprocess_elapsed_seconds: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         result = dict(self.__dict__)
@@ -2043,6 +2047,8 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
             # FAST/EXACT candidates now estimate a bounded bridge correction so
             # the global prior is closer to the exact execution distribution.
 
+    postprocess_started = time.perf_counter()
+
     prior_institutional_score = pd.to_numeric(
         frame.get("InstitutionalScore", pd.Series(np.nan, index=frame.index)),
         errors="coerce",
@@ -2233,8 +2239,12 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     reliability = pd.to_numeric(
         frame["BacktestReliability"], errors="coerce"
     ).fillna(0.0)
+    calibration_started = time.perf_counter()
     calibration_details = calibration_details_for_frame(
         frame, getattr(summary, "global_calibration", None)
+    )
+    summary.calibration_lookup_elapsed_seconds = float(
+        time.perf_counter() - calibration_started
     )
     peer_score = calibration_details["score"]
     peer_confidence = calibration_details["confidence"]
@@ -2445,11 +2455,28 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     )
 
     frame = finalize_signal_ranking(frame)
-    frame.to_csv(path, index=False, encoding="utf-8-sig")
-    from report import refresh_candidate_exports
+    summary.ranking_compute_elapsed_seconds = float(
+        time.perf_counter() - postprocess_started
+    )
+    persistence_started = time.perf_counter()
+    from report import _atomic_write_csv, _atomic_write_parquet, refresh_candidate_exports
 
+    _atomic_write_csv(frame, path)
     refresh_candidate_exports(frame, top_n_csv=top_n, output_dir=OUTPUT_DIR)
-    frame.to_parquet(OUTPUT_DIR / "AllResults.parquet", index=False)
+    _atomic_write_parquet(frame, OUTPUT_DIR / "AllResults.parquet")
+    summary.persistence_elapsed_seconds = float(
+        time.perf_counter() - persistence_started
+    )
+    summary.postprocess_elapsed_seconds = float(
+        summary.ranking_compute_elapsed_seconds + summary.persistence_elapsed_seconds
+    )
+    logger.info(
+        "Backtest postprocess: calibration=%.2fs, ranking=%.2fs, persistence=%.2fs, total=%.2fs.",
+        summary.calibration_lookup_elapsed_seconds,
+        summary.ranking_compute_elapsed_seconds,
+        summary.persistence_elapsed_seconds,
+        summary.postprocess_elapsed_seconds,
+    )
 
 
 def _spearman(frame: pd.DataFrame, target: str) -> float:

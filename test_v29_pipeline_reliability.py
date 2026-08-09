@@ -20,7 +20,7 @@ import report
 class V29PipelineReliabilityTests(unittest.TestCase):
     def test_scoring_version_is_unchanged_but_pipeline_version_is_v29(self):
         self.assertEqual(config.SCORING_VERSION, "2026-08-09-v24-decision-integrity")
-        self.assertIn("v29", config.PIPELINE_VERSION)
+        self.assertRegex(config.PIPELINE_VERSION, r"v(?:29|3[0-9])")
 
     def test_hybrid_run_does_not_pollute_per_ticker_mode(self):
         frame = pd.DataFrame(

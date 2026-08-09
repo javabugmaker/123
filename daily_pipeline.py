@@ -49,6 +49,7 @@ _ARCHIVE_FILES = (
     "Top50ETF.csv",
     "Top50TradeReady.csv",
     "BacktestSummary.json",
+    "ScanPerformance.json",
     "DailyRunSummary.json",
 )
 _PUBLISH_PATTERNS = (
@@ -312,6 +313,7 @@ def _write_manifest(
     stage_seconds: dict[str, float],
 ) -> dict[str, object]:
     backtest = _read_json(OUTPUT_DIR / "BacktestSummary.json")
+    scan_performance = _read_json(OUTPUT_DIR / "ScanPerformance.json")
     evaluations = int(backtest.get("total_ticker_evaluations", 0) or 0)
     cache_hits = int(backtest.get("cache_hits", 0) or 0)
     cache_hit_rate = float(backtest.get("cache_hit_rate", 0.0) or 0.0)
@@ -346,6 +348,15 @@ def _write_manifest(
         "stage_seconds": {
             key: round(float(value), 3) for key, value in stage_seconds.items()
         },
+        "scan_breakdown": {
+            "total_seconds": round(float(scan_performance.get("total_seconds", stage_seconds.get("scan", 0.0)) or 0.0), 3),
+            "universe_seconds": round(float(scan_performance.get("universe_seconds", 0.0) or 0.0), 3),
+            "fundamentals_seconds": round(float(scan_performance.get("fundamentals_seconds", 0.0) or 0.0), 3),
+            "download_seconds": round(float(scan_performance.get("download_seconds", 0.0) or 0.0), 3),
+            "analysis_seconds": round(float(scan_performance.get("analysis_seconds", 0.0) or 0.0), 3),
+            "enrichment_seconds": round(float(scan_performance.get("enrichment_seconds", 0.0) or 0.0), 3),
+            "export_seconds": round(float(scan_performance.get("export_seconds", 0.0) or 0.0), 3),
+        },
         "backtest": {
             "run_mode": str(backtest.get("mode", "")).upper(),
             "engine": backtest.get("engine", ""),
@@ -361,6 +372,17 @@ def _write_manifest(
             "elapsed_seconds": round(backtest_elapsed, 3),
             "fast_elapsed_seconds": round(max(0.0, backtest_elapsed - exact_elapsed), 3),
             "exact_elapsed_seconds": round(exact_elapsed, 3),
+            "calibration_lookup_seconds": round(float(backtest.get("calibration_lookup_elapsed_seconds", 0.0) or 0.0), 3),
+            "ranking_compute_seconds": round(float(backtest.get("ranking_compute_elapsed_seconds", 0.0) or 0.0), 3),
+            "persistence_seconds": round(float(backtest.get("persistence_elapsed_seconds", 0.0) or 0.0), 3),
+            "postprocess_seconds": round(
+                max(
+                    float(backtest.get("postprocess_elapsed_seconds", 0.0) or 0.0),
+                    float(stage_seconds.get("backtest", 0.0) or 0.0) - backtest_elapsed,
+                    0.0,
+                ),
+                3,
+            ),
         },
         # v27 top-level compatibility keys.
         "backtest_engine": backtest.get("engine", ""),

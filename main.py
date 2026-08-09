@@ -132,6 +132,27 @@ def cmd_scan(args: argparse.Namespace) -> int:
     )
     report = execution.report
 
+    scan_performance = {
+        "total_seconds": round(float(getattr(execution, "elapsed_seconds", 0.0) or 0.0), 4),
+        "universe_seconds": round(float(getattr(execution, "prepare_seconds", 0.0) or 0.0), 4),
+        "fundamentals_seconds": round(float(getattr(execution, "fundamentals_seconds", 0.0) or 0.0), 4),
+        "scan_core_seconds": round(float(getattr(execution, "scan_seconds", 0.0) or 0.0), 4),
+        "download_seconds": round(float(getattr(report, "download_seconds", 0.0) or 0.0), 4),
+        "analysis_seconds": round(float(getattr(report, "analysis_seconds", 0.0) or 0.0), 4),
+        "enrichment_seconds": round(float(getattr(report, "enrichment_seconds", 0.0) or 0.0), 4),
+        "export_seconds": round(float(getattr(execution, "export_seconds", 0.0) or 0.0), 4),
+        "successful": int(getattr(report, "successful", 0) or 0),
+        "failed": int(getattr(report, "failed", 0) or 0),
+        "stocks": int(getattr(execution, "stock_count", 0) or 0),
+        "etfs": int(getattr(execution, "etf_count", 0) or 0),
+    }
+    scan_performance_path = OUTPUT_DIR / "ScanPerformance.json"
+    temporary_scan_performance = scan_performance_path.with_name(".ScanPerformance.json.tmp")
+    temporary_scan_performance.write_text(
+        json.dumps(scan_performance, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    os.replace(temporary_scan_performance, scan_performance_path)
+
     if report.successful == 0:
         logger.error("没有可用 TickFlow 行情数据，扫描失败；请检查网络或 TickFlow Free 服务后重试。")
         print_scan_summary(report)

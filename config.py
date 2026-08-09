@@ -180,9 +180,9 @@ BACKTEST_EXACT_REFINEMENT_CANDIDATES: Final[int] = 150
 
 SCORING_VERSION: str = "2026-08-09-v24-decision-integrity"
 # Engineering versions are intentionally separate from the scoring model.
-PIPELINE_VERSION: str = "2026-08-09-v29-reliable-daily"
-GUI_VERSION: str = "2026-08-09-v29-workstation"
-BACKTEST_PROVENANCE_VERSION: str = "2026-08-09-v29"
+PIPELINE_VERSION: str = "2026-08-09-v30-fast-workstation"
+GUI_VERSION: str = "2026-08-09-v30-workstation"
+BACKTEST_PROVENANCE_VERSION: str = "2026-08-09-v30"
 
 # Daily publication quality gates.  They protect the canonical result set from
 # provider truncation or a stale daily-bar snapshot without changing scoring.
