@@ -12,7 +12,11 @@ class GuiWorkstationV26Tests(unittest.TestCase):
         self.assertIn("InstitutionalStrength", gui.DISPLAY_COLUMNS)
         self.assertIn("SignalStatus", gui.DISPLAY_COLUMNS)
         self.assertIn("SignalDays", gui.DISPLAY_COLUMNS)
-        self.assertNotIn("TradeReadinessReason", gui.DISPLAY_COLUMNS)
+        # Keep the historical public display contract for downstream callers,
+        # while the actual v26 Treeview removes the long explanation column.
+        self.assertIn("TradeReadinessReason", gui.DISPLAY_COLUMNS)
+        display_source = inspect.getsource(gui.DecisionScannerGUI._set_display_columns_for_file)
+        self.assertIn('columns.remove("TradeReadinessReason")', display_source)
         self.assertNotIn("QualityGate", gui.DISPLAY_COLUMNS)
         self.assertNotIn("BacktestConfidenceTier", gui.DISPLAY_COLUMNS)
         self.assertEqual(gui.COLUMN_NAMES["ReferenceBuyPrice"], "参考买点")
