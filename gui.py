@@ -140,6 +140,17 @@ BACKTEST_SCOPE_FILES = {
 }
 DAILY_PIPELINE_FILE = Path(__file__).resolve().with_name("daily_pipeline.py")
 
+
+def _duration_label(seconds: float) -> str:
+    total = max(0, int(round(float(seconds or 0.0))))
+    minutes, secs = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
 _original_update_filter_values = _core.ScannerGUI._update_filter_values
 _original_row_matches_filters = _core.ScannerGUI._row_matches_filters
 _original_clear_filters = _core.ScannerGUI.clear_filters
@@ -552,6 +563,7 @@ def _build_ui_v26(self) -> None:
 
     # Main result area --------------------------------------------------------
     body = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+    self.body_paned = body
     body.pack(fill=tk.BOTH, expand=True, padx=18, pady=(0, 8))
 
     table_frame = ctk.CTkFrame(body, corner_radius=10, fg_color="#ffffff")
@@ -572,6 +584,19 @@ def _build_ui_v26(self) -> None:
         font=("Microsoft YaHei UI", 9),
         text_color="#64748b",
     ).grid(row=0, column=1, padx=(12, 0), sticky="w")
+    self.detail_toggle_button = ctk.CTkButton(
+        result_bar,
+        text="详情 ‹",
+        width=72,
+        height=28,
+        fg_color="transparent",
+        hover_color="#eef4fb",
+        text_color="#334e68",
+        border_width=1,
+        border_color="#d7e2ee",
+        command=self._toggle_detail_panel,
+    )
+    self.detail_toggle_button.grid(row=0, column=2, padx=(8, 0), sticky="e")
 
     pagination = ctk.CTkFrame(table_frame, fg_color="transparent")
     pagination.grid(row=1, column=0, columnspan=2, padx=14, pady=(0, 6), sticky="e")
@@ -615,7 +640,8 @@ def _build_ui_v26(self) -> None:
     self.table.bind("<Return>", self.show_selected_detail)
 
     # Right-side decision card ------------------------------------------------
-    detail = ctk.CTkFrame(body, width=310, corner_radius=10, fg_color="#ffffff")
+    detail = ctk.CTkFrame(body, width=280, corner_radius=10, fg_color="#ffffff")
+    self.detail_panel = detail
     detail.pack_propagate(False)
     ctk.CTkLabel(detail, text="当前标的", text_color="#64748b", font=("Microsoft YaHei UI", 9)).pack(
         anchor="w", padx=18, pady=(18, 2)
@@ -667,7 +693,7 @@ def _build_ui_v26(self) -> None:
         text_color="#334e68",
         justify="left",
         anchor="nw",
-        wraplength=270,
+        wraplength=240,
     ).pack(fill=tk.X, padx=18)
     detail_actions = ctk.CTkFrame(detail, fg_color="transparent")
     detail_actions.pack(side=tk.BOTTOM, fill=tk.X, padx=18, pady=18)
@@ -711,6 +737,18 @@ def _build_ui_v26(self) -> None:
         text_color="#52677d",
         font=("Microsoft YaHei UI", 9),
     ).pack(side=tk.LEFT, padx=(2, 8), pady=9)
+    ctk.CTkButton(
+        footer,
+        text="性能详情",
+        width=76,
+        height=28,
+        fg_color="transparent",
+        hover_color="#eef4fb",
+        text_color="#334e68",
+        border_width=1,
+        border_color="#d7e2ee",
+        command=self._show_run_performance,
+    ).pack(side=tk.LEFT, padx=(0, 8), pady=7)
     ctk.CTkLabel(footer, textvariable=self.page_summary, text_color="#64748b").pack(side=tk.RIGHT, padx=(10, 6), pady=9)
     self.log_toggle_button = ctk.CTkButton(
         footer,
@@ -988,11 +1026,14 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self._advanced_visible = False
         self._more_filters_visible = False
         self._log_visible = False
+        self._detail_visible = True
+        self._run_performance_payload: dict[str, object] = {}
         super().__init__(root)
         self._scan_mode_changed(self.scan_mode.get())
         self.root.bind("<Control-r>", lambda _event: self.start_scan())
         self.root.bind("<Control-b>", lambda _event: self.start_backtest())
         self.root.bind("<Control-Shift-R>", lambda _event: self.start_daily_pipeline())
+        self.root.bind("<Control-d>", lambda _event: self._toggle_detail_panel())
         for key, shortcut in zip(("mixed", "stocks", "etf", "ready", "new", "all"), "123456"):
             self.root.bind(f"<Control-Key-{shortcut}>", lambda _event, nav_key=key: self._load_navigation(nav_key))
         self.root.after(80, self._update_run_quality_summary)
@@ -1078,6 +1119,30 @@ class DecisionScannerGUI(_core.ScannerGUI):
     def _show_log_for_error(self) -> None:
         if not self._log_visible:
             self._toggle_log()
+
+    def _toggle_detail_panel(self) -> None:
+        pane = getattr(self, "body_paned", None)
+        detail = getattr(self, "detail_panel", None)
+        button = getattr(self, "detail_toggle_button", None)
+        if pane is None or detail is None:
+            return
+        visible = bool(getattr(self, "_detail_visible", True))
+        if visible:
+            try:
+                pane.forget(detail)
+            except Exception:
+                return
+            self._detail_visible = False
+            if button is not None:
+                button.configure(text="详情 ›")
+        else:
+            try:
+                pane.add(detail, weight=1)
+            except Exception:
+                return
+            self._detail_visible = True
+            if button is not None:
+                button.configure(text="详情 ‹")
 
     # Scan modes --------------------------------------------------------------
     def _scan_mode_changed(self, choice: str) -> None:
@@ -1301,16 +1366,63 @@ class DecisionScannerGUI(_core.ScannerGUI):
             return
         if not isinstance(payload, dict):
             return
+        self._run_performance_payload = payload
         expected = str(payload.get("expected_trading_date", "") or "-")
         stages = payload.get("stage_seconds", {}) if isinstance(payload.get("stage_seconds", {}), dict) else {}
         backtest = payload.get("backtest", {}) if isinstance(payload.get("backtest", {}), dict) else {}
+        elapsed = float(payload.get("elapsed_seconds", 0.0) or 0.0)
         scan_seconds = float(stages.get("scan", 0.0) or 0.0)
-        backtest_seconds = float(stages.get("backtest", 0.0) or 0.0)
-        exact = int(backtest.get("exact_refinement_tickers", 0) or 0)
+        engine_seconds = float(backtest.get("elapsed_seconds", 0.0) or 0.0)
+        postprocess_seconds = float(backtest.get("postprocess_seconds", 0.0) or 0.0)
+        if postprocess_seconds <= 0:
+            postprocess_seconds = max(
+                0.0,
+                float(stages.get("backtest", 0.0) or 0.0) - engine_seconds,
+            )
         cache = float(backtest.get("cache_hit_rate", 0.0) or 0.0)
         self.run_quality.set(
-            f"最新 {expected} · 扫描 {scan_seconds:.0f}s · 回测 {backtest_seconds:.0f}s · EXACT {exact} · Cache {cache:.0%}"
+            f"✓ {expected} · 总{_duration_label(elapsed)} · 扫描{_duration_label(scan_seconds)} · "
+            f"引擎{_duration_label(engine_seconds)} · 后处理{_duration_label(postprocess_seconds)} · Cache {cache:.0%}"
         )
+
+    def _show_run_performance(self) -> None:
+        payload = dict(getattr(self, "_run_performance_payload", {}) or {})
+        if not payload:
+            self._update_run_quality_summary()
+            payload = dict(getattr(self, "_run_performance_payload", {}) or {})
+        if not payload:
+            _core.messagebox.showinfo("运行性能", "还没有可用的 DailyRunSummary.json。")
+            return
+        universe = payload.get("universe", {}) if isinstance(payload.get("universe", {}), dict) else {}
+        freshness = payload.get("freshness", {}) if isinstance(payload.get("freshness", {}), dict) else {}
+        scan = payload.get("scan_breakdown", {}) if isinstance(payload.get("scan_breakdown", {}), dict) else {}
+        backtest = payload.get("backtest", {}) if isinstance(payload.get("backtest", {}), dict) else {}
+        lines = [
+            f"状态：{payload.get('publish_status', '-')}",
+            f"交易日：{payload.get('expected_trading_date', '-')}",
+            f"总耗时：{_duration_label(float(payload.get('elapsed_seconds', 0.0) or 0.0))}",
+            f"标的：{int(universe.get('rows', 0) or 0)} · 股票 {int(universe.get('stocks', 0) or 0)} · ETF {int(universe.get('etfs', 0) or 0)}",
+            f"最新覆盖：{float(freshness.get('all_results_ratio', 0.0) or 0.0):.2%}",
+            "",
+            "扫描阶段",
+            f"  股票池：{_duration_label(float(scan.get('universe_seconds', 0.0) or 0.0))}",
+            f"  基本面：{_duration_label(float(scan.get('fundamentals_seconds', 0.0) or 0.0))}",
+            f"  行情更新：{_duration_label(float(scan.get('download_seconds', 0.0) or 0.0))}",
+            f"  指标分析：{_duration_label(float(scan.get('analysis_seconds', 0.0) or 0.0))}",
+            f"  评分增强：{_duration_label(float(scan.get('enrichment_seconds', 0.0) or 0.0))}",
+            f"  扫描导出：{_duration_label(float(scan.get('export_seconds', 0.0) or 0.0))}",
+            "",
+            "回测阶段",
+            f"  FAST：{int(backtest.get('fast_screen_tickers', 0) or 0)}",
+            f"  EXACT：{int(backtest.get('exact_refinement_tickers', 0) or 0)}",
+            f"  回测引擎：{_duration_label(float(backtest.get('elapsed_seconds', 0.0) or 0.0))}",
+            f"  校准查表：{_duration_label(float(backtest.get('calibration_lookup_seconds', 0.0) or 0.0))}",
+            f"  排名计算：{_duration_label(float(backtest.get('ranking_compute_seconds', 0.0) or 0.0))}",
+            f"  文件落盘：{_duration_label(float(backtest.get('persistence_seconds', 0.0) or 0.0))}",
+            f"  后处理：{_duration_label(float(backtest.get('postprocess_seconds', 0.0) or 0.0))}",
+            f"  Cache：{float(backtest.get('cache_hit_rate', 0.0) or 0.0):.2%}",
+        ]
+        _core.messagebox.showinfo("本轮运行性能", "\n".join(lines))
 
     # Dashboard cards / decision card ----------------------------------------
     def _update_dashboard_cards(self) -> None:

@@ -260,49 +260,175 @@ def calibration_details_for_frame(
     frame: pd.DataFrame,
     rows: list[dict[str, Any]] | None,
 ) -> pd.DataFrame:
+    """Resolve hierarchical calibration for a result frame in near-linear time.
+
+    v29 resolved every ticker by repeatedly scanning the complete calibration
+    row list, then scanned it a second time to recover detail fields.  A full
+    market run therefore paid an O(result_rows * calibration_rows) Python cost.
+    v30 builds one immutable lookup keyed by the same hierarchy and computes
+    score/setup buckets in vectorized form.  Resolution semantics and priority
+    order are unchanged, but each candidate now needs at most nine dictionary
+    lookups.
+    """
     columns = {
-        "score": 50.0, "confidence": 0.0, "level": "none", "samples": 0,
-        "effective_samples": 0.0, "mean_net_excess20": np.nan,
-        "win_rate_net_excess20": np.nan, "start_date": "", "end_date": "",
+        "score": 50.0,
+        "confidence": 0.0,
+        "level": "none",
+        "samples": 0,
+        "effective_samples": 0.0,
+        "mean_net_excess20": np.nan,
+        "win_rate_net_excess20": np.nan,
+        "start_date": "",
+        "end_date": "",
     }
     if frame.empty:
-        return pd.DataFrame({key: pd.Series(dtype=float if isinstance(value, (int, float)) else str) for key, value in columns.items()}, index=frame.index)
+        return pd.DataFrame(
+            {
+                key: pd.Series(
+                    dtype=float if isinstance(value, (int, float)) else str
+                )
+                for key, value in columns.items()
+            },
+            index=frame.index,
+        )
     if not rows:
-        return pd.DataFrame({key: pd.Series(value, index=frame.index) for key, value in columns.items()})
+        return pd.DataFrame(
+            {key: pd.Series(value, index=frame.index) for key, value in columns.items()}
+        )
 
-    prepared_rows = list(rows)
-    asset_values = frame.get("AssetType", frame.get("asset_type", pd.Series("stock", index=frame.index)))
-    signal_values = frame.get("EntrySignal", frame.get("entry_signal", pd.Series("UNKNOWN", index=frame.index)))
-    model_scores = pd.to_numeric(frame.get("FinalScore", frame.get("score", pd.Series(np.nan, index=frame.index))), errors="coerce")
-    regime_values = frame.get("MarketRegime", frame.get("market_regime", pd.Series("UNKNOWN", index=frame.index)))
-    setup_values = pd.to_numeric(frame.get("BaseScore", frame.get("setup_score", pd.Series(np.nan, index=frame.index))), errors="coerce")
+    level_fields: dict[str, tuple[str, ...]] = {
+        "asset_signal_regime_score_setup": (
+            "asset_type",
+            "entry_signal",
+            "market_regime",
+            "score_bucket",
+            "setup_bucket",
+        ),
+        "asset_signal_regime_score": (
+            "asset_type",
+            "entry_signal",
+            "market_regime",
+            "score_bucket",
+        ),
+        "asset_signal_regime": ("asset_type", "entry_signal", "market_regime"),
+        "asset_signal_bucket": ("asset_type", "entry_signal", "score_bucket"),
+        "asset_signal": ("asset_type", "entry_signal"),
+        "signal_bucket": ("entry_signal", "score_bucket"),
+        "signal": ("entry_signal",),
+        "asset": ("asset_type",),
+        "global": tuple(),
+    }
+    lookup: dict[tuple[str, ...], dict[str, Any]] = {}
+    for row in rows:
+        level = str(row.get("level", ""))
+        fields = level_fields.get(level)
+        if fields is None:
+            continue
+        key = (level, *(str(row.get(field, "")) for field in fields))
+        # build_global_calibration emits unique hierarchy keys.  setdefault also
+        # preserves legacy "first row wins" behaviour for hand-written inputs.
+        lookup.setdefault(key, row)
+
+    asset_values = frame.get(
+        "AssetType", frame.get("asset_type", pd.Series("stock", index=frame.index))
+    ).fillna("stock").astype(str).str.lower()
+    signal_values = frame.get(
+        "EntrySignal", frame.get("entry_signal", pd.Series("UNKNOWN", index=frame.index))
+    ).fillna("UNKNOWN").astype(str).str.upper()
+    regime_values = frame.get(
+        "MarketRegime", frame.get("market_regime", pd.Series("UNKNOWN", index=frame.index))
+    ).map(_normalize_regime)
+    model_scores = pd.to_numeric(
+        frame.get("FinalScore", frame.get("score", pd.Series(np.nan, index=frame.index))),
+        errors="coerce",
+    )
+    setup_values = pd.to_numeric(
+        frame.get("BaseScore", frame.get("setup_score", pd.Series(np.nan, index=frame.index))),
+        errors="coerce",
+    )
+    score_buckets = pd.cut(
+        model_scores,
+        bins=SCORE_BUCKET_EDGES,
+        labels=SCORE_BUCKET_LABELS,
+        right=False,
+        include_lowest=True,
+    ).astype("object")
+    setup_buckets = pd.cut(
+        setup_values,
+        bins=SETUP_BUCKET_EDGES,
+        labels=SETUP_BUCKET_LABELS,
+        right=False,
+        include_lowest=True,
+    ).astype("object")
+
     records: list[dict[str, Any]] = []
-    for asset, signal, score, regime, setup in zip(asset_values, signal_values, model_scores, regime_values, setup_values):
-        value, confidence, level = resolve_global_calibration(
-            str(asset), str(signal), float(score) if pd.notna(score) else np.nan, prepared_rows,
-            market_regime=str(regime), setup_score=float(setup) if pd.notna(setup) else np.nan,
+    for asset, signal, regime, bucket_value, setup_bucket_value in zip(
+        asset_values, signal_values, regime_values, score_buckets, setup_buckets
+    ):
+        asset = str(asset)
+        signal = str(signal)
+        regime = str(regime)
+        bucket = str(bucket_value) if pd.notna(bucket_value) else ""
+        setup_bucket = str(setup_bucket_value) if pd.notna(setup_bucket_value) else ""
+        keys = (
+            (
+                "asset_signal_regime_score_setup",
+                asset,
+                signal,
+                regime,
+                bucket,
+                setup_bucket,
+            ),
+            ("asset_signal_regime_score", asset, signal, regime, bucket),
+            ("asset_signal_regime", asset, signal, regime),
+            ("asset_signal_bucket", asset, signal, bucket),
+            ("asset_signal", asset, signal),
+            ("signal_bucket", signal, bucket),
+            ("signal", signal),
+            ("asset", asset),
+            ("global",),
         )
         matched: dict[str, Any] | None = None
-        for row in prepared_rows:
-            if str(row.get("level", "")) != level:
+        score = 50.0
+        confidence = 0.0
+        level = "none"
+        for key in keys:
+            candidate = lookup.get(tuple(str(value) for value in key))
+            if candidate is None:
                 continue
             try:
-                row_score = float(row.get("calibration_score", np.nan))
-                row_confidence = float(row.get("confidence", np.nan))
+                candidate_score = float(candidate.get("calibration_score", 50.0))
+                candidate_confidence = float(candidate.get("confidence", 0.0))
             except (TypeError, ValueError):
                 continue
-            if np.isclose(row_score, value, equal_nan=False) and np.isclose(row_confidence, confidence, equal_nan=False):
-                matched = row
-                break
-        records.append({
-            "score": value, "confidence": confidence, "level": level,
-            "samples": int((matched or {}).get("samples", 0) or 0),
-            "effective_samples": float((matched or {}).get("effective_samples", 0.0) or 0.0),
-            "mean_net_excess20": pd.to_numeric(pd.Series([(matched or {}).get("mean_net_excess20", np.nan)]), errors="coerce").iloc[0],
-            "win_rate_net_excess20": pd.to_numeric(pd.Series([(matched or {}).get("win_rate_net_excess20", np.nan)]), errors="coerce").iloc[0],
-            "start_date": str((matched or {}).get("start_date", "") or ""),
-            "end_date": str((matched or {}).get("end_date", "") or ""),
-        })
+            if not np.isfinite(candidate_score) or not np.isfinite(candidate_confidence):
+                continue
+            matched = candidate
+            score = float(np.clip(candidate_score, 0.0, 100.0))
+            confidence = float(np.clip(candidate_confidence, 0.0, 1.0))
+            level = str(candidate.get("level", "none"))
+            break
+
+        matched = matched or {}
+        mean_excess = pd.to_numeric(
+            pd.Series([matched.get("mean_net_excess20", np.nan)]), errors="coerce"
+        ).iloc[0]
+        win_rate = pd.to_numeric(
+            pd.Series([matched.get("win_rate_net_excess20", np.nan)]), errors="coerce"
+        ).iloc[0]
+        records.append(
+            {
+                "score": score,
+                "confidence": confidence,
+                "level": level,
+                "samples": int(matched.get("samples", 0) or 0),
+                "effective_samples": float(matched.get("effective_samples", 0.0) or 0.0),
+                "mean_net_excess20": mean_excess,
+                "win_rate_net_excess20": win_rate,
+                "start_date": str(matched.get("start_date", "") or ""),
+                "end_date": str(matched.get("end_date", "") or ""),
+            }
+        )
     return pd.DataFrame.from_records(records, index=frame.index)
 
 def calibration_scores_for_frame(

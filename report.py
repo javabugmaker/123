@@ -514,6 +514,57 @@ def _etf_theme_key(row: pd.Series) -> str:
     )
 
 
+def _ensure_diversity_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Populate expensive ETF/theme provenance once and preserve existing values."""
+    working = frame.copy()
+    asset_type = working.get(
+        "AssetType", pd.Series("", index=working.index)
+    ).fillna("").astype(str).str.strip().str.lower()
+    is_etf = working.get(
+        "IsETF", pd.Series(False, index=working.index)
+    ).map(_truthy) | asset_type.eq("etf")
+
+    if "ETFTheme" not in working:
+        working["ETFTheme"] = ""
+    missing_theme = is_etf & working["ETFTheme"].fillna("").astype(str).str.strip().eq("")
+    if missing_theme.any():
+        working.loc[missing_theme, "ETFTheme"] = working.loc[missing_theme].apply(
+            _etf_theme_key, axis=1
+        )
+
+    if "ETFTrackingKey" not in working:
+        working["ETFTrackingKey"] = ""
+    missing_tracking = is_etf & working["ETFTrackingKey"].fillna("").astype(str).str.strip().eq("")
+    if missing_tracking.any():
+        working.loc[missing_tracking, "ETFTrackingKey"] = working.loc[missing_tracking].apply(
+            lambda row: etf_tracking_key(
+                name=row.get("Name", ""),
+                industry=row.get("Industry", ""),
+                sector="",
+                ticker=row.get("Ticker", ""),
+            ),
+            axis=1,
+        )
+
+    if "ThemeCluster" not in working:
+        working["ThemeCluster"] = ""
+    missing_cluster = working["ThemeCluster"].fillna("").astype(str).str.strip().eq("")
+    if missing_cluster.any():
+        working.loc[missing_cluster, "ThemeCluster"] = working.loc[missing_cluster].apply(
+            lambda row: theme_cluster(
+                is_etf=_truthy(row.get("IsETF", False))
+                or str(row.get("AssetType", "")).strip().lower() == "etf",
+                name=row.get("Name", ""),
+                industry=row.get("Industry", ""),
+                sector=row.get("Sector", ""),
+                classification=row.get("ModelClassification", ""),
+                ticker=row.get("Ticker", ""),
+            ),
+            axis=1,
+        )
+    return working
+
+
 def _diversify_ranked_candidates(
     frame: pd.DataFrame,
     limit: int,
@@ -522,22 +573,7 @@ def _diversify_ranked_candidates(
 ) -> pd.DataFrame:
     if frame.empty or limit <= 0:
         return frame.head(0).copy()
-    working = frame.copy()
-    working["ETFTheme"] = working.apply(_etf_theme_key, axis=1)
-    working["ETFTrackingKey"] = working.apply(
-        lambda row: etf_tracking_key(
-            name=row.get("Name", ""), industry=row.get("Industry", ""),
-            sector="", ticker=row.get("Ticker", "")
-        ) if _truthy(row.get("IsETF", False)) or str(row.get("AssetType", "")).strip().lower() == "etf" else "",
-        axis=1,
-    )
-    working["ThemeCluster"] = working.apply(
-        lambda row: theme_cluster(
-            is_etf=_truthy(row.get("IsETF", False)) or str(row.get("AssetType", "")).strip().lower() == "etf",
-            name=row.get("Name", ""), industry=row.get("Industry", ""), sector=row.get("Sector", ""),
-            classification=row.get("ModelClassification", ""), ticker=row.get("Ticker", ""),
-        ), axis=1,
-    )
+    working = _ensure_diversity_columns(frame)
     theme_counts: dict[str, int] = {}
     tracking_counts: dict[str, int] = {}
     stock_industry_counts: dict[str, int] = {}
@@ -616,26 +652,26 @@ DECISION_RESULT_COLUMNS: tuple[str, ...] = (
 
 
 def _decision_projection(frame: pd.DataFrame) -> pd.DataFrame:
-    working = frame.copy()
-    if "ETFTheme" not in working:
-        working["ETFTheme"] = ""
+    # Project first so the GUI path never copies the 200+ column research frame.
+    working = frame.reindex(columns=DECISION_RESULT_COLUMNS).copy()
+    working["ETFTheme"] = working["ETFTheme"].astype("object")
     missing_theme = working["ETFTheme"].fillna("").astype(str).str.strip().eq("")
     if missing_theme.any():
         inferred = working.loc[missing_theme].apply(_etf_theme_key, axis=1)
-        ticker = working.loc[missing_theme].get(
-            "Ticker", pd.Series("", index=working.loc[missing_theme].index)
-        ).fillna("").astype(str).str.strip()
-        classification = working.loc[missing_theme].get(
-            "ModelClassification", pd.Series("", index=working.loc[missing_theme].index)
-        ).fillna("").astype(str).str.strip()
-        # A generic ETF name can make the classification helper fall through to
-        # the ticker itself.  That is provenance, not a useful user-facing theme.
-        # Prefer the model classification in that boundary case.
+        ticker = working.loc[missing_theme, "Ticker"].fillna("").astype(str).str.strip()
+        classification = (
+            working.loc[missing_theme, "ModelClassification"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
         inferred_text = inferred.fillna("").astype(str).str.strip()
         generic = inferred_text.eq("") | inferred_text.eq(ticker)
-        inferred_text = inferred_text.where(~generic | classification.eq(""), classification)
+        inferred_text = inferred_text.where(
+            ~generic | classification.eq(""), classification
+        )
         working.loc[missing_theme, "ETFTheme"] = inferred_text
-    return working.reindex(columns=DECISION_RESULT_COLUMNS)
+    return working
 
 
 def write_decision_results(
@@ -660,6 +696,7 @@ def refresh_candidate_exports(
     """Refresh every GUI-facing candidate export from one ranked result frame."""
     destination = output_dir if output_dir is not None else OUTPUT_DIR
     ranked = _rank_valid_candidates(frame)
+    ranked = _ensure_diversity_columns(ranked)
     ranked["ModelVersion"] = ranked.get("ModelVersion", pd.Series(SCORING_VERSION, index=ranked.index)).replace("", SCORING_VERSION).fillna(SCORING_VERSION)
     ranked["IndicatorCacheVersion"] = ranked.get("IndicatorCacheVersion", pd.Series(INDICATOR_CACHE_VERSION, index=ranked.index)).replace("", INDICATOR_CACHE_VERSION).fillna(INDICATOR_CACHE_VERSION)
     ranked["BacktestCacheVersion"] = ranked.get("BacktestCacheVersion", pd.Series(BACKTEST_CACHE_VERSION, index=ranked.index)).replace("", BACKTEST_CACHE_VERSION).fillna(BACKTEST_CACHE_VERSION)

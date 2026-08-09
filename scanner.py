@@ -741,6 +741,9 @@ class ScanReport:
     failed: int = 0
     passed_filters: int = 0
     elapsed_seconds: float = 0.0
+    download_seconds: float = 0.0
+    analysis_seconds: float = 0.0
+    enrichment_seconds: float = 0.0
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -1441,6 +1444,9 @@ def run_scan(
         failed=failed,
         passed_filters=passed,
         elapsed_seconds=elapsed,
+        download_seconds=download_elapsed,
+        analysis_seconds=analysis_elapsed,
+        enrichment_seconds=enrichment_elapsed,
     )
     logger.info(
         "Scan complete: %d successful, %d failed, %d passed filters, %.1f seconds.",
