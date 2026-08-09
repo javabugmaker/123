@@ -42,6 +42,7 @@ _core.DISPLAY_COLUMNS = (
     "RankingEligibility",
     "RankingScore",
     "InstitutionalStrength",
+    "TradeReadinessReason",
 )
 
 _core.COLUMN_NAMES.update(
@@ -226,8 +227,7 @@ def _build_ui_v26(self) -> None:
         textvariable=self.status,
         fg_color="#244864",
         corner_radius=8,
-        padx=12,
-        pady=6,
+        height=32,
         text_color="#e6f2ff",
         font=("Microsoft YaHei UI", 9, "bold"),
     ).pack(side=tk.LEFT)
@@ -580,7 +580,7 @@ def _build_ui_v26(self) -> None:
     self.table = ttk.Treeview(table_frame, show="headings", selectmode="browse", style="Compact.Treeview")
     self.table.tag_configure("eligibility-recommended", background="#ecfdf3", foreground="#166534")
     self.table.tag_configure("eligibility-cautious", background="#fffbeb", foreground="#92400e")
-    self.table.tag_configure("eligibility-risk", background="#fef2f2", foreground="#991b1b")
+    self.table.tag_configure("risk-filter", background="#fef2f2", foreground="#991b1b")
     self.table.tag_configure("eligibility-observe", background="#ffffff", foreground="#334e68")
     ybar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.table.yview)
     xbar = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self.table.xview)
@@ -614,8 +614,7 @@ def _build_ui_v26(self) -> None:
         corner_radius=8,
         text_color="#1d4ed8",
         font=("Microsoft YaHei UI", 12, "bold"),
-        padx=12,
-        pady=8,
+        height=36,
     )
     self.detail_signal_label.pack(fill=tk.X, padx=18, pady=(0, 14))
     for label, variable in (
@@ -882,8 +881,10 @@ def _render_cached_rows_v26(self) -> bool:
         summary = re.sub(r" · 过期 \d+", "", self.result_summary.get())
         summary = summary.replace("当前文件：", "")
         self.result_summary.set(summary)
-    self._update_dashboard_cards()
-    self._reset_decision_card_if_needed()
+    if hasattr(self, "card_recommended"):
+        self._update_dashboard_cards()
+    if hasattr(self, "detail_title") and hasattr(self, "table"):
+        self._reset_decision_card_if_needed()
     return True
 
 
@@ -959,10 +960,12 @@ class DecisionScannerGUI(_core.ScannerGUI):
         return _render_cached_rows_v26(self)
 
     def _quality_tag(self, quality: str) -> str:
-        return ""
+        # Preserve the historical method contract.  v26 intentionally does
+        # not configure these tags, so eligibility remains the only row color.
+        return _core.ScannerGUI._quality_tag(self, quality)
 
     def _entry_tag(self, signal: str) -> str:
-        return ""
+        return _core.ScannerGUI._entry_tag(self, signal)
 
     def _risk_tag(self, values: list[str], indexes: dict[str, int]) -> str:
         eligibility = _value_for(indexes, values, "RankingEligibility")
@@ -971,7 +974,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         if eligibility == "谨慎候选":
             return "eligibility-cautious"
         if eligibility == "风险过滤":
-            return "eligibility-risk"
+            return "risk-filter"
         return "eligibility-observe"
 
     # Layout toggles ----------------------------------------------------------
@@ -1095,6 +1098,10 @@ class DecisionScannerGUI(_core.ScannerGUI):
 
     def _set_display_columns_for_file(self, filename: str) -> None:
         columns = list(_core.DISPLAY_COLUMNS)
+        # Keep TradeReadinessReason in the public compatibility contract, but
+        # move the long explanation out of the real table into the decision card.
+        if "TradeReadinessReason" in columns:
+            columns.remove("TradeReadinessReason")
         if filename in {"Top50Stocks.csv", "Top50ETF.csv"} and "AssetType" in columns:
             columns.remove("AssetType")
         self._display_headers = [column for column in columns if column in self._csv_headers]
@@ -1107,6 +1114,10 @@ class DecisionScannerGUI(_core.ScannerGUI):
         loaded = self._call_core_with_legacy_output_dir(_core.ScannerGUI.load_csv, filename)
         if not loaded:
             return False
+        # Older callers/tests intentionally construct the GUI without __init__.
+        # In that compatibility path the core load/render is already complete.
+        if not hasattr(self, "view_title"):
+            return loaded
         self._ensure_derived_columns()
         self._set_display_columns_for_file(filename)
         rendered = _render_cached_rows_v26(self)
@@ -1235,7 +1246,8 @@ class DecisionScannerGUI(_core.ScannerGUI):
         ]
 
     def _resolve_backtest_tickers(self) -> list[str]:
-        scope = self.backtest_scope.get()
+        scope_var = getattr(self, "backtest_scope", None)
+        scope = scope_var.get() if scope_var is not None else "当前筛选"
         if scope == "当前页面":
             return self._visible_page_tickers()
         if scope == "当前筛选":
@@ -1270,13 +1282,15 @@ class DecisionScannerGUI(_core.ScannerGUI):
             return
         previous = list(self.filtered_tickers)
         self.filtered_tickers = tickers
-        self.backtest_button.configure(state=_core.tk.DISABLED, text="回测运行中")
+        backtest_button = getattr(self, "backtest_button", None)
+        if backtest_button is not None:
+            backtest_button.configure(state=_core.tk.DISABLED, text="回测运行中")
         try:
             _core.ScannerGUI.start_backtest(self)
         finally:
             self.filtered_tickers = previous
-        if not self.scan_running:
-            self.backtest_button.configure(state=_core.tk.NORMAL, text="▶ 运行回测")
+        if not self.scan_running and backtest_button is not None:
+            backtest_button.configure(state=_core.tk.NORMAL, text="▶ 运行回测")
 
     def start_backtest(self) -> None:
         if self.scan_running:
