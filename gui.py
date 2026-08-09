@@ -129,6 +129,7 @@ BACKTEST_SCOPE_FILES = {
     "综合 Top50": "Top50Mixed.csv",
     "强推荐": "Top50TradeReady.csv",
 }
+DAILY_PIPELINE_FILE = Path(__file__).resolve().with_name("daily_pipeline.py")
 
 _original_update_filter_values = _core.ScannerGUI._update_filter_values
 _original_row_matches_filters = _core.ScannerGUI._row_matches_filters
@@ -271,6 +272,18 @@ def _build_ui_v26(self) -> None:
     )
     self.ticker_entry.grid(row=0, column=5, padx=(0, 16), pady=14, sticky="ew")
 
+    self.daily_button = ctk.CTkButton(
+        controls,
+        text="⚡ 今日一键更新",
+        command=self.start_daily_pipeline,
+        width=146,
+        height=38,
+        fg_color="#7c3aed",
+        hover_color="#6d28d9",
+        font=("Microsoft YaHei UI", 10, "bold"),
+    )
+    self.daily_button.grid(row=0, column=6, padx=(0, 8), pady=12)
+
     self.start_button = ctk.CTkButton(
         controls,
         text="▶ 开始扫描",
@@ -279,7 +292,7 @@ def _build_ui_v26(self) -> None:
         height=38,
         font=("Microsoft YaHei UI", 10, "bold"),
     )
-    self.start_button.grid(row=0, column=6, padx=(0, 8), pady=12)
+    self.start_button.grid(row=0, column=7, padx=(0, 8), pady=12)
     self.backtest_button = ctk.CTkButton(
         controls,
         text="▶ 运行回测",
@@ -290,7 +303,7 @@ def _build_ui_v26(self) -> None:
         hover_color="#115e59",
         font=("Microsoft YaHei UI", 10, "bold"),
     )
-    self.backtest_button.grid(row=0, column=7, padx=(0, 8), pady=12)
+    self.backtest_button.grid(row=0, column=8, padx=(0, 8), pady=12)
     self.cancel_button = ctk.CTkButton(
         controls,
         text="■ 停止",
@@ -301,7 +314,7 @@ def _build_ui_v26(self) -> None:
         fg_color="#64748b",
         hover_color="#475569",
     )
-    self.cancel_button.grid(row=0, column=8, padx=(0, 8), pady=12)
+    self.cancel_button.grid(row=0, column=9, padx=(0, 8), pady=12)
     ctk.CTkButton(
         controls,
         text="⚙ 高级设置",
@@ -313,10 +326,10 @@ def _build_ui_v26(self) -> None:
         text_color="#334e68",
         border_width=1,
         border_color="#d7e2ee",
-    ).grid(row=0, column=9, padx=(0, 16), pady=12)
+    ).grid(row=0, column=10, padx=(0, 16), pady=12)
 
     self.advanced_frame = ctk.CTkFrame(controls, fg_color="#f8fafc", corner_radius=8)
-    self.advanced_frame.grid(row=1, column=0, columnspan=10, padx=14, pady=(0, 14), sticky="ew")
+    self.advanced_frame.grid(row=1, column=0, columnspan=11, padx=14, pady=(0, 14), sticky="ew")
     self.advanced_frame.grid_remove()
     self.source_box = ttk.Combobox(
         self.advanced_frame,
@@ -852,9 +865,12 @@ def _format_table_value_v26(self, column: str, value: str) -> str:
         return {
             "NEW": "新出现",
             "ACTIVE": "持续有效",
-            "CONFIRMED": "持续有效",
+            "CONFIRMED": "持续确认",
+            "STRENGTHEN": "正在增强",
+            "WATCH": "观察中",
+            "WEAKEN": "正在转弱",
             "FAILED": "已失效",
-            "EXPIRED": "已失效",
+            "EXPIRED": "已过期",
             "INACTIVE": "已结束",
         }.get(text.strip().upper(), text)
     return _original_format_table_value(self, column, value)
@@ -913,6 +929,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self._nav_buttons: dict[str, object] = {}
         self._active_nav = "mixed"
         self._new_signal_only = False
+        self._daily_pipeline_active = False
         self._advanced_visible = False
         self._more_filters_visible = False
         self._log_visible = False
@@ -920,6 +937,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self._scan_mode_changed(self.scan_mode.get())
         self.root.bind("<Control-r>", lambda _event: self.start_scan())
         self.root.bind("<Control-b>", lambda _event: self.start_backtest())
+        self.root.bind("<Control-Shift-R>", lambda _event: self.start_daily_pipeline())
         for key, shortcut in zip(("mixed", "stocks", "etf", "ready", "new", "all"), "123456"):
             self.root.bind(f"<Control-Key-{shortcut}>", lambda _event, nav_key=key: self._load_navigation(nav_key))
 
@@ -1023,14 +1041,54 @@ class DecisionScannerGUI(_core.ScannerGUI):
     def _advanced_changed(self) -> None:
         self.scan_mode.set("自定义")
 
+    def start_daily_pipeline(self) -> None:
+        if self.scan_running:
+            _core.messagebox.showinfo("提示", "当前任务正在运行中")
+            return
+        if not DAILY_PIPELINE_FILE.exists():
+            _core.messagebox.showerror("无法启动", f"缺少 {DAILY_PIPELINE_FILE.name}")
+            return
+        self.clear_log()
+        self.scan_running = True
+        self.backtest_running = True
+        self._daily_pipeline_active = True
+        self._cancel_requested = False
+        self._csv_path = None
+        self._csv_mtime = None
+        self.scan_output_mtime = self._results_mtime()
+        self.daily_button.configure(state=_core.tk.DISABLED, text="今日全流程运行中")
+        self.start_button.configure(state=_core.tk.DISABLED)
+        self.backtest_button.configure(state=_core.tk.DISABLED)
+        self.cancel_button.configure(state=_core.tk.NORMAL)
+        self.progress.stop()
+        self.progress.configure(mode="indeterminate")
+        self.progress.start(12)
+        self.status.set("今日全流程：准备获取最新数据")
+        command = [
+            _core.sys.executable,
+            str(DAILY_PIPELINE_FILE),
+            "--data-source",
+            self._selected_data_source(),
+            "--backtest-mode",
+            "fast",
+        ]
+        if bool(self.refresh_fundamentals.get()):
+            command.append("--refresh-fundamentals")
+        self.append_log(
+            "今日一键更新：最新日K → 全市场扫描 → FAST回测 → EXACT精炼 → 最终Top50。\n"
+        )
+        _core.threading.Thread(target=self.run_process, args=(command,), daemon=True).start()
+
     def start_scan(self) -> None:
         if self.scan_running:
             return _core.ScannerGUI.start_scan(self)
         self._scan_mode_changed(self.scan_mode.get())
+        self.daily_button.configure(state=_core.tk.DISABLED)
         self.backtest_button.configure(state=_core.tk.DISABLED)
         self.start_button.configure(text="扫描运行中")
         _core.ScannerGUI.start_scan(self)
         if not self.scan_running:
+            self.daily_button.configure(state=_core.tk.NORMAL)
             self.backtest_button.configure(state=_core.tk.NORMAL)
             self.start_button.configure(text="▶ 开始扫描")
 
@@ -1283,6 +1341,9 @@ class DecisionScannerGUI(_core.ScannerGUI):
         previous = list(self.filtered_tickers)
         self.filtered_tickers = tickers
         backtest_button = getattr(self, "backtest_button", None)
+        daily_button = getattr(self, "daily_button", None)
+        if daily_button is not None:
+            daily_button.configure(state=_core.tk.DISABLED)
         if backtest_button is not None:
             backtest_button.configure(state=_core.tk.DISABLED, text="回测运行中")
         try:
@@ -1291,6 +1352,8 @@ class DecisionScannerGUI(_core.ScannerGUI):
             self.filtered_tickers = previous
         if not self.scan_running and backtest_button is not None:
             backtest_button.configure(state=_core.tk.NORMAL, text="▶ 运行回测")
+            if daily_button is not None:
+                daily_button.configure(state=_core.tk.NORMAL, text="⚡ 今日一键更新")
 
     def start_backtest(self) -> None:
         if self.scan_running:
@@ -1304,23 +1367,50 @@ class DecisionScannerGUI(_core.ScannerGUI):
 
     # Task completion ---------------------------------------------------------
     def scan_finished(self, code: int) -> None:
+        daily_pipeline = bool(getattr(self, "_daily_pipeline_active", False))
         was_backtest = self.backtest_running
+        # The generic core opens the backtest result dialog when backtest_running
+        # is true. A daily run should instead land directly on the final mixed Top50.
+        if daily_pipeline:
+            self.backtest_running = False
         _core.ScannerGUI.scan_finished(self, code)
         self.start_button.configure(state=_core.tk.NORMAL, text="▶ 开始扫描")
         self.backtest_button.configure(state=_core.tk.NORMAL, text="▶ 运行回测")
+        if hasattr(self, "daily_button"):
+            self.daily_button.configure(state=_core.tk.NORMAL, text="⚡ 今日一键更新")
+        if daily_pipeline:
+            self._daily_pipeline_active = False
+            if code == 0:
+                self.load_csv("Top50Mixed.csv")
+                self.status.set("今日全流程完成 · 综合/股票/ETF Top50 已更新")
+                self.append_log(
+                    "今日全流程完成：Top50Mixed.csv / Top50Stocks.csv / Top50ETF.csv 已刷新。\n"
+                )
+            else:
+                self._show_log_for_error()
+            return
         if code == 0 and not was_backtest and self.auto_backtest_recommended.get():
             tickers = self._tickers_from_output_file("Top50TradeReady.csv")
             if tickers:
                 self.root.after(200, lambda values=tickers: self._start_backtest_for_tickers(values))
 
     def scan_failed(self, error: str) -> None:
+        self._daily_pipeline_active = False
         _core.ScannerGUI.scan_failed(self, error)
         self.start_button.configure(state=_core.tk.NORMAL, text="▶ 开始扫描")
         self.backtest_button.configure(state=_core.tk.NORMAL, text="▶ 运行回测")
+        if hasattr(self, "daily_button"):
+            self.daily_button.configure(state=_core.tk.NORMAL, text="⚡ 今日一键更新")
         self._show_log_for_error()
 
     def append_log(self, text: str) -> None:
         _core.ScannerGUI.append_log(self, text)
+        if "DAILY stage 1/3" in text:
+            self.status.set("今日全流程 1/3 · 获取最新行情并扫描")
+        elif "DAILY stage 2/3" in text:
+            self.status.set("今日全流程 2/3 · 全量回测与候选精炼")
+        elif "DAILY stage 3/3" in text:
+            self.status.set("今日全流程 3/3 · 生成最终 Top50")
         lowered = text.casefold()
         if "traceback" in lowered or "异常" in text or "启动失败" in text:
             self._show_log_for_error()
