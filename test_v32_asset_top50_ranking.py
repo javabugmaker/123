@@ -9,6 +9,8 @@ import pandas as pd
 import config
 import report
 
+# Connector-origin commit used to trigger the final Ubuntu/Windows matrix.
+
 
 class V32AssetTop50RankingTests(unittest.TestCase):
     def _frame(self) -> pd.DataFrame:
