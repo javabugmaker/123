@@ -26,15 +26,16 @@ jobs:
         run: |
           python tools/v31_migrate.py
           python tools/v31_fix_migration.py
+          python tools/v31_fix_gui_tests.py
       - name: Compile
         run: python -m py_compile downloader.py scanner.py report.py daily_pipeline.py config.py test_v31_stock_universe_integrity.py
       - name: Focused tests
-        run: python -m unittest -v test_v31_stock_universe_integrity.py test_v29_pipeline_reliability.py test_v30_performance_workstation.py
+        run: python -m unittest -v test_v31_stock_universe_integrity.py test_v29_pipeline_reliability.py test_v30_performance_workstation.py test_gui_clean_v25.py test_gui_workstation_v26.py test_v27_gui_pipeline.py
       - name: Full regression
         run: python -m unittest discover -v
       - name: Commit validated product diff
         run: |
-          rm -f tools/v31_migrate.py tools/v31_fix_migration.py .github/workflows/v31-migration.yml
+          rm -f tools/v31_migrate.py tools/v31_fix_migration.py tools/v31_fix_gui_tests.py .github/workflows/v31-migration.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
