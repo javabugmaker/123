@@ -2325,8 +2325,12 @@ def _adaptive_worker_count(
     hard_limit = min(max(1, int(BACKTEST_MAX_PROCESSES)), cpu_limit, max(1, total))
     if requested is not None:
         return min(hard_limit, max(1, int(requested)))
-    utilization = 0.90 if profile.name == "fast" else 0.75
-    target = max(2, int(round(cpu_limit * utilization))) if total >= BACKTEST_PROCESS_MIN_TICKERS else 1
+    if total <= 1:
+        return 1
+    # Small batches now use threads instead of being artificially serialized;
+    # larger CPU-heavy batches still switch to isolated worker processes.
+    utilization = 0.90 if profile.name == "fast" else 0.80
+    target = max(2, int(round(cpu_limit * utilization)))
     return min(hard_limit, target, max(1, total))
 
 
@@ -2473,7 +2477,10 @@ def run_historical_backtest(
     use_process_pool = bool(
         total >= int(BACKTEST_PROCESS_MIN_TICKERS) and worker_count > 1
     )
-    engine = "process" if use_process_pool else "sequential"
+    use_thread_pool = bool(
+        1 < total < int(BACKTEST_PROCESS_MIN_TICKERS) and worker_count > 1
+    )
+    engine = "process" if use_process_pool else "thread" if use_thread_pool else "sequential"
     benchmark_signature = "state-v5"
     completed = 0
     cache_hits = 0
@@ -2564,6 +2571,45 @@ def run_historical_backtest(
                 for ticker, error in errors:
                     logger.warning("Backtest failed for %s: %s", ticker, error)
                 record_progress(batch_frame, batch_count, batch_hits, batch_hit_tickers)
+    elif use_thread_pool:
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="backtest",
+        ) as executor:
+            futures = {
+                executor.submit(
+                    _backtest_one_ticker_cached,
+                    ticker,
+                    source,
+                    benchmark_frame,
+                    commission,
+                    stamp_duty,
+                    slippage,
+                    (validation_end, test_start),
+                    benchmark_signature,
+                    profile=profile,
+                    benchmark_name=benchmark,
+                ): ticker
+                for ticker in unique_tickers
+            }
+            for future in as_completed(futures):
+                ticker = futures[future]
+                try:
+                    ticker_samples, cache_hit = future.result()
+                except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
+                    logger.warning("Backtest failed for %s: %s", ticker, exc)
+                    ticker_samples, cache_hit = [], False
+                batch_frame = (
+                    pd.DataFrame.from_records(ticker_samples)
+                    if ticker_samples
+                    else pd.DataFrame()
+                )
+                record_progress(
+                    batch_frame,
+                    1,
+                    int(cache_hit),
+                    [str(ticker)] if cache_hit else [],
+                )
     else:
         for ticker in unique_tickers:
             try:
