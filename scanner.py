@@ -391,35 +391,6 @@ def scan_single_from_df(
                 error="Insufficient data",
             )
 
-        market_cap = ticker_info.market_cap
-        if market_cap is None and not ticker_info.is_etf:
-            try:
-                market_cap = get_market_cap(ticker)
-            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-                return ScanResult(
-                    ticker=ticker,
-                    name=ticker_info.name,
-                    sector=ticker_info.sector,
-                    industry=ticker_info.industry,
-                    is_etf=ticker_info.is_etf,
-                    asset_type=ticker_info.asset_type,
-                    error=f"市值获取失败: {exc}",
-                )
-        if (
-            not ticker_info.is_etf
-            and market_cap is not None
-            and market_cap < MIN_MARKET_CAP
-        ):
-            return ScanResult(
-                ticker=ticker,
-                name=ticker_info.name,
-                sector=ticker_info.sector,
-                industry=ticker_info.industry,
-                is_etf=ticker_info.is_etf,
-                asset_type=ticker_info.asset_type,
-                error=f"市值 {market_cap:,.0f} 元低于最低要求 {MIN_MARKET_CAP:,.0f} 元",
-            )
-
         if not indicators_computed:
             df = compute_all_indicators(df.copy())
         close = _parse_float(df["Close"].iloc[-1], np.nan)
@@ -434,6 +405,26 @@ def scan_single_from_df(
                 error="最新收盘价无效",
             )
 
+        market_cap = ticker_info.market_cap
+        if market_cap is None and not ticker_info.is_etf:
+            shares = _parse_float(ticker_info.total_shares, np.nan)
+            if np.isfinite(shares) and shares > 0:
+                market_cap = float(shares * close)
+            else:
+                try:
+                    market_cap = get_market_cap(ticker)
+                except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                    logger.warning(
+                        "Market-cap metadata unavailable for %s; treating as unknown: %s",
+                        ticker,
+                        exc,
+                    )
+                    market_cap = None
+
+        # Market-cap evidence participates in the ordinary filter gate.  A low
+        # or missing value must never become ScanResult.error, because errors
+        # are excluded from every candidate export and can silently collapse
+        # the entire stock research pool when provider metadata changes scale.
         filter_results = run_all_filters(
             df,
             market_cap=market_cap,
@@ -444,6 +435,14 @@ def scan_single_from_df(
             "min_price": filter_results.min_price.passed,
             "min_volume": filter_results.min_volume.passed,
             "min_market_cap": filter_results.min_market_cap.passed,
+            "market_cap": (
+                float(market_cap)
+                if market_cap is not None and np.isfinite(float(market_cap))
+                else None
+            ),
+            "market_cap_available": bool(
+                market_cap is not None and np.isfinite(float(market_cap))
+            ),
             "sufficient_history": filter_results.sufficient_history.passed,
             "signal_count": filter_results.signal_count(),
             "filter_count": filter_results.passed_count(),

@@ -218,6 +218,26 @@ def _number_or_none(value: Any) -> float | None:
     return number if np.isfinite(number) and number > 0 else None
 
 
+def _normalize_cn_share_count(value: Any) -> float | None:
+    """Return TickFlow CN share-capital metadata in individual shares.
+
+    Historical/free metadata payloads can expose CN share capital at a scale
+    that is indistinguishable from 10k-share units.  Treating those small
+    values as individual shares makes almost the entire A-share universe look
+    smaller than the 100m CNY market-cap floor.  Values already large enough
+    to be plausible individual-share counts are preserved; smaller positive
+    values are conservatively expanded by 10,000.
+    """
+    number = _number_or_none(value)
+    if number is None:
+        return None
+    if number < 10_000_000:
+        scaled = number * 10_000.0
+        if scaled <= 10_000_000_000_000.0:
+            return scaled
+    return number
+
+
 def _as_mapping(value: Any) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
@@ -513,8 +533,8 @@ def _ticker_info_from_meta(
     symbol: str, meta: dict[str, Any], is_etf: bool
 ) -> TickerInfo:
     ext = meta.get("ext") if isinstance(meta.get("ext"), Mapping) else {}
-    total_shares = _number_or_none(ext.get("total_shares"))
-    float_shares = _number_or_none(ext.get("float_shares"))
+    total_shares = _normalize_cn_share_count(ext.get("total_shares"))
+    float_shares = _normalize_cn_share_count(ext.get("float_shares"))
     name = str(meta.get("name") or "")
     exchange = str(meta.get("exchange") or symbol.rsplit(".", 1)[-1])
     return TickerInfo(
@@ -823,7 +843,7 @@ def get_market_cap(ticker: str) -> float | None:
     symbol = normalize_ticker(ticker)
     meta = _load_or_fetch_meta(symbol)
     ext = meta.get("ext") if isinstance(meta.get("ext"), Mapping) else {}
-    shares = _number_or_none(ext.get("total_shares"))
+    shares = _normalize_cn_share_count(ext.get("total_shares"))
     if shares is None:
         return None
     frame = _load_cache(symbol)
