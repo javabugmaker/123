@@ -6,6 +6,12 @@ on:
       - agent/pipeline-reliability-v29
     paths:
       - .github/workflows/apply-v29.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-v29.yml
+      - tools/apply_v29_pipeline_reliability.py
 
 permissions:
   contents: write
