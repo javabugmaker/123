@@ -1,0 +1,59 @@
+name: Apply v30 Performance Workstation
+
+on:
+  push:
+    branches:
+      - agent/performance-workstation-v30
+    paths:
+      - .github/workflows/apply-v30.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-v30.yml
+      - tools/apply_v30_performance_workstation.py
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/performance-workstation-v30
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: Apply v30 patch
+        run: python tools/apply_v30_performance_workstation.py
+
+      - name: Compile
+        run: python -m compileall -q .
+
+      - name: Focused v30 tests
+        env:
+          MPLBACKEND: Agg
+        run: python -m unittest -v test_v30_performance_workstation.py test_v29_pipeline_reliability.py test_v28_gui_backtest.py test_v27_gui_pipeline.py test_gui_workstation_v26.py test_performance_regressions.py
+
+      - name: Full regression suite
+        env:
+          MPLBACKEND: Agg
+        run: python -m unittest discover -v
+
+      - name: Commit verified product diff
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add analytics.py config.py daily_pipeline.py gui.py main.py model_calibration.py report.py scan_service.py scanner.py test_v30_performance_workstation.py
+          git rm tools/apply_v30_performance_workstation.py .github/workflows/apply-v30.yml
+          git commit -m "perf: accelerate calibration and workstation observability v30"
+          git push origin HEAD:agent/performance-workstation-v30
