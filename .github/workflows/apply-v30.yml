@@ -49,6 +49,28 @@ jobs:
       - name: Apply v30 patch
         run: python tools/apply_v30_performance_workstation.py
 
+      - name: Align forward compatibility and pandas dtype
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          test_path = Path("test_v29_pipeline_reliability.py")
+          test_text = test_path.read_text(encoding="utf-8")
+          old = '        self.assertIn("v29", config.PIPELINE_VERSION)\n'
+          new = '        self.assertRegex(config.PIPELINE_VERSION, r"v(?:29|3[0-9])")\n'
+          if old not in test_text:
+              raise SystemExit("legacy v29 version assertion not found")
+          test_path.write_text(test_text.replace(old, new, 1), encoding="utf-8")
+
+          report_path = Path("report.py")
+          report_text = report_path.read_text(encoding="utf-8")
+          old = '    working = frame.reindex(columns=DECISION_RESULT_COLUMNS).copy()\n    missing_theme = working["ETFTheme"].fillna("").astype(str).str.strip().eq("")\n'
+          new = '    working = frame.reindex(columns=DECISION_RESULT_COLUMNS).copy()\n    working["ETFTheme"] = working["ETFTheme"].astype("object")\n    missing_theme = working["ETFTheme"].fillna("").astype(str).str.strip().eq("")\n'
+          if old not in report_text:
+              raise SystemExit("decision projection dtype marker not found")
+          report_path.write_text(report_text.replace(old, new, 1), encoding="utf-8")
+          PY
+
       - name: Compile
         run: python -m compileall -q .
 
@@ -66,7 +88,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add analytics.py config.py daily_pipeline.py gui.py main.py model_calibration.py report.py scan_service.py scanner.py test_v30_performance_workstation.py
+          git add analytics.py config.py daily_pipeline.py gui.py main.py model_calibration.py report.py scan_service.py scanner.py test_v29_pipeline_reliability.py test_v30_performance_workstation.py
           git rm tools/apply_v30_performance_workstation.py .github/workflows/apply-v30.yml
           git commit -m "perf: accelerate calibration and workstation observability v30"
           git push origin HEAD:agent/performance-workstation-v30
