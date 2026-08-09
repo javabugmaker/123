@@ -180,7 +180,7 @@ BACKTEST_EXACT_REFINEMENT_CANDIDATES: Final[int] = 150
 
 SCORING_VERSION: str = "2026-08-09-v24-decision-integrity"
 # Engineering versions are intentionally separate from the scoring model.
-PIPELINE_VERSION: str = "2026-08-10-v31-stock-universe-integrity"
+PIPELINE_VERSION: str = "2026-08-10-v32-asset-top50-ranking"
 GUI_VERSION: str = "2026-08-09-v30-workstation"
 BACKTEST_PROVENANCE_VERSION: str = "2026-08-09-v30"
 

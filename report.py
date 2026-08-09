@@ -742,16 +742,21 @@ def refresh_candidate_exports(
         "IsETF", pd.Series(False, index=ranked.index)
     ).map(_truthy) | asset_type.eq("etf")
 
+    # Split asset lists are pure within-asset rankings, not diversified research
+    # pools.  Diversity caps remain valuable for the mixed Top50, but must never
+    # truncate the dedicated stock/ETF pages below the number of valid assets.
+    # Trade eligibility is preserved as a display/decision field and does not
+    # decide whether a valid asset may appear in its research Top50.
     stock_path = destination / f"Top{top_n_csv}Stocks.csv"
-    stock_pool = _diversify_ranked_candidates(
-        ranked.loc[~is_etf_mask], top_n_csv
-    )
+    stock_pool = ranked.loc[~is_etf_mask].head(top_n_csv).copy().reset_index(drop=True)
+    stock_pool["ResearchDiversityPenalty"] = 1.0
+    stock_pool["ResearchPoolRank"] = np.arange(1, len(stock_pool) + 1)
     _atomic_write_csv(stock_pool, stock_path)
 
     etf_path = destination / f"Top{top_n_csv}ETF.csv"
-    etf_pool = _diversify_ranked_candidates(
-        ranked.loc[is_etf_mask], top_n_csv
-    )
+    etf_pool = ranked.loc[is_etf_mask].head(top_n_csv).copy().reset_index(drop=True)
+    etf_pool["ResearchDiversityPenalty"] = 1.0
+    etf_pool["ResearchPoolRank"] = np.arange(1, len(etf_pool) + 1)
     _atomic_write_csv(etf_pool, etf_path)
     logger.info(
         "Exported split research lists: mixed=%d, stocks=%d, ETF=%d.",
