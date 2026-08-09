@@ -14,6 +14,8 @@ import report
 import scan_service
 import scanner
 
+# Keep this suite as the v30 performance/workstation contract exercised by PR CI.
+
 
 class V30PerformanceWorkstationTests(unittest.TestCase):
     def test_scoring_model_stays_v24_while_engineering_moves_to_v30(self):
