@@ -33,6 +33,9 @@ jobs:
       - name: Apply v28 patch
         run: python tools/apply_v28_gui_backtest.py
 
+      - name: Fix generated GUI escape
+        run: python tools/fix_v28_generated_gui.py
+
       - name: Compile
         run: python -m compileall -q .
 
@@ -51,6 +54,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add analytics.py gui.py test_v28_gui_backtest.py
-          git rm tools/apply_v28_gui_backtest.py .github/workflows/apply-v28.yml README_V28_TMP.md
+          git rm tools/apply_v28_gui_backtest.py tools/fix_v28_generated_gui.py .github/workflows/apply-v28.yml README_V28_TMP.md
           git commit -m "perf: evidence-gate exact refinement and polish v28 GUI"
           git push origin HEAD:agent/gui-backtest-v28
