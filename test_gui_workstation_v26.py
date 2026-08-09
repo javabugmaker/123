@@ -25,7 +25,7 @@ class GuiWorkstationV26Tests(unittest.TestCase):
         self.assertEqual(gui.COLUMN_NAMES["InstitutionalStrength"], "机构强度")
 
     def test_top50_stock_and_etf_are_first_class_navigation(self):
-        source = inspect.getsource(gui._build_ui_v26)
+        source = inspect.getsource(gui.DecisionScannerGUI._build_ui)
         self.assertIn("综合 Top50", source)
         self.assertIn("股票 Top50", source)
         self.assertIn("ETF Top50", source)
@@ -35,7 +35,7 @@ class GuiWorkstationV26Tests(unittest.TestCase):
         self.assertEqual(gui.NAV_FILES["etf"], "Top50ETF.csv")
 
     def test_scan_and_backtest_remain_primary_actions(self):
-        source = inspect.getsource(gui._build_ui_v26)
+        source = inspect.getsource(gui.DecisionScannerGUI._build_ui)
         self.assertIn("▶ 开始扫描", source)
         self.assertIn("▶ 运行回测", source)
         self.assertIn("■ 停止", source)
@@ -44,7 +44,7 @@ class GuiWorkstationV26Tests(unittest.TestCase):
         self.assertIn("完整刷新", source)
 
     def test_backtest_scope_matches_high_frequency_workflow(self):
-        source = inspect.getsource(gui._build_ui_v26)
+        source = inspect.getsource(gui.DecisionScannerGUI._build_ui)
         for label in (
             "当前页面",
             "当前筛选",
@@ -58,7 +58,7 @@ class GuiWorkstationV26Tests(unittest.TestCase):
             self.assertIn(label, source)
 
     def test_engineering_controls_and_log_are_collapsible(self):
-        source = inspect.getsource(gui._build_ui_v26)
+        source = inspect.getsource(gui.DecisionScannerGUI._build_ui)
         self.assertIn("高级设置", source)
         self.assertIn("更多筛选", source)
         self.assertIn("日志 ›", source)
@@ -66,9 +66,9 @@ class GuiWorkstationV26Tests(unittest.TestCase):
 
     def test_new_signal_filter_is_explicit(self):
         instance = gui.DecisionScannerGUI.__new__(gui.DecisionScannerGUI)
-        self.assertEqual(gui._format_table_value_v26(instance, "SignalStatus", "NEW"), "新出现")
-        self.assertEqual(gui._format_table_value_v26(instance, "SignalStatus", "ACTIVE"), "持续有效")
-        self.assertEqual(gui._format_table_value_v26(instance, "SignalStatus", "FAILED"), "已失效")
+        self.assertEqual(instance._format_table_value("SignalStatus", "NEW"), "新出现")
+        self.assertEqual(instance._format_table_value("SignalStatus", "ACTIVE"), "持续有效")
+        self.assertEqual(instance._format_table_value("SignalStatus", "FAILED"), "已失效")
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ import gui
 
 class V27GuiPipelineTests(unittest.TestCase):
     def test_daily_pipeline_is_first_class_gui_action(self):
-        source = inspect.getsource(gui._build_ui_v26)
+        source = inspect.getsource(gui.DecisionScannerGUI._build_ui)
         self.assertIn("⚡ 今日一键更新", source)
         self.assertIn("command=self.start_daily_pipeline", source)
         method = inspect.getsource(gui.DecisionScannerGUI.start_daily_pipeline)
@@ -36,7 +36,7 @@ class V27GuiPipelineTests(unittest.TestCase):
             "EXPIRED": "已过期",
         }
         for raw, translated in expected.items():
-            self.assertEqual(gui._format_table_value_v26(instance, "SignalStatus", raw), translated)
+            self.assertEqual(instance._format_table_value("SignalStatus", raw), translated)
 
     def test_two_to_seven_tickers_use_thread_pool(self):
         benchmark = pd.DataFrame(
