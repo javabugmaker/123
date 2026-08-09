@@ -9,6 +9,7 @@ card, and collapsible engineering controls/logs.
 """
 
 import csv
+import json
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -88,6 +89,10 @@ _core.COLUMN_NAMES.update(
         "GlobalCalibrationScore": "全局校准分",
         "GlobalCalibrationConfidence": "全局校准可信度",
         "GlobalCalibrationLevel": "全局校准层级",
+        "BacktestRunMode": "本轮回测模式",
+        "BacktestStage": "回测阶段",
+        "BacktestEligibleForRanking": "回测参与排名",
+        "BacktestSkipReason": "回测说明",
     }
 )
 
@@ -117,7 +122,7 @@ NAV_FILES = {
     "stocks": "Top50Stocks.csv",
     "etf": "Top50ETF.csv",
     "ready": "Top50TradeReady.csv",
-    "all": "AllResults.csv",
+    "all": "DecisionResults.csv",
 }
 NAV_TITLES = {
     "mixed": "综合 Top50",
@@ -698,8 +703,14 @@ def _build_ui_v26(self) -> None:
         width=136,
     )
     self.backtest_scope_menu.pack(side=tk.LEFT, pady=9)
-    self.progress = ttk.Progressbar(footer, mode="indeterminate", length=220)
-    self.progress.pack(side=tk.LEFT, padx=14, pady=9)
+    self.progress = ttk.Progressbar(footer, mode="indeterminate", length=180)
+    self.progress.pack(side=tk.LEFT, padx=12, pady=9)
+    ctk.CTkLabel(
+        footer,
+        textvariable=self.run_quality,
+        text_color="#52677d",
+        font=("Microsoft YaHei UI", 9),
+    ).pack(side=tk.LEFT, padx=(2, 8), pady=9)
     ctk.CTkLabel(footer, textvariable=self.page_summary, text_color="#64748b").pack(side=tk.RIGHT, padx=(10, 6), pady=9)
     self.log_toggle_button = ctk.CTkButton(
         footer,
@@ -958,6 +969,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.card_cautious = tk.StringVar(master=root, value="0")
         self.card_new = tk.StringVar(master=root, value="0")
         self.card_total = tk.StringVar(master=root, value="0")
+        self.run_quality = tk.StringVar(master=root, value="运行质量：尚无本轮数据")
         self.detail_title = tk.StringVar(master=root, value="选择一个标的")
         self.detail_subtitle = tk.StringVar(master=root, value="从左侧列表查看交易决策")
         self.detail_signal = tk.StringVar(master=root, value="等待选择")
@@ -983,6 +995,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.root.bind("<Control-Shift-R>", lambda _event: self.start_daily_pipeline())
         for key, shortcut in zip(("mixed", "stocks", "etf", "ready", "new", "all"), "123456"):
             self.root.bind(f"<Control-Key-{shortcut}>", lambda _event, nav_key=key: self._load_navigation(nav_key))
+        self.root.after(80, self._update_run_quality_summary)
 
     def _call_core_with_legacy_output_dir(self, method, *args, **kwargs):
         previous = _core.OUTPUT_DIR
@@ -1149,9 +1162,11 @@ class DecisionScannerGUI(_core.ScannerGUI):
     def _load_navigation(self, key: str) -> None:
         self._new_signal_only = key == "new"
         if key == "new":
-            filename = "AllResults.csv"
+            filename = "DecisionResults.csv" if self._csv_has_results("DecisionResults.csv") else "AllResults.csv"
         else:
             filename = NAV_FILES[key]
+            if filename == "DecisionResults.csv" and not self._csv_has_results(filename):
+                filename = "AllResults.csv"
         if self.load_csv(filename, preserve_new_signal=(key == "new")):
             self._set_active_nav(key)
 
@@ -1164,7 +1179,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         return None
 
     def _load_best_available_results(self) -> bool:
-        for filename in ("Top50Mixed.csv", "Top50Stocks.csv", "Top50ETF.csv", "Top50.csv", "AllResults.csv"):
+        for filename in ("Top50Mixed.csv", "Top50Stocks.csv", "Top50ETF.csv", "Top50.csv", "DecisionResults.csv", "AllResults.csv"):
             if self._csv_has_results(filename):
                 return self.load_csv(filename)
         return False
@@ -1276,6 +1291,27 @@ class DecisionScannerGUI(_core.ScannerGUI):
     def _write_top50_csv(self, tickers: list[str]) -> Path:
         return self._call_core_with_legacy_output_dir(_core.ScannerGUI._write_top50_csv, tickers)
 
+    def _update_run_quality_summary(self) -> None:
+        path = OUTPUT_DIR / "DailyRunSummary.json"
+        if not path.exists() or not hasattr(self, "run_quality"):
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        expected = str(payload.get("expected_trading_date", "") or "-")
+        stages = payload.get("stage_seconds", {}) if isinstance(payload.get("stage_seconds", {}), dict) else {}
+        backtest = payload.get("backtest", {}) if isinstance(payload.get("backtest", {}), dict) else {}
+        scan_seconds = float(stages.get("scan", 0.0) or 0.0)
+        backtest_seconds = float(stages.get("backtest", 0.0) or 0.0)
+        exact = int(backtest.get("exact_refinement_tickers", 0) or 0)
+        cache = float(backtest.get("cache_hit_rate", 0.0) or 0.0)
+        self.run_quality.set(
+            f"最新 {expected} · 扫描 {scan_seconds:.0f}s · 回测 {backtest_seconds:.0f}s · EXACT {exact} · Cache {cache:.0%}"
+        )
+
     # Dashboard cards / decision card ----------------------------------------
     def _update_dashboard_cards(self) -> None:
         indexes = getattr(self, "_csv_indexes", {})
@@ -1362,10 +1398,19 @@ class DecisionScannerGUI(_core.ScannerGUI):
         samples_value = self._numeric_value(data.get("BacktestSamples", ""))
         samples = int(samples_value) if samples_value is not None else 0
         confidence = str(data.get("BacktestConfidenceTier", "") or "").strip() or "未评估"
-        backtest_parts = [value for value in (mode, f"{samples}样本", confidence) if value]
-        self.detail_backtest.set(" · ".join(backtest_parts) or "-")
+        ranking_enabled = str(data.get("BacktestEligibleForRanking", "")).strip().lower() in {"true", "1", "yes", "y", "是"}
+        if mode in {"", "NONE"}:
+            backtest_parts = ["未评估"]
+        else:
+            backtest_parts = [mode, f"{samples}样本", confidence]
+            if not ranking_enabled:
+                backtest_parts.append("不参与排名")
+        self.detail_backtest.set(" · ".join(value for value in backtest_parts if value) or "-")
         reason = data.get("TradeReadinessReason", "") or data.get("RankingReason", "") or "暂无额外执行说明。"
-        if confidence == "样本不足":
+        skip_reason = str(data.get("BacktestSkipReason", "") or "").strip()
+        if skip_reason:
+            reason = f"{reason}\n\n回测：{skip_reason}。"
+        elif confidence == "样本不足":
             reason = f"{reason}\n\n历史样本不足，回测暂不作为主要排序依据。"
         self.detail_reason.set(reason)
         if eligibility == "推荐":
@@ -1486,7 +1531,8 @@ class DecisionScannerGUI(_core.ScannerGUI):
             self._daily_pipeline_active = False
             if code == 0:
                 self.load_csv("Top50Mixed.csv")
-                self.status.set("今日全流程完成 · 综合/股票/ETF Top50 已更新")
+                self._update_run_quality_summary()
+                self.status.set("今日全流程完成 · 数据闸门通过 · Top50 已发布")
                 self.append_log(
                     "今日全流程完成：Top50Mixed.csv / Top50Stocks.csv / Top50ETF.csv 已刷新。\n"
                 )
@@ -1509,12 +1555,14 @@ class DecisionScannerGUI(_core.ScannerGUI):
 
     def append_log(self, text: str) -> None:
         _core.ScannerGUI.append_log(self, text)
-        if "DAILY stage 1/3" in text:
-            self.status.set("今日全流程 1/3 · 获取最新行情并扫描")
-        elif "DAILY stage 2/3" in text:
-            self.status.set("今日全流程 2/3 · 全量回测与候选精炼")
-        elif "DAILY stage 3/3" in text:
-            self.status.set("今日全流程 3/3 · 生成最终 Top50")
+        if "DAILY stage 1/4" in text:
+            self.status.set("今日全流程 1/4 · 获取最新行情并扫描")
+        elif "DAILY stage 2/4" in text:
+            self.status.set("今日全流程 2/4 · 数据完整性与新鲜度校验")
+        elif "DAILY stage 3/4" in text:
+            self.status.set("今日全流程 3/4 · FAST回测与EXACT精炼")
+        elif "DAILY stage 4/4" in text:
+            self.status.set("今日全流程 4/4 · 同RunId校验与发布")
         lowered = text.casefold()
         if "traceback" in lowered or "异常" in text or "启动失败" in text:
             self._show_log_for_error()

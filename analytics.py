@@ -161,6 +161,20 @@ class BacktestSummary:
     walk_forward: list[dict[str, Any]] = field(default_factory=list)
     component_calibration: dict[str, Any] = field(default_factory=dict)
     fast_exact_bridge: dict[str, Any] = field(default_factory=dict)
+    # v29 run-level provenance / observability.  requested_tickers is populated
+    # by the CLI before ranking so manual subset backtests never mark unrelated
+    # AllResults rows as if they had been evaluated.
+    requested_tickers: list[str] = field(default_factory=list)
+    fast_screen_ticker_count: int = 0
+    exact_refinement_count: int = 0
+    exact_refinement_tickers: list[str] = field(default_factory=list)
+    exact_refinement_elapsed_seconds: float = 0.0
+    exact_worker_count: int = 0
+    total_ticker_evaluations: int = 0
+    signal_sample_ticker_count: int = 0
+    no_signal_ticker_count: int = 0
+    ranking_eligible_ticker_count: int = 0
+    cache_hit_rate: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         result = dict(self.__dict__)
@@ -1844,12 +1858,126 @@ def _select_exact_refinement_pool(
         .copy()
     )
 
+
+def _apply_backtest_provenance(
+    frame: pd.DataFrame,
+    summary: BacktestSummary,
+    observed: pd.Series,
+) -> pd.DataFrame:
+    """Separate run-level HYBRID provenance from per-ticker execution state.
+
+    A HYBRID run means the task used FAST screening plus selective EXACT
+    refinement.  It does *not* mean every ticker was evaluated in HYBRID mode.
+    Manual subset backtests also leave unrelated AllResults rows explicitly
+    NOT_EVALUATED instead of fabricating a zero-sample result.
+    """
+    frame = frame.copy()
+    ticker_text = frame.get("Ticker", pd.Series("", index=frame.index)).fillna("").astype(str)
+    requested = {
+        str(value).strip()
+        for value in (getattr(summary, "requested_tickers", []) or [])
+        if str(value).strip()
+    }
+    if not requested:
+        requested = {
+            str(row.get("ticker", "")).strip()
+            for row in (getattr(summary, "by_ticker", []) or [])
+            if str(row.get("ticker", "")).strip()
+        }
+    if not requested and int(getattr(summary, "ticker_count", 0) or 0) >= len(frame):
+        requested = set(ticker_text)
+    requested_mask = ticker_text.isin(requested)
+
+    run_mode = str(getattr(summary, "mode", "") or "").strip().upper() or "UNKNOWN"
+    run_engine = str(getattr(summary, "engine", "") or "").strip()
+    screen_mode = "FAST" if run_mode == "HYBRID" else run_mode
+    screen_engine = run_engine.split("+exact:", 1)[0] if run_engine else ""
+
+    raw_mode = frame.get("BacktestMode", pd.Series("", index=frame.index)).fillna("").astype(str).str.strip().str.upper()
+    inferred_mode = pd.Series(
+        np.where(requested_mask, screen_mode, "NONE"), index=frame.index, dtype=object
+    )
+    ticker_mode = raw_mode.where(raw_mode.ne(""), inferred_mode)
+    ticker_mode = ticker_mode.where(requested_mask, "NONE")
+
+    raw_engine = frame.get("BacktestEngine", pd.Series("", index=frame.index)).fillna("").astype(str).str.strip()
+    ticker_engine = raw_engine.where(raw_engine.ne(""), screen_engine)
+    ticker_engine = ticker_engine.where(requested_mask, "")
+
+    raw_stage = frame.get("BacktestStage", pd.Series("", index=frame.index)).fillna("").astype(str).str.strip().str.upper()
+    default_stage = pd.Series(
+        np.where(
+            ~requested_mask,
+            "NOT_EVALUATED",
+            np.where(
+                ticker_mode.eq("EXACT"),
+                "EXACT_REFINEMENT" if run_mode == "HYBRID" else "EXACT",
+                "FAST_SCREEN",
+            ),
+        ),
+        index=frame.index,
+        dtype=object,
+    )
+    stage = raw_stage.where(raw_stage.ne(""), default_stage)
+    stage = stage.where(requested_mask, "NOT_EVALUATED")
+
+    numeric_observed = pd.to_numeric(observed, errors="coerce").fillna(0.0).clip(lower=0.0)
+    frame["BacktestSamples"] = numeric_observed.round().astype(int)
+    if "BacktestEffectiveSamples" in frame:
+        frame["BacktestEffectiveSamples"] = (
+            pd.to_numeric(frame["BacktestEffectiveSamples"], errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(0.0)
+            .clip(lower=0.0)
+        )
+    frame["BacktestRunMode"] = run_mode
+    frame["BacktestRunEngine"] = run_engine
+    frame["BacktestRequested"] = requested_mask.astype(bool)
+    frame["BacktestMode"] = ticker_mode
+    frame["BacktestEngine"] = ticker_engine
+    frame["BacktestStage"] = stage
+    frame["BacktestStatus"] = np.select(
+        [~requested_mask, numeric_observed.gt(0.0)],
+        ["SKIPPED", "SAMPLES"],
+        default="NO_SIGNAL_SAMPLES",
+    )
+    frame["BacktestEligibleForRanking"] = (
+        requested_mask & numeric_observed.ge(BACKTEST_MIN_SAMPLES_FOR_RANKING)
+    )
+
+    minimum_fast = _minimum_fast_samples_for_exact_refinement()
+    frame["BacktestSkipReason"] = np.select(
+        [
+            ~requested_mask,
+            requested_mask & ticker_mode.eq("FAST") & numeric_observed.eq(0.0),
+            requested_mask & ticker_mode.eq("EXACT") & numeric_observed.eq(0.0),
+            requested_mask & ticker_mode.eq("FAST") & numeric_observed.gt(0.0) & numeric_observed.lt(minimum_fast) & pd.Series(run_mode == "HYBRID", index=frame.index),
+            requested_mask & ticker_mode.eq("FAST") & numeric_observed.ge(minimum_fast) & pd.Series(run_mode == "HYBRID", index=frame.index),
+            requested_mask & numeric_observed.lt(BACKTEST_MIN_SAMPLES_FOR_RANKING),
+        ],
+        [
+            "不在本次回测范围",
+            "FAST无历史信号样本",
+            "EXACT无历史信号样本",
+            "FAST样本不足，跳过EXACT",
+            "未进入EXACT候选池",
+            "历史样本不足，不参与排名",
+        ],
+        default="",
+    )
+    return frame
+
 def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     path = OUTPUT_DIR / "AllResults.csv"
     if not path.exists() or not summary.by_ticker:
         return
     frame = pd.read_csv(path, encoding="utf-8-sig", low_memory=False).copy()
     original_mode = str(summary.mode or "").strip().lower()
+    summary.fast_screen_ticker_count = int(getattr(summary, "ticker_count", 0) or 0)
+    summary.exact_refinement_count = 0
+    summary.exact_refinement_tickers = []
+    summary.exact_refinement_elapsed_seconds = 0.0
+    summary.exact_worker_count = 0
     if original_mode == "fast" and BACKTEST_AUTO_EXACT_REFINEMENT:
         fast_rows = list(summary.by_ticker or [])
         pool = _select_exact_refinement_pool(frame, fast_rows, top_n=top_n)
@@ -1870,6 +1998,16 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
                 mode="exact",
             )
             exact_rows = list(exact.by_ticker or [])
+            summary.exact_refinement_count = len(refine_tickers)
+            summary.exact_refinement_tickers = list(refine_tickers)
+            summary.exact_refinement_elapsed_seconds = float(getattr(exact, "elapsed_seconds", 0.0) or 0.0)
+            summary.exact_worker_count = int(getattr(exact, "worker_count", 0) or 0)
+            summary.elapsed_seconds = float(getattr(summary, "elapsed_seconds", 0.0) or 0.0) + summary.exact_refinement_elapsed_seconds
+            summary.cache_hits = int(getattr(summary, "cache_hits", 0) or 0) + int(getattr(exact, "cache_hits", 0) or 0)
+            summary.cache_hit_tickers = sorted(
+                set(getattr(summary, "cache_hit_tickers", []) or [])
+                | set(getattr(exact, "cache_hit_tickers", []) or [])
+            )
             exact_keys = {(str(row.get("ticker", "")), str(row.get("entry_signal", "")).upper()) for row in exact_rows}
             current_signal = dict(zip(pool["Ticker"].astype(str), pool.get("EntrySignal", pd.Series("UNKNOWN", index=pool.index)).fillna("UNKNOWN").astype(str).str.upper()))
             for ticker in refine_tickers:
@@ -1973,6 +2111,11 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "BacktestEngine",
         "BacktestStatus",
         "BacktestStage",
+        "BacktestRunMode",
+        "BacktestRunEngine",
+        "BacktestRequested",
+        "BacktestEligibleForRanking",
+        "BacktestSkipReason",
         "GlobalCalibrationScore",
         "GlobalCalibrationConfidence",
         "GlobalCalibrationLevel",
@@ -2032,24 +2175,11 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
             frame[column] = np.nan
 
     observed = pd.to_numeric(frame["BacktestSamples"], errors="coerce").fillna(0.0)
-    frame["BacktestMode"] = (
-        frame.get("BacktestMode", pd.Series("", index=frame.index))
-        .fillna("").astype(str).str.strip().replace("", str(summary.mode).upper())
-    )
-    frame["BacktestEngine"] = (
-        frame.get("BacktestEngine", pd.Series("", index=frame.index))
-        .fillna("").astype(str).str.strip().replace("", str(summary.engine))
-    )
+    frame = _apply_backtest_provenance(frame, summary, observed)
+    observed = pd.to_numeric(frame["BacktestSamples"], errors="coerce").fillna(0.0)
     frame["BacktestCacheHit"] = frame.get(
         "BacktestCacheHit", pd.Series(False, index=frame.index)
     ).fillna(False).astype(bool)
-    frame["BacktestStatus"] = np.where(observed.gt(0.0), "SAMPLES", "NO_SIGNAL_SAMPLES")
-    if "BacktestStage" not in frame:
-        frame["BacktestStage"] = np.where(
-            frame["BacktestMode"].astype(str).str.upper().eq("EXACT"),
-            "EXACT",
-            "FAST_SCREEN",
-        )
     effective_observed = (
         pd.to_numeric(frame["BacktestEffectiveSamples"], errors="coerce")
         .replace([np.inf, -np.inf], np.nan)
@@ -2283,6 +2413,36 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     frame["InstitutionalScore"] = single_quality_score.where(
         prior_institutional_score.notna(), legacy_institutional
     ).round(4)
+
+    requested_mask = frame.get(
+        "BacktestRequested", pd.Series(False, index=frame.index)
+    ).fillna(False).astype(bool)
+    requested_count = int(requested_mask.sum())
+    sample_count = int(
+        frame.loc[
+            requested_mask
+            & pd.to_numeric(frame["BacktestSamples"], errors="coerce").fillna(0).gt(0),
+            "Ticker",
+        ].astype(str).nunique()
+    )
+    ranking_eligible_count = int(
+        frame.loc[
+            requested_mask
+            & frame.get(
+                "BacktestEligibleForRanking", pd.Series(False, index=frame.index)
+            ).fillna(False).astype(bool),
+            "Ticker",
+        ].astype(str).nunique()
+    )
+    summary.signal_sample_ticker_count = sample_count
+    summary.no_signal_ticker_count = max(0, requested_count - sample_count)
+    summary.ranking_eligible_ticker_count = ranking_eligible_count
+    summary.total_ticker_evaluations = int(getattr(summary, "fast_screen_ticker_count", 0) or 0) + int(getattr(summary, "exact_refinement_count", 0) or 0)
+    summary.cache_hit_rate = round(
+        float(getattr(summary, "cache_hits", 0) or 0)
+        / max(1, int(summary.total_ticker_evaluations or requested_count)),
+        4,
+    )
 
     frame = finalize_signal_ranking(frame)
     frame.to_csv(path, index=False, encoding="utf-8-sig")
