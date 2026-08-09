@@ -1,12 +1,14 @@
 name: Apply v27 Daily Pipeline
 
-# trigger: v27 daily pipeline migration
 on:
   push:
     branches:
       - agent/backtest-parallel-v27
     paths:
       - .github/workflows/apply-v27-daily.yml
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
