@@ -37,9 +37,6 @@ def move_module_docstring_before_future(path: str) -> None:
     write(path, f'{match.group("doc")}\n\nfrom __future__ import annotations\n\n{rest}')
 
 
-# Correct module metadata ordering where earlier refactors put __future__ before
-# the module docstring. This is semantic-neutral and makes editor import sorting
-# deterministic.
 for module in (
     "classification.py",
     "daily_pipeline.py",
@@ -50,16 +47,12 @@ for module in (
 ):
     move_module_docstring_before_future(module)
 
-# Real Pyright defect: Path is used in the model-weight cache signature.
 replace_once(
     "score.py",
     "from dataclasses import dataclass, field\nfrom typing import Any\n",
     "from dataclasses import dataclass, field\nfrom pathlib import Path\nfrom typing import Any\n",
 )
 
-# Fix the two Pylance errors shown in VS Code by giving navigation widgets their
-# actual type instead of object. Also remove a redundant integer conversion and
-# one dead local.
 replace_once(
     "gui.py",
     "        self._nav_buttons: dict[str, object] = {}\n",
@@ -76,9 +69,6 @@ replace_once(
     "    def _build_ui_configure_styles(self) -> None:\n        ttk = _core.ttk\n",
 )
 
-# The same DecisionState/DecisionReason values were emitted twice in one dict.
-# Python silently kept the latter; remove the duplicate pair so static analysis
-# can protect this export schema going forward without changing CSV semantics.
 replace_once(
     "report.py",
     '                "RankingPenaltyReason": r.ranking_penalty_reason,\n'
@@ -89,9 +79,6 @@ replace_once(
     '                "TradeReadiness": r.trade_readiness or r.ranking_eligibility,\n',
 )
 
-# Avoid pandas object-dtype fillna downcasting behavior that is deprecated in
-# pandas 2.3 and changes in pandas 3. Equality produces the intended boolean
-# mask without relying on implicit downcasting.
 replace_once(
     "analytics.py",
     '    frame["BacktestCacheHit"] = frame.get(\n'
@@ -101,16 +88,24 @@ replace_once(
     '        "BacktestCacheHit", pd.Series(False, index=frame.index)\n'
     '    ).eq(True)\n',
 )
+replace_once(
+    "analytics.py",
+    '    target = max(2, int(round(cpu_limit * utilization)))\n',
+    '    target = max(2, round(cpu_limit * utilization))\n',
+)
 
-# Remove a dead intermediate that was left behind when quality-gate reporting
-# switched to failed/unknown explanations.
+replace_once(
+    "gui_core.py",
+    '        total, active, confirmed, breakout, actionable, average = self._market_overview_values(rows, indexes)\n',
+    '        total, _active, _confirmed, breakout, actionable, average = self._market_overview_values(rows, indexes)\n',
+)
+
 replace_once(
     "fundamental_quality.py",
     '    passed = [name for name, value in factors.items() if value is True]\n',
     "",
 )
 
-# Consolidate logging imports at module scope; Literal was unused.
 config_text = read("config.py")
 if "import logging\nimport sys\nimport time\n" not in config_text[:500]:
     config_text = config_text.replace(
@@ -130,9 +125,6 @@ config_text = config_text.replace(
 )
 write("config.py", config_text)
 
-# Ruff policy intentionally targets correctness/import hygiene. Chinese UI text
-# legitimately uses full-width punctuation, and this project contains long
-# explanatory strings, so RUF001/RUF002 and E501 are deliberately not selected.
 write(
     "pyproject.toml",
     '''[tool.ruff]\ntarget-version = "py311"\nline-length = 120\nextend-exclude = [\n  ".venv",\n  "cache",\n  "output",\n  "logs",\n  ".ruff_cache",\n  "tools/apply_project_hardening.py",\n  "tools/v34_migrate.py",\n]\n\n[tool.ruff.lint]\nselect = ["F", "I", "UP035", "RUF046", "RUF059"]\n''',
