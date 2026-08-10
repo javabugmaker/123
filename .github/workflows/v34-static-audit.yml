@@ -20,12 +20,24 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install ruff pyright
-      - name: Ruff full-project audit
+      - name: Ruff editor-equivalent audit
         continue-on-error: true
-        run: ruff check . --output-format concise
-      - name: Pyright project audit
+        run: ruff check . --select E,F,I,RUF,UP,B,SIM,PERF --output-format concise
+      - name: Pyright configured project audit
         continue-on-error: true
         run: pyright
+      - name: Pyright GUI attribute audit
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cfg = json.loads(Path('pyrightconfig.json').read_text(encoding='utf-8'))
+          cfg['include'] = ['gui.py', 'gui_core.py']
+          cfg['reportAttributeAccessIssue'] = 'error'
+          Path('pyrightconfig.v34.json').write_text(json.dumps(cfg, indent=2), encoding='utf-8')
+          PY
+          pyright -p pyrightconfig.v34.json
       - name: Compile all project modules
         run: python -m compileall -q .
       - name: Unit tests
