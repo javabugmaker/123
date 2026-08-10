@@ -20,11 +20,12 @@ import logging
 import sys
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -34,15 +35,13 @@ from tqdm import tqdm
 from analytics import enrich_results
 from classification import etf_theme_key, etf_tracking_key, model_classification, theme_cluster
 from config import (
-    CACHE_DIR,
     CHECKPOINT_INTERVAL,
     ENABLE_CHECKPOINT,
+    INDICATOR_CACHE_ENABLED,
     LOG_DIR,
-    MIN_MARKET_CAP,
     OUTPUT_DIR,
     SCAN_THREADS,
     SCORING_VERSION,
-    INDICATOR_CACHE_ENABLED,
     TICKFLOW_MAX_WORKERS,
     setup_logging,
 )

@@ -15,50 +15,47 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from classification import etf_tracking_key, model_classification, theme_cluster
 from calibration_bridge import bridge_global_calibration
-from tradeability import is_entry_tradeable
-from trading_calendar import trading_age_days
+from classification import etf_tracking_key, model_classification, theme_cluster
 from config import (
+    BACKTEST_AUTO_EXACT_MAX_TICKERS,
+    BACKTEST_AUTO_EXACT_REFINEMENT,
+    BACKTEST_CACHE_ENABLED,
+    BACKTEST_CHUNK_SIZE,
+    BACKTEST_EXACT_REFINEMENT_CANDIDATES,
+    BACKTEST_FAST_CANDIDATE_GAP_DAYS,
+    BACKTEST_FAST_CHUNK_SIZE,
+    BACKTEST_FAST_COOLDOWN_DAYS,
+    BACKTEST_FAST_SCORE_WINDOW_BARS,
     BACKTEST_FULL_WEIGHT_SAMPLES,
+    BACKTEST_INCREMENTAL_TAIL_BARS,
     BACKTEST_LOW_CONFIDENCE_MAX_SAMPLES,
+    BACKTEST_MAX_PROCESSES,
     BACKTEST_MIN_SAMPLES_FOR_RANKING,
     BACKTEST_NEUTRAL_SCORE,
     BACKTEST_NORMAL_WEIGHT,
     BACKTEST_OUTCOME_HORIZON_DAYS,
-    BACKTEST_SIGNAL_COOLDOWN_DAYS,
-    BACKTEST_SCORE_WINDOW_BARS,
-    BACKTEST_FAST_SCORE_WINDOW_BARS,
-    BACKTEST_FAST_COOLDOWN_DAYS,
-    BACKTEST_FAST_CANDIDATE_GAP_DAYS,
-    BACKTEST_AUTO_EXACT_MAX_TICKERS,
-    BACKTEST_AUTO_EXACT_REFINEMENT,
-    BACKTEST_EXACT_REFINEMENT_CANDIDATES,
-    BACKTEST_MAX_PROCESSES,
     BACKTEST_PROCESS_MIN_TICKERS,
-    BACKTEST_CHUNK_SIZE,
-    BACKTEST_FAST_CHUNK_SIZE,
     BACKTEST_PROGRESS_INTERVAL,
-    BACKTEST_INCREMENTAL_TAIL_BARS,
-    BACKTEST_CACHE_ENABLED,
+    BACKTEST_SCORE_WINDOW_BARS,
+    BACKTEST_SIGNAL_COOLDOWN_DAYS,
+    ENABLE_VOLUME_PROFILE,
     GLOBAL_CALIBRATION_MAX_WEIGHT,
     GLOBAL_CALIBRATION_MIN_SAMPLES,
     INDICATOR_CACHE_ENABLED,
-    MODEL_QUALITY_WEIGHT,
-    ENABLE_VOLUME_PROFILE,
     INSTITUTIONAL_TIER_TRAP_LABEL,
     INSTITUTIONAL_TIER_WAIT_LABEL,
+    MODEL_QUALITY_WEIGHT,
     OUTPUT_DIR,
     QUALITY_MULTIPLIER_FAIL,
     QUALITY_MULTIPLIER_PASS,
     QUALITY_MULTIPLIER_UNKNOWN,
     SCAN_THREADS,
-    SECTOR_CONFIRMATION_MIN_FACTOR,
     SECTOR_CONFIRMATION_INDUSTRY_WEIGHT,
+    SECTOR_CONFIRMATION_MIN_FACTOR,
     SECTOR_CONFIRMATION_RELATIVE_WEIGHT,
 )
 from downloader import (
-    _is_a_share_market_closed,
     _cache_path,
     _load_cache,
     download_ticker,
@@ -69,7 +66,6 @@ from model_calibration import (
     build_global_calibration,
     calibrate_component_weights,
     calibration_details_for_frame,
-    calibration_scores_for_frame,
     walk_forward_stats,
 )
 from performance_cache import (
@@ -82,6 +78,8 @@ from performance_cache import (
 )
 from score import breakout_score, entry_point, model_weight_signature, score_ticker, value_trap_risk
 from signal_lifecycle import finalize_signal_ranking
+from tradeability import is_entry_tradeable
+from trading_calendar import trading_age_days
 
 logger = logging.getLogger("institution_scanner.analytics")
 
@@ -677,7 +675,7 @@ def refresh_research_outcomes(
     source: str,
     history_path: Path | None = None,
 ) -> pd.DataFrame:
-    from signal_lifecycle import HISTORY_FILE, HISTORY_COLUMNS
+    from signal_lifecycle import HISTORY_COLUMNS, HISTORY_FILE
 
     path = history_path or HISTORY_FILE
     if not path.exists():
@@ -2185,7 +2183,7 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     observed = pd.to_numeric(frame["BacktestSamples"], errors="coerce").fillna(0.0)
     frame["BacktestCacheHit"] = frame.get(
         "BacktestCacheHit", pd.Series(False, index=frame.index)
-    ).fillna(False).astype(bool)
+    ).eq(True)
     effective_observed = (
         pd.to_numeric(frame["BacktestEffectiveSamples"], errors="coerce")
         .replace([np.inf, -np.inf], np.nan)
@@ -2608,7 +2606,7 @@ def _adaptive_worker_count(
     # Small batches now use threads instead of being artificially serialized;
     # larger CPU-heavy batches still switch to isolated worker processes.
     utilization = 0.90 if profile.name == "fast" else 0.80
-    target = max(2, int(round(cpu_limit * utilization)))
+    target = max(2, round(cpu_limit * utilization))
     return min(hard_limit, target, max(1, total))
 
 

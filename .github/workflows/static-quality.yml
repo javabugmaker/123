@@ -1,0 +1,28 @@
+name: Static Quality
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  static-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install project and static tools
+        run: |
+          pip install -r requirements.txt
+          pip install ruff pyright
+      - name: Ruff
+        run: ruff check .
+      - name: Pyright project
+        run: pyright
+      - name: Pyright GUI strict
+        run: pyright -p pyrightconfig.gui.json
+      - name: Compile
+        run: python -m compileall -q .

@@ -41,8 +41,6 @@ from config import (
     TOP_N_REPORT,
     setup_logging,
 )
-from fundamental_data import fundamental_data_path, refresh_fundamental_data
-from historical_universe import merge_with_cached_universe
 from downloader import (
     TickerInfo,
     build_ticker_universe,
@@ -50,10 +48,11 @@ from downloader import (
     is_etf_ticker,
     normalize_ticker,
 )
+from fundamental_data import fundamental_data_path, refresh_fundamental_data
+from historical_universe import merge_with_cached_universe
 from report import export_all, print_scan_summary, print_terminal_report
 from scan_service import ScanRequest, execute_scan
 from scanner import clear_checkpoint, run_parallel_indicator_scan, run_scan
-
 
 DATA_SOURCE_CHOICES = ("tickflow",)
 

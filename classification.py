@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Shared stock/ETF classification helpers used by ranking and exports."""
+
+from __future__ import annotations
 
 import math
 import re

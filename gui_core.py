@@ -386,6 +386,12 @@ BACKTEST_MODE_RE = re.compile(r"mode=(FAST|EXACT)")
 
 
 class ScannerGUI:
+    # Class-level declarations preserve precise typing even in regression tests
+    # that intentionally construct a partially initialized GUI via __new__.
+    cache_first: tk.BooleanVar
+    refresh_fundamentals: tk.BooleanVar
+    _scan_cancel_event: threading.Event | None
+
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("A股机构吸筹扫描器")
@@ -1806,7 +1812,7 @@ class ScannerGUI:
     ) -> None:
         if not hasattr(self, "market_overview"):
             return
-        total, active, confirmed, breakout, actionable, average = self._market_overview_values(rows, indexes)
+        total, _active, _confirmed, breakout, actionable, average = self._market_overview_values(rows, indexes)
         regime = (
             f" · {self._market_regime_summary(rows, indexes)}"
             if "MarketRegime" in indexes

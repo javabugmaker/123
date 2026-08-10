@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Out-of-sample calibration helpers for InstitutionScanner.
 
 This module is intentionally independent from the scanner/GUI layers.  It turns
@@ -8,8 +6,11 @@ single ticker has too few independent observations, and it evaluates the model
 with expanding-window walk-forward tests.
 """
 
+from __future__ import annotations
+
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -186,7 +187,7 @@ def build_global_calibration(
                 key_values = (key_values,)
             row: dict[str, Any] = {
                 "level": level,
-                "samples": int(len(group)),
+                "samples": len(group),
                 "effective_samples": round(effective, 4),
                 "mean_net_excess20": round(float(mean20), 4) if np.isfinite(mean20) else np.nan,
                 "mean_net_excess60": round(float(mean60), 4) if np.isfinite(mean60) else np.nan,
@@ -539,7 +540,7 @@ def walk_forward_stats(
         rows.append(
             {
                 "year": year,
-                "train_samples": int(len(train)),
+                "train_samples": len(train),
                 "test_samples": int(valid.sum()),
                 "rank_ic": round(rank_ic, 6),
                 "top_bucket_net_excess20": round(float(top.mean()), 4) if not top.empty else np.nan,

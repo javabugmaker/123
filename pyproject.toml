@@ -1,0 +1,15 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = [
+  ".venv",
+  "cache",
+  "output",
+  "logs",
+  ".ruff_cache",
+  "tools/apply_project_hardening.py",
+  "tools/v34_migrate.py",
+]
+
+[tool.ruff.lint]
+select = ["F", "I", "UP035", "RUF046", "RUF059"]

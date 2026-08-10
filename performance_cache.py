@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Persistent compute caches used by scanner and historical backtests.
 
 The cache layer distinguishes immutable strategy parameters from market state.
@@ -9,13 +7,16 @@ price changes (for example a forward-adjustment rebase) are detected by a tail
 fingerprint and still force a safe full rebuild.
 """
 
+from __future__ import annotations
+
 import gzip
 import hashlib
 import json
 import re
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -69,7 +70,7 @@ def _frame_identity(df: pd.DataFrame) -> dict[str, Any]:
                 value = float("nan")
             sample_values.append(round(value, 8) if np.isfinite(value) else 0.0)
     return {
-        "rows": int(len(df)),
+        "rows": len(df),
         "first": first,
         "last": last,
         "sample_close": sample_values,

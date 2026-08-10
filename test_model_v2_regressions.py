@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import json
-import tempfile
 import threading
 import unittest
-from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 
-import analytics
 import gui
 import gui_core
 import model_calibration

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -24,26 +23,26 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from analytics import refresh_research_outcomes, write_research_reports
+from classification import etf_theme_key, etf_tracking_key, theme_cluster
 from config import (
+    ETF_THEME_MAX_PER_TOP_LIST,
+    ETF_TRACKING_MAX_PER_TOP_LIST,
     INSTITUTIONAL_TIER_A_SCORE,
     INSTITUTIONAL_TIER_B_SCORE,
     INSTITUTIONAL_TIER_C_SCORE,
     INSTITUTIONAL_TIER_TRAP_LABEL,
     INSTITUTIONAL_TIER_WAIT_LABEL,
-    ETF_THEME_MAX_PER_TOP_LIST,
-    ETF_TRACKING_MAX_PER_TOP_LIST,
-    STOCK_INDUSTRY_MAX_PER_TOP_LIST,
-    THEME_CLUSTER_SOFT_PENALTY,
-    SCORING_VERSION,
     OUTPUT_DIR,
     PIPELINE_VERSION,
+    SCORING_VERSION,
+    STOCK_INDUSTRY_MAX_PER_TOP_LIST,
+    THEME_CLUSTER_SOFT_PENALTY,
     TOP_N_PARQUET,
     TOP_N_REPORT,
     VALUE_TRAP_RISK_THRESHOLD,
 )
-from classification import etf_theme_key, etf_tracking_key, theme_cluster
-from scanner import ScanReport, ScanResult
 from performance_cache import BACKTEST_CACHE_VERSION, INDICATOR_CACHE_VERSION
+from scanner import ScanReport, ScanResult
 from signal_lifecycle import enrich_signal_lifecycle, finalize_signal_ranking
 
 logger = logging.getLogger("institution_scanner.report")
@@ -370,8 +369,6 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "HardRiskPenalty": round(r.hard_risk_penalty, 4),
                 "HardRiskReason": r.hard_risk_reason,
                 "RankingPenaltyReason": r.ranking_penalty_reason,
-                "DecisionState": r.decision_state,
-                "DecisionReason": r.decision_reason,
                 "TradeReadiness": r.trade_readiness or r.ranking_eligibility,
                 "ResearchTier": r.research_tier,
                 "TechnicalInstitutionalScore": round(r.technical_institutional_score, 4) if np.isfinite(r.technical_institutional_score) else None,
