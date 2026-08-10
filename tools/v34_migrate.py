@@ -99,6 +99,27 @@ replace_once(
     '        total, active, confirmed, breakout, actionable, average = self._market_overview_values(rows, indexes)\n',
     '        total, _active, _confirmed, breakout, actionable, average = self._market_overview_values(rows, indexes)\n',
 )
+replace_once(
+    "gui_core.py",
+    '        cache_first = getattr(self, "cache_first", None)\n'
+    '        if cache_first is not None and cache_first.get() and not self.force_download.get():\n'
+    '            command.append("--cache-first")\n'
+    '        refresh_fundamentals = getattr(self, "refresh_fundamentals", None)\n'
+    '        if refresh_fundamentals is not None and refresh_fundamentals.get():\n'
+    '            command.append("--refresh-fundamentals")\n',
+    '        if self.cache_first.get() and not self.force_download.get():\n'
+    '            command.append("--cache-first")\n'
+    '        if self.refresh_fundamentals.get():\n'
+    '            command.append("--refresh-fundamentals")\n',
+)
+replace_once(
+    "gui_core.py",
+    '        scan_cancel_event = getattr(self, "_scan_cancel_event", None)\n'
+    '        if scan_cancel_event is not None:\n'
+    '            scan_cancel_event.set()\n',
+    '        if self._scan_cancel_event is not None:\n'
+    '            self._scan_cancel_event.set()\n',
+)
 
 replace_once(
     "fundamental_quality.py",
