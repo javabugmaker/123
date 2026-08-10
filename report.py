@@ -510,6 +510,21 @@ def _truthy(value: object) -> bool:
     return str(value).strip().lower() in {"true", "1", "yes", "y", "是"}
 
 
+def _clean_group_key(value: object) -> str:
+    """Normalize nullable categorical keys before diversity accounting."""
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    if text.lower() in {"", "nan", "none", "nat", "<na>"}:
+        return ""
+    return text
+
+
 def _etf_theme_key(row: pd.Series) -> str:
     if not (_truthy(row.get("IsETF", False)) or str(row.get("AssetType", "")).strip().lower() == "etf"):
         return ""
@@ -533,6 +548,7 @@ def _ensure_diversity_columns(frame: pd.DataFrame) -> pd.DataFrame:
 
     if "ETFTheme" not in working:
         working["ETFTheme"] = ""
+    working["ETFTheme"] = working["ETFTheme"].astype("object")
     missing_theme = is_etf & working["ETFTheme"].fillna("").astype(str).str.strip().eq("")
     if missing_theme.any():
         working.loc[missing_theme, "ETFTheme"] = working.loc[missing_theme].apply(
@@ -541,6 +557,7 @@ def _ensure_diversity_columns(frame: pd.DataFrame) -> pd.DataFrame:
 
     if "ETFTrackingKey" not in working:
         working["ETFTrackingKey"] = ""
+    working["ETFTrackingKey"] = working["ETFTrackingKey"].astype("object")
     missing_tracking = is_etf & working["ETFTrackingKey"].fillna("").astype(str).str.strip().eq("")
     if missing_tracking.any():
         working.loc[missing_tracking, "ETFTrackingKey"] = working.loc[missing_tracking].apply(
@@ -555,6 +572,7 @@ def _ensure_diversity_columns(frame: pd.DataFrame) -> pd.DataFrame:
 
     if "ThemeCluster" not in working:
         working["ThemeCluster"] = ""
+    working["ThemeCluster"] = working["ThemeCluster"].astype("object")
     missing_cluster = working["ThemeCluster"].fillna("").astype(str).str.strip().eq("")
     if missing_cluster.any():
         working.loc[missing_cluster, "ThemeCluster"] = working.loc[missing_cluster].apply(
@@ -598,15 +616,26 @@ def _diversify_ranked_candidates(
         best_penalty = 1.0
         for index in remaining:
             row = working.loc[index]
-            theme = str(row.get("ETFTheme", "") or "").strip()
-            tracking = str(row.get("ETFTrackingKey", "") or "").strip()
-            classification = str(row.get("ModelClassification", "") or row.get("Industry", "") or row.get("Sector", "") or "").strip()
-            cluster = str(row.get("ThemeCluster", "") or "").strip()
-            if tracking and tracking_counts.get(tracking, 0) >= max(1, int(ETF_TRACKING_MAX_PER_TOP_LIST)):
+            row_is_etf = _truthy(row.get("IsETF", False)) or str(
+                row.get("AssetType", "")
+            ).strip().lower() == "etf"
+            # ETF-only provenance must never participate in stock diversity.
+            # In particular, np.nan used to stringify to "nan", making every
+            # stock look like the same ETF tracking product and capping stocks
+            # in the mixed Top50 at one row.
+            theme = _clean_group_key(row.get("ETFTheme", "")) if row_is_etf else ""
+            tracking = _clean_group_key(row.get("ETFTrackingKey", "")) if row_is_etf else ""
+            classification = (
+                _clean_group_key(row.get("ModelClassification", ""))
+                or _clean_group_key(row.get("Industry", ""))
+                or _clean_group_key(row.get("Sector", ""))
+            )
+            cluster = _clean_group_key(row.get("ThemeCluster", ""))
+            if row_is_etf and tracking and tracking_counts.get(tracking, 0) >= max(1, int(ETF_TRACKING_MAX_PER_TOP_LIST)):
                 continue
-            if theme and theme_counts.get(theme, 0) >= max(1, int(max_per_theme)):
+            if row_is_etf and theme and theme_counts.get(theme, 0) >= max(1, int(max_per_theme)):
                 continue
-            if not theme and classification and classification.lower() not in {"nan", "none"} and stock_industry_counts.get(classification, 0) >= max(1, int(max_per_stock_industry)):
+            if (not row_is_etf) and classification and stock_industry_counts.get(classification, 0) >= max(1, int(max_per_stock_industry)):
                 continue
             penalty = max(0.70, 1.0 - float(THEME_CLUSTER_SOFT_PENALTY) * cluster_counts.get(cluster, 0)) if cluster else 1.0
             value = float(rank_score.loc[index]) * penalty
@@ -615,15 +644,22 @@ def _diversify_ranked_candidates(
         if best_index is None:
             break
         row = working.loc[best_index]
-        theme = str(row.get("ETFTheme", "") or "").strip()
-        tracking = str(row.get("ETFTrackingKey", "") or "").strip()
-        classification = str(row.get("ModelClassification", "") or row.get("Industry", "") or row.get("Sector", "") or "").strip()
-        cluster = str(row.get("ThemeCluster", "") or "").strip()
-        if theme:
+        row_is_etf = _truthy(row.get("IsETF", False)) or str(
+            row.get("AssetType", "")
+        ).strip().lower() == "etf"
+        theme = _clean_group_key(row.get("ETFTheme", "")) if row_is_etf else ""
+        tracking = _clean_group_key(row.get("ETFTrackingKey", "")) if row_is_etf else ""
+        classification = (
+            _clean_group_key(row.get("ModelClassification", ""))
+            or _clean_group_key(row.get("Industry", ""))
+            or _clean_group_key(row.get("Sector", ""))
+        )
+        cluster = _clean_group_key(row.get("ThemeCluster", ""))
+        if row_is_etf and theme:
             theme_counts[theme] = theme_counts.get(theme, 0) + 1
-        if tracking:
+        if row_is_etf and tracking:
             tracking_counts[tracking] = tracking_counts.get(tracking, 0) + 1
-        if not theme and classification and classification.lower() not in {"nan", "none"}:
+        if (not row_is_etf) and classification:
             stock_industry_counts[classification] = stock_industry_counts.get(classification, 0) + 1
         if cluster:
             cluster_counts[cluster] = cluster_counts.get(cluster, 0) + 1

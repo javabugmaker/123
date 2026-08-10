@@ -96,7 +96,7 @@ class V32AssetTop50RankingTests(unittest.TestCase):
         self.assertLess(len(mixed.loc[mixed["AssetType"].astype(str).str.lower().eq("stock")]), 50)
 
     def test_engineering_version_advances_without_model_change(self):
-        self.assertIn("v32", config.PIPELINE_VERSION)
+        self.assertRegex(config.PIPELINE_VERSION, r"-v(?:3[2-9]|[4-9][0-9]+)-")
         self.assertIn("v24", config.SCORING_VERSION)
 
 
