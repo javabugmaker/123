@@ -151,13 +151,30 @@ write(
     '''[tool.ruff]\ntarget-version = "py311"\nline-length = 120\nextend-exclude = [\n  ".venv",\n  "cache",\n  "output",\n  "logs",\n  ".ruff_cache",\n  "tools/apply_project_hardening.py",\n  "tools/v34_migrate.py",\n]\n\n[tool.ruff.lint]\nselect = ["F", "I", "UP035", "RUF046", "RUF059"]\n''',
 )
 
+# Pandas stubs produce a large number of false-positive attribute diagnostics
+# when reportAttributeAccessIssue is forced globally. Keep the existing broad
+# project compatibility profile, and enforce strict attribute access on the GUI
+# modules where it catches real widget/state typing regressions.
 pyright = json.loads(read("pyrightconfig.json"))
-pyright["reportAttributeAccessIssue"] = "error"
+pyright["reportAttributeAccessIssue"] = "none"
 write("pyrightconfig.json", json.dumps(pyright, ensure_ascii=False, indent=2) + "\n")
+write(
+    "pyrightconfig.gui.json",
+    json.dumps(
+        {
+            "extends": "./pyrightconfig.json",
+            "include": ["gui.py", "gui_core.py"],
+            "reportAttributeAccessIssue": "error",
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    + "\n",
+)
 
 write(
     ".github/workflows/static-quality.yml",
-    '''name: Static Quality\n\non:\n  pull_request:\n    branches: [main]\n  push:\n    branches: [main]\n\njobs:\n  static-quality:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-python@v5\n        with:\n          python-version: '3.11'\n      - name: Install project and static tools\n        run: |\n          pip install -r requirements.txt\n          pip install ruff pyright\n      - name: Ruff\n        run: ruff check .\n      - name: Pyright\n        run: pyright\n      - name: Compile\n        run: python -m compileall -q .\n''',
+    '''name: Static Quality\n\non:\n  pull_request:\n    branches: [main]\n  push:\n    branches: [main]\n\njobs:\n  static-quality:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-python@v5\n        with:\n          python-version: '3.11'\n      - name: Install project and static tools\n        run: |\n          pip install -r requirements.txt\n          pip install ruff pyright\n      - name: Ruff\n        run: ruff check .\n      - name: Pyright project\n        run: pyright\n      - name: Pyright GUI strict\n        run: pyright -p pyrightconfig.gui.json\n      - name: Compile\n        run: python -m compileall -q .\n''',
 )
 
 print("v34 migration applied")
