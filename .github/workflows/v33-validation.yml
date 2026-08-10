@@ -1,0 +1,40 @@
+name: V33 Migration Validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-and-test:
+    if: github.head_ref == 'agent/mixed-top50-nan-fix-v33'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/mixed-top50-nan-fix-v33
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Apply v33 migration
+        run: python tools/v33_migrate.py
+      - name: Compile
+        run: python -m py_compile report.py config.py test_v33_mixed_diversity_nan.py
+      - name: Focused tests
+        run: python -m unittest test_v31_stock_universe_integrity.py test_v32_asset_top50_ranking.py test_v33_mixed_diversity_nan.py
+      - name: Full regression
+        run: python -m unittest discover -p 'test*.py'
+      - name: Commit validated product diff
+        shell: bash
+        run: |
+          rm -f tools/v33_migrate.py .github/workflows/v33-validation.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add report.py config.py test_v33_mixed_diversity_nan.py tools/v33_migrate.py .github/workflows/v33-validation.yml
+          git commit -m "fix: isolate ETF diversity keys in mixed ranking v33"
+          git push origin HEAD:agent/mixed-top50-nan-fix-v33
