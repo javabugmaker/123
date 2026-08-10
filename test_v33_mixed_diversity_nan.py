@@ -9,6 +9,7 @@ import config
 import report
 
 
+# Regression contract for mixed-list nullable ETF provenance.
 class V33MixedDiversityNaNTests(unittest.TestCase):
     def test_clean_group_key_normalizes_nullable_values(self):
         for value in (None, np.nan, pd.NA, "nan", "NaN", "none", "<NA>", ""):
