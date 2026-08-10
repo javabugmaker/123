@@ -1,0 +1,32 @@
+name: V34 Static Audit
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    if: github.head_ref == 'agent/static-quality-v34'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install project and audit tools
+        run: |
+          pip install -r requirements.txt
+          pip install ruff pyright
+      - name: Ruff full-project audit
+        continue-on-error: true
+        run: ruff check . --output-format concise
+      - name: Pyright project audit
+        continue-on-error: true
+        run: pyright
+      - name: Compile all project modules
+        run: python -m compileall -q .
+      - name: Unit tests
+        run: python -m unittest discover -p 'test*.py'
