@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 
 import numpy as np
@@ -88,7 +89,9 @@ class V33MixedDiversityNaNTests(unittest.TestCase):
         self.assertNotIn("510002.SH", tickers)
 
     def test_engineering_version_advances_without_model_change(self):
-        self.assertIn("v33", config.PIPELINE_VERSION)
+        match = re.search(r"-v(\d+)-", config.PIPELINE_VERSION)
+        self.assertIsNotNone(match)
+        self.assertGreaterEqual(int(match.group(1)), 33)
         self.assertIn("v24", config.SCORING_VERSION)
 
 

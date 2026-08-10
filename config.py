@@ -7,6 +7,9 @@ All tunable parameters live here so no magic numbers appear in application code.
 
 from __future__ import annotations
 
+import logging
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -180,7 +183,7 @@ BACKTEST_EXACT_REFINEMENT_CANDIDATES: Final[int] = 150
 
 SCORING_VERSION: str = "2026-08-09-v24-decision-integrity"
 # Engineering versions are intentionally separate from the scoring model.
-PIPELINE_VERSION: str = "2026-08-10-v33-mixed-diversity-nan"
+PIPELINE_VERSION: str = "2026-08-10-v34-static-quality"
 GUI_VERSION: str = "2026-08-09-v30-workstation"
 BACKTEST_PROVENANCE_VERSION: str = "2026-08-09-v30"
 
@@ -338,10 +341,6 @@ ENABLE_VOLUME_PROFILE: bool = True
 # ======================================================================
 # 集中日志配置
 # ======================================================================
-import logging
-import sys
-import time
-from typing import Literal
 
 _LOG_LEVEL_MAP: dict[str, int] = {
     "DEBUG": logging.DEBUG,

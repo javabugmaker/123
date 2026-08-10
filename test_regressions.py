@@ -42,24 +42,22 @@ import main
 import scanner
 import signal_lifecycle
 from analytics import BacktestSummary, _ticker_backtest_rows, apply_backtest_ranking
-from fundamental_quality import calculate_quality
-from report import _institutional_tier
-from score import ScoreBreakdown, _score_dimensions_available, entry_point, score_structure
-from downloader import TickerInfo, _cache_path, _log_download_progress
+from downloader import TickerInfo, _log_download_progress
 from filters import (
     filter_bear_market,
     filter_min_price,
     filter_min_volume,
     filter_volume_accumulation,
 )
+from fundamental_quality import calculate_quality
 from indicators import (
     compute_moving_averages,
     compute_volume_mas,
     detect_wyckoff_phase,
 )
-from report import _results_to_dataframe, export_all
+from report import _institutional_tier, _results_to_dataframe, export_all
 from scanner import ScanReport, ScanResult
-from score import score_ticker
+from score import ScoreBreakdown, _score_dimensions_available, entry_point, score_structure, score_ticker
 
 
 class RegressionTests(TestCase):

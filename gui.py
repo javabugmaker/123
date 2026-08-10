@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """High-frequency decision workstation GUI.
 
 ``gui_core.py`` remains the stable scanner/backtest implementation.  This
@@ -7,6 +5,8 @@ module owns the v26 presentation layer: a CustomTkinter shell, independent
 stock/ETF Top50 views, first-class scan/backtest actions, a compact decision
 card, and collapsible engineering controls/logs.
 """
+
+from __future__ import annotations
 
 import csv
 import json
@@ -142,7 +142,7 @@ DAILY_PIPELINE_FILE = Path(__file__).resolve().with_name("daily_pipeline.py")
 
 
 def _duration_label(seconds: float) -> str:
-    total = max(0, int(round(float(seconds or 0.0))))
+    total = max(0, round(float(seconds or 0.0)))
     minutes, secs = divmod(total, 60)
     hours, minutes = divmod(minutes, 60)
     if hours:
@@ -208,7 +208,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.detail_score = tk.StringVar(master=root, value="-")
         self.detail_backtest = tk.StringVar(master=root, value="-")
         self.detail_reason = tk.StringVar(master=root, value="双击可查看完整研究字段。")
-        self._nav_buttons: dict[str, object] = {}
+        self._nav_buttons: dict[str, ctk.CTkButton] = {}
         self._active_nav = "mixed"
         self._new_signal_only = False
         self._daily_pipeline_active = False
@@ -253,7 +253,6 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self._set_active_nav("mixed")
 
     def _build_ui_configure_styles(self) -> None:
-        tk = _core.tk
         ttk = _core.ttk
         style = ttk.Style()
         style.configure("Panel.TLabel", background="#ffffff", foreground="#334e68")

@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """One-click daily workflow with v29 transactional publication.
 
 The canonical output set is snapshotted before a run.  A scan/backtest/data
 quality failure restores that snapshot; a successful run is archived under a
 RunId and only then advances LatestRun.json.  Scoring semantics are untouched.
 """
+
+from __future__ import annotations
 
 import argparse
 import csv

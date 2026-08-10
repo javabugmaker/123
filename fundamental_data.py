@@ -7,10 +7,11 @@ import re
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 import numpy as np
 import pandas as pd

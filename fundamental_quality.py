@@ -147,7 +147,6 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
             else None
         ),
     }
-    passed = [name for name, value in factors.items() if value is True]
     failed = [name for name, value in factors.items() if value is False]
     unknown = [name for name, value in factors.items() if value is None]
     completeness = (

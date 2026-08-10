@@ -12,17 +12,16 @@ import json
 import logging
 import re
 import tempfile
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping, cast
-from zoneinfo import ZoneInfo
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 
-from network_proxy import configure_akshare_proxy_from_system
 from trading_calendar import latest_completed_trading_day, market_is_closed
 
 try:
@@ -378,7 +377,7 @@ def _record_market_manifest(ticker: str, df: pd.DataFrame) -> None:
     latest = pd.Timestamp(index.max()).strftime("%Y-%m-%d") if len(index) else ""
     _MARKET_MANIFEST_DIRTY[normalize_ticker(ticker)] = {
         "path": path.name,
-        "rows": int(len(df)),
+        "rows": len(df),
         "last_date": latest,
         "size": int(stat.st_size),
         "mtime_ns": int(stat.st_mtime_ns),

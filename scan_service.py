@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Shared application service for CLI and GUI scan execution.
 
 The service owns universe preparation, optional fundamental refresh, scan
@@ -7,12 +5,14 @@ execution and report export. UI/CLI layers only build a request and present the
 result, which prevents their execution paths from drifting apart.
 """
 
+from __future__ import annotations
+
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from config import FUNDAMENTAL_REFRESH_FORCE, TOP_N_PARQUET, TOP_N_REPORT
 from downloader import TickerInfo, build_ticker_universe, is_etf_ticker, normalize_ticker
