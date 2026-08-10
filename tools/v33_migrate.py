@@ -13,6 +13,15 @@ if truthy_block not in text:
     raise RuntimeError("_truthy insertion point not found")
 text = text.replace(truthy_block, helper_block, 1)
 
+# String provenance columns may arrive as all-NaN float columns from pandas.
+# Cast them once before writing inferred text to avoid dtype coercion warnings.
+for column in ("ETFTheme", "ETFTrackingKey", "ThemeCluster"):
+    marker = f'''    if "{column}" not in working:\n        working["{column}"] = ""\n'''
+    replacement = marker + f'''    working["{column}"] = working["{column}"].astype("object")\n'''
+    if marker not in text:
+        raise RuntimeError(f"{column} dtype insertion point not found")
+    text = text.replace(marker, replacement, 1)
+
 old_loop = '''        for index in remaining:\n            row = working.loc[index]\n            theme = str(row.get("ETFTheme", "") or "").strip()\n            tracking = str(row.get("ETFTrackingKey", "") or "").strip()\n            classification = str(row.get("ModelClassification", "") or row.get("Industry", "") or row.get("Sector", "") or "").strip()\n            cluster = str(row.get("ThemeCluster", "") or "").strip()\n            if tracking and tracking_counts.get(tracking, 0) >= max(1, int(ETF_TRACKING_MAX_PER_TOP_LIST)):\n                continue\n            if theme and theme_counts.get(theme, 0) >= max(1, int(max_per_theme)):\n                continue\n            if not theme and classification and classification.lower() not in {"nan", "none"} and stock_industry_counts.get(classification, 0) >= max(1, int(max_per_stock_industry)):\n                continue\n'''
 new_loop = '''        for index in remaining:\n            row = working.loc[index]\n            row_is_etf = _truthy(row.get("IsETF", False)) or str(\n                row.get("AssetType", "")\n            ).strip().lower() == "etf"\n            # ETF-only provenance must never participate in stock diversity.\n            # In particular, np.nan used to stringify to "nan", making every\n            # stock look like the same ETF tracking product and capping stocks\n            # in the mixed Top50 at one row.\n            theme = _clean_group_key(row.get("ETFTheme", "")) if row_is_etf else ""\n            tracking = _clean_group_key(row.get("ETFTrackingKey", "")) if row_is_etf else ""\n            classification = (\n                _clean_group_key(row.get("ModelClassification", ""))\n                or _clean_group_key(row.get("Industry", ""))\n                or _clean_group_key(row.get("Sector", ""))\n            )\n            cluster = _clean_group_key(row.get("ThemeCluster", ""))\n            if row_is_etf and tracking and tracking_counts.get(tracking, 0) >= max(1, int(ETF_TRACKING_MAX_PER_TOP_LIST)):\n                continue\n            if row_is_etf and theme and theme_counts.get(theme, 0) >= max(1, int(max_per_theme)):\n                continue\n            if (not row_is_etf) and classification and stock_industry_counts.get(classification, 0) >= max(1, int(max_per_stock_industry)):\n                continue\n'''
 if old_loop not in text:
@@ -33,5 +42,13 @@ new_version = 'PIPELINE_VERSION: str = "2026-08-10-v33-mixed-diversity-nan"'
 if old_version not in config_text:
     raise RuntimeError("v32 PIPELINE_VERSION not found")
 config_path.write_text(config_text.replace(old_version, new_version, 1), encoding="utf-8")
+
+legacy_test_path = ROOT / "test_v32_asset_top50_ranking.py"
+legacy_test = legacy_test_path.read_text(encoding="utf-8")
+old_assert = '        self.assertIn("v32", config.PIPELINE_VERSION)\n'
+new_assert = '        self.assertRegex(config.PIPELINE_VERSION, r"-v(?:3[2-9]|[4-9][0-9]+)-")\n'
+if old_assert not in legacy_test:
+    raise RuntimeError("v32 pipeline-version assertion not found")
+legacy_test_path.write_text(legacy_test.replace(old_assert, new_assert, 1), encoding="utf-8")
 
 print("v33 migration applied")
