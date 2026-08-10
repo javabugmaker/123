@@ -96,35 +96,41 @@ replace_once(
 
 replace_once(
     "gui_core.py",
+    'class ScannerGUI:\n    def __init__(self, root: tk.Tk) -> None:\n',
+    'class ScannerGUI:\n    # Class-level declarations preserve precise typing even in regression tests\n'
+    '    # that intentionally construct a partially initialized GUI via __new__.\n'
+    '    cache_first: tk.BooleanVar\n'
+    '    refresh_fundamentals: tk.BooleanVar\n'
+    '    _scan_cancel_event: threading.Event | None\n\n'
+    '    def __init__(self, root: tk.Tk) -> None:\n',
+)
+replace_once(
+    "gui_core.py",
     '        total, active, confirmed, breakout, actionable, average = self._market_overview_values(rows, indexes)\n',
     '        total, _active, _confirmed, breakout, actionable, average = self._market_overview_values(rows, indexes)\n',
-)
-replace_once(
-    "gui_core.py",
-    '        cache_first = getattr(self, "cache_first", None)\n'
-    '        if cache_first is not None and cache_first.get() and not self.force_download.get():\n'
-    '            command.append("--cache-first")\n'
-    '        refresh_fundamentals = getattr(self, "refresh_fundamentals", None)\n'
-    '        if refresh_fundamentals is not None and refresh_fundamentals.get():\n'
-    '            command.append("--refresh-fundamentals")\n',
-    '        if self.cache_first.get() and not self.force_download.get():\n'
-    '            command.append("--cache-first")\n'
-    '        if self.refresh_fundamentals.get():\n'
-    '            command.append("--refresh-fundamentals")\n',
-)
-replace_once(
-    "gui_core.py",
-    '        scan_cancel_event = getattr(self, "_scan_cancel_event", None)\n'
-    '        if scan_cancel_event is not None:\n'
-    '            scan_cancel_event.set()\n',
-    '        if self._scan_cancel_event is not None:\n'
-    '            self._scan_cancel_event.set()\n',
 )
 
 replace_once(
     "fundamental_quality.py",
     '    passed = [name for name, value in factors.items() if value is True]\n',
     "",
+)
+
+replace_once(
+    "test_v33_mixed_diversity_nan.py",
+    '    def test_engineering_version_advances_without_model_change(self):\n'
+    '        self.assertIn("v33", config.PIPELINE_VERSION)\n'
+    '        self.assertIn("v24", config.SCORING_VERSION)\n',
+    '    def test_engineering_version_advances_without_model_change(self):\n'
+    '        match = re.search(r"-v(\\d+)-", config.PIPELINE_VERSION)\n'
+    '        self.assertIsNotNone(match)\n'
+    '        self.assertGreaterEqual(int(match.group(1)), 33)\n'
+    '        self.assertIn("v24", config.SCORING_VERSION)\n',
+)
+replace_once(
+    "test_v33_mixed_diversity_nan.py",
+    "import unittest\n\nimport numpy as np\n",
+    "import re\nimport unittest\n\nimport numpy as np\n",
 )
 
 config_text = read("config.py")
@@ -151,10 +157,6 @@ write(
     '''[tool.ruff]\ntarget-version = "py311"\nline-length = 120\nextend-exclude = [\n  ".venv",\n  "cache",\n  "output",\n  "logs",\n  ".ruff_cache",\n  "tools/apply_project_hardening.py",\n  "tools/v34_migrate.py",\n]\n\n[tool.ruff.lint]\nselect = ["F", "I", "UP035", "RUF046", "RUF059"]\n''',
 )
 
-# Pandas stubs produce a large number of false-positive attribute diagnostics
-# when reportAttributeAccessIssue is forced globally. Keep the existing broad
-# project compatibility profile, and enforce strict attribute access on the GUI
-# modules where it catches real widget/state typing regressions.
 pyright = json.loads(read("pyrightconfig.json"))
 pyright["reportAttributeAccessIssue"] = "none"
 write("pyrightconfig.json", json.dumps(pyright, ensure_ascii=False, indent=2) + "\n")
