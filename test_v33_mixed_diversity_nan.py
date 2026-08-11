@@ -88,11 +88,13 @@ class V33MixedDiversityNaNTests(unittest.TestCase):
         self.assertIn("510001.SH", tickers)
         self.assertNotIn("510002.SH", tickers)
 
-    def test_engineering_version_advances_without_model_change(self):
-        match = re.search(r"-v(\d+)-", config.PIPELINE_VERSION)
-        self.assertIsNotNone(match)
-        self.assertGreaterEqual(int(match.group(1)), 33)
-        self.assertIn("v24", config.SCORING_VERSION)
+    def test_engineering_and_scoring_versions_can_advance_independently(self):
+        pipeline_match = re.search(r"-v(\d+)-", config.PIPELINE_VERSION)
+        scoring_match = re.search(r"-v(\d+)-", config.SCORING_VERSION)
+        self.assertIsNotNone(pipeline_match)
+        self.assertIsNotNone(scoring_match)
+        self.assertGreaterEqual(int(pipeline_match.group(1)), 33)
+        self.assertGreaterEqual(int(scoring_match.group(1)), 24)
 
 
 if __name__ == "__main__":
