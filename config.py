@@ -1,8 +1,8 @@
-"""v35 configuration facade.
+"""v36 configuration facade.
 
-The v34 configuration implementation is kept in ``config_core`` so the public
-``config`` module can advance model/cache versions while preserving the stable
-runtime, path and logging configuration.
+The stable runtime configuration remains in ``config_core``.  v36 keeps the
+v35 scoring model unchanged while advancing the market-data/pipeline provenance
+to canonical TickFlow CN volume-in-shares semantics.
 """
 
 from __future__ import annotations
@@ -10,7 +10,9 @@ from __future__ import annotations
 from config_core import *  # noqa: F403
 
 SCORING_VERSION: str = "2026-08-11-v35-orthogonal-decision"
-PIPELINE_VERSION: str = "2026-08-11-v35-model-integrity"
+PIPELINE_VERSION: str = "2026-08-12-v36-volume-shares-v35-model"
+MARKET_DATA_VERSION: str = "2026-08-12-v36-tickflow-volume-shares"
+BACKTEST_PROVENANCE_VERSION: str = "2026-08-12-v36-volume-shares"
 
 # Relative asset rank is only a comparability correction.  It must not replace
 # the absolute institutional score as the model anchor.
