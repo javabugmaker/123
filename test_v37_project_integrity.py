@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# Connector-authored trigger so the validated bot commit receives normal push CI.
 import json
 import tempfile
 import unittest
