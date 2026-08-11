@@ -4,6 +4,7 @@ import unittest
 
 import pandas as pd
 
+from config import CROSS_ASSET_PERCENTILE_MAX_ADJUSTMENT
 from signal_lifecycle import finalize_signal_ranking
 
 
@@ -52,14 +53,15 @@ class RankingIntegrityV19Tests(unittest.TestCase):
         result = finalize_signal_ranking(pd.DataFrame(rows)).set_index("Ticker")
 
         self.assertEqual(result.loc["READY", "DecisionState"], "READY")
-        self.assertEqual(result.loc["FAILED_TOP", "DecisionState"], "OBSERVE")
+        self.assertEqual(result.loc["FAILED_TOP", "DecisionState"], "BLOCKED")
         self.assertLess(
             result.loc["FAILED_TOP", "RankingScore"],
             result.loc["READY", "RankingScore"],
         )
         self.assertLess(result.loc["FAILED_TOP", "ReadinessPenaltyFactor"], 0.60)
+        self.assertTrue(bool(result.loc["FAILED_TOP", "HardRiskFlag"]))
 
-    def test_cross_asset_percentile_uplift_is_capped(self):
+    def test_cross_asset_percentile_uplift_is_tightly_bounded(self):
         rows = [
             self._row("S1", 50.0),
             self._row("S2", 45.0),
@@ -70,7 +72,10 @@ class RankingIntegrityV19Tests(unittest.TestCase):
         ]
         result = finalize_signal_ranking(pd.DataFrame(rows)).set_index("Ticker")
         uplift = result["CrossAssetScore"] - result["InstitutionalScore"]
-        self.assertLessEqual(float(uplift.max()), 15.0001)
+        self.assertLessEqual(
+            float(uplift.abs().max()),
+            CROSS_ASSET_PERCENTILE_MAX_ADJUSTMENT + 1e-6,
+        )
 
     def test_clean_wait_pullback_keeps_full_integrity_factor(self):
         rows = [self._row(f"S{i}", 55.0 - i, signal="WAIT_PULLBACK") for i in range(6)]
