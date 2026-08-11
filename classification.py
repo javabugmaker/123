@@ -24,6 +24,27 @@ ETF_THEME_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("货币现金管理", ("快钱", "天天金", "添益", "货币ETF", "现金管理")),
 )
 
+ETF_RESEARCH_EXCLUDED_LABELS = frozenset(
+    {
+        "货币现金管理",
+        "货币ETF",
+        "现金管理",
+        "同业存单",
+        "短债",
+    }
+)
+ETF_RESEARCH_EXCLUDED_KEYWORDS: tuple[str, ...] = (
+    "货币ETF",
+    "货币基金",
+    "现金管理",
+    "同业存单",
+    "短债",
+    "快钱",
+    "天天金",
+    "添益",
+)
+
+
 ETF_TRACKING_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("上证50", ("上证50",)),
     ("沪深300", ("沪深300", "HS300")),
@@ -161,6 +182,36 @@ def model_classification(
     if is_etf:
         return etf_theme_key(name=name, industry=industry, sector=sector, ticker=ticker)
     return safe_text(industry) or safe_text(sector)
+
+
+def etf_research_eligibility(
+    *,
+    is_etf: bool,
+    name: Any = "",
+    industry: Any = "",
+    sector: Any = "",
+    classification: Any = "",
+    ticker: Any = "",
+) -> tuple[bool, str]:
+    """Return whether an asset belongs in directional equity/ETF research lists.
+
+    Cash-management and cash-equivalent ETFs are intentionally excluded from
+    signal Top50 surfaces. Equity-factor products such as ``现金流因子`` remain
+    eligible because the exclusion uses exact labels/specific product keywords,
+    not a broad ``现金`` substring.
+    """
+    if not is_etf:
+        return True, ""
+    resolved = safe_text(classification) or etf_theme_key(
+        name=name, industry=industry, sector=sector, ticker=ticker
+    )
+    text = _classification_text(name, industry, sector, resolved)
+    if resolved in ETF_RESEARCH_EXCLUDED_LABELS:
+        return False, f"ETF分类排除：{resolved}"
+    for keyword in ETF_RESEARCH_EXCLUDED_KEYWORDS:
+        if keyword.upper() in text:
+            return False, f"ETF现金管理产品排除：{keyword}"
+    return True, ""
 
 
 def theme_cluster(

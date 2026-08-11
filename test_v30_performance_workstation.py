@@ -20,7 +20,9 @@ class V30PerformanceWorkstationTests(unittest.TestCase):
     def test_engineering_contract_survives_later_scoring_versions(self):
         self.assertRegex(config.SCORING_VERSION, r"-v(?:2[4-9]|[3-9][0-9]+)-")
         self.assertTrue(any(f"v{version}" in config.PIPELINE_VERSION for version in range(30, 100)))
-        self.assertIn("v30", config.GUI_VERSION)
+        self.assertTrue(
+            any(f"v{version}" in config.GUI_VERSION for version in range(30, 100))
+        )
 
     def test_calibration_details_uses_indexed_lookup_not_rowwise_resolver(self):
         rows = [

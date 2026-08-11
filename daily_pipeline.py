@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import logging
 import os
@@ -337,17 +338,32 @@ def _commit_transaction(tx_dir: Path) -> None:
     shutil.rmtree(tx_dir, ignore_errors=True)
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _archive_run(pipeline_run_id: str, payload: dict[str, object]) -> Path:
+    """Create an immutable per-run snapshot; never overwrite an existing run id."""
     run_dir = OUTPUT_DIR / "runs" / pipeline_run_id
     if run_dir.exists():
-        shutil.rmtree(run_dir)
-    run_dir.mkdir(parents=True, exist_ok=True)
+        raise FileExistsError(f"run archive already exists: {pipeline_run_id}")
+    run_dir.mkdir(parents=True, exist_ok=False)
     try:
+        archive_hashes: dict[str, str] = {}
         for name in _ARCHIVE_FILES:
             source = OUTPUT_DIR / name
             if source.exists() and source.is_file():
-                shutil.copy2(source, run_dir / name)
-        _atomic_write_json(run_dir / "RunManifest.json", payload)
+                destination = run_dir / name
+                shutil.copy2(source, destination)
+                archive_hashes[name] = _sha256_file(destination)
+        manifest_payload = dict(payload)
+        manifest_payload["archive_hashes_sha256"] = archive_hashes
+        manifest_payload["archive_immutable"] = True
+        _atomic_write_json(run_dir / "RunManifest.json", manifest_payload)
         _atomic_write_json(
             OUTPUT_DIR / "LatestRun.json",
             {
@@ -364,6 +380,38 @@ def _archive_run(pipeline_run_id: str, payload: dict[str, object]) -> Path:
     return run_dir
 
 
+def _cache_health(
+    previous_summary: dict[str, object],
+    current_rate: float,
+    evaluations: int,
+) -> dict[str, object]:
+    previous_backtest = previous_summary.get("backtest", {})
+    if not isinstance(previous_backtest, dict):
+        previous_backtest = {}
+    previous_rate = float(previous_backtest.get("cache_hit_rate", 0.0) or 0.0)
+    previous_version = str(previous_summary.get("pipeline_version", "") or "")
+    cold_start = bool(previous_version and previous_version != PIPELINE_VERSION) or not previous_version
+    rate = float(max(0.0, min(1.0, current_rate)))
+    if evaluations <= 0:
+        status = "未知"
+    elif cold_start:
+        status = "冷启动"
+    elif rate >= 0.70:
+        status = "健康"
+    elif rate >= 0.35:
+        status = "偏低"
+    else:
+        status = "异常偏低"
+    return {
+        "status": status,
+        "cold_start": cold_start,
+        "current_rate": round(rate, 4),
+        "previous_rate": round(previous_rate, 4),
+        "delta": round(rate - previous_rate, 4),
+        "warning": bool(status == "异常偏低" and evaluations >= 100),
+    }
+
+
 def _write_manifest(
     *,
     pipeline_run_id: str,
@@ -377,6 +425,7 @@ def _write_manifest(
     scan_profile: dict[str, object],
     final_profiles: dict[str, dict[str, object]],
     stage_seconds: dict[str, float],
+    previous_summary: dict[str, object],
 ) -> dict[str, object]:
     backtest = _read_json(OUTPUT_DIR / "BacktestSummary.json")
     scan_performance = _read_json(OUTPUT_DIR / "ScanPerformance.json")
@@ -385,6 +434,7 @@ def _write_manifest(
     cache_hit_rate = float(backtest.get("cache_hit_rate", 0.0) or 0.0)
     if cache_hit_rate <= 0 and evaluations > 0:
         cache_hit_rate = cache_hits / evaluations
+    cache_health = _cache_health(previous_summary, cache_hit_rate, evaluations)
     exact_elapsed = float(backtest.get("exact_refinement_elapsed_seconds", 0.0) or 0.0)
     backtest_elapsed = float(backtest.get("elapsed_seconds", 0.0) or 0.0)
     payload: dict[str, object] = {
@@ -435,6 +485,10 @@ def _write_manifest(
             "ranking_eligible_tickers": int(backtest.get("ranking_eligible_ticker_count", 0) or 0),
             "cache_hits": cache_hits,
             "cache_hit_rate": round(cache_hit_rate, 4),
+            "cache_health": str(cache_health.get("status", "未知")),
+            "cache_cold_start": bool(cache_health.get("cold_start", False)),
+            "cache_hit_rate_delta": float(cache_health.get("delta", 0.0) or 0.0),
+            "cache_warning": bool(cache_health.get("warning", False)),
             "elapsed_seconds": round(backtest_elapsed, 3),
             "fast_elapsed_seconds": round(max(0.0, backtest_elapsed - exact_elapsed), 3),
             "exact_elapsed_seconds": round(exact_elapsed, 3),
@@ -589,6 +643,7 @@ def run_daily_pipeline(
             scan_profile=scan_profile,
             final_profiles=final_profiles,
             stage_seconds=stage_seconds,
+            previous_summary=previous_summary,
         )
         run_dir = _archive_run(pipeline_run_id, payload)
         _commit_transaction(tx_dir)

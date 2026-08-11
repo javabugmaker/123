@@ -10,7 +10,9 @@ from __future__ import annotations
 from config_core import *  # noqa: F403
 
 SCORING_VERSION: str = "2026-08-11-v35-orthogonal-decision"
-PIPELINE_VERSION: str = "2026-08-12-v36-volume-shares-v35-model"
+PIPELINE_VERSION: str = "2026-08-12-v37-project-integrity-evidence"
+GUI_VERSION: str = "2026-08-12-v37-evidence-ux"
+EVIDENCE_POLICY_VERSION: str = "2026-08-12-v37-peer-plus-ticker"
 MARKET_DATA_VERSION: str = "2026-08-12-v36-tickflow-volume-shares"
 BACKTEST_PROVENANCE_VERSION: str = "2026-08-12-v36-volume-shares"
 

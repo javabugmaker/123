@@ -131,7 +131,9 @@ class ModelV35IntegrityTests(unittest.TestCase):
 
     def test_scoring_version_advances_for_changed_model_semantics(self):
         self.assertIn("v35", config.SCORING_VERSION)
-        self.assertIn("v35", config.PIPELINE_VERSION)
+        self.assertTrue(
+            any(f"v{version}" in config.PIPELINE_VERSION for version in range(35, 100))
+        )
 
 
 if __name__ == "__main__":

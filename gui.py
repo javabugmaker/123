@@ -93,6 +93,16 @@ _core.COLUMN_NAMES.update(
         "BacktestStage": "回测阶段",
         "BacktestEligibleForRanking": "回测参与排名",
         "BacktestSkipReason": "回测说明",
+        "HardGatePassed": "基础硬准入",
+        "DiagnosticFailedCount": "诊断未通过数",
+        "DiagnosticFailedNames": "诊断未通过项",
+        "ResearchEligible": "研究榜资格",
+        "ResearchExclusionReason": "研究榜排除原因",
+        "TickerEvidence": "本票回测证据",
+        "PeerCalibrationEvidence": "同类校准证据",
+        "EvidenceStrengthScore": "证据强度",
+        "EvidenceTier": "证据等级",
+        "EvidenceReason": "证据说明",
     }
 )
 
@@ -207,6 +217,8 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.detail_rank = tk.StringVar(master=root, value="-")
         self.detail_score = tk.StringVar(master=root, value="-")
         self.detail_backtest = tk.StringVar(master=root, value="-")
+        self.detail_peer_calibration = tk.StringVar(master=root, value="-")
+        self.detail_evidence = tk.StringVar(master=root, value="-")
         self.detail_reason = tk.StringVar(master=root, value="双击可查看完整研究字段。")
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
         self._active_nav = "mixed"
@@ -719,7 +731,9 @@ class DecisionScannerGUI(_core.ScannerGUI):
             ("交易资格", self.detail_eligibility),
             ("榜单 / 全局", self.detail_rank),
             ("排序 / 机构", self.detail_score),
-            ("回测证据", self.detail_backtest),
+            ("本票回测", self.detail_backtest),
+            ("同类校准", self.detail_peer_calibration),
+            ("证据等级", self.detail_evidence),
         ):
             row = ctk.CTkFrame(detail, fg_color="transparent")
             row.pack(fill=tk.X, padx=18, pady=4)
@@ -1323,9 +1337,11 @@ class DecisionScannerGUI(_core.ScannerGUI):
                 float(stages.get("backtest", 0.0) or 0.0) - engine_seconds,
             )
         cache = float(backtest.get("cache_hit_rate", 0.0) or 0.0)
+        cache_health = str(backtest.get("cache_health", "") or "").strip()
+        cache_label = f"Cache {cache:.0%}" + (f"·{cache_health}" if cache_health else "")
         self.run_quality.set(
             f"✓ {expected} · 总{_duration_label(elapsed)} · 扫描{_duration_label(scan_seconds)} · "
-            f"引擎{_duration_label(engine_seconds)} · 后处理{_duration_label(postprocess_seconds)} · Cache {cache:.0%}"
+            f"引擎{_duration_label(engine_seconds)} · 后处理{_duration_label(postprocess_seconds)} · {cache_label}"
         )
 
     def _show_run_performance(self) -> None:
@@ -1364,6 +1380,8 @@ class DecisionScannerGUI(_core.ScannerGUI):
             f"  文件落盘：{_duration_label(float(backtest.get('persistence_seconds', 0.0) or 0.0))}",
             f"  后处理：{_duration_label(float(backtest.get('postprocess_seconds', 0.0) or 0.0))}",
             f"  Cache：{float(backtest.get('cache_hit_rate', 0.0) or 0.0):.2%}",
+            f"  Cache健康：{backtest.get('cache_health', '-')}",
+            f"  较上轮：{float(backtest.get('cache_hit_rate_delta', 0.0) or 0.0):+.2%}",
         ]
         _core.messagebox.showinfo("本轮运行性能", "\n".join(lines))
 
@@ -1416,6 +1434,8 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.detail_rank.set("-")
         self.detail_score.set("-")
         self.detail_backtest.set("-")
+        self.detail_peer_calibration.set("-")
+        self.detail_evidence.set("-")
         self.detail_reason.set("双击可查看完整研究字段。")
 
     def _update_decision_card(self, _event=None) -> None:
@@ -1460,8 +1480,21 @@ class DecisionScannerGUI(_core.ScannerGUI):
             backtest_parts = [mode, f"{samples}样本", confidence]
             if not ranking_enabled:
                 backtest_parts.append("不参与排名")
-        self.detail_backtest.set(" · ".join(value for value in backtest_parts if value) or "-")
+        ticker_evidence = str(data.get("TickerEvidence", "") or "").strip()
+        self.detail_backtest.set(ticker_evidence or " · ".join(value for value in backtest_parts if value) or "-")
+        peer_evidence = str(data.get("PeerCalibrationEvidence", "") or "").strip()
+        self.detail_peer_calibration.set(peer_evidence or "-")
+        evidence_tier = str(data.get("EvidenceTier", "") or "").strip()
+        evidence_score = self._format_table_value(
+            "EvidenceStrengthScore", data.get("EvidenceStrengthScore", "")
+        )
+        self.detail_evidence.set(
+            " · ".join(value for value in (evidence_tier, evidence_score) if value) or "-"
+        )
         reason = data.get("TradeReadinessReason", "") or data.get("RankingReason", "") or "暂无额外执行说明。"
+        evidence_reason = str(data.get("EvidenceReason", "") or "").strip()
+        if evidence_reason:
+            reason = f"{reason}\n\n证据：{evidence_reason}"
         skip_reason = str(data.get("BacktestSkipReason", "") or "").strip()
         if skip_reason:
             reason = f"{reason}\n\n回测：{skip_reason}。"

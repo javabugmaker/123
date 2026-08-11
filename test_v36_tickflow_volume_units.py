@@ -74,7 +74,9 @@ class V36TickFlowVolumeUnitTests(unittest.TestCase):
         self.assertIn("volume-shares-v1", str(performance_cache.INDICATOR_CACHE_DIR))
         self.assertIn("volume-shares-v1", str(performance_cache.BACKTEST_CACHE_DIR))
         self.assertEqual(downloader.TICKFLOW_CANONICAL_VOLUME_UNIT, "shares")
-        self.assertIn("v36", config.PIPELINE_VERSION)
+        self.assertTrue(
+            any(f"v{version}" in config.PIPELINE_VERSION for version in range(36, 100))
+        )
         self.assertIn("v35", config.SCORING_VERSION)
         self.assertIn("volume-shares", config.MARKET_DATA_VERSION)
 

@@ -23,7 +23,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from analytics import refresh_research_outcomes, write_research_reports
-from classification import etf_theme_key, etf_tracking_key, theme_cluster
+from classification import (
+    etf_research_eligibility,
+    etf_theme_key,
+    etf_tracking_key,
+    theme_cluster,
+)
+from evidence import enrich_evidence_fields
 from config import (
     ETF_THEME_MAX_PER_TOP_LIST,
     ETF_TRACKING_MAX_PER_TOP_LIST,
@@ -138,6 +144,27 @@ def _rankable_results(results: list[ScanResult]) -> list[ScanResult]:
         ),
         reverse=True,
     )
+
+
+_HARD_GATE_FILTER_KEYS = ("min_price", "min_volume", "min_market_cap", "sufficient_history")
+_DIAGNOSTIC_FILTER_KEYS = (
+    "volume_accumulation",
+    "obv_divergence",
+    "cmf_positive",
+    "ad_slope",
+    "consolidation",
+    "volatility_contraction",
+)
+
+
+def _failed_filter_names(result: ScanResult, keys: tuple[str, ...]) -> list[str]:
+    names: list[str] = []
+    for key in keys:
+        if result.is_etf and key in {"min_price", "min_market_cap"}:
+            continue
+        if not bool(result.filter_details.get(key, False)):
+            names.append(key)
+    return names
 
 
 def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
@@ -345,9 +372,16 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "VolAccumDays": r.volume_accum_days,
                 "SignalCount": r.filter_details.get("signal_count", 0),
                 "FilterCount": r.filter_details.get("filter_count", 0),
+                # Compatibility field: historically this meant the combined
+                # hard-gate + accumulation/structure recipe, not "every filter".
                 "PassedFilters": r.passed_filters,
                 "UniverseEligible": r.universe_eligible,
+                "HardGatePassed": r.universe_eligible,
+                "HardGateFailedCount": len(_failed_filter_names(r, _HARD_GATE_FILTER_KEYS)),
+                "HardGateFailedNames": ",".join(_failed_filter_names(r, _HARD_GATE_FILTER_KEYS)),
                 "SignalConfirmed": r.signal_confirmed,
+                "DiagnosticFailedCount": len(_failed_filter_names(r, _DIAGNOSTIC_FILTER_KEYS)),
+                "DiagnosticFailedNames": ",".join(_failed_filter_names(r, _DIAGNOSTIC_FILTER_KEYS)),
                 "FailedFilterCount": r.failed_filter_count,
                 "FailedFilterNames": r.failed_filter_names,
                 "MinPricePassed": r.filter_details.get("min_price", False),
@@ -424,16 +458,45 @@ def _atomic_write_parquet(df: pd.DataFrame, path: Path) -> None:
             temporary_path.unlink()
 
 
+def _apply_research_policy(frame: pd.DataFrame) -> pd.DataFrame:
+    """Mark non-directional ETF products before any TopN candidate ranking."""
+    working = frame.copy()
+    if working.empty:
+        working["ResearchEligible"] = pd.Series(dtype=bool)
+        working["ResearchExclusionReason"] = pd.Series(dtype="object")
+        return working
+    eligibility: list[bool] = []
+    reasons: list[str] = []
+    for _, row in working.iterrows():
+        asset = str(row.get("AssetType", "") or "").strip().lower()
+        is_etf = _truthy(row.get("IsETF", False)) or asset == "etf"
+        eligible, reason = etf_research_eligibility(
+            is_etf=is_etf,
+            name=row.get("Name", ""),
+            industry=row.get("Industry", ""),
+            sector=row.get("Sector", ""),
+            classification=row.get("ModelClassification", row.get("ETFTheme", "")),
+            ticker=row.get("Ticker", ""),
+        )
+        eligibility.append(bool(eligible))
+        reasons.append(str(reason or ""))
+    working["ResearchEligible"] = eligibility
+    working["ResearchExclusionReason"] = reasons
+    return working
+
+
 def _rank_valid_candidates(frame: pd.DataFrame) -> pd.DataFrame:
-    """Return valid results in the same order used by every candidate export."""
+    """Return research-eligible valid results in canonical candidate order."""
     if frame.empty:
-        return frame.copy()
-    valid = frame.loc[
-        frame.get("Error", pd.Series("", index=frame.index))
+        return enrich_evidence_fields(_apply_research_policy(frame))
+    prepared = enrich_evidence_fields(_apply_research_policy(frame))
+    valid = prepared.loc[
+        prepared.get("Error", pd.Series("", index=prepared.index))
         .fillna("")
         .astype(str)
         .str.strip()
         .eq("")
+        & prepared["ResearchEligible"].fillna(False).astype(bool)
     ].copy()
     if valid.empty:
         return valid.reset_index(drop=True)
@@ -680,13 +743,18 @@ def _sort_export_rows(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataF
 
 DECISION_RESULT_COLUMNS: tuple[str, ...] = (
     "Ticker", "Name", "Sector", "Industry", "ETFTheme", "IsETF", "AssetType",
-    "ModelClassification", "ThemeCluster", "Close", "EntrySignal", "SignalStatus",
-    "SignalDays", "EntryZone", "BreakoutBuyPrice", "StopLoss", "RankingEligibility",
-    "RankingScore", "ResearchPoolRank", "OverallRank", "InstitutionalTier",
-    "InstitutionalScore", "TradeReadinessReason", "RankingReason", "DecisionState",
-    "BacktestRunMode", "BacktestMode", "BacktestStage", "BacktestSamples",
+    "ModelClassification", "ThemeCluster", "ResearchEligible", "ResearchExclusionReason",
+    "Close", "EntrySignal", "SignalStatus", "SignalDays", "EntryZone",
+    "BreakoutBuyPrice", "StopLoss", "RankingEligibility", "RankingScore",
+    "ResearchPoolRank", "OverallRank", "InstitutionalTier", "InstitutionalScore",
+    "HardGatePassed", "DiagnosticFailedCount", "DiagnosticFailedNames",
+    "TradeReadinessReason", "RankingReason", "DecisionState", "BacktestRunMode",
+    "BacktestMode", "BacktestStage", "BacktestSamples", "BacktestEffectiveSamples",
     "BacktestStatus", "BacktestConfidenceTier", "BacktestRequested",
     "BacktestEligibleForRanking", "BacktestSkipReason", "BacktestCacheHit",
+    "GlobalCalibrationSamples", "GlobalCalibrationEffectiveSamples",
+    "GlobalCalibrationConfidence", "GlobalCalibrationLevel", "TickerEvidence",
+    "PeerCalibrationEvidence", "EvidenceStrengthScore", "EvidenceTier", "EvidenceReason",
     "DataAsOf", "DataTradingAgeDays", "RunId", "ModelVersion", "PipelineVersion",
 )
 
@@ -930,7 +998,9 @@ def export_all(
     data_source: str = "eastmoney",
 ) -> tuple[Path, Path, Path, Path]:
     """Export CSV, Parquet, and full results. Returns (csv_path, parquet_path, full_csv, full_parquet)."""
-    df = enrich_signal_lifecycle(_results_to_dataframe(results))
+    df = enrich_evidence_fields(
+        _apply_research_policy(enrich_signal_lifecycle(_results_to_dataframe(results)))
+    )
     research_history = refresh_research_outcomes(data_source)
     write_research_reports(research_history)
     if df.empty:
