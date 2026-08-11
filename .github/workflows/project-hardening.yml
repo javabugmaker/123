@@ -4,8 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - tools/apply_project_hardening.py
-      - tools/v37_compat_fix.py
+      - tools/v37_static_fix.py
       - .github/workflows/project-hardening.yml
   workflow_dispatch:
 
@@ -25,26 +24,27 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      - name: Install dependencies
+      - name: Install dependencies and static tools
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install ruff pyright
 
-      - name: Apply v37 migration
-        run: python tools/apply_project_hardening.py
+      - name: Apply final v37 static fix
+        run: python tools/v37_static_fix.py
 
-      - name: Update forward-compatible regression contracts
-        run: python tools/v37_compat_fix.py
-
-      - name: Validate syntax
+      - name: Validate static quality
         run: |
+          ruff check .
+          pyright -p pyrightconfig.json
+          pyright -p pyrightconfig.gui.json
           python -m compileall -q .
           git diff --check
 
       - name: Run tests
         run: python -m unittest discover -v
 
-      - name: Commit validated v37 directly to main
+      - name: Commit validated static fix directly to main
         run: |
           git config user.name "OpenAI Codex"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -52,5 +52,5 @@ jobs:
             echo "No changes to commit"
             exit 0
           fi
-          git commit -m "feat: project integrity and evidence UX v37"
+          git commit -m "style: finalize v37 static quality"
           git push origin HEAD:main
