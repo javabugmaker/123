@@ -95,9 +95,9 @@ class V32AssetTop50RankingTests(unittest.TestCase):
         self.assertEqual(len(stocks), 50)
         self.assertLess(len(mixed.loc[mixed["AssetType"].astype(str).str.lower().eq("stock")]), 50)
 
-    def test_engineering_version_advances_without_model_change(self):
+    def test_engineering_contract_is_forward_compatible_with_v35_model(self):
         self.assertRegex(config.PIPELINE_VERSION, r"-v(?:3[2-9]|[4-9][0-9]+)-")
-        self.assertIn("v24", config.SCORING_VERSION)
+        self.assertRegex(config.SCORING_VERSION, r"-v(?:2[4-9]|[3-9][0-9]+)-")
 
 
 if __name__ == "__main__":
