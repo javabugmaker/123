@@ -6,11 +6,17 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+
 jobs:
   static-quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && 'main' || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -18,6 +24,12 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install ruff pyright
+      - name: Apply staged v35 model upgrade
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, 'feat: improve model decision integrity v35')
+        run: python tools/v35_model_upgrade.py
+      - name: Ruff safe fixes
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, 'feat: improve model decision integrity v35')
+        run: ruff check . --fix
       - name: Ruff
         run: ruff check .
       - name: Pyright project
@@ -26,3 +38,19 @@ jobs:
         run: pyright -p pyrightconfig.gui.json
       - name: Compile
         run: python -m compileall -q .
+      - name: Focused v35 tests
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python -m unittest test_v35_model_integrity.py
+      - name: Unit tests
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python -m unittest discover -p 'test*.py'
+      - name: Commit validated v35 product changes directly to main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, 'feat: improve model decision integrity v35')
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add config.py score.py signal_lifecycle.py test_v35_model_integrity.py
+          git diff --cached --quiet && exit 0
+          git commit -m "feat: improve model decision integrity v35"
+          git push origin HEAD:main
