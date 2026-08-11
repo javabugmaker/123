@@ -1,194 +1,246 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
-import re
 
-ROOT = Path(__file__).resolve().parents[1] if Path(__file__).parent.name == 'tools' else Path.cwd()
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def load(path: str) -> str:
-    return (ROOT / path).read_text(encoding='utf-8')
+    return (ROOT / path).read_text(encoding="utf-8")
 
 
 def save(path: str, text: str) -> None:
-    (ROOT / path).write_text(text, encoding='utf-8')
+    target = ROOT / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
 
 
-def replace_once(text: str, old: str, new: str, label: str) -> str:
+def replace_once(path: str, old: str, new: str, label: str) -> None:
+    text = load(path)
     count = text.count(old)
     if count != 1:
-        raise RuntimeError(f'{label}: expected exactly one match, got {count}')
-    return text.replace(old, new, 1)
+        raise RuntimeError(f"{label}: expected exactly one match, got {count}")
+    save(path, text.replace(old, new, 1))
 
 
-def sub_once(text: str, pattern: str, repl: str, label: str, flags: int = 0) -> str:
-    new, count = re.subn(pattern, repl, text, count=1, flags=flags)
-    if count != 1:
-        raise RuntimeError(f'{label}: expected exactly one regex match, got {count}')
-    return new
+def insert_before_once(path: str, marker: str, insertion: str, label: str) -> None:
+    replace_once(path, marker, insertion + marker, label)
 
 
-path = 'downloader.py'
-text = load(path)
-text = replace_once(text, '_LAST_DOWNLOAD_AT = 0.0\n', '_LAST_DOWNLOAD_AT = 0.0\n_PRICE_CACHE_SCHEMA_VERSION = "v2-provider-consistent"\n', 'downloader cache schema')
-text = sub_once(text, r'def normalize_ticker\(ticker: str\) -> str:\n(?:    .*\n)+?\n\ndef is_etf_ticker', '''def normalize_ticker(ticker: str) -> str:\n    normalized = str(ticker).strip().upper()\n    if "." in normalized:\n        return normalized\n    if len(normalized) != 6 or not normalized.isdigit():\n        return normalized\n    if normalized.startswith(("4", "8", "92")):\n        suffix = "BJ"\n    elif normalized.startswith(("5", "6")):\n        suffix = "SH"\n    else:\n        suffix = "SZ"\n    return f"{normalized}.{suffix}"\n\n\ndef is_etf_ticker''', 'normalize_ticker', flags=re.MULTILINE)
-text = replace_once(text, '''    if source:\n        value = f"{value}__{normalize_data_source(source)}"\n''', '''    if source:\n        normalized_source = normalize_data_source(source)\n        value = f"{value}__{normalized_source}__{_PRICE_CACHE_SCHEMA_VERSION}"\n''', 'cache stem versioning')
-text = sub_once(text, r'_DATA_SOURCE_CANDIDATES = \{.*?\n\}', '''_DATA_SOURCE_CANDIDATES = {\n    # auto only uses providers with an explicit forward-adjusted daily-history\n    # path. Sina remains available when selected explicitly, but is excluded\n    # from automatic fallback because this adapter does not expose a stable\n    # qfq contract compatible with the other providers.\n    "auto": ("tencent", "akshare", "eastmoney"),\n    "akshare": ("akshare",),\n    "eastmoney": ("eastmoney",),\n    "sina": ("sina",),\n    "tencent": ("tencent",),\n}''', 'data source candidate policy', flags=re.DOTALL)
-text = sub_once(text, r'def _download_single\(\n    ticker: str,\n    source: str = "eastmoney",\n    start_date: datetime \| None = None,\n\) -> pd\.DataFrame \| None:\n.*?\n\ndef download_ticker\(', '''def _download_single_with_source(\n    ticker: str,\n    source: str = "eastmoney",\n    start_date: datetime | None = None,\n) -> tuple[pd.DataFrame | None, str | None]:\n    """Download one coherent history and report the provider that produced it."""\n    ticker = normalize_ticker(ticker)\n    selected = normalize_data_source(source)\n    loaders = {\n        "akshare": _download_from_akshare,\n        "eastmoney": _download_from_eastmoney,\n        "sina": _download_from_sina,\n        "tencent": _download_from_tencent,\n    }\n    for candidate in _DATA_SOURCE_CANDIDATES[selected]:\n        loader = loaders[candidate]\n        try:\n            _wait_for_download_slot()\n            frame = loader(ticker, start_date=start_date)\n        except _DOWNLOAD_ERRORS as exc:\n            logger.debug(\n                "数据源 %s 获取 %s 失败：%s",\n                get_data_source_label(candidate),\n                ticker,\n                exc,\n            )\n            continue\n        if frame is not None and not frame.empty:\n            if selected == "auto":\n                logger.debug(\n                    "自动优选已使用%s获取 %s 的数据。",\n                    get_data_source_label(candidate),\n                    ticker,\n                )\n            return frame, candidate\n    return None, None\n\n\ndef _download_single(\n    ticker: str,\n    source: str = "eastmoney",\n    start_date: datetime | None = None,\n) -> pd.DataFrame | None:\n    frame, _actual_source = _download_single_with_source(\n        ticker, source=source, start_date=start_date\n    )\n    return frame\n\n\ndef _price_source_meta_path(ticker: str, selected_source: str) -> Path:\n    return CACHE_DIR / f"{_safe_cache_stem(ticker, selected_source)}.source.json"\n\n\ndef _save_price_source_meta(\n    ticker: str, selected_source: str, actual_source: str\n) -> None:\n    path = _price_source_meta_path(ticker, selected_source)\n    payload = {\n        "selected_source": normalize_data_source(selected_source),\n        "actual_source": normalize_data_source(actual_source),\n        "cache_schema": _PRICE_CACHE_SCHEMA_VERSION,\n        "updated": datetime.now(timezone.utc).isoformat(),\n    }\n    temporary = path.with_name(f".{path.name}.tmp")\n    try:\n        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")\n        temporary.replace(path)\n    finally:\n        temporary.unlink(missing_ok=True)\n\n\ndef _load_price_source_meta(ticker: str, selected_source: str) -> dict[str, str]:\n    path = _price_source_meta_path(ticker, selected_source)\n    try:\n        payload = json.loads(path.read_text(encoding="utf-8"))\n    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError):\n        return {}\n    if payload.get("cache_schema") != _PRICE_CACHE_SCHEMA_VERSION:\n        return {}\n    actual = str(payload.get("actual_source", "")).strip().lower()\n    if actual not in _DATA_SOURCE_LABELS or actual == "auto":\n        return {}\n    return {"actual_source": actual}\n\n\ndef download_ticker(''', 'download source provenance helpers', flags=re.DOTALL)
-text = sub_once(text, r'def download_ticker\(\n    ticker: str,\n    force: bool = False,\n    source: str = "eastmoney",\n    cache_first: bool = False,\n\) -> pd\.DataFrame \| None:\n.*?\n\ndef download_batch\(', '''def download_ticker(\n    ticker: str,\n    force: bool = False,\n    source: str = "eastmoney",\n    cache_first: bool = False,\n) -> pd.DataFrame | None:\n    """Return provider-consistent OHLCV history for one ticker.\n\n    Explicit providers never silently fall back. ``auto`` records the actual\n    provider used for the cache and keeps incremental updates on that same\n    provider. If that provider becomes unavailable, the cache is rebuilt in\n    full from one alternative provider instead of concatenating incompatible\n    adjustment histories.\n    """\n    ticker = normalize_ticker(ticker)\n    selected = normalize_data_source(source)\n\n    def persist(frame: pd.DataFrame | None, actual_source: str | None) -> pd.DataFrame | None:\n        if frame is None or frame.empty or actual_source is None:\n            return frame\n        _save_cache(ticker, frame, selected)\n        _save_price_source_meta(ticker, selected, actual_source)\n        return frame\n\n    if force:\n        frame, actual_source = _download_single_with_source(ticker, selected)\n        return persist(frame, actual_source)\n\n    cached = _load_cache(ticker, selected)\n    if cached is None:\n        frame, actual_source = _download_single_with_source(ticker, selected)\n        return persist(frame, actual_source)\n\n    if cache_first or _cache_has_completed_daily_bar(cached):\n        return cached\n\n    cached_index = pd.DatetimeIndex(cached.index).dropna()\n    if cached_index.empty:\n        return cached\n    last_timestamp = pd.Timestamp(cast(Any, cached_index[-1]))\n    last_date = cast(datetime, last_timestamp.to_pydatetime())\n    if last_date.tzinfo is not None:\n        last_date = last_date.replace(tzinfo=None)\n\n    metadata = _load_price_source_meta(ticker, selected)\n    actual_source = metadata.get("actual_source")\n    if selected != "auto":\n        actual_source = selected\n\n    request_start = last_date - timedelta(days=7)\n    if actual_source:\n        try:\n            incremental, provider = _download_single_with_source(\n                ticker, actual_source, start_date=request_start\n            )\n        except _DOWNLOAD_ERRORS as exc:\n            logger.debug("Incremental update failed for %s: %s", ticker, exc)\n            incremental, provider = None, None\n        if incremental is not None and not incremental.empty and provider == actual_source:\n            new_df = incremental.loc[incremental.index >= pd.Timestamp(last_date)]\n            if not new_df.empty:\n                combined = cast(pd.DataFrame, pd.concat([cached, new_df]))\n                combined = combined.loc[~combined.index.duplicated(keep="last")].sort_index()\n                validated = _validate_ohlcv(combined)\n                if validated is not None and not validated.equals(cached):\n                    return persist(validated, actual_source)\n            return cached\n\n    if selected == "auto":\n        rebuilt, provider = _download_single_with_source(ticker, selected)\n        if rebuilt is not None and not rebuilt.empty and provider is not None:\n            return persist(rebuilt, provider)\n\n    return cached\n\n\ndef download_batch(''', 'download_ticker provider-consistent implementation', flags=re.DOTALL)
-save(path, text)
-
-path = 'score.py'
-text = load(path)
-old = '''    trap = value_trap_risk(df)\n    breakout = breakout_score(df)\n    entry = entry_point(df, breakout)\n    base_score = total * (1.0 - 0.55 * trap / 100.0)\n    trigger_score = _clamp(breakout * 0.55 + entry["score"] * 0.45, 0.0, 100.0)\n    if trap >= 70.0:\n        trigger_score *= 0.5\n    final_score = _clamp(base_score * 0.65 + trigger_score * 0.35, 0.0, 100.0)\n'''
-new = '''    trap = value_trap_risk(df)\n    breakout = breakout_score(df)\n    entry = entry_point(\n        df,\n        breakout,\n        volume_score=volume,\n        value_trap_risk_value=trap,\n    )\n\n    # Three distinct layers: setup quality, trigger strength and execution\n    # readiness. Missing indicator dimensions reduce the score instead of\n    # allowing the remaining dimensions to be renormalized to an artificial 100.\n    setup_coverage = 0.55 + 0.45 * indicator_coverage\n    trigger_coverage = 0.75 + 0.25 * indicator_coverage\n    execution_coverage = 0.70 + 0.30 * indicator_coverage\n    base_score = total * (1.0 - 0.55 * trap / 100.0) * setup_coverage\n    trigger_score = _clamp(breakout * trigger_coverage, 0.0, 100.0)\n    execution_score = _clamp(float(entry["score"]) * execution_coverage, 0.0, 100.0)\n    if trap >= 70.0:\n        trigger_score *= 0.5\n        execution_score *= 0.5\n    final_score = _clamp(\n        base_score * 0.55 + trigger_score * 0.25 + execution_score * 0.20,\n        0.0,\n        100.0,\n    )\n    coverage_cap = 40.0 + 60.0 * indicator_coverage\n    final_score = min(final_score, coverage_cap)\n'''
-text = replace_once(text, old, new, 'score composition')
-text = replace_once(text, '        "entry": entry["score"],\n', '        "entry": entry["score"],\n        "execution": execution_score,\n        "coverage_cap": coverage_cap,\n', 'score contribution execution')
-save(path, text)
-
-path = 'analytics.py'
-text = load(path)
-text = replace_once(text, 'from score import score_ticker\n', 'from score import entry_point, score_ticker\n', 'analytics entry_point import')
-text = sub_once(text, r'def _signal_points\(\n    enriched: pd\.DataFrame, cooldown: int = BACKTEST_SIGNAL_COOLDOWN_DAYS\n\) -> list\[int\]:\n.*?\n\ndef _backtest_one_ticker\(', '''_BACKTEST_ACTIONABLE_SIGNALS = frozenset({"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"})\n\n\ndef _signal_points(\n    enriched: pd.DataFrame, cooldown: int = BACKTEST_SIGNAL_COOLDOWN_DAYS\n) -> list[int]:\n    """Locate historical signals with the same entry engine used by live scans."""\n    if len(enriched) < 252:\n        return []\n    cooldown = max(1, int(cooldown))\n    close = pd.to_numeric(enriched.get("Close"), errors="coerce")\n    high = pd.to_numeric(enriched.get("High"), errors="coerce")\n    low = pd.to_numeric(enriched.get("Low"), errors="coerce")\n    ma20 = pd.to_numeric(enriched.get("MA20", pd.Series(np.nan, index=enriched.index)), errors="coerce")\n    ma50 = pd.to_numeric(enriched.get("MA50", pd.Series(np.nan, index=enriched.index)), errors="coerce")\n    atr = pd.to_numeric(enriched.get("ATR14", pd.Series(np.nan, index=enriched.index)), errors="coerce")\n    support = low.rolling(20, min_periods=20).min()\n    resistance = high.shift(1).rolling(20, min_periods=20).max()\n    near_support = close.le(support + atr.fillna(close * 0.03) * 1.5)\n    five_day_up = close.ge(close.shift(5))\n    base_entry = (\n        close.ge(ma20).astype(float) * 20.0\n        + ma20.ge(ma50).astype(float) * 20.0\n        + near_support.astype(float) * 20.0\n        + five_day_up.astype(float) * 15.0\n    )\n    broad_candidate = (\n        (close.gt(ma20) & base_entry.ge(25.0))\n        | (near_support & base_entry.ge(45.0))\n        | close.gt(resistance)\n    ).fillna(False)\n    candidates = np.flatnonzero(broad_candidate.to_numpy(dtype=bool))\n    last_signal = -cooldown\n    points: list[int] = []\n    is_etf = False\n    for index in candidates:\n        if index < 251 or index >= len(enriched) - BACKTEST_OUTCOME_HORIZON_DAYS:\n            continue\n        if index - last_signal < cooldown:\n            continue\n        historical = enriched.iloc[: index + 1].copy()\n        historical_score = score_ticker(historical, is_etf=is_etf)\n        entry = entry_point(\n            historical,\n            breakout=historical_score.breakout_score,\n            volume_score=historical_score.volume,\n            value_trap_risk_value=historical_score.value_trap_risk,\n        )\n        if str(entry.get("signal", "AVOID")).upper() not in _BACKTEST_ACTIONABLE_SIGNALS:\n            continue\n        points.append(int(index))\n        last_signal = int(index)\n    return points\n\n\ndef _backtest_one_ticker(''', 'historical signal engine', flags=re.DOTALL)
-text = replace_once(text, '    score_cache: dict[int, float] = {}\n', '    score_cache: dict[int, float] = {}\n    signal_cache: dict[int, str] = {}\n', 'backtest signal cache')
-text = replace_once(text, '''        score_cache[length] = (\n            final_score\n            if np.isfinite(final_score)\n            else _finite_float(getattr(historical_score, "total", np.nan), 0.0)\n        )\n''', '''        score_cache[length] = (\n            final_score\n            if np.isfinite(final_score)\n            else _finite_float(getattr(historical_score, "total", np.nan), 0.0)\n        )\n        historical_entry = entry_point(\n            historical,\n            breakout=historical_score.breakout_score,\n            volume_score=historical_score.volume,\n            value_trap_risk_value=historical_score.value_trap_risk,\n        )\n        signal_cache[length] = str(historical_entry.get("signal", "AVOID")).upper()\n''', 'historical entry signal cache')
-text = replace_once(text, '                "score": score_cache[index + 1],\n                "split": split,\n', '                "score": score_cache[index + 1],\n                "entry_signal": signal_cache.get(index + 1, "AVOID"),\n                "split": split,\n', 'backtest sample entry signal')
-text = replace_once(text, '    for ticker, group in sample_frame.groupby("ticker", sort=False):\n', '    if "entry_signal" not in sample_frame:\n        sample_frame["entry_signal"] = "UNKNOWN"\n    for (ticker, entry_signal), group in sample_frame.groupby(["ticker", "entry_signal"], sort=False):\n', 'signal-specific backtest grouping')
-text = replace_once(text, '                "ticker": str(ticker),\n                "samples": len(group),\n', '                "ticker": str(ticker),\n                "entry_signal": str(entry_signal),\n                "samples": len(group),\n', 'signal-specific backtest row')
-text = replace_once(text, '''    metrics = (\n        pd.DataFrame(summary.by_ticker)\n        .rename(columns={"ticker": "Ticker", **metric_columns})\n        .reindex(columns=["Ticker", *metric_columns.values()])\n    )\n    frame = frame.merge(metrics, on="Ticker", how="left", validate="one_to_one")\n''', '''    metrics = (\n        pd.DataFrame(summary.by_ticker)\n        .rename(columns={"ticker": "Ticker", "entry_signal": "EntrySignal", **metric_columns})\n        .reindex(columns=["Ticker", "EntrySignal", *metric_columns.values()])\n    )\n    frame["EntrySignal"] = (\n        frame.get("EntrySignal", pd.Series("AVOID", index=frame.index))\n        .fillna("AVOID")\n        .astype(str)\n        .str.upper()\n    )\n    metrics["EntrySignal"] = metrics["EntrySignal"].fillna("UNKNOWN").astype(str).str.upper()\n    frame = frame.merge(metrics, on=["Ticker", "EntrySignal"], how="left", validate="one_to_one")\n''', 'signal-specific backtest merge')
-save(path, text)
-
-path = 'fundamental_data.py'
-text = load(path)
-text = replace_once(text, '_CACHE_COMPLETENESS_THRESHOLD = 0.90\n', '_CACHE_COMPLETENESS_THRESHOLD = 0.80\n_FUNDAMENTAL_CACHE_MAX_AGE_DAYS = 7\n', 'fundamental cache thresholds')
-text = sub_once(text, r'def _is_current_quarter\(\) -> bool:\n.*?\n\ndef _write_frame', '''def _is_current_quarter() -> bool:\n    """Return True only for a recent cache from the current disclosure quarter."""\n    try:\n        metadata = json.loads(_META_PATH.read_text(encoding="utf-8"))\n        quarter = f"{date.today().year}-Q{(date.today().month - 1) // 3 + 1}"\n        if metadata.get("quarter") != quarter:\n            return False\n        updated = date.fromisoformat(str(metadata.get("updated", "")))\n        return (date.today() - updated).days <= _FUNDAMENTAL_CACHE_MAX_AGE_DAYS\n    except (OSError, ValueError, TypeError):\n        return False\n\n\ndef _write_frame''', 'fundamental freshness function', flags=re.DOTALL)
-text = sub_once(text, r'def _cache_completeness\(\n    frame: pd\.DataFrame,\n    symbols: list\[str\],\n    industries: Mapping\[str, str\],\n\) -> float:\n.*?\n\ndef _fetch_fundamental_row', '''def _cache_completeness(\n    frame: pd.DataFrame,\n    symbols: list[str],\n    industries: Mapping[str, str],\n) -> float:\n    if frame.empty or not symbols:\n        return 0.0\n    cached = (\n        frame.drop_duplicates("Ticker", keep="last")\n        .set_index("Ticker")\n        .reindex(symbols)\n    )\n    roe = pd.to_numeric(cached.get("ROE"), errors="coerce").notna()\n    margin = pd.to_numeric(cached.get("IndustryGrossMarginPercentile"), errors="coerce").notna()\n    profits = (\n        pd.to_numeric(cached.get("NetProfitY1"), errors="coerce").notna()\n        & pd.to_numeric(cached.get("NetProfitY2"), errors="coerce").notna()\n        & pd.to_numeric(cached.get("NetProfitY3"), errors="coerce").notna()\n    )\n    periods = pd.to_numeric(cached.get("InstitutionHoldingPeriods"), errors="coerce")\n    trend = cached.get("InstitutionHoldingTrend", pd.Series("", index=cached.index)).fillna("").astype(str).str.strip()\n    holder = periods.ge(2) & trend.ne("") & ~trend.str.lower().eq("unknown")\n    factor_count = roe.astype(int) + margin.astype(int) + profits.astype(int) + holder.astype(int)\n    complete = factor_count.ge(3)\n    if industries:\n        expected_industry = cached.index.to_series().isin(industries)\n        cache_industry = cached.get("Industry", pd.Series("", index=cached.index)).fillna("").astype(str).str.strip().ne("")\n        complete &= ~expected_industry | cache_industry\n    return float(complete.mean()) if len(complete) else 0.0\n\n\ndef _fetch_fundamental_row''', 'fundamental completeness', flags=re.DOTALL)
-save(path, text)
-
-path = 'fundamental_quality.py'
-text = load(path)
-text = text.replace('"机构持仓连续增加"', '"机构覆盖家数连续增加"')
-text = replace_once(text, '''        quality_score=(\n            round(len(passed) / (len(passed) + len(failed)) * 100.0, 4)\n            if passed or failed\n            else np.nan\n        ),\n''', '''        quality_score=(\n            round(\n                50.0\n                + (len(passed) / (len(passed) + len(failed)) * 100.0 - 50.0)\n                * completeness,\n                4,\n            )\n            if passed or failed\n            else np.nan\n        ),\n''', 'quality score shrinkage')
-save(path, text)
-
-path = 'main.py'
-text = load(path)
-text = replace_once(text, '    if getattr(args, "refresh_fundamentals", False) and stock_universe:\n', '    if stock_universe:\n', 'scan automatic fundamental refresh')
-text = replace_once(text, '''    fundamental_path = fundamental_data_path()\n    if getattr(args, "refresh_fundamentals", False):\n''', '''    fundamental_path = fundamental_data_path()\n    if stock_universe:\n''', 'report automatic fundamental refresh')
-save(path, text)
-
-path = 'signal_lifecycle.py'
-text = load(path)
-text = sub_once(text, r'    prior_recency_factor = _number\(\n        result\.get\("SignalRecencyFactor", pd\.Series\(np\.nan, index=result\.index\)\),\n        np\.nan,\n    \)\n', '', 'remove unused prior recency factor')
-text = sub_once(text, r'    base_institutional = _number\(\n        result\.get\("InstitutionalScore", result\["Score"\]\), default=np\.nan\n    \)\n.*?    result\.loc\[\n        ~result\.get\("IsETF".*?\n    \] = INSTITUTIONAL_TIER_TRAP_LABEL\n', '''    result["BreakoutQualityFactor"] = _number(\n        result.get("BreakoutQualityFactor", pd.Series(1.0, index=result.index)), 1.0\n    ).clip(0.0, 1.0)\n''', 'remove duplicate lifecycle score/tier mutation', flags=re.DOTALL)
-save(path, text)
-
-path = 'scanner.py'
-text = load(path)
-text = replace_once(text, '    _load_cache,\n', '    _cache_path,\n    _load_cache,\n', 'scanner canonical cache import')
-text = replace_once(text, '''    results.sort(\n        key=lambda result: (\n            _parse_float(result.institutional_score, np.nan)\n            if np.isfinite(_parse_float(result.institutional_score, np.nan))\n            else _parse_float(result.final_score, result.score.total)\n        ),\n        reverse=True,\n    )\n''', '''    results.sort(\n        key=lambda result: (\n            _parse_float(result.ranking_score, np.nan)\n            if np.isfinite(_parse_float(result.ranking_score, np.nan))\n            else _parse_float(result.institutional_score, np.nan)\n            if np.isfinite(_parse_float(result.institutional_score, np.nan))\n            else _parse_float(result.final_score, result.score.total)\n        ),\n        reverse=True,\n    )\n''', 'scanner canonical ranking sort')
-text = sub_once(text, r'def _cache_path_for\(ticker: str, source: str\) -> Path:\n    .*?\n\n', '''def _cache_path_for(ticker: str, source: str) -> Path:\n    return _cache_path(_normalize_ticker(ticker), normalize_data_source(source))\n\n''', 'scanner canonical cache path', flags=re.DOTALL)
-save(path, text)
-
-path = 'gui_core.py'
-text = load(path)
-text = sub_once(text, r'DATA_SOURCE_HINTS = \{.*?\n\}', '''DATA_SOURCE_HINTS = {\n    "自动优选": "腾讯 / AKShare / 东方财富自动择优（统一前复权）",\n    "AkShare": "仅使用 AkShare，不静默混源",\n    "东方财富": "仅使用东方财富，不静默混源",\n    "新浪财经": "仅使用新浪财经（独立缓存）",\n    "腾讯财经": "仅使用腾讯财经，不静默混源",\n}''', 'gui data source hints', flags=re.DOTALL)
-text = text.replace('"BreakoutScore": "启动概率",', '"BreakoutScore": "突破强度",')
-text = text.replace('"InstitutionHoldingStatus": "机构持仓状态",', '"InstitutionHoldingStatus": "机构覆盖趋势",')
-text = sub_once(text, r'DISPLAY_COLUMNS = \(.*?\n\)', '''DISPLAY_COLUMNS = (\n    "OverallRank",\n    "Ticker",\n    "Name",\n    "Close",\n    "EntrySignal",\n    "EntryZone",\n    "BreakoutBuyPrice",\n    "StopLoss",\n    "RankingEligibility",\n    "RankingScore",\n    "InstitutionalTier",\n    "InstitutionalScore",\n    "FinalScore",\n    "QualityGate",\n    "QualityDataCompleteness",\n    "BacktestSamples",\n    "BacktestConfidenceTier",\n    "ValueTrapRisk",\n    "ChaseRiskScore",\n    "PassedFilters",\n    "TradeReadinessReason",\n    "DataAsOf",\n    "RankingReason",\n)''', 'gui display columns', flags=re.DOTALL)
-text = text.replace('"Close": "收盘价",', '"Close": "当日收盘价",')
-text = text.replace('"EntryZone": "买入区间",', '"EntryZone": "回调买点",')
-text = text.replace('"BreakoutBuyPrice": "突破买入价",', '"BreakoutBuyPrice": "突破买点",')
-text = text.replace('"RankingEligibility": "排序资格",', '"RankingEligibility": "交易资格",')
-text = text.replace('"TradeReadinessReason": "执行资格说明",', '"TradeReadinessReason": "执行说明",')
-text = sub_once(text, r'    def _update_market_overview\(\n        self, rows: list\[list\[str\]\], indexes: dict\[str, int\]\n    \) -> None:\n.*?\n    def _market_regime_summary', '''    def _update_market_overview(\n        self, rows: list[list[str]], indexes: dict[str, int]\n    ) -> None:\n        if not hasattr(self, "market_overview"):\n            return\n        total, _active, _confirmed, breakout, actionable, average = self._market_overview_values(rows, indexes)\n        self.market_overview.set(\n            f"概览：{total} 只 · 启动 {breakout} · 可交易 {actionable} · 最终均分 {average:.1f}"\n        )\n\n    def _market_regime_summary''', 'gui compact market overview', flags=re.DOTALL)
-text = replace_once(text, '''            stale = sum(\n                len(row) > freshness_index\n                and self._cell_text(row[freshness_index]) == "过期"\n                for row in filtered\n            ) if freshness_index is not None else 0\n            readiness = f" · 就绪 {recommended}" if eligibility_index is not None else ""\n            freshness = f" · 过期 {stale}" if freshness_index is not None and stale else ""\n            self.result_summary.set(\n                f"当前文件：{self.current_file} · 命中 {len(filtered):,} / {len(data_rows):,} 条{readiness}{freshness}"\n            )\n''', '''            readiness = f" · 就绪 {recommended}" if eligibility_index is not None else ""\n            self.result_summary.set(\n                f"当前文件：{self.current_file} · 命中 {len(filtered):,} / {len(data_rows):,} 条{readiness}"\n            )\n''', 'gui hide stale diagnostic counter')
-save(path, text)
-
-save('gui.py', '''from __future__ import annotations\n\n"""Tkinter GUI entrypoint. Presentation policy now lives in gui_core.py."""\n\nfrom gui_core import ScannerGUI, main\n\n__all__ = ["ScannerGUI", "main"]\n\n\nif __name__ == "__main__":\n    main()\n''')
-
-path = 'config.py'
-text = load(path)
-text = sub_once(text, r'SCORING_VERSION: str = "[^"]+"', 'SCORING_VERSION: str = "2026-08-07-v11-provider-consistency-entry-backtest"', 'scoring version')
-save(path, text)
-
-path = 'requirements.txt'
-text = load(path)
-text = replace_once(text, 'akshare>=1.16.53\n', 'akshare==1.16.53\n', 'akshare pin')
-text = text.replace('pandas>=2.0.0\n', 'pandas>=2.0.0,<3.0\n')
-text = text.replace('numpy>=1.24.0\n', 'numpy>=1.24.0,<3.0\n')
-text = text.replace('requests>=2.28.0\n', 'requests>=2.28.0,<3.0\n')
-save(path, text)
-
-new_tests = r'''from __future__ import annotations
-
-from types import SimpleNamespace
-from unittest import TestCase
-from unittest.mock import patch
-
-import numpy as np
-import pandas as pd
-
-import analytics
-import downloader
-import gui_core
-from fundamental_quality import calculate_quality
-from score import score_ticker
+# ---------------------------------------------------------------------------
+# v37: version/provenance only. Scoring semantics remain v35.
+# ---------------------------------------------------------------------------
+replace_once(
+    "config.py",
+    'PIPELINE_VERSION: str = "2026-08-12-v36-volume-shares-v35-model"\n',
+    'PIPELINE_VERSION: str = "2026-08-12-v37-project-integrity-evidence"\n'
+    'GUI_VERSION: str = "2026-08-12-v37-evidence-ux"\n'
+    'EVIDENCE_POLICY_VERSION: str = "2026-08-12-v37-peer-plus-ticker"\n',
+    "v37 config version",
+)
 
 
-class HardeningRegressionTests(TestCase):
-    def test_beijing_ticker_normalization(self):
-        self.assertEqual(downloader.normalize_ticker("430047"), "430047.BJ")
-        self.assertEqual(downloader.normalize_ticker("832000"), "832000.BJ")
-        self.assertEqual(downloader.normalize_ticker("920001"), "920001.BJ")
+# ---------------------------------------------------------------------------
+# ETF research eligibility policy: exclude cash-management products by
+# classification, without excluding equity cash-flow factor ETFs.
+# ---------------------------------------------------------------------------
+insert_before_once(
+    "classification.py",
+    "ETF_TRACKING_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (\n",
+    '''ETF_RESEARCH_EXCLUDED_LABELS = frozenset(\n    {\n        "货币现金管理",\n        "货币ETF",\n        "现金管理",\n        "同业存单",\n        "短债",\n    }\n)\nETF_RESEARCH_EXCLUDED_KEYWORDS: tuple[str, ...] = (\n    "货币ETF",\n    "货币基金",\n    "现金管理",\n    "同业存单",\n    "短债",\n    "快钱",\n    "天天金",\n    "添益",\n)\n\n\n''',
+    "ETF research exclusions",
+)
 
-    def test_explicit_sources_never_silently_fallback(self):
-        self.assertEqual(downloader._DATA_SOURCE_CANDIDATES["eastmoney"], ("eastmoney",))
-        self.assertEqual(downloader._DATA_SOURCE_CANDIDATES["akshare"], ("akshare",))
-        self.assertNotIn("sina", downloader._DATA_SOURCE_CANDIDATES["auto"])
+insert_before_once(
+    "classification.py",
+    "def theme_cluster(\n",
+    '''def etf_research_eligibility(\n    *,\n    is_etf: bool,\n    name: Any = "",\n    industry: Any = "",\n    sector: Any = "",\n    classification: Any = "",\n    ticker: Any = "",\n) -> tuple[bool, str]:\n    """Return whether an asset belongs in directional equity/ETF research lists.\n\n    Cash-management and cash-equivalent ETFs are intentionally excluded from\n    signal Top50 surfaces. Equity-factor products such as ``现金流因子`` remain\n    eligible because the exclusion uses exact labels/specific product keywords,\n    not a broad ``现金`` substring.\n    """\n    if not is_etf:\n        return True, ""\n    resolved = safe_text(classification) or etf_theme_key(\n        name=name, industry=industry, sector=sector, ticker=ticker\n    )\n    text = _classification_text(name, industry, sector, resolved)\n    if resolved in ETF_RESEARCH_EXCLUDED_LABELS:\n        return False, f"ETF分类排除：{resolved}"\n    for keyword in ETF_RESEARCH_EXCLUDED_KEYWORDS:\n        if keyword.upper() in text:\n            return False, f"ETF现金管理产品排除：{keyword}"\n    return True, ""\n\n\n''',
+    "ETF research eligibility helper",
+)
 
-    def test_price_cache_schema_invalidates_legacy_paths(self):
-        path = downloader._cache_path("000001.SZ", "eastmoney")
-        self.assertIn("v2-provider-consistent", path.name)
 
-    def test_missing_score_dimensions_cap_final_score(self):
-        index = pd.date_range("2025-01-01", periods=260, freq="B")
-        close = pd.Series(np.linspace(10.0, 8.0, len(index)), index=index)
-        frame = pd.DataFrame({"Close": close, "High": close * 1.01, "Low": close * 0.99, "MA200": close.rolling(200, min_periods=1).mean()}, index=index)
-        result = score_ticker(frame)
-        self.assertEqual(result.missing_indicators, 3)
-        self.assertLessEqual(result.final_score, 64.0)
+# ---------------------------------------------------------------------------
+# Evidence-strength presentation model. This is deliberately NOT imported by
+# the scoring engine and never changes RankingScore.
+# ---------------------------------------------------------------------------
+save(
+    "evidence.py",
+    '''"""Non-alpha evidence-strength fields for research/UI presentation.\n\nThe scanner has two different historical evidence sources:\n1. per-ticker backtest samples;\n2. peer/global calibration cohorts.\n\nThis module summarizes *confidence/coverage*, not expected return, and must not\nfeed back into RankingScore or trade eligibility.\n"""\n\nfrom __future__ import annotations\n\nimport numpy as np\nimport pandas as pd\n\n\ndef _number(frame: pd.DataFrame, column: str, default: float = 0.0) -> pd.Series:\n    return (\n        pd.to_numeric(frame.get(column, pd.Series(default, index=frame.index)), errors="coerce")\n        .replace([np.inf, -np.inf], np.nan)\n        .fillna(default)\n        .astype(float)\n    )\n\n\ndef _text(frame: pd.DataFrame, column: str, default: str = "") -> pd.Series:\n    return frame.get(column, pd.Series(default, index=frame.index)).fillna(default).astype(str).str.strip()\n\n\ndef enrich_evidence_fields(frame: pd.DataFrame) -> pd.DataFrame:\n    """Add explainable evidence-strength fields without changing ranking."""\n    result = frame.copy()\n    if result.empty:\n        for column, dtype in (\n            ("TickerEvidence", "object"),\n            ("PeerCalibrationEvidence", "object"),\n            ("EvidenceStrengthScore", "float64"),\n            ("EvidenceTier", "object"),\n            ("EvidenceReason", "object"),\n        ):\n            result[column] = pd.Series(dtype=dtype)\n        return result\n\n    samples = _number(result, "BacktestSamples", 0.0).clip(lower=0.0)\n    effective = _number(result, "BacktestEffectiveSamples", 0.0).clip(lower=0.0)\n    mode = _text(result, "BacktestMode", "NONE").str.upper().replace("", "NONE")\n    ticker_tier = _text(result, "BacktestConfidenceTier", "未评估").replace("", "未评估")\n    ticker_strength = (effective / 20.0).clip(0.0, 1.0)\n\n    peer_samples = _number(result, "GlobalCalibrationSamples", 0.0).clip(lower=0.0)\n    peer_effective = _number(result, "GlobalCalibrationEffectiveSamples", 0.0).clip(lower=0.0)\n    peer_count = peer_effective.where(peer_effective.gt(0.0), peer_samples)\n    peer_confidence = _number(result, "GlobalCalibrationConfidence", 0.0).clip(0.0, 1.0)\n    peer_level = _text(result, "GlobalCalibrationLevel", "none").replace("", "none")\n    # Confidence already contains calibration sample-quality logic. The smooth\n    # sample term prevents a tiny cohort with a high numerical confidence from\n    # looking equivalent to a mature peer cohort.\n    peer_sample_strength = np.log1p(peer_count).div(np.log1p(100.0)).clip(0.0, 1.0)\n    peer_strength = (peer_confidence * peer_sample_strength).clip(0.0, 1.0)\n\n    evidence = (0.35 * ticker_strength + 0.65 * peer_strength) * 100.0\n    has_any = samples.gt(0.0) | peer_count.gt(0.0)\n    evidence = evidence.where(has_any, 0.0).clip(0.0, 100.0)\n    tier = pd.Series("不足", index=result.index, dtype="object")\n    tier.loc[has_any & evidence.lt(30.0)] = "低"\n    tier.loc[evidence.ge(30.0)] = "中"\n    tier.loc[evidence.ge(55.0)] = "中高"\n    tier.loc[evidence.ge(75.0)] = "高"\n\n    result["TickerEvidence"] = [\n        f"{m} · {int(s)}样本 · {t}"\n        for m, s, t in zip(mode, samples, ticker_tier)\n    ]\n    result["PeerCalibrationEvidence"] = [\n        f"{level} · {count:.0f}有效样本 · {confidence:.0%}"\n        if count > 0\n        else "无同类校准样本"\n        for level, count, confidence in zip(peer_level, peer_count, peer_confidence)\n    ]\n    result["EvidenceStrengthScore"] = evidence.round(2)\n    result["EvidenceTier"] = tier\n    result["EvidenceReason"] = [\n        f"本票有效样本 {ticker_eff:.1f}；同类有效样本 {peer_eff:.1f}，同类置信度 {peer_conf:.0%}。证据等级仅描述历史覆盖，不参与排序。"\n        for ticker_eff, peer_eff, peer_conf in zip(effective, peer_count, peer_confidence)\n    ]\n    return result\n''',
+)
 
-    def test_partial_fundamentals_shrink_quality_toward_neutral(self):
-        quality = calculate_quality({"Ticker": "000001.SZ", "ROE": 15.0})
-        self.assertAlmostEqual(quality.quality_data_completeness, 0.25)
-        self.assertAlmostEqual(quality.quality_score, 62.5)
 
-    def test_backtest_signal_points_use_live_entry_engine(self):
-        index = pd.date_range("2024-01-01", periods=340, freq="B")
-        close = pd.Series(np.linspace(10.0, 12.0, len(index)), index=index)
-        frame = pd.DataFrame({"Close": close, "High": close * 1.01, "Low": close * 0.99, "Volume": 1_000_000.0, "MA20": close * 0.99, "MA50": close * 0.98, "ATR14": close * 0.02}, index=index)
-        fake_score = SimpleNamespace(breakout_score=80.0, volume=20.0, value_trap_risk=10.0)
-        with patch.object(analytics, "score_ticker", return_value=fake_score), patch.object(analytics, "entry_point", return_value={"signal": "BUY_NOW"}) as entry:
-            points = analytics._signal_points(frame, cooldown=20)
-        self.assertTrue(points)
-        self.assertGreater(entry.call_count, 0)
-        self.assertTrue(all(b - a >= 20 for a, b in zip(points, points[1:])))
+# ---------------------------------------------------------------------------
+# Report/export semantics: research eligibility, hard-gate vs diagnostics,
+# evidence columns and compatibility fields.
+# ---------------------------------------------------------------------------
+replace_once(
+    "report.py",
+    "from classification import etf_theme_key, etf_tracking_key, theme_cluster\n",
+    "from classification import (\n"
+    "    etf_research_eligibility,\n"
+    "    etf_theme_key,\n"
+    "    etf_tracking_key,\n"
+    "    theme_cluster,\n"
+    ")\n"
+    "from evidence import enrich_evidence_fields\n",
+    "report imports",
+)
 
-    def test_backtest_rows_are_signal_specific(self):
-        sample = pd.DataFrame({"ticker": ["000001.SZ"] * 4, "entry_signal": ["BUY_NOW", "BUY_NOW", "WAIT_PULLBACK", "WAIT_PULLBACK"], "return20": [2.0, 3.0, -1.0, 1.0], "return60": [4.0, 5.0, -2.0, 2.0], "benchmark_return20": [0.0] * 4, "benchmark_return60": [0.0] * 4, "net_return20": [1.5, 2.5, -1.5, 0.5], "net_return60": [3.5, 4.5, -2.5, 1.5], "drawdown20": [-2.0, -2.0, -4.0, -3.0], "drawdown60": [-3.0, -3.0, -6.0, -5.0], "sample_weight": [1.0] * 4, "signal_date": pd.date_range("2025-01-01", periods=4, freq="30D")})
-        rows = analytics._ticker_backtest_rows(sample)
-        self.assertEqual({row["entry_signal"] for row in rows}, {"BUY_NOW", "WAIT_PULLBACK"})
-        self.assertEqual(len(rows), 2)
+insert_before_once(
+    "report.py",
+    "def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:\n",
+    '''_HARD_GATE_FILTER_KEYS = ("min_price", "min_volume", "min_market_cap", "sufficient_history")\n_DIAGNOSTIC_FILTER_KEYS = (\n    "volume_accumulation",\n    "obv_divergence",\n    "cmf_positive",\n    "ad_slope",\n    "consolidation",\n    "volatility_contraction",\n)\n\n\ndef _failed_filter_names(result: ScanResult, keys: tuple[str, ...]) -> list[str]:\n    names: list[str] = []\n    for key in keys:\n        if result.is_etf and key in {"min_price", "min_market_cap"}:\n            continue\n        if not bool(result.filter_details.get(key, False)):\n            names.append(key)\n    return names\n\n\n''',
+    "report filter semantics helpers",
+)
 
-    def test_gui_first_screen_keeps_decision_fields_only(self):
-        self.assertIn("Close", gui_core.DISPLAY_COLUMNS)
-        self.assertIn("EntryZone", gui_core.DISPLAY_COLUMNS)
-        self.assertNotIn("HardRiskFlag", gui_core.DISPLAY_COLUMNS)
-        self.assertNotIn("DataFreshnessStatus", gui_core.DISPLAY_COLUMNS)
-        self.assertNotIn("MarketRegime", gui_core.DISPLAY_COLUMNS)
-        self.assertEqual(gui_core.COLUMN_NAMES["BreakoutScore"], "突破强度")
-'''
-save('test_hardening_regressions.py', new_tests)
+replace_once(
+    "report.py",
+    '''                "PassedFilters": r.passed_filters,\n                "UniverseEligible": r.universe_eligible,\n                "SignalConfirmed": r.signal_confirmed,\n                "FailedFilterCount": r.failed_filter_count,\n                "FailedFilterNames": r.failed_filter_names,\n                "MinPricePassed": r.filter_details.get("min_price", False),\n''',
+    '''                # Compatibility field: historically this meant the combined\n                # hard-gate + accumulation/structure recipe, not "every filter".\n                "PassedFilters": r.passed_filters,\n                "UniverseEligible": r.universe_eligible,\n                "HardGatePassed": r.universe_eligible,\n                "HardGateFailedCount": len(_failed_filter_names(r, _HARD_GATE_FILTER_KEYS)),\n                "HardGateFailedNames": ",".join(_failed_filter_names(r, _HARD_GATE_FILTER_KEYS)),\n                "SignalConfirmed": r.signal_confirmed,\n                "DiagnosticFailedCount": len(_failed_filter_names(r, _DIAGNOSTIC_FILTER_KEYS)),\n                "DiagnosticFailedNames": ",".join(_failed_filter_names(r, _DIAGNOSTIC_FILTER_KEYS)),\n                "FailedFilterCount": r.failed_filter_count,\n                "FailedFilterNames": r.failed_filter_names,\n                "MinPricePassed": r.filter_details.get("min_price", False),\n''',
+    "report hard gate diagnostics",
+)
 
-print('project hardening patch applied')
+insert_before_once(
+    "report.py",
+    "def _rank_valid_candidates(frame: pd.DataFrame) -> pd.DataFrame:\n",
+    '''def _apply_research_policy(frame: pd.DataFrame) -> pd.DataFrame:\n    """Mark non-directional ETF products before any TopN candidate ranking."""\n    working = frame.copy()\n    if working.empty:\n        working["ResearchEligible"] = pd.Series(dtype=bool)\n        working["ResearchExclusionReason"] = pd.Series(dtype="object")\n        return working\n    eligibility: list[bool] = []\n    reasons: list[str] = []\n    for _, row in working.iterrows():\n        asset = str(row.get("AssetType", "") or "").strip().lower()\n        is_etf = _truthy(row.get("IsETF", False)) or asset == "etf"\n        eligible, reason = etf_research_eligibility(\n            is_etf=is_etf,\n            name=row.get("Name", ""),\n            industry=row.get("Industry", ""),\n            sector=row.get("Sector", ""),\n            classification=row.get("ModelClassification", row.get("ETFTheme", "")),\n            ticker=row.get("Ticker", ""),\n        )\n        eligibility.append(bool(eligible))\n        reasons.append(str(reason or ""))\n    working["ResearchEligible"] = eligibility\n    working["ResearchExclusionReason"] = reasons\n    return working\n\n\n''',
+    "report research policy helper",
+)
+
+replace_once(
+    "report.py",
+    '''def _rank_valid_candidates(frame: pd.DataFrame) -> pd.DataFrame:\n    """Return valid results in the same order used by every candidate export."""\n    if frame.empty:\n        return frame.copy()\n    valid = frame.loc[\n        frame.get("Error", pd.Series("", index=frame.index))\n        .fillna("")\n        .astype(str)\n        .str.strip()\n        .eq("")\n    ].copy()\n''',
+    '''def _rank_valid_candidates(frame: pd.DataFrame) -> pd.DataFrame:\n    """Return research-eligible valid results in canonical candidate order."""\n    if frame.empty:\n        return enrich_evidence_fields(_apply_research_policy(frame))\n    prepared = enrich_evidence_fields(_apply_research_policy(frame))\n    valid = prepared.loc[\n        prepared.get("Error", pd.Series("", index=prepared.index))\n        .fillna("")\n        .astype(str)\n        .str.strip()\n        .eq("")\n        & prepared["ResearchEligible"].fillna(False).astype(bool)\n    ].copy()\n''',
+    "report candidate eligibility",
+)
+
+replace_once(
+    "report.py",
+    '''DECISION_RESULT_COLUMNS: tuple[str, ...] = (\n    "Ticker", "Name", "Sector", "Industry", "ETFTheme", "IsETF", "AssetType",\n    "ModelClassification", "ThemeCluster", "Close", "EntrySignal", "SignalStatus",\n    "SignalDays", "EntryZone", "BreakoutBuyPrice", "StopLoss", "RankingEligibility",\n    "RankingScore", "ResearchPoolRank", "OverallRank", "InstitutionalTier",\n    "InstitutionalScore", "TradeReadinessReason", "RankingReason", "DecisionState",\n    "BacktestRunMode", "BacktestMode", "BacktestStage", "BacktestSamples",\n    "BacktestStatus", "BacktestConfidenceTier", "BacktestRequested",\n    "BacktestEligibleForRanking", "BacktestSkipReason", "BacktestCacheHit",\n    "DataAsOf", "DataTradingAgeDays", "RunId", "ModelVersion", "PipelineVersion",\n)\n''',
+    '''DECISION_RESULT_COLUMNS: tuple[str, ...] = (\n    "Ticker", "Name", "Sector", "Industry", "ETFTheme", "IsETF", "AssetType",\n    "ModelClassification", "ThemeCluster", "ResearchEligible", "ResearchExclusionReason",\n    "Close", "EntrySignal", "SignalStatus", "SignalDays", "EntryZone",\n    "BreakoutBuyPrice", "StopLoss", "RankingEligibility", "RankingScore",\n    "ResearchPoolRank", "OverallRank", "InstitutionalTier", "InstitutionalScore",\n    "HardGatePassed", "DiagnosticFailedCount", "DiagnosticFailedNames",\n    "TradeReadinessReason", "RankingReason", "DecisionState", "BacktestRunMode",\n    "BacktestMode", "BacktestStage", "BacktestSamples", "BacktestEffectiveSamples",\n    "BacktestStatus", "BacktestConfidenceTier", "BacktestRequested",\n    "BacktestEligibleForRanking", "BacktestSkipReason", "BacktestCacheHit",\n    "GlobalCalibrationSamples", "GlobalCalibrationEffectiveSamples",\n    "GlobalCalibrationConfidence", "GlobalCalibrationLevel", "TickerEvidence",\n    "PeerCalibrationEvidence", "EvidenceStrengthScore", "EvidenceTier", "EvidenceReason",\n    "DataAsOf", "DataTradingAgeDays", "RunId", "ModelVersion", "PipelineVersion",\n)\n''',
+    "decision projection evidence columns",
+)
+
+replace_once(
+    "report.py",
+    '    df = enrich_signal_lifecycle(_results_to_dataframe(results))\n',
+    '    df = enrich_evidence_fields(\n        _apply_research_policy(enrich_signal_lifecycle(_results_to_dataframe(results)))\n    )\n',
+    "all results research/evidence enrichment",
+)
+
+
+# ---------------------------------------------------------------------------
+# GUI: three separate evidence rows + clearer filter semantics + cache health.
+# ---------------------------------------------------------------------------
+replace_once(
+    "gui.py",
+    '''        "BacktestSkipReason": "回测说明",\n    }\n)\n''',
+    '''        "BacktestSkipReason": "回测说明",\n        "HardGatePassed": "基础硬准入",\n        "DiagnosticFailedCount": "诊断未通过数",\n        "DiagnosticFailedNames": "诊断未通过项",\n        "ResearchEligible": "研究榜资格",\n        "ResearchExclusionReason": "研究榜排除原因",\n        "TickerEvidence": "本票回测证据",\n        "PeerCalibrationEvidence": "同类校准证据",\n        "EvidenceStrengthScore": "证据强度",\n        "EvidenceTier": "证据等级",\n        "EvidenceReason": "证据说明",\n    }\n)\n''',
+    "GUI evidence column names",
+)
+
+replace_once(
+    "gui.py",
+    '        self.detail_backtest = tk.StringVar(master=root, value="-")\n',
+    '        self.detail_backtest = tk.StringVar(master=root, value="-")\n'
+    '        self.detail_peer_calibration = tk.StringVar(master=root, value="-")\n'
+    '        self.detail_evidence = tk.StringVar(master=root, value="-")\n',
+    "GUI evidence variables",
+)
+
+replace_once(
+    "gui.py",
+    '''            ("排序 / 机构", self.detail_score),\n            ("回测证据", self.detail_backtest),\n        ):\n''',
+    '''            ("排序 / 机构", self.detail_score),\n            ("本票回测", self.detail_backtest),\n            ("同类校准", self.detail_peer_calibration),\n            ("证据等级", self.detail_evidence),\n        ):\n''',
+    "GUI evidence rows",
+)
+
+replace_once(
+    "gui.py",
+    '''        self.detail_score.set("-")\n        self.detail_backtest.set("-")\n        self.detail_reason.set("双击可查看完整研究字段。")\n''',
+    '''        self.detail_score.set("-")\n        self.detail_backtest.set("-")\n        self.detail_peer_calibration.set("-")\n        self.detail_evidence.set("-")\n        self.detail_reason.set("双击可查看完整研究字段。")\n''',
+    "GUI evidence reset",
+)
+
+replace_once(
+    "gui.py",
+    '''        self.detail_backtest.set(" · ".join(value for value in backtest_parts if value) or "-")\n        reason = data.get("TradeReadinessReason", "") or data.get("RankingReason", "") or "暂无额外执行说明。"\n''',
+    '''        ticker_evidence = str(data.get("TickerEvidence", "") or "").strip()\n        self.detail_backtest.set(ticker_evidence or " · ".join(value for value in backtest_parts if value) or "-")\n        peer_evidence = str(data.get("PeerCalibrationEvidence", "") or "").strip()\n        self.detail_peer_calibration.set(peer_evidence or "-")\n        evidence_tier = str(data.get("EvidenceTier", "") or "").strip()\n        evidence_score = self._format_table_value(\n            "EvidenceStrengthScore", data.get("EvidenceStrengthScore", "")\n        )\n        self.detail_evidence.set(\n            " · ".join(value for value in (evidence_tier, evidence_score) if value) or "-"\n        )\n        reason = data.get("TradeReadinessReason", "") or data.get("RankingReason", "") or "暂无额外执行说明。"\n        evidence_reason = str(data.get("EvidenceReason", "") or "").strip()\n        if evidence_reason:\n            reason = f"{reason}\\n\\n证据：{evidence_reason}"\n''',
+    "GUI evidence content",
+)
+
+replace_once(
+    "gui.py",
+    '''        cache = float(backtest.get("cache_hit_rate", 0.0) or 0.0)\n        self.run_quality.set(\n            f"✓ {expected} · 总{_duration_label(elapsed)} · 扫描{_duration_label(scan_seconds)} · "\n            f"引擎{_duration_label(engine_seconds)} · 后处理{_duration_label(postprocess_seconds)} · Cache {cache:.0%}"\n        )\n''',
+    '''        cache = float(backtest.get("cache_hit_rate", 0.0) or 0.0)\n        cache_health = str(backtest.get("cache_health", "") or "").strip()\n        cache_label = f"Cache {cache:.0%}" + (f"·{cache_health}" if cache_health else "")\n        self.run_quality.set(\n            f"✓ {expected} · 总{_duration_label(elapsed)} · 扫描{_duration_label(scan_seconds)} · "\n            f"引擎{_duration_label(engine_seconds)} · 后处理{_duration_label(postprocess_seconds)} · {cache_label}"\n        )\n''',
+    "GUI cache-health footer",
+)
+
+replace_once(
+    "gui.py",
+    '''            f"  Cache：{float(backtest.get('cache_hit_rate', 0.0) or 0.0):.2%}",\n        ]\n''',
+    '''            f"  Cache：{float(backtest.get('cache_hit_rate', 0.0) or 0.0):.2%}",\n            f"  Cache健康：{backtest.get('cache_health', '-')}",\n            f"  较上轮：{float(backtest.get('cache_hit_rate_delta', 0.0) or 0.0):+.2%}",\n        ]\n''',
+    "GUI cache-health details",
+)
+
+
+# ---------------------------------------------------------------------------
+# Daily pipeline: immutable run archives with SHA-256 provenance and cache
+# health monitoring. Low cache is observable, not a publication failure.
+# ---------------------------------------------------------------------------
+replace_once(
+    "daily_pipeline.py",
+    "import csv\nimport json\n",
+    "import csv\nimport hashlib\nimport json\n",
+    "daily hashlib import",
+)
+
+archive_start = load("daily_pipeline.py")
+old_archive = '''def _archive_run(pipeline_run_id: str, payload: dict[str, object]) -> Path:\n    run_dir = OUTPUT_DIR / "runs" / pipeline_run_id\n    if run_dir.exists():\n        shutil.rmtree(run_dir)\n    run_dir.mkdir(parents=True, exist_ok=True)\n    try:\n        for name in _ARCHIVE_FILES:\n            source = OUTPUT_DIR / name\n            if source.exists() and source.is_file():\n                shutil.copy2(source, run_dir / name)\n        _atomic_write_json(run_dir / "RunManifest.json", payload)\n        _atomic_write_json(\n            OUTPUT_DIR / "LatestRun.json",\n            {\n                "run_id": pipeline_run_id,\n                "data_run_id": payload.get("data_run_id", ""),\n                "expected_trading_date": payload.get("expected_trading_date", ""),\n                "run_dir": str(run_dir.relative_to(OUTPUT_DIR)),\n                "pipeline_version": PIPELINE_VERSION,\n            },\n        )\n    except Exception:\n        shutil.rmtree(run_dir, ignore_errors=True)\n        raise\n    return run_dir\n\n\n'''
+new_archive = '''def _sha256_file(path: Path) -> str:\n    digest = hashlib.sha256()\n    with path.open("rb") as file:\n        for chunk in iter(lambda: file.read(1024 * 1024), b""):\n            digest.update(chunk)\n    return digest.hexdigest()\n\n\ndef _archive_run(pipeline_run_id: str, payload: dict[str, object]) -> Path:\n    """Create an immutable per-run snapshot; never overwrite an existing run id."""\n    run_dir = OUTPUT_DIR / "runs" / pipeline_run_id\n    if run_dir.exists():\n        raise FileExistsError(f"run archive already exists: {pipeline_run_id}")\n    run_dir.mkdir(parents=True, exist_ok=False)\n    try:\n        archive_hashes: dict[str, str] = {}\n        for name in _ARCHIVE_FILES:\n            source = OUTPUT_DIR / name\n            if source.exists() and source.is_file():\n                destination = run_dir / name\n                shutil.copy2(source, destination)\n                archive_hashes[name] = _sha256_file(destination)\n        manifest_payload = dict(payload)\n        manifest_payload["archive_hashes_sha256"] = archive_hashes\n        manifest_payload["archive_immutable"] = True\n        _atomic_write_json(run_dir / "RunManifest.json", manifest_payload)\n        _atomic_write_json(\n            OUTPUT_DIR / "LatestRun.json",\n            {\n                "run_id": pipeline_run_id,\n                "data_run_id": payload.get("data_run_id", ""),\n                "expected_trading_date": payload.get("expected_trading_date", ""),\n                "run_dir": str(run_dir.relative_to(OUTPUT_DIR)),\n                "pipeline_version": PIPELINE_VERSION,\n            },\n        )\n    except Exception:\n        shutil.rmtree(run_dir, ignore_errors=True)\n        raise\n    return run_dir\n\n\ndef _cache_health(\n    previous_summary: dict[str, object],\n    current_rate: float,\n    evaluations: int,\n) -> dict[str, object]:\n    previous_backtest = previous_summary.get("backtest", {})\n    if not isinstance(previous_backtest, dict):\n        previous_backtest = {}\n    previous_rate = float(previous_backtest.get("cache_hit_rate", 0.0) or 0.0)\n    previous_version = str(previous_summary.get("pipeline_version", "") or "")\n    cold_start = bool(previous_version and previous_version != PIPELINE_VERSION) or not previous_version\n    rate = float(max(0.0, min(1.0, current_rate)))\n    if evaluations <= 0:\n        status = "未知"\n    elif cold_start:\n        status = "冷启动"\n    elif rate >= 0.70:\n        status = "健康"\n    elif rate >= 0.35:\n        status = "偏低"\n    else:\n        status = "异常偏低"\n    return {\n        "status": status,\n        "cold_start": cold_start,\n        "current_rate": round(rate, 4),\n        "previous_rate": round(previous_rate, 4),\n        "delta": round(rate - previous_rate, 4),\n        "warning": bool(status == "异常偏低" and evaluations >= 100),\n    }\n\n\n'''
+if old_archive not in archive_start:
+    raise RuntimeError("daily immutable archive: expected function body not found")
+save("daily_pipeline.py", archive_start.replace(old_archive, new_archive, 1))
+
+replace_once(
+    "daily_pipeline.py",
+    '''    final_profiles: dict[str, dict[str, object]],\n    stage_seconds: dict[str, float],\n) -> dict[str, object]:\n''',
+    '''    final_profiles: dict[str, dict[str, object]],\n    stage_seconds: dict[str, float],\n    previous_summary: dict[str, object],\n) -> dict[str, object]:\n''',
+    "manifest previous-summary parameter",
+)
+
+replace_once(
+    "daily_pipeline.py",
+    '''    if cache_hit_rate <= 0 and evaluations > 0:\n        cache_hit_rate = cache_hits / evaluations\n    exact_elapsed = float(backtest.get("exact_refinement_elapsed_seconds", 0.0) or 0.0)\n''',
+    '''    if cache_hit_rate <= 0 and evaluations > 0:\n        cache_hit_rate = cache_hits / evaluations\n    cache_health = _cache_health(previous_summary, cache_hit_rate, evaluations)\n    exact_elapsed = float(backtest.get("exact_refinement_elapsed_seconds", 0.0) or 0.0)\n''',
+    "manifest cache health calculation",
+)
+
+replace_once(
+    "daily_pipeline.py",
+    '''            "cache_hits": cache_hits,\n            "cache_hit_rate": round(cache_hit_rate, 4),\n            "elapsed_seconds": round(backtest_elapsed, 3),\n''',
+    '''            "cache_hits": cache_hits,\n            "cache_hit_rate": round(cache_hit_rate, 4),\n            "cache_health": str(cache_health.get("status", "未知")),\n            "cache_cold_start": bool(cache_health.get("cold_start", False)),\n            "cache_hit_rate_delta": float(cache_health.get("delta", 0.0) or 0.0),\n            "cache_warning": bool(cache_health.get("warning", False)),\n            "elapsed_seconds": round(backtest_elapsed, 3),\n''',
+    "manifest cache health fields",
+)
+
+replace_once(
+    "daily_pipeline.py",
+    '''            final_profiles=final_profiles,\n            stage_seconds=stage_seconds,\n        )\n''',
+    '''            final_profiles=final_profiles,\n            stage_seconds=stage_seconds,\n            previous_summary=previous_summary,\n        )\n''',
+    "manifest cache baseline call",
+)
+
+
+# ---------------------------------------------------------------------------
+# v37 regression suite.
+# ---------------------------------------------------------------------------
+save(
+    "test_v37_project_integrity.py",
+    '''from __future__ import annotations\n\nimport json\nimport tempfile\nimport unittest\nfrom pathlib import Path\nfrom unittest.mock import patch\n\nimport pandas as pd\n\nimport config\nimport daily_pipeline\nfrom classification import etf_research_eligibility\nfrom evidence import enrich_evidence_fields\nfrom report import _rank_valid_candidates\n\n\nclass V37ProjectIntegrityTests(unittest.TestCase):\n    def test_cash_management_etf_is_excluded_but_cashflow_factor_remains(self) -> None:\n        excluded, reason = etf_research_eligibility(\n            is_etf=True,\n            name="快钱ETF汇添富",\n            classification="货币现金管理",\n            ticker="159005.SZ",\n        )\n        self.assertFalse(excluded)\n        self.assertIn("排除", reason)\n        eligible, _ = etf_research_eligibility(\n            is_etf=True,\n            name="现金流ETF",\n            classification="现金流因子",\n            ticker="560000.SH",\n        )\n        self.assertTrue(eligible)\n\n    def test_candidate_rank_omits_cash_management_etf(self) -> None:\n        frame = pd.DataFrame(\n            {\n                "Ticker": ["159005.SZ", "560000.SH", "000001.SZ"],\n                "Name": ["快钱ETF汇添富", "现金流ETF", "平安银行"],\n                "IsETF": [True, True, False],\n                "AssetType": ["etf", "etf", "stock"],\n                "ModelClassification": ["货币现金管理", "现金流因子", "银行"],\n                "RankingScore": [99.0, 60.0, 55.0],\n                "InstitutionalScore": [50.0, 40.0, 38.0],\n                "Error": ["", "", ""],\n            }\n        )\n        ranked = _rank_valid_candidates(frame)\n        self.assertNotIn("159005.SZ", set(ranked["Ticker"]))\n        self.assertIn("560000.SH", set(ranked["Ticker"]))\n        self.assertIn("000001.SZ", set(ranked["Ticker"]))\n        self.assertTrue(ranked["ResearchEligible"].all())\n\n    def test_evidence_strength_uses_ticker_and_peer_coverage_without_ranking(self) -> None:\n        frame = pd.DataFrame(\n            {\n                "Ticker": ["A", "B"],\n                "RankingScore": [77.0, 66.0],\n                "BacktestMode": ["FAST", "FAST"],\n                "BacktestSamples": [0, 20],\n                "BacktestEffectiveSamples": [0.0, 20.0],\n                "BacktestConfidenceTier": ["样本不足", "中可信度"],\n                "GlobalCalibrationSamples": [10000, 10000],\n                "GlobalCalibrationEffectiveSamples": [1000.0, 1000.0],\n                "GlobalCalibrationConfidence": [1.0, 1.0],\n                "GlobalCalibrationLevel": ["asset_signal", "asset_signal"],\n            }\n        )\n        enriched = enrich_evidence_fields(frame)\n        self.assertEqual(list(enriched["RankingScore"]), [77.0, 66.0])\n        self.assertGreater(float(enriched.loc[0, "EvidenceStrengthScore"]), 50.0)\n        self.assertGreater(\n            float(enriched.loc[1, "EvidenceStrengthScore"]),\n            float(enriched.loc[0, "EvidenceStrengthScore"]),\n        )\n        self.assertIn(enriched.loc[0, "EvidenceTier"], {"中高", "高"})\n\n    def test_cache_health_distinguishes_cold_start_and_persistent_miss(self) -> None:\n        cold = daily_pipeline._cache_health(\n            {"pipeline_version": "old", "backtest": {"cache_hit_rate": 0.9}},\n            0.0,\n            6000,\n        )\n        self.assertEqual(cold["status"], "冷启动")\n        warm = daily_pipeline._cache_health(\n            {"pipeline_version": config.PIPELINE_VERSION, "backtest": {"cache_hit_rate": 0.8}},\n            0.1,\n            6000,\n        )\n        self.assertEqual(warm["status"], "异常偏低")\n        self.assertTrue(warm["warning"])\n\n    def test_run_archive_is_immutable_and_hashed(self) -> None:\n        with tempfile.TemporaryDirectory() as tmp:\n            output = Path(tmp)\n            (output / "Top50Mixed.csv").write_text("Ticker\\n000001.SZ\\n", encoding="utf-8")\n            with patch.object(daily_pipeline, "OUTPUT_DIR", output):\n                run_dir = daily_pipeline._archive_run(\n                    "run-1",\n                    {"data_run_id": "data-1", "expected_trading_date": "2026-08-11"},\n                )\n                manifest = json.loads((run_dir / "RunManifest.json").read_text(encoding="utf-8"))\n                self.assertTrue(manifest["archive_immutable"])\n                self.assertIn("Top50Mixed.csv", manifest["archive_hashes_sha256"])\n                with self.assertRaises(FileExistsError):\n                    daily_pipeline._archive_run("run-1", {})\n\n    def test_v37_does_not_change_scoring_model_version(self) -> None:\n        self.assertIn("v35", config.SCORING_VERSION)\n        self.assertIn("v37", config.PIPELINE_VERSION)\n        self.assertIn("v37", config.GUI_VERSION)\n\n\nif __name__ == "__main__":\n    unittest.main()\n''',
+)
+
+# Stage every generated product change. The legacy workflow's later explicit
+# `git add` calls do not clear this index, so new modules/report/daily files are
+# included in the validated commit without broadening the workflow itself.
+subprocess.run(["git", "add", "-A"], cwd=ROOT, check=True)
