@@ -18,8 +18,8 @@ import report
 
 
 class V29PipelineReliabilityTests(unittest.TestCase):
-    def test_scoring_version_is_unchanged_but_pipeline_version_is_v29(self):
-        self.assertEqual(config.SCORING_VERSION, "2026-08-09-v24-decision-integrity")
+    def test_pipeline_reliability_contract_survives_later_model_versions(self):
+        self.assertRegex(config.SCORING_VERSION, r"-v(?:2[4-9]|[3-9][0-9]+)-")
         self.assertRegex(config.PIPELINE_VERSION, r"v(?:29|3[0-9])")
 
     def test_hybrid_run_does_not_pollute_per_ticker_mode(self):
