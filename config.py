@@ -1,8 +1,8 @@
-"""v36 configuration facade.
+"""InstitutionScanner configuration facade.
 
-The stable runtime configuration remains in ``config_core``.  v36 keeps the
-v35 scoring model unchanged while advancing the market-data/pipeline provenance
-to canonical TickFlow CN volume-in-shares semantics.
+The stable runtime defaults remain in ``config_core``.  This facade carries the
+current model/pipeline provenance across v36 market-data normalization, v37
+project-integrity/evidence UX, and v38 industry-adaptive Fundamental Gate 2.0.
 """
 
 from __future__ import annotations
