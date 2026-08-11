@@ -26,8 +26,9 @@ class HardeningRegressionTests(unittest.TestCase):
 
     def test_tickflow_cache_schema_invalidates_all_legacy_market_caches(self) -> None:
         path = downloader._cache_path("600000.SH", "eastmoney")
-        self.assertEqual(path.parent.name, "v3-tickflow-forward")
+        self.assertEqual(path.parent.name, "v4-tickflow-forward-volume-shares")
         self.assertEqual(path.name, "600000.SH.parquet")
+        self.assertEqual(downloader.TICKFLOW_CANONICAL_VOLUME_UNIT, "shares")
 
     def test_sparse_fundamental_quality_is_shrunk_toward_neutral(self) -> None:
         quality = calculate_quality(
