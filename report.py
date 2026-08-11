@@ -29,7 +29,6 @@ from classification import (
     etf_tracking_key,
     theme_cluster,
 )
-from evidence import enrich_evidence_fields
 from config import (
     ETF_THEME_MAX_PER_TOP_LIST,
     ETF_TRACKING_MAX_PER_TOP_LIST,
@@ -47,6 +46,7 @@ from config import (
     TOP_N_REPORT,
     VALUE_TRAP_RISK_THRESHOLD,
 )
+from evidence import enrich_evidence_fields
 from performance_cache import BACKTEST_CACHE_VERSION, INDICATOR_CACHE_VERSION
 from scanner import ScanReport, ScanResult
 from signal_lifecycle import enrich_signal_lifecycle, finalize_signal_ranking
