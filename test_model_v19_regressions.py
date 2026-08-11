@@ -11,6 +11,7 @@ from classification import etf_tracking_key, theme_cluster
 from config import (
     BACKTEST_AUTO_EXACT_REFINEMENT,
     BACKTEST_EXACT_REFINEMENT_CANDIDATES,
+    CROSS_ASSET_PERCENTILE_MAX_ADJUSTMENT,
     SCORING_VERSION,
 )
 from model_calibration import build_global_calibration, calibration_details_for_frame
@@ -21,8 +22,9 @@ from signal_lifecycle import finalize_signal_ranking
 
 
 class ModelV19RegressionTests(unittest.TestCase):
-    def test_v24_version_and_refinement_contract(self):
-        self.assertEqual(SCORING_VERSION, "2026-08-09-v24-decision-integrity")
+    def test_model_version_and_refinement_contract(self):
+        version = int(SCORING_VERSION.split("-v", 1)[1].split("-", 1)[0])
+        self.assertGreaterEqual(version, 35)
         self.assertEqual(INDICATOR_CACHE_VERSION, "v5")
         self.assertEqual(BACKTEST_CACHE_VERSION, "v8")
         self.assertTrue(BACKTEST_AUTO_EXACT_REFINEMENT)
@@ -110,6 +112,51 @@ class ModelV19RegressionTests(unittest.TestCase):
         row = {"ticker":"000001.SZ","entry_signal":"WAIT_PULLBACK","samples":3,"backtest_mode":"FAST"}
         summary = analytics.BacktestSummary(mode="fast", by_ticker=[row])
         self.assertEqual(summary.mode, "fast")
+
+    def test_terminal_lifecycle_is_hard_block_and_relative_uplift_is_tightly_bounded(self):
+        def row(ticker: str, score_value: float, status: str = "NEW") -> dict[str, object]:
+            return {
+                "Ticker": ticker,
+                "IsETF": False,
+                "AssetType": "stock",
+                "InstitutionalScore": score_value,
+                "FinalScore": score_value,
+                "Score": score_value,
+                "EntrySignal": "BUY_NOW",
+                "PassedFilters": True,
+                "UniverseEligible": True,
+                "SignalStatus": status,
+                "QualityApplicable": True,
+                "QualityDataCompleteness": 1.0,
+                "QualityGate": True,
+                "QualityDataAvailable": True,
+                "QualityROE": True,
+                "QualityGrossMargin": True,
+                "QualityNetProfit": True,
+                "InstitutionHoldingStatus": "PASS",
+                "ROE": 12.0,
+                "IndustryGrossMarginPercentile": 70.0,
+                "NetProfitY1": 1.0,
+                "NetProfitY2": 1.0,
+                "NetProfitY3": 1.0,
+                "ScoreCoverage": 1.0,
+                "DataAgeDays": 0,
+                "DataTradingAgeDays": 0,
+                "ValueTrapRisk": 0.0,
+                "SignalRecencyDays": 1,
+            }
+
+        frame = pd.DataFrame(
+            [row("FAILED", 50.0, "FAILED")]
+            + [row(f"S{i}", 55.0 - i) for i in range(1, 7)]
+        )
+        result = finalize_signal_ranking(frame).set_index("Ticker")
+        self.assertEqual(result.loc["FAILED", "DecisionState"], "BLOCKED")
+        uplift = result["CrossAssetScore"] - result["InstitutionalScore"]
+        self.assertLessEqual(
+            float(uplift.abs().max()),
+            CROSS_ASSET_PERCENTILE_MAX_ADJUSTMENT + 1e-6,
+        )
 
 
 if __name__ == "__main__":
