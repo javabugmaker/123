@@ -1,0 +1,59 @@
+name: Validate v38 fundamental gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - tools/v38_migrate.py
+      - .github/workflows/v38-migration.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies and quality tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff pyright
+
+      - name: Apply v38 migration
+        run: python tools/v38_migrate.py
+
+      - name: Static validation
+        run: |
+          ruff check .
+          pyright -p pyrightconfig.json
+          pyright -p pyrightconfig.gui.json
+          python -m compileall -q .
+          git diff --check
+
+      - name: Focused v38 regression
+        run: python -m unittest -v test_v38_fundamental_gate2.py
+
+      - name: Full regression
+        run: python -m unittest discover -v
+
+      - name: Commit validated v38 directly to main
+        run: |
+          git config user.name "OpenAI Codex"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "feat: industry-adaptive fundamental gate v38"
+          git push origin HEAD:main
