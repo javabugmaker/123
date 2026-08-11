@@ -11,8 +11,8 @@ import signal_lifecycle
 from config import SCORING_VERSION
 
 
-# These regressions are the public v24 contract: research tier and execution
-# status must agree, while stock/ETF research lists remain independently usable.
+# These regressions preserve the public v24 tier/execution contract while later
+# model versions may improve how scores are constructed and normalized.
 class DecisionGuiV24Tests(TestCase):
     @staticmethod
     def _decision_frame() -> pd.DataFrame:
@@ -96,10 +96,12 @@ class DecisionGuiV24Tests(TestCase):
         self.assertNotIn("BacktestSamples", gui.DISPLAY_COLUMNS)
         self.assertNotIn("QualityDataCompleteness", gui.DISPLAY_COLUMNS)
 
-    def test_model_version_is_v24(self):
-        self.assertEqual(SCORING_VERSION, "2026-08-09-v24-decision-integrity")
+    def test_model_version_is_at_least_v24(self):
+        version = int(SCORING_VERSION.split("-v", 1)[1].split("-", 1)[0])
+        self.assertGreaterEqual(version, 24)
 
 
 if __name__ == "__main__":
     import unittest
+
     unittest.main()
