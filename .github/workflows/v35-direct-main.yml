@@ -1,0 +1,52 @@
+name: V35 Direct Main Model Upgrade
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/v35_model_upgrade.py'
+      - '.github/workflows/v35-direct-main.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install project and quality tools
+        run: |
+          pip install -r requirements.txt
+          pip install ruff pyright
+      - name: Apply v35 model upgrade
+        run: python tools/v35_model_upgrade.py
+      - name: Ruff safe fixes
+        run: ruff check . --fix
+      - name: Ruff final
+        run: ruff check .
+      - name: Pyright project
+        run: pyright
+      - name: Pyright GUI strict
+        run: pyright -p pyrightconfig.gui.json
+      - name: Compile
+        run: python -m compileall -q .
+      - name: Focused v35 tests
+        run: python -m unittest test_v35_model_integrity.py
+      - name: Full regression
+        run: python -m unittest discover -p 'test*.py'
+      - name: Commit validated v35 product changes directly to main
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add config.py score.py signal_lifecycle.py test_v35_model_integrity.py
+          git diff --cached --quiet && exit 0
+          git commit -m "feat: improve model decision integrity v35"
+          git push origin HEAD:main
