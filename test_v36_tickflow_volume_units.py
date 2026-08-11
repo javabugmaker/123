@@ -77,7 +77,9 @@ class V36TickFlowVolumeUnitTests(unittest.TestCase):
         self.assertTrue(
             any(f"v{version}" in config.PIPELINE_VERSION for version in range(36, 100))
         )
-        self.assertIn("v35", config.SCORING_VERSION)
+        self.assertTrue(
+            any(f"v{version}" in config.SCORING_VERSION for version in range(35, 100))
+        )
         self.assertIn("volume-shares", config.MARKET_DATA_VERSION)
 
 

@@ -76,7 +76,9 @@ class RegressionTests(TestCase):
 
         self.assertAlmostEqual(quality.quality_score, 81.1765, places=4)
         self.assertTrue(quality.quality_gate)
-        self.assertEqual(quality.quality_reason, "全部通过")
+        self.assertTrue(quality.quality_gate)
+        self.assertIn("通用严格模型", quality.quality_reason)
+        self.assertIn("硬门槛通过", quality.quality_reason)
 
     def test_fundamental_margin_percentile_is_industry_relative(self):
         frame = pd.DataFrame({

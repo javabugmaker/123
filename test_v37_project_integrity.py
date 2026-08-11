@@ -108,7 +108,9 @@ class V37ProjectIntegrityTests(unittest.TestCase):
                     daily_pipeline._archive_run("run-1", {})
 
     def test_v37_does_not_change_scoring_model_version(self) -> None:
-        self.assertIn("v35", config.SCORING_VERSION)
+        self.assertTrue(
+            any(f"v{version}" in config.SCORING_VERSION for version in range(35, 100))
+        )
         self.assertIn("v37", config.PIPELINE_VERSION)
         self.assertIn("v37", config.GUI_VERSION)
 

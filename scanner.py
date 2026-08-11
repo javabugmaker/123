@@ -196,6 +196,9 @@ class ScanResult:
     quality_data_completeness: float = 0.0
     quality_gate_reason: str = "基本面数据缺失（中性）"
     quality_multiplier: float = 0.95
+    quality_profile: str = "GENERAL"
+    quality_profit_trend_status: str = "UNKNOWN"
+    cyclical_quality_override: bool = False
     stage: str = "未知"
     data_source: str = ""
     data_asof: str = ""
@@ -696,6 +699,9 @@ def scan_single_from_df(
             quality_data_completeness=quality.quality_data_completeness,
             quality_gate_reason=quality.quality_gate_reason,
             quality_multiplier=quality.quality_multiplier,
+            quality_profile=getattr(quality, "quality_profile", "GENERAL"),
+            quality_profit_trend_status=getattr(quality, "profit_trend_status", "UNKNOWN"),
+            cyclical_quality_override=bool(getattr(quality, "cyclical_quality_override", False)),
             model_classification=resolved_classification,
             etf_tracking_key=resolved_tracking_key,
             theme_cluster=resolved_theme_cluster,

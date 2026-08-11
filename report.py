@@ -268,6 +268,9 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "QualityDataCompleteness": round(r.quality_data_completeness, 4),
                 "QualityGateReason": r.quality_gate_reason,
                 "QualityMultiplier": round(r.quality_multiplier, 4),
+                "QualityProfile": r.quality_profile,
+                "ProfitTrendStatus": r.quality_profit_trend_status,
+                "CyclicalQualityOverride": r.cyclical_quality_override,
                 "BacktestSamples": r.backtest_samples,
                 "BacktestEffectiveSamples": round(r.backtest_effective_samples, 4),
                 "BacktestWinRate20D": round(r.backtest_win_rate_20d, 4)
@@ -748,6 +751,7 @@ DECISION_RESULT_COLUMNS: tuple[str, ...] = (
     "BreakoutBuyPrice", "StopLoss", "RankingEligibility", "RankingScore",
     "ResearchPoolRank", "OverallRank", "InstitutionalTier", "InstitutionalScore",
     "HardGatePassed", "DiagnosticFailedCount", "DiagnosticFailedNames",
+    "QualityProfile", "ProfitTrendStatus", "CyclicalQualityOverride",
     "TradeReadinessReason", "RankingReason", "DecisionState", "BacktestRunMode",
     "BacktestMode", "BacktestStage", "BacktestSamples", "BacktestEffectiveSamples",
     "BacktestStatus", "BacktestConfidenceTier", "BacktestRequested",

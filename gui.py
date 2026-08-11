@@ -103,6 +103,9 @@ _core.COLUMN_NAMES.update(
         "EvidenceStrengthScore": "证据强度",
         "EvidenceTier": "证据等级",
         "EvidenceReason": "证据说明",
+        "QualityProfile": "基本面模型",
+        "ProfitTrendStatus": "利润趋势",
+        "CyclicalQualityOverride": "周期恢复放行",
     }
 )
 
