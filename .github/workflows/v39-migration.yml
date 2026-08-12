@@ -6,6 +6,7 @@ on:
     paths:
       - tools/v39_migrate.py
       - tools/v39_update_contracts.py
+      - tools/v39_compat_fix.py
       - .github/workflows/v39-migration.yml
   workflow_dispatch:
 
@@ -33,6 +34,9 @@ jobs:
 
       - name: Apply v39 migration
         run: python tools/v39_migrate.py
+
+      - name: Preserve legacy export compatibility
+        run: python tools/v39_compat_fix.py
 
       - name: Update forward-compatible history contracts
         run: python tools/v39_update_contracts.py
