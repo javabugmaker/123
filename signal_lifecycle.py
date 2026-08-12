@@ -1,9 +1,9 @@
-"""v35 lifecycle/ranking policy facade.
+"""Current lifecycle/ranking policy facade.
 
-``signal_lifecycle_core`` preserves the stable v34 lifecycle implementation.
-This facade applies three model-integrity corrections after the stable pass:
-a bounded cross-asset percentile adjustment, terminal/rapidly-weakening signal
-consistency, and tier/decision reconciliation using the corrected score.
+``signal_lifecycle_core`` provides the stable lifecycle engine.  The facade
+keeps cross-asset normalization bounded and reconciles lifecycle, tier and
+decision state after Fundamental Gate 2.0.  v39 additionally requires the
+core pass to preserve v38 fundamental-gate authority end to end.
 """
 
 from __future__ import annotations

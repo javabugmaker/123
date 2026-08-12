@@ -360,43 +360,66 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         .clip(0.0, 1.0)
         .round(4)
     )
+    supplied_quality_gate = _bool_series(result, "QualityGate", True)
     supplied_quality_fail = (
-        _bool_series(result, "QualityDataAvailable")
-        & ~_bool_series(result, "QualityGate", True)
+        _bool_series(result, "QualityDataAvailable") & ~supplied_quality_gate
         if "QualityGate" in result
         else pd.Series(False, index=result.index)
     )
-    known_fail = quality_applicable & (
+    quality_profile = _text_series(result, "QualityProfile", "").str.upper()
+    gate2_profile = quality_profile.isin({"GENERAL", "FINANCIAL", "CYCLICAL", "DEFENSIVE"})
+
+    legacy_known_fail = quality_applicable & (
         (roe_available & ~_bool_series(result, "QualityROE", True))
         | (margin_available & ~_bool_series(result, "QualityGrossMargin", True))
         | (profit_available & ~_bool_series(result, "QualityNetProfit", True))
         | status.eq("FAIL")
         | supplied_quality_fail
     )
-    any_unknown = quality_applicable & (
+    # v38 Fundamental Gate 2.0 has already evaluated the profile-specific hard
+    # factors.  Institution coverage is supporting evidence only and therefore
+    # must never be reintroduced here as a standalone veto.
+    known_fail = legacy_known_fail.where(~gate2_profile, quality_applicable & ~supplied_quality_gate)
+    legacy_unknown = quality_applicable & (
         status.eq("UNKNOWN") | ~(roe_available & margin_available & profit_available)
     )
-    result["QualityGate"] = ~known_fail
-    result["QualityMultiplier"] = np.select(
-        [~quality_applicable, known_fail, any_unknown],
-        [1.0, QUALITY_MULTIPLIER_FAIL, QUALITY_MULTIPLIER_UNKNOWN],
-        default=QUALITY_MULTIPLIER_PASS,
+    gate2_uncertain = quality_applicable & gate2_profile & (
+        status.ne("PASS") | result["QualityDataCompleteness"].lt(1.0)
     )
-    quality_reason = _text_series(result, "QualityGateReason", "")
-    quality_reason = quality_reason.where(~known_fail, "存在已确认质量未通过项")
-    quality_reason = quality_reason.where(
+    any_unknown = legacy_unknown.where(~gate2_profile, gate2_uncertain)
+    result["QualityGate"] = ~known_fail
+
+    computed_multiplier = pd.Series(
+        np.select(
+            [~quality_applicable, known_fail, any_unknown],
+            [1.0, QUALITY_MULTIPLIER_FAIL, QUALITY_MULTIPLIER_UNKNOWN],
+            default=QUALITY_MULTIPLIER_PASS,
+        ),
+        index=result.index,
+        dtype=float,
+    )
+    supplied_multiplier = _number(
+        result.get("QualityMultiplier", pd.Series(np.nan, index=result.index)), np.nan
+    )
+    result["QualityMultiplier"] = supplied_multiplier.where(
+        gate2_profile & supplied_multiplier.notna(), computed_multiplier
+    )
+
+    supplied_reason = _text_series(result, "QualityGateReason", "")
+    legacy_reason = supplied_reason.copy()
+    legacy_reason = legacy_reason.where(~known_fail, "存在已确认质量未通过项")
+    legacy_reason = legacy_reason.where(
         ~(status.eq("UNKNOWN") & ~known_fail & quality_applicable),
         "机构覆盖家数历史不足，按中性处理",
     )
-    quality_reason = quality_reason.where(
-        quality_applicable,
-        "ETF基本面门槛不适用",
-    )
-    quality_reason = quality_reason.where(
-        ~(quality_reason.eq("") & ~known_fail & ~any_unknown),
+    legacy_reason = legacy_reason.where(quality_applicable, "ETF基本面门槛不适用")
+    legacy_reason = legacy_reason.where(
+        ~(legacy_reason.eq("") & ~known_fail & ~any_unknown),
         "全部可用质量项通过",
     )
-    result["QualityGateReason"] = quality_reason
+    result["QualityGateReason"] = supplied_reason.where(
+        gate2_profile & supplied_reason.ne(""), legacy_reason
+    )
 
     freshness_status, freshness_factor, freshness_reason = _data_freshness(result)
     result["DataFreshnessStatus"] = freshness_status
@@ -536,10 +559,17 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     quality_score_value = _number(
         result.get("QualityScore", pd.Series(np.nan, index=result.index)), np.nan
     )
-    cyclical_quality_override = (
+    legacy_cyclical_override = (
         cyclical_style
         & result["QualityDataCompleteness"].ge(QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE)
         & quality_score_value.ge(45.0)
+    )
+    supplied_cyclical_override = _bool_series(result, "CyclicalQualityOverride")
+    gate2_profile = _text_series(result, "QualityProfile", "").str.upper().isin(
+        {"GENERAL", "FINANCIAL", "CYCLICAL", "DEFENSIVE"}
+    )
+    cyclical_quality_override = supplied_cyclical_override.where(
+        gate2_profile, legacy_cyclical_override
     )
     result["CyclicalQualityOverride"] = cyclical_quality_override
     quality_action_block = quality_applicable & (
@@ -1054,8 +1084,17 @@ def _opportunity_score(
 def _is_active(frame: pd.DataFrame) -> pd.Series:
     score = _number(frame.get("Score", pd.Series(index=frame.index)))
     signals = _number(frame.get("SignalCount", pd.Series(index=frame.index)))
-    passed = frame.get("PassedFilters", pd.Series(False, index=frame.index)).map(_bool)
-    return passed | ((score >= 35) & (signals >= 3))
+    passed = _bool_series(frame, "PassedFilters")
+    universe_eligible = _bool_series(frame, "UniverseEligible", True)
+    entry_signal = _text_series(frame, "EntrySignal", "AVOID").str.upper()
+    strict_breakout_override = (
+        ~passed
+        & universe_eligible
+        & entry_signal.eq("BREAKOUT_CONFIRM")
+        & _bool_series(frame, "BreakoutVolumeConfirmed")
+        & _bool_series(frame, "BreakoutFlowConfirmed")
+    )
+    return passed | ((score >= 35) & (signals >= 3)) | strict_breakout_override
 
 
 def _stage(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.Series]:
@@ -1148,6 +1187,10 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
     ] = "HOLD_WAIT"
     result.loc[distribution & entry_signal.ne("AVOID"), "EntrySignal"] = "AVOID"
 
+    # Lifecycle activity and the later decision override must consume the
+    # same validated breakout evidence; otherwise a cautious candidate can
+    # incorrectly display as “无信号 / 0天”.
+    result = validate_signal_consistency(result)
     active = _is_active(result)
     history = _load_history()
     history["Ticker"] = history["Ticker"].astype(str).str.strip().str.upper()

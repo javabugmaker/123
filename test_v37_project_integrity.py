@@ -107,11 +107,13 @@ class V37ProjectIntegrityTests(unittest.TestCase):
                 with self.assertRaises(FileExistsError):
                     daily_pipeline._archive_run("run-1", {})
 
-    def test_v37_does_not_change_scoring_model_version(self) -> None:
+    def test_v37_integrity_survives_later_pipeline_versions(self) -> None:
         self.assertTrue(
             any(f"v{version}" in config.SCORING_VERSION for version in range(35, 100))
         )
-        self.assertIn("v37", config.PIPELINE_VERSION)
+        self.assertTrue(
+            any(f"v{version}" in config.PIPELINE_VERSION for version in range(37, 100))
+        )
         self.assertIn("v37", config.GUI_VERSION)
 
 

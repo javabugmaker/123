@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from config_core import *  # noqa: F403
 
-SCORING_VERSION: str = "2026-08-12-v38-fundamental-gate2"
-PIPELINE_VERSION: str = "2026-08-12-v38-fundamental-gate2-v37-integrity"
+SCORING_VERSION: str = "2026-08-12-v39-decision-integrity2"
+PIPELINE_VERSION: str = "2026-08-12-v39-decision-integrity2-v38-fundamental"
 FUNDAMENTAL_GATE_VERSION: str = "2026-08-12-v38-industry-adaptive"
+DECISION_INTEGRITY_VERSION: str = "2026-08-12-v39-gate-lifecycle-research"
 GUI_VERSION: str = "2026-08-12-v37-evidence-ux"
 EVIDENCE_POLICY_VERSION: str = "2026-08-12-v37-peer-plus-ticker"
 MARKET_DATA_VERSION: str = "2026-08-12-v36-tickflow-volume-shares"

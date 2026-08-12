@@ -104,10 +104,14 @@ class FundamentalGateV38Tests(unittest.TestCase):
         self.assertLess(quality.quality_multiplier, 1.0)
         self.assertIn("不单独否决", quality.quality_reason)
 
-    def test_v38_advances_model_but_preserves_v37_and_v36_provenance(self):
-        self.assertIn("v38", config.SCORING_VERSION)
-        self.assertIn("v38", config.PIPELINE_VERSION)
-        self.assertIn("v37", config.PIPELINE_VERSION)
+    def test_v38_policy_survives_later_model_and_pipeline_versions(self):
+        self.assertTrue(
+            any(f"v{version}" in config.SCORING_VERSION for version in range(38, 100))
+        )
+        self.assertTrue(
+            any(f"v{version}" in config.PIPELINE_VERSION for version in range(38, 100))
+        )
+        self.assertIn("v38", config.FUNDAMENTAL_GATE_VERSION)
         self.assertIn("v37", config.GUI_VERSION)
         self.assertIn("v36", config.MARKET_DATA_VERSION)
 

@@ -157,7 +157,23 @@ _DIAGNOSTIC_FILTER_KEYS = (
 )
 
 
+def _hard_gate_evaluated(result: ScanResult) -> bool:
+    return any(key in result.filter_details for key in _HARD_GATE_FILTER_KEYS)
+
+
+def _hard_gate_passed(result: ScanResult) -> bool:
+    if _hard_gate_evaluated(result):
+        return bool(result.universe_eligible)
+    return bool(result.passed_filters)
+
+
 def _failed_filter_names(result: ScanResult, keys: tuple[str, ...]) -> list[str]:
+    if (
+        keys == _HARD_GATE_FILTER_KEYS
+        and not _hard_gate_evaluated(result)
+        and result.passed_filters
+    ):
+        return []
     names: list[str] = []
     for key in keys:
         if result.is_etf and key in {"min_price", "min_market_cap"}:
@@ -378,8 +394,8 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 # Compatibility field: historically this meant the combined
                 # hard-gate + accumulation/structure recipe, not "every filter".
                 "PassedFilters": r.passed_filters,
-                "UniverseEligible": r.universe_eligible,
-                "HardGatePassed": r.universe_eligible,
+                "UniverseEligible": _hard_gate_passed(r),
+                "HardGatePassed": _hard_gate_passed(r),
                 "HardGateFailedCount": len(_failed_filter_names(r, _HARD_GATE_FILTER_KEYS)),
                 "HardGateFailedNames": ",".join(_failed_filter_names(r, _HARD_GATE_FILTER_KEYS)),
                 "SignalConfirmed": r.signal_confirmed,
@@ -481,11 +497,78 @@ def _apply_research_policy(frame: pd.DataFrame) -> pd.DataFrame:
             classification=row.get("ModelClassification", row.get("ETFTheme", "")),
             ticker=row.get("Ticker", ""),
         )
-        eligibility.append(bool(eligible))
+        hard_value = row.get("HardGatePassed", None)
+        try:
+            hard_missing = hard_value is None or pd.isna(hard_value)
+        except (TypeError, ValueError):
+            hard_missing = hard_value is None
+        if hard_missing or str(hard_value).strip() == "":
+            hard_value = row.get("UniverseEligible", True)
+        hard_ok = _truthy(hard_value)
+        failed_names = _clean_group_key(row.get("HardGateFailedNames", ""))
+        legacy_combined_pass = (
+            not hard_ok
+            and not failed_names
+            and _truthy(row.get("PassedFilters", False))
+        )
+        if legacy_combined_pass:
+            hard_ok = True
+        if not hard_ok:
+            hard_reason = (
+                f"硬准入失败：{failed_names}" if failed_names else "硬准入条件未通过"
+            )
+            reason = f"{reason}；{hard_reason}" if reason else hard_reason
+        eligibility.append(bool(eligible) and hard_ok)
         reasons.append(str(reason or ""))
     working["ResearchEligible"] = eligibility
     working["ResearchExclusionReason"] = reasons
     return working
+
+
+def validate_decision_integrity(frame: pd.DataFrame) -> None:
+    """Fail closed on contradictions between eligibility, gate and lifecycle."""
+    if frame.empty:
+        return
+
+    violations: list[str] = []
+    ticker = frame.get("Ticker", pd.Series("", index=frame.index)).fillna("").astype(str)
+
+    if {"ResearchEligible", "HardGatePassed"}.issubset(frame.columns):
+        bad = _bool_series_for_integrity(frame, "ResearchEligible") & ~_bool_series_for_integrity(
+            frame, "HardGatePassed"
+        )
+        if bad.any():
+            violations.append(
+                "hard-gate rows marked research-eligible: " + ",".join(ticker.loc[bad].head(5))
+            )
+
+    if {"QualityReason", "QualityGate"}.issubset(frame.columns):
+        reason = frame["QualityReason"].fillna("").astype(str)
+        bad = reason.str.contains("行业自适应硬门槛通过", regex=False) & ~_bool_series_for_integrity(
+            frame, "QualityGate"
+        )
+        if bad.any():
+            violations.append(
+                "Fundamental Gate 2.0 pass rewritten to fail: " + ",".join(ticker.loc[bad].head(5))
+            )
+
+    lifecycle_columns = {"RankingEligibility", "SignalStatus", "SignalDays"}
+    if lifecycle_columns.issubset(frame.columns):
+        actionable = frame["RankingEligibility"].fillna("").astype(str).isin({"推荐", "谨慎候选"})
+        status = frame["SignalStatus"].fillna("").astype(str).str.upper().str.strip()
+        days = pd.to_numeric(frame["SignalDays"], errors="coerce").fillna(0.0)
+        bad = actionable & (status.eq("") | status.isin({"FAILED", "EXPIRED", "INACTIVE"}) | days.lt(1.0))
+        if bad.any():
+            violations.append(
+                "actionable rows without active lifecycle: " + ",".join(ticker.loc[bad].head(5))
+            )
+
+    if violations:
+        raise ValueError("Decision integrity violation: " + " | ".join(violations))
+
+
+def _bool_series_for_integrity(frame: pd.DataFrame, column: str) -> pd.Series:
+    return frame.get(column, pd.Series(False, index=frame.index)).map(_truthy)
 
 
 def _rank_valid_candidates(frame: pd.DataFrame) -> pd.DataFrame:
@@ -493,6 +576,7 @@ def _rank_valid_candidates(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
         return enrich_evidence_fields(_apply_research_policy(frame))
     prepared = enrich_evidence_fields(_apply_research_policy(frame))
+    validate_decision_integrity(prepared)
     valid = prepared.loc[
         prepared.get("Error", pd.Series("", index=prepared.index))
         .fillna("")
