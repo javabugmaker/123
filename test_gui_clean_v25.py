@@ -17,7 +17,9 @@ class GuiCleanV25Tests(unittest.TestCase):
         self.assertNotIn("PassedFilters", gui.DISPLAY_COLUMNS)
         self.assertNotIn("FinalScore", gui.DISPLAY_COLUMNS)
         self.assertNotIn("RankingReason", gui.DISPLAY_COLUMNS)
-        self.assertEqual(gui.COLUMN_NAMES["EntrySignal"], "当前买点")
+        # v41 clarifies that EntrySignal is the technical setup; the final
+        # executable state remains RankingEligibility / TradeReadiness.
+        self.assertEqual(gui.COLUMN_NAMES["EntrySignal"], "技术买点")
         self.assertEqual(gui.COLUMN_NAMES["SignalStatus"], "近期买点")
         self.assertEqual(gui.COLUMN_NAMES["SignalDays"], "持续天数")
 

@@ -102,6 +102,7 @@ python main.py scan --refresh-fundamentals
 结果位于 `output/`，主要包括：
 
 - `AllResults.csv` / `AllResults.parquet`：完整研究结果
+- `Top200.parquet`：统一 RankingScore 的机器研究榜，视图标识为 `RANKED_RESEARCH`
 - `Top50.csv` / `Top50Mixed.csv`：统一 RankingScore + 多样性约束的综合研究榜
 - `Top50Stocks.csv` / `Top50ETF.csv`：股票、ETF 各自独立纯排名
 - `Top50TradeReady.csv`：仅最终 `推荐`
@@ -112,8 +113,10 @@ python main.py scan --refresh-fundamentals
 - `Top50ValueTrapRisk.csv`：价值陷阱风险研究池
 - 信号生命周期与回测文件
 
-候选 CSV 均带 `CandidateView` / `CandidateViewRank`，避免把“研究榜排名”、
-“买点排序”和“推荐资格”混成同一个概念。
+所有候选 CSV 与 `Top200.parquet` 均带 `CandidateView` / `CandidateViewRank`，
+并以相同顺序保留 `ResearchPoolRank` / `ResearchDiversityPenalty`，避免跨格式读取时
+把“研究榜排名”、“技术买点”和最终“推荐资格”混成同一个概念。GUI 中的
+`技术买点` 只描述价格/量价结构，是否可执行以 `交易资格` 和 `执行说明` 为准。
 
 行情缓存位于 `cache/v3-tickflow-forward/`。旧行情源缓存不会被 TickFlow 行情层读取。
 

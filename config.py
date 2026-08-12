@@ -3,7 +3,7 @@
 The stable runtime defaults remain in ``config_core``.  This facade carries the
 current model/pipeline provenance across v36 market-data normalization, v37
 project-integrity/evidence UX, v38 Fundamental Gate 2.0, v39 decision integrity,
-and v40 candidate-view / explanation integrity.
+v40 candidate-view semantics and v41 cross-format/action-copy integrity.
 """
 
 from __future__ import annotations
@@ -11,11 +11,11 @@ from __future__ import annotations
 from config_core import *  # noqa: F403
 
 SCORING_VERSION: str = "2026-08-12-v39-decision-integrity2"
-PIPELINE_VERSION: str = "2026-08-12-v40-output-semantics-v39-decision-integrity-v38-fundamental"
+PIPELINE_VERSION: str = "2026-08-12-v41-output-integrity-v40-semantics-v39-decision-v38-fundamental"
 FUNDAMENTAL_GATE_VERSION: str = "2026-08-12-v38-industry-adaptive"
-DECISION_INTEGRITY_VERSION: str = "2026-08-12-v40-explanation-integrity-v39-gate-lifecycle-research"
-OUTPUT_CONTRACT_VERSION: str = "2026-08-12-v40-candidate-views"
-GUI_VERSION: str = "2026-08-12-v37-evidence-ux"
+DECISION_INTEGRITY_VERSION: str = "2026-08-12-v41-action-copy-v40-explanations-v39-gate-lifecycle"
+OUTPUT_CONTRACT_VERSION: str = "2026-08-12-v41-unified-schema-v40-candidate-views"
+GUI_VERSION: str = "2026-08-12-v41-decision-clarity-v37-evidence-ux"
 EVIDENCE_POLICY_VERSION: str = "2026-08-12-v37-peer-plus-ticker"
 MARKET_DATA_VERSION: str = "2026-08-12-v36-tickflow-volume-shares"
 BACKTEST_PROVENANCE_VERSION: str = "2026-08-12-v36-volume-shares"

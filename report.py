@@ -564,6 +564,61 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
             )
 
     if "RankingEligibility" in frame.columns:
+        eligibility = frame["RankingEligibility"].fillna("").astype(str)
+        if "DecisionState" in frame.columns:
+            expected_eligibility = (
+                frame["DecisionState"]
+                .fillna("")
+                .astype(str)
+                .str.upper()
+                .map(
+                    {
+                        "READY": "推荐",
+                        "CAUTIOUS": "谨慎候选",
+                        "OBSERVE": "观察",
+                        "BLOCKED": "风险过滤",
+                    }
+                )
+            )
+            comparable = expected_eligibility.notna()
+            bad = comparable & eligibility.ne(expected_eligibility)
+            if bad.any():
+                violations.append(
+                    "decision state disagrees with eligibility: "
+                    + ",".join(ticker.loc[bad].head(5))
+                )
+
+        if "TradeReadiness" in frame.columns:
+            readiness = frame["TradeReadiness"].fillna("").astype(str)
+            bad = readiness.ne("") & readiness.ne(eligibility)
+            if bad.any():
+                violations.append(
+                    "trade readiness disagrees with eligibility: "
+                    + ",".join(ticker.loc[bad].head(5))
+                )
+
+        actionable = eligibility.isin({"推荐", "谨慎候选"})
+        asset_type = frame.get(
+            "AssetType", pd.Series("", index=frame.index)
+        ).fillna("").astype(str).str.lower()
+        is_etf = _bool_series_for_integrity(frame, "IsETF") | asset_type.eq("etf")
+        quality_applicable = (
+            _bool_series_for_integrity(frame, "QualityApplicable")
+            if "QualityApplicable" in frame.columns
+            else ~is_etf
+        ) & ~is_etf
+        if "QualityGate" in frame.columns:
+            bad = (
+                actionable
+                & quality_applicable
+                & ~_bool_series_for_integrity(frame, "QualityGate")
+            )
+            if bad.any():
+                violations.append(
+                    "actionable stock rows failed the quality gate: "
+                    + ",".join(ticker.loc[bad].head(5))
+                )
+
         recommended = frame["RankingEligibility"].fillna("").astype(str).eq("推荐")
         stale = pd.Series(False, index=frame.index)
         if "RankingReason" in frame.columns:
@@ -917,7 +972,12 @@ def write_decision_results(
 
 
 def _annotate_candidate_view(frame: pd.DataFrame, view: str) -> pd.DataFrame:
-    """Attach a stable view identity and sequential rank to every candidate export."""
+    """Attach canonical view metadata to every candidate export.
+
+    All candidate files deliberately end with the same four columns.  Keeping
+    both names and order stable matters for Parquet/CSV consumers that compare
+    schemas before concatenating the different research views.
+    """
     working = frame.copy().reset_index(drop=True)
     rank = np.arange(1, len(working) + 1)
     working["CandidateView"] = view
@@ -928,7 +988,16 @@ def _annotate_candidate_view(frame: pd.DataFrame, view: str) -> pd.DataFrame:
     working["ResearchPoolRank"] = rank
     if "ResearchDiversityPenalty" not in working.columns:
         working["ResearchDiversityPenalty"] = 1.0
-    return working
+    metadata_columns = (
+        "CandidateView",
+        "CandidateViewRank",
+        "ResearchPoolRank",
+        "ResearchDiversityPenalty",
+    )
+    regular_columns = [
+        column for column in working.columns if column not in metadata_columns
+    ]
+    return working.loc[:, [*regular_columns, *metadata_columns]]
 
 def refresh_candidate_exports(
     frame: pd.DataFrame,
@@ -1015,7 +1084,10 @@ def refresh_candidate_exports(
     )
 
     parquet_path = destination / f"Top{top_n_parquet}.parquet"
-    _atomic_write_parquet(ranked.head(top_n_parquet), parquet_path)
+    parquet_pool = _annotate_candidate_view(
+        ranked.head(top_n_parquet), "RANKED_RESEARCH"
+    )
+    _atomic_write_parquet(parquet_pool, parquet_path)
     logger.info("Exported Top %d to %s", top_n_parquet, parquet_path)
 
     # Specialized research surfaces rank by their own purpose.  v39 still sent

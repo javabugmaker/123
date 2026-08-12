@@ -189,6 +189,59 @@ def _sync_final_explanations(
         penalty.loc[strong_ready] = cleaned
     result["RankingPenaltyReason"] = penalty
 
+
+def _sync_final_action_text(
+    result: pd.DataFrame,
+    *,
+    signal: pd.Series,
+    strong_ready: pd.Series,
+    cautious_ready: pd.Series,
+    quality_action_block: pd.Series,
+    terminal: pd.Series,
+    weakening: pd.Series,
+) -> None:
+    """Make compact action/risk copy obey the final decision state.
+
+    ``ActionSuggestion`` starts as a lifecycle-stage description.  It must be
+    reconciled after quality, evidence tier and lifecycle checks; otherwise an
+    OBSERVE row can still say ``顺势跟踪`` even though execution is explicitly
+    disallowed elsewhere in the same record.
+    """
+    decision = _core._text_series(result, "DecisionState", "OBSERVE").str.upper()
+    observe = decision.eq("OBSERVE")
+    blocked = decision.eq("BLOCKED")
+
+    suggestion = _core._text_series(result, "ActionSuggestion", "等待条件改善")
+    suggestion.loc[observe] = "继续观察，等待条件改善"
+    suggestion.loc[observe & signal.eq("WAIT_PULLBACK")] = "等待回调与资格确认"
+    suggestion.loc[
+        observe & signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
+    ] = "仅观察，暂不执行"
+    suggestion.loc[quality_action_block & observe] = "仅研究观察，等待基本面改善"
+    suggestion.loc[weakening & ~terminal] = "等待信号重新增强"
+    suggestion.loc[cautious_ready] = "谨慎观察，等待进一步确认"
+    suggestion.loc[strong_ready & signal.eq("BUY_NOW")] = "执行条件满足，按计划分批"
+    suggestion.loc[strong_ready & signal.eq("BREAKOUT_CONFIRM")] = (
+        "突破确认，等待计划内执行"
+    )
+    suggestion.loc[blocked] = "风险过滤，暂不参与"
+    result["ActionSuggestion"] = suggestion
+
+    risk_note = _core._text_series(result, "RiskNote", "结构仍需确认")
+    readiness_reason = _core._text_series(
+        result, "TradeReadinessReason", "等待趋势、量能或风险条件改善"
+    )
+    hard_reason = _core._text_series(result, "HardRiskReason", "")
+    risk_note.loc[quality_action_block & observe] = readiness_reason.loc[
+        quality_action_block & observe
+    ]
+    risk_note.loc[weakening & ~terminal] = "信号快速衰减"
+    risk_note.loc[cautious_ready] = "B级候选，仍需进一步确认"
+    risk_note.loc[blocked] = hard_reason.loc[blocked].where(
+        hard_reason.loc[blocked].str.strip().ne(""), readiness_reason.loc[blocked]
+    )
+    result["RiskNote"] = risk_note
+
 def _recompute_tiers_and_decisions(
     result: pd.DataFrame,
     corrected: pd.Series,
@@ -405,6 +458,15 @@ def _recompute_tiers_and_decisions(
     )
     advice.loc[terminal] = "信号生命周期已结束，当前不参与。"
     result["OperationAdvice"] = advice
+    _sync_final_action_text(
+        result,
+        signal=signal,
+        strong_ready=strong_ready,
+        cautious_ready=cautious_ready,
+        quality_action_block=quality_action_block,
+        terminal=terminal,
+        weakening=weakening,
+    )
 
 
 def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
@@ -439,4 +501,5 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
 
 _core.finalize_signal_ranking = finalize_signal_ranking
 _core._sync_final_explanations = _sync_final_explanations
+_core._sync_final_action_text = _sync_final_action_text
 sys.modules[__name__] = _core
