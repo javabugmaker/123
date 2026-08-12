@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - tools/v39_migrate.py
+      - tools/v39_update_contracts.py
       - .github/workflows/v39-migration.yml
   workflow_dispatch:
 
@@ -33,6 +34,9 @@ jobs:
       - name: Apply v39 migration
         run: python tools/v39_migrate.py
 
+      - name: Update forward-compatible history contracts
+        run: python tools/v39_update_contracts.py
+
       - name: Static validation
         run: |
           ruff check .
@@ -51,7 +55,7 @@ jobs:
         run: |
           git config user.name "OpenAI Codex"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add config.py report.py signal_lifecycle.py signal_lifecycle_core.py test_v39_decision_integrity.py
+          git add config.py report.py signal_lifecycle.py signal_lifecycle_core.py test_v39_decision_integrity.py test_v38_fundamental_gate2.py test_v37_project_integrity.py
           if git diff --cached --quiet; then
             echo "No product changes to commit"
             exit 0
