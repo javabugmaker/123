@@ -130,6 +130,65 @@ def _apply_lifecycle_integrity(
     result["ReadinessPenaltyFactor"] = new_readiness.round(4)
 
 
+
+def _strip_reason_tokens(series: pd.Series, tokens: tuple[str, ...]) -> pd.Series:
+    cleaned = series.fillna("").astype(str)
+    for token in tokens:
+        cleaned = cleaned.str.replace(token, "", regex=False)
+    cleaned = cleaned.str.replace("；；", "；", regex=False)
+    return cleaned.str.strip("；， ")
+
+
+def _sync_final_explanations(
+    result: pd.DataFrame,
+    strong_ready: pd.Series,
+    cautious_ready: pd.Series,
+    filter_override: pd.Series,
+) -> None:
+    """Synchronize reason/penalty text with the final post-normalization decision."""
+    actionable = strong_ready | cautious_ready
+    readiness_reason = _core._text_series(
+        result, "TradeReadinessReason", "等待趋势、量能或风险条件改善"
+    )
+    ranking_reason = _core._text_series(result, "RankingReason", "")
+    ranking_reason.loc[actionable] = readiness_reason.loc[actionable]
+
+    backtest_eligible = _core._bool_series(result, "BacktestEligibleForRanking")
+    confidence = _core._text_series(result, "BacktestConfidenceTier", "")
+    backtest_status = _core._text_series(result, "BacktestStatus", "").str.upper()
+    insufficient_evidence = actionable & ~backtest_eligible & (
+        confidence.str.contains("样本不足", regex=False)
+        | backtest_status.isin({"SAMPLES", "NO_SIGNAL_SAMPLES"})
+    )
+    ranking_reason.loc[insufficient_evidence] = (
+        ranking_reason.loc[insufficient_evidence].str.rstrip("；")
+        + "；回测样本不足，不参与校准"
+    )
+
+    strict_override = actionable & filter_override
+    override_text = "量价资金确认突破，严格覆盖基础筛选缺口"
+    missing_override_text = strict_override & ~ranking_reason.str.contains(
+        override_text, regex=False
+    )
+    ranking_reason.loc[missing_override_text] = (
+        ranking_reason.loc[missing_override_text].str.rstrip("；")
+        + "；"
+        + override_text
+    )
+    result["RankingReason"] = ranking_reason
+
+    penalty = _core._text_series(result, "RankingPenaltyReason", "")
+    if strong_ready.any():
+        cleaned = _strip_reason_tokens(
+            penalty.loc[strong_ready],
+            (
+                "B级仅列谨慎候选",
+                "B级量价资金突破确认，谨慎候选",
+            ),
+        )
+        penalty.loc[strong_ready] = cleaned
+    result["RankingPenaltyReason"] = penalty
+
 def _recompute_tiers_and_decisions(
     result: pd.DataFrame,
     corrected: pd.Series,
@@ -326,6 +385,7 @@ def _recompute_tiers_and_decisions(
     reason.loc[terminal] = "信号生命周期已结束，禁止作为当前交易信号"
     result["TradeReadinessReason"] = reason
     result["DecisionReason"] = reason
+    _sync_final_explanations(result, strong_ready, cautious_ready, filter_override)
 
     advice = _core._text_series(result, "OperationAdvice", "")
     advice.loc[strong_ready & signal.eq("BUY_NOW")] = (
@@ -378,4 +438,5 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 _core.finalize_signal_ranking = finalize_signal_ranking
+_core._sync_final_explanations = _sync_final_explanations
 sys.modules[__name__] = _core

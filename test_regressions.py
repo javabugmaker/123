@@ -695,6 +695,13 @@ class RegressionTests(TestCase):
                 filter_details={"signal_count": 3},
             ),
         ]
+        # This historical export fixture represents valid research candidates.
+        # Make its modern entry-state intent explicit so v40 can keep genuine
+        # risk-filtered rows out of Opportunity without weakening compatibility.
+        for result in results:
+            result.entry_signal = "WAIT_PULLBACK"
+            result.raw_entry_signal = "WAIT_PULLBACK"
+
         results[0].score.total = 90.0
         results[0].score.trend = 25.0
         results[0].score.accumulation = 25.0

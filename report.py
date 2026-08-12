@@ -563,6 +563,28 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
                 "actionable rows without active lifecycle: " + ",".join(ticker.loc[bad].head(5))
             )
 
+    if "RankingEligibility" in frame.columns:
+        recommended = frame["RankingEligibility"].fillna("").astype(str).eq("推荐")
+        stale = pd.Series(False, index=frame.index)
+        if "RankingReason" in frame.columns:
+            ranking_reason = frame["RankingReason"].fillna("").astype(str)
+            stale |= recommended & (
+                ranking_reason.str.contains("谨慎候选", regex=False)
+                | ranking_reason.str.contains("转为观察", regex=False)
+                | ranking_reason.str.contains("禁止进入推荐", regex=False)
+            )
+        if "RankingPenaltyReason" in frame.columns:
+            penalty_reason = frame["RankingPenaltyReason"].fillna("").astype(str)
+            stale |= recommended & (
+                penalty_reason.str.contains("B级仅列谨慎候选", regex=False)
+                | penalty_reason.str.contains("禁止进入推荐", regex=False)
+            )
+        if stale.any():
+            violations.append(
+                "recommended rows carry stale cautious explanation: "
+                + ",".join(ticker.loc[stale].head(5))
+            )
+
     if violations:
         raise ValueError("Decision integrity violation: " + " | ".join(violations))
 
@@ -742,10 +764,13 @@ def _diversify_ranked_candidates(
     limit: int,
     max_per_theme: int = ETF_THEME_MAX_PER_TOP_LIST,
     max_per_stock_industry: int = STOCK_INDUSTRY_MAX_PER_TOP_LIST,
+    diversity_prepared: bool = False,
 ) -> pd.DataFrame:
     if frame.empty or limit <= 0:
         return frame.head(0).copy()
-    working = _ensure_diversity_columns(frame)
+    # refresh_candidate_exports() prepares these columns once for the full wide
+    # frame.  Reusing them avoids repeated 200+ column copies for each view.
+    working = frame if diversity_prepared else _ensure_diversity_columns(frame)
     theme_counts: dict[str, int] = {}
     tracking_counts: dict[str, int] = {}
     stock_industry_counts: dict[str, int] = {}
@@ -756,6 +781,9 @@ def _diversify_ranked_candidates(
         working.get("RankingScore", working.get("CrossAssetScore", pd.Series(0.0, index=working.index))),
         errors="coerce",
     ).fillna(0.0)
+    risk_filtered = working.get(
+        "RankingEligibility", pd.Series("观察", index=working.index)
+    ).fillna("观察").astype(str).eq("风险过滤")
     penalties: dict[int, float] = {}
     while remaining and len(selected) < int(limit):
         best_index: int | None = None
@@ -785,7 +813,11 @@ def _diversify_ranked_candidates(
             if (not row_is_etf) and classification and stock_industry_counts.get(classification, 0) >= max(1, int(max_per_stock_industry)):
                 continue
             penalty = max(0.70, 1.0 - float(THEME_CLUSTER_SOFT_PENALTY) * cluster_counts.get(cluster, 0)) if cluster else 1.0
-            value = float(rank_score.loc[index]) * penalty
+            # _rank_valid_candidates() deliberately puts risk-filtered rows last.
+            # Preserve that bucket priority after diversity reranking: a blocked
+            # row may fill the list only when no feasible non-risk row remains.
+            risk_bucket_penalty = 1_000_000_000.0 if bool(risk_filtered.loc[index]) else 0.0
+            value = float(rank_score.loc[index]) * penalty - risk_bucket_penalty
             if value > best_value:
                 best_index, best_value, best_penalty = int(index), value, penalty
         if best_index is None:
@@ -883,6 +915,21 @@ def write_decision_results(
     )
     return path
 
+
+def _annotate_candidate_view(frame: pd.DataFrame, view: str) -> pd.DataFrame:
+    """Attach a stable view identity and sequential rank to every candidate export."""
+    working = frame.copy().reset_index(drop=True)
+    rank = np.arange(1, len(working) + 1)
+    working["CandidateView"] = view
+    working["CandidateViewRank"] = rank
+    # ResearchPoolRank remains the compatibility rank used by older GUI/data
+    # consumers.  Specialized views historically received it only when they
+    # happened to pass through the diversity selector; v40 makes it explicit.
+    working["ResearchPoolRank"] = rank
+    if "ResearchDiversityPenalty" not in working.columns:
+        working["ResearchDiversityPenalty"] = 1.0
+    return working
+
 def refresh_candidate_exports(
     frame: pd.DataFrame,
     top_n_csv: int = TOP_N_REPORT,
@@ -909,7 +956,10 @@ def refresh_candidate_exports(
     write_decision_results(ranked, destination)
 
     csv_path = destination / f"Top{top_n_csv}.csv"
-    research_pool = _diversify_ranked_candidates(ranked, top_n_csv)
+    research_pool = _diversify_ranked_candidates(
+        ranked, top_n_csv, diversity_prepared=True
+    )
+    research_pool = _annotate_candidate_view(research_pool, "MIXED_RESEARCH")
     _atomic_write_csv(research_pool, csv_path)
     logger.info(
         "Exported diversified Top %d (%d rows) to %s",
@@ -918,9 +968,7 @@ def refresh_candidate_exports(
         csv_path,
     )
 
-    # Keep TopN.csv as the compatibility alias while publishing explicit
-    # mixed / stock / ETF research lists so one asset class cannot hide the
-    # other in the GUI.
+    # TopN.csv is the compatibility alias of the explicit mixed research list.
     mixed_path = destination / f"Top{top_n_csv}Mixed.csv"
     _atomic_write_csv(research_pool, mixed_path)
 
@@ -931,21 +979,16 @@ def refresh_candidate_exports(
         "IsETF", pd.Series(False, index=ranked.index)
     ).map(_truthy) | asset_type.eq("etf")
 
-    # Split asset lists are pure within-asset rankings, not diversified research
-    # pools.  Diversity caps remain valuable for the mixed Top50, but must never
-    # truncate the dedicated stock/ETF pages below the number of valid assets.
-    # Trade eligibility is preserved as a display/decision field and does not
-    # decide whether a valid asset may appear in its research Top50.
+    # Dedicated asset lists are pure within-asset rankings.  They intentionally
+    # do not inherit mixed-list diversity caps or trade-readiness thresholds.
     stock_path = destination / f"Top{top_n_csv}Stocks.csv"
-    stock_pool = ranked.loc[~is_etf_mask].head(top_n_csv).copy().reset_index(drop=True)
-    stock_pool["ResearchDiversityPenalty"] = 1.0
-    stock_pool["ResearchPoolRank"] = np.arange(1, len(stock_pool) + 1)
+    stock_pool = ranked.loc[~is_etf_mask].head(top_n_csv).copy()
+    stock_pool = _annotate_candidate_view(stock_pool, "STOCK_RESEARCH")
     _atomic_write_csv(stock_pool, stock_path)
 
     etf_path = destination / f"Top{top_n_csv}ETF.csv"
-    etf_pool = ranked.loc[is_etf_mask].head(top_n_csv).copy().reset_index(drop=True)
-    etf_pool["ResearchDiversityPenalty"] = 1.0
-    etf_pool["ResearchPoolRank"] = np.arange(1, len(etf_pool) + 1)
+    etf_pool = ranked.loc[is_etf_mask].head(top_n_csv).copy()
+    etf_pool = _annotate_candidate_view(etf_pool, "ETF_RESEARCH")
     _atomic_write_csv(etf_pool, etf_path)
     logger.info(
         "Exported split research lists: mixed=%d, stocks=%d, ETF=%d.",
@@ -960,7 +1003,10 @@ def refresh_candidate_exports(
             "RankingEligibility", pd.Series("观察", index=ranked.index)
         ).eq("推荐")
     ]
-    trade_ready = _diversify_ranked_candidates(trade_ready, top_n_csv)
+    trade_ready = _diversify_ranked_candidates(
+        trade_ready, top_n_csv, diversity_prepared=True
+    )
+    trade_ready = _annotate_candidate_view(trade_ready, "TRADE_READY")
     _atomic_write_csv(trade_ready, trade_ready_path)
     logger.info(
         "Exported %d trade-ready candidates to %s",
@@ -972,40 +1018,51 @@ def refresh_candidate_exports(
     _atomic_write_parquet(ranked.head(top_n_parquet), parquet_path)
     logger.info("Exported Top %d to %s", top_n_parquet, parquet_path)
 
+    # Specialized research surfaces rank by their own purpose.  v39 still sent
+    # these through the mixed RankingScore diversity selector, which could make
+    # Opportunity and EntryCandidates byte-for-byte clones of Top50Mixed.
+    non_risk = ranked.get(
+        "RankingEligibility", pd.Series("观察", index=ranked.index)
+    ).fillna("观察").astype(str).ne("风险过滤")
+
     opportunity_path = destination / f"Top{top_n_csv}Opportunity.csv"
     opportunity = _sort_export_rows(
-        ranked,
-        ("RankingScore", "FinalScore", "TriggerScore")
-        if "FinalScore" in ranked.columns
-        else ("OpportunityScore", "Score"),
-    )
-    opportunity = _diversify_ranked_candidates(opportunity, top_n_csv)
+        ranked.loc[non_risk],
+        ("OpportunityScore", "RankingScore", "FinalScore"),
+    ).head(top_n_csv)
+    opportunity = _annotate_candidate_view(opportunity, "OPPORTUNITY")
     _atomic_write_csv(opportunity, opportunity_path)
 
     trigger_path = destination / f"Top{top_n_csv}BreakoutCandidates.csv"
-    trigger = ranked.loc[
-        (
-            pd.to_numeric(
-                ranked.get("BreakoutScore", pd.Series(0.0, index=ranked.index)),
-                errors="coerce",
-            ).fillna(0) >= 55
-        )
+    entry_signal = ranked.get(
+        "EntrySignal", pd.Series("AVOID", index=ranked.index)
+    ).fillna("AVOID").astype(str).str.upper()
+    confirmed_breakout = (
+        non_risk
+        & entry_signal.eq("BREAKOUT_CONFIRM")
+        & ranked.get("PriceBreakout", pd.Series(False, index=ranked.index)).map(_truthy)
         & ranked.get(
-            "SmartMoneyStage", pd.Series("NONE", index=ranked.index)
-        ).isin(["ACCUMULATION", "BREAKOUT"])
-    ]
-    trigger = _sort_export_rows(trigger, ("RankingScore", "BreakoutScore"))
-    trigger = _diversify_ranked_candidates(trigger, top_n_csv)
+            "BreakoutVolumeConfirmed", pd.Series(False, index=ranked.index)
+        ).map(_truthy)
+        & ranked.get(
+            "BreakoutFlowConfirmed", pd.Series(False, index=ranked.index)
+        ).map(_truthy)
+    )
+    trigger = _sort_export_rows(
+        ranked.loc[confirmed_breakout], ("BreakoutScore", "RankingScore")
+    ).head(top_n_csv)
+    trigger = _annotate_candidate_view(trigger, "CONFIRMED_BREAKOUT")
     _atomic_write_csv(trigger, trigger_path)
 
     entry_path = destination / f"Top{top_n_csv}EntryCandidates.csv"
     entry = ranked.loc[
-        ranked.get("EntrySignal", pd.Series("AVOID", index=ranked.index)).isin(
-            ["BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"]
-        )
+        non_risk
+        & entry_signal.isin(["BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"])
     ]
-    entry = _sort_export_rows(entry, ("RankingScore", "EntryScore"))
-    entry = _diversify_ranked_candidates(entry, top_n_csv)
+    entry = _sort_export_rows(
+        entry, ("EntrySignalPriority", "EntryScore", "RankingScore")
+    ).head(top_n_csv)
+    entry = _annotate_candidate_view(entry, "ENTRY_SETUP")
     _atomic_write_csv(entry, entry_path)
 
     trap_path = destination / f"Top{top_n_csv}ValueTrapRisk.csv"
@@ -1015,18 +1072,21 @@ def refresh_candidate_exports(
             errors="coerce",
         ).fillna(0) >= 60
     ]
-    trap = _sort_export_rows(trap, ("ValueTrapRisk", "RankingScore"))
-    _atomic_write_csv(trap.head(top_n_csv), trap_path)
+    trap = _sort_export_rows(trap, ("ValueTrapRisk", "RankingScore")).head(top_n_csv)
+    trap = _annotate_candidate_view(trap, "VALUE_TRAP_RISK")
+    _atomic_write_csv(trap, trap_path)
 
     sustained_path = destination / f"Top{top_n_csv}SustainedSignals.csv"
-    sustained = ranked.loc[
-        pd.to_numeric(
-            ranked.get("SignalDays", pd.Series(0.0, index=ranked.index)),
-            errors="coerce",
-        ).fillna(0).gt(0)
-    ]
-    sustained = _sort_export_rows(sustained, ("SignalDays", "OpportunityScore"))
-    _atomic_write_csv(sustained.head(top_n_csv), sustained_path)
+    signal_days = pd.to_numeric(
+        ranked.get("SignalDays", pd.Series(0.0, index=ranked.index)),
+        errors="coerce",
+    ).fillna(0)
+    sustained = ranked.loc[non_risk & signal_days.gt(0)]
+    sustained = _sort_export_rows(
+        sustained, ("SignalDays", "OpportunityScore", "RankingScore")
+    ).head(top_n_csv)
+    sustained = _annotate_candidate_view(sustained, "SUSTAINED_SIGNAL")
+    _atomic_write_csv(sustained, sustained_path)
     return csv_path, parquet_path, ranked
 
 
