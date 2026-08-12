@@ -277,10 +277,13 @@ def _recompute_tiers_and_decisions(
         ),
         0.0,
     ).clip(0.0, 1.0)
-    cyclical_override = _core._bool_series(result, "CyclicalQualityOverride")
+    hard_data_complete = _core._bool_series(
+        result, "QualityHardDataComplete", True
+    )
     quality_action_block = quality_applicable & (
         quality_completeness.lt(_config.QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE)
-        | (~quality_gate & ~cyclical_override)
+        | ~hard_data_complete
+        | ~quality_gate
     )
     recency_days = _core._number(
         result.get("SignalRecencyDays", pd.Series(np.nan, index=result.index)),
@@ -378,6 +381,7 @@ def _recompute_tiers_and_decisions(
     chase = _core._number(
         result.get("ChaseRiskScore", pd.Series(0.0, index=result.index)), 0.0
     )
+    execution_risk_block = _core._execution_risk_block(result, signal)
 
     trade_ready = (
         signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
@@ -391,6 +395,7 @@ def _recompute_tiers_and_decisions(
         & ~data_risk
         & ~stale_data
         & ~minimum_score_risk
+        & ~execution_risk_block
         & chase.lt(_config.CHASE_RISK_HIGH_THRESHOLD)
     )
     hard_block = (
@@ -432,6 +437,9 @@ def _recompute_tiers_and_decisions(
     reason.loc[strong_ready] = "买点、质量、数据与综合评分均满足执行条件"
     reason.loc[cautious_ready] = "B级观察但量价资金突破确认，列为谨慎候选"
     reason.loc[tier_demoted] = "研究等级未达到A级执行门槛，转为观察"
+    reason.loc[execution_risk_block & ~hard_block] = (
+        "止损距离或预期盈亏比未达执行门槛，转为观察"
+    )
     reason.loc[weakening & ~terminal] = (
         "信号处于WEAKEN且快速下降，等待重新增强后再进入推荐"
     )

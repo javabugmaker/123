@@ -30,6 +30,7 @@ from classification import (
     theme_cluster,
 )
 from config import (
+    BREAKOUT_CONFIRM_MIN_VOLUME_RATIO,
     ETF_THEME_MAX_PER_TOP_LIST,
     ETF_TRACKING_MAX_PER_TOP_LIST,
     INSTITUTIONAL_TIER_A_SCORE,
@@ -44,11 +45,14 @@ from config import (
     THEME_CLUSTER_SOFT_PENALTY,
     TOP_N_PARQUET,
     TOP_N_REPORT,
+    TRADE_READY_MAX_STOP_DISTANCE_PCT,
+    TRADE_READY_MIN_REWARD_RISK,
     VALUE_TRAP_RISK_THRESHOLD,
 )
 from evidence import enrich_evidence_fields
 from performance_cache import BACKTEST_CACHE_VERSION, INDICATOR_CACHE_VERSION
 from scanner import ScanReport, ScanResult
+from score import model_weight_signature
 from signal_lifecycle import enrich_signal_lifecycle, finalize_signal_ranking
 
 logger = logging.getLogger("institution_scanner.report")
@@ -218,7 +222,9 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "Score": round(r.score.total, 2),
                 "BaseScore": round(r.base_score, 2) if np.isfinite(r.base_score) else None,
                 "TriggerScore": round(r.trigger_score, 2) if np.isfinite(r.trigger_score) else None,
+                "ExecutionScore": round(r.score.execution_score, 2),
                 "FinalScore": round(r.final_score, 2) if np.isfinite(r.final_score) else None,
+                "ModelWeightSignature": model_weight_signature(),
                 "BreakoutScore": round(r.breakout_score, 2) if np.isfinite(r.breakout_score) else None,
                 "SmartMoneyStage": r.smart_money_stage,
                 "EntryScore": round(r.entry_score, 2) if np.isfinite(r.entry_score) else None,
@@ -236,6 +242,9 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "BreakoutFlowConfirmed": r.breakout_flow_confirmed,
                 "PriceBreakout": r.price_breakout,
                 "StopLoss": round(r.stop_loss, 2) if np.isfinite(r.stop_loss) else None,
+                "ProjectedTarget": round(r.projected_target, 2) if np.isfinite(r.projected_target) else None,
+                "StopDistancePct": round(r.stop_distance_pct, 4) if np.isfinite(r.stop_distance_pct) else None,
+                "RewardRiskRatio": round(r.reward_risk_ratio, 4) if np.isfinite(r.reward_risk_ratio) else None,
                 "ValueTrapRisk": round(r.value_trap_risk, 2) if np.isfinite(r.value_trap_risk) else None,
                 "RiskWarning": r.risk_warning,
                 "OperationAdvice": r.operation_advice,
@@ -282,6 +291,7 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "QualityApplicable": r.quality_applicable,
                 "InstitutionHoldingStatus": r.quality_institution_holding_status,
                 "QualityDataCompleteness": round(r.quality_data_completeness, 4),
+                "QualityHardDataComplete": r.quality_hard_data_complete,
                 "QualityGateReason": r.quality_gate_reason,
                 "QualityMultiplier": round(r.quality_multiplier, 4),
                 "QualityProfile": r.quality_profile,
@@ -616,6 +626,62 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
             if bad.any():
                 violations.append(
                     "actionable stock rows failed the quality gate: "
+                    + ",".join(ticker.loc[bad].head(5))
+                )
+        if "QualityHardDataComplete" in frame.columns:
+            bad = (
+                actionable
+                & quality_applicable
+                & ~_bool_series_for_integrity(frame, "QualityHardDataComplete")
+            )
+            if bad.any():
+                violations.append(
+                    "actionable stock rows missing required fundamental data: "
+                    + ",".join(ticker.loc[bad].head(5))
+                )
+
+        signal = frame.get(
+            "EntrySignal", pd.Series("", index=frame.index)
+        ).fillna("").astype(str).str.upper()
+        breakout_actionable = actionable & signal.eq("BREAKOUT_CONFIRM")
+        if "BreakoutVolumeRatio" in frame.columns:
+            volume_ratio = pd.to_numeric(
+                frame["BreakoutVolumeRatio"], errors="coerce"
+            )
+            bad = (
+                breakout_actionable
+                & volume_ratio.notna()
+                & volume_ratio.lt(BREAKOUT_CONFIRM_MIN_VOLUME_RATIO)
+            )
+            if bad.any():
+                violations.append(
+                    "actionable breakouts lack event-volume confirmation: "
+                    + ",".join(ticker.loc[bad].head(5))
+                )
+
+        if "StopDistancePct" in frame.columns:
+            stop_distance = pd.to_numeric(
+                frame["StopDistancePct"], errors="coerce"
+            )
+            bad = actionable & stop_distance.notna() & (
+                stop_distance.le(0.0)
+                | stop_distance.gt(TRADE_READY_MAX_STOP_DISTANCE_PCT)
+            )
+            if bad.any():
+                violations.append(
+                    "actionable rows exceed stop-distance bounds: "
+                    + ",".join(ticker.loc[bad].head(5))
+                )
+        if "RewardRiskRatio" in frame.columns:
+            reward_risk = pd.to_numeric(
+                frame["RewardRiskRatio"], errors="coerce"
+            )
+            bad = actionable & reward_risk.notna() & reward_risk.lt(
+                TRADE_READY_MIN_REWARD_RISK
+            )
+            if bad.any():
+                violations.append(
+                    "actionable rows fail reward-risk bounds: "
                     + ",".join(ticker.loc[bad].head(5))
                 )
 

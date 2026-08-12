@@ -57,7 +57,7 @@ from downloader import (
 )
 from filters import run_all_filters
 from fundamental_quality import get_quality
-from indicators import compute_all_indicators
+from indicators import compute_all_indicators, true_range, wilder_average
 from performance_cache import load_or_compute_indicators
 from score import (
     ScoreBreakdown,
@@ -148,6 +148,9 @@ class ScanResult:
     breakout_flow_confirmed: bool = False
     price_breakout: bool = False
     stop_loss: float = np.nan
+    projected_target: float = np.nan
+    stop_distance_pct: float = np.nan
+    reward_risk_ratio: float = np.nan
     value_trap_risk: float = np.nan
     risk_warning: str = ""
     operation_advice: str = ""
@@ -194,6 +197,7 @@ class ScanResult:
     quality_applicable: bool = True
     quality_institution_holding_status: str = "UNKNOWN"
     quality_data_completeness: float = 0.0
+    quality_hard_data_complete: bool = False
     quality_gate_reason: str = "基本面数据缺失（中性）"
     quality_multiplier: float = 0.95
     quality_profile: str = "GENERAL"
@@ -295,17 +299,35 @@ def _parse_float(value: Any, default: float = np.nan) -> float:
     return parsed if np.isfinite(parsed) else default
 
 
+def _quality_hard_data_complete_from_row(row: pd.Series) -> bool:
+    """Read v43 completeness or derive it from legacy fundamental columns."""
+    if "QualityHardDataComplete" in row.index and pd.notna(
+        row.get("QualityHardDataComplete")
+    ):
+        return _parse_bool(row.get("QualityHardDataComplete"), False)
+    if _parse_bool(row.get("IsETF", False)):
+        return True
+    profile = str(row.get("QualityProfile", "GENERAL") or "GENERAL").upper()
+    roe_available = np.isfinite(_parse_float(row.get("ROE", np.nan)))
+    profit_available = all(
+        np.isfinite(_parse_float(row.get(column, np.nan)))
+        for column in ("NetProfitY1", "NetProfitY2", "NetProfitY3")
+    )
+    margin_available = np.isfinite(
+        _parse_float(row.get("IndustryGrossMarginPercentile", np.nan))
+    )
+    margin_required = profile not in {"FINANCIAL", "DEFENSIVE", "ETF"}
+    return bool(
+        roe_available
+        and profit_available
+        and (not margin_required or margin_available)
+    )
+
+
 def _latest_atr_from_ohlc(df: pd.DataFrame, period: int) -> float:
     if df is None or len(df) < period or not {"High", "Low", "Close"}.issubset(df.columns):
         return np.nan
-    high = pd.to_numeric(df["High"], errors="coerce")
-    low = pd.to_numeric(df["Low"], errors="coerce")
-    close = pd.to_numeric(df["Close"], errors="coerce")
-    prev_close = close.shift(1)
-    true_range = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
-    ).max(axis=1)
-    value = true_range.rolling(period, min_periods=period).mean().iloc[-1]
+    value = wilder_average(true_range(df), period).iloc[-1]
     return _parse_float(value, np.nan)
 
 
@@ -432,7 +454,6 @@ def scan_single_from_df(
             market_cap=market_cap,
             require_market_cap=not ticker_info.is_etf,
         )
-        passed = filter_results.all_passed()
         filter_map = {
             "min_price": filter_results.min_price.passed,
             "min_volume": filter_results.min_volume.passed,
@@ -481,6 +502,8 @@ def scan_single_from_df(
             sum(bool(value) for value in accumulation_states.values()) >= 2
             and any(bool(value) for value in structure_states.values())
         )
+        passed = bool(universe_eligible and signal_confirmed)
+        filter_map.update(base_filter_states)
         failed_filter_names = [
             name
             for name, state in {**base_filter_states, **accumulation_states, **structure_states}.items()
@@ -666,6 +689,9 @@ def scan_single_from_df(
             breakout_flow_confirmed=_parse_bool(entry.get("flow_confirmed")),
             price_breakout=_parse_bool(entry.get("price_breakout")),
             stop_loss=_parse_float(entry["stop"]),
+            projected_target=_parse_float(entry.get("projected_target")),
+            stop_distance_pct=_parse_float(entry.get("stop_distance_pct")),
+            reward_risk_ratio=_parse_float(entry.get("reward_risk_ratio")),
             value_trap_risk=trap,
             risk_warning=risk_warning,
             operation_advice=operation_advice,
@@ -697,6 +723,9 @@ def scan_single_from_df(
             quality_applicable=getattr(quality, "applicable", not ticker_info.is_etf),
             quality_institution_holding_status=quality.institution_holding_status,
             quality_data_completeness=quality.quality_data_completeness,
+            quality_hard_data_complete=getattr(
+                quality, "quality_hard_data_complete", False
+            ),
             quality_gate_reason=quality.quality_gate_reason,
             quality_multiplier=quality.quality_multiplier,
             quality_profile=getattr(quality, "quality_profile", "GENERAL"),
@@ -931,6 +960,9 @@ def run_scan(
                             confidence=_parse_float(
                                 row.get("ScoreConfidence", 1.0), 1.0
                             ),
+                            execution_score=_parse_float(
+                                row.get("ExecutionScore", np.nan), 0.0
+                            ),
                         ),
                         score_missing_indicators=_parse_int(
                             row.get("ScoreMissingIndicators", 0), 0
@@ -1055,6 +1087,15 @@ def run_scan(
                         ),
                         price_breakout=_parse_bool(row.get("PriceBreakout", False)),
                         stop_loss=_parse_float(row.get("StopLoss", np.nan)),
+                        projected_target=_parse_float(
+                            row.get("ProjectedTarget", np.nan)
+                        ),
+                        stop_distance_pct=_parse_float(
+                            row.get("StopDistancePct", np.nan)
+                        ),
+                        reward_risk_ratio=_parse_float(
+                            row.get("RewardRiskRatio", np.nan)
+                        ),
                         value_trap_risk=_parse_float(
                             row.get("ValueTrapRisk", np.nan)
                         ),
@@ -1118,6 +1159,9 @@ def run_scan(
                         quality_data_completeness=_parse_float(
                             row.get("QualityDataCompleteness", 0.0), 0.0
                         ),
+                        quality_hard_data_complete=_parse_bool(
+                            _quality_hard_data_complete_from_row(row)
+                        ),
                         quality_gate_reason=str(
                             row.get(
                                 "QualityGateReason", "基本面数据缺失（中性）"
@@ -1126,6 +1170,15 @@ def run_scan(
                         ),
                         quality_multiplier=_parse_float(
                             row.get("QualityMultiplier", 0.95), 0.95
+                        ),
+                        quality_profile=str(
+                            row.get("QualityProfile", "GENERAL") or "GENERAL"
+                        ),
+                        quality_profit_trend_status=str(
+                            row.get("ProfitTrendStatus", "UNKNOWN") or "UNKNOWN"
+                        ),
+                        cyclical_quality_override=_parse_bool(
+                            row.get("CyclicalQualityOverride", False)
                         ),
                         etf_tracking_key=str(row.get("ETFTrackingKey", "") or ""),
                         theme_cluster=str(row.get("ThemeCluster", "") or ""),
@@ -1176,6 +1229,24 @@ def run_scan(
                         failed_filter_names=str(row.get("FailedFilterNames", "") or ""),
                         style=str(row.get("Style", "均衡")),
                         filter_details={
+                            "min_price": _parse_bool(
+                                row.get("MinPricePassed", False)
+                            ),
+                            "min_volume": _parse_bool(
+                                row.get("MinVolumePassed", False)
+                            ),
+                            "min_market_cap": _parse_bool(
+                                row.get("MarketCapPassed", False)
+                            ),
+                            "market_cap": _parse_float(
+                                row.get("MarketCap", np.nan)
+                            ),
+                            "market_cap_available": _parse_bool(
+                                row.get("MarketCapDataAvailable", False)
+                            ),
+                            "sufficient_history": _parse_bool(
+                                row.get("SufficientHistoryPassed", False)
+                            ),
                             "obv_divergence": _parse_bool(
                                 row.get("OBV_Div", False)
                             ),

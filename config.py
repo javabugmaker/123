@@ -1,20 +1,20 @@
 """InstitutionScanner configuration facade.
 
 The stable runtime defaults remain in ``config_core``.  This facade carries the
-current model/pipeline provenance across v36 market-data normalization, v37
-project-integrity/evidence UX, v38 Fundamental Gate 2.0, v39 decision integrity,
-v40 candidate-view semantics and v41 cross-format/action-copy integrity.
+current model/pipeline provenance across v36 market-data normalization, v38
+Fundamental Gate 2.0, v41 output integrity, v42 diversity performance and v43
+core logic integrity.
 """
 
 from __future__ import annotations
 
 from config_core import *  # noqa: F403
 
-SCORING_VERSION: str = "2026-08-12-v39-decision-integrity2"
-PIPELINE_VERSION: str = "2026-08-12-v41-output-integrity-v40-semantics-v39-decision-v38-fundamental"
-FUNDAMENTAL_GATE_VERSION: str = "2026-08-12-v38-industry-adaptive"
-DECISION_INTEGRITY_VERSION: str = "2026-08-12-v41-action-copy-v40-explanations-v39-gate-lifecycle"
-OUTPUT_CONTRACT_VERSION: str = "2026-08-12-v41-unified-schema-v40-candidate-views"
+SCORING_VERSION: str = "2026-08-12-v43-wilder-risk-integrity-v39-decision"
+PIPELINE_VERSION: str = "2026-08-12-v43-core-v42-diversity-v41-output-v40-semantics-v39-decision-v38-fundamental"
+FUNDAMENTAL_GATE_VERSION: str = "2026-08-12-v43-hard-data-completeness-v38-industry-adaptive"
+DECISION_INTEGRITY_VERSION: str = "2026-08-12-v43-risk-eligibility-v41-action-v40-explanations-v39-lifecycle"
+OUTPUT_CONTRACT_VERSION: str = "2026-08-12-v43-risk-audit-v41-unified-v40-candidate-views"
 GUI_VERSION: str = "2026-08-12-v41-decision-clarity-v37-evidence-ux"
 EVIDENCE_POLICY_VERSION: str = "2026-08-12-v37-peer-plus-ticker"
 MARKET_DATA_VERSION: str = "2026-08-12-v36-tickflow-volume-shares"
@@ -23,6 +23,12 @@ BACKTEST_PROVENANCE_VERSION: str = "2026-08-12-v36-volume-shares"
 # Relative asset rank is only a comparability correction.  It must not replace
 # the absolute institutional score as the model anchor.
 CROSS_ASSET_PERCENTILE_MAX_ADJUSTMENT: float = 5.0
+
+# Execution eligibility uses the same risk geometry exposed in result files.
+# Missing metrics stay compatible with legacy exports, while current scans are
+# required to satisfy both bounds before becoming trade-ready.
+TRADE_READY_MAX_STOP_DISTANCE_PCT: float = 12.0
+TRADE_READY_MIN_REWARD_RISK: float = 1.0
 
 # Rapidly weakening signals stay visible for research but lose trade-ready
 # status and receive a bounded ranking penalty until strength recovers.

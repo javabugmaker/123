@@ -52,6 +52,7 @@ class FundamentalQuality:
     data_available: bool = False
     institution_holding_status: str = "UNKNOWN"
     quality_data_completeness: float = 0.0
+    quality_hard_data_complete: bool = False
     quality_gate_reason: str = "基本面数据缺失（中性）"
     quality_multiplier: float = QUALITY_MULTIPLIER_UNKNOWN
     quality_profile: str = "GENERAL"
@@ -278,6 +279,7 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
         hard_factors[margin_label] = margin_factor
     hard_failed = [name for name, value in hard_factors.items() if value is False]
     hard_unknown = [name for name, value in hard_factors.items() if value is None]
+    hard_data_complete = not hard_unknown
 
     evidence_available = [roe_available, profit_available, holding_available]
     if margin_applicable:
@@ -303,6 +305,8 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
     reason_parts = [f"{_profile_name(profile)}模型"]
     if hard_failed:
         reason_parts.append("硬门槛未通过：" + "、".join(hard_failed))
+    elif hard_unknown:
+        reason_parts.append("可用硬门槛未见失败")
     else:
         reason_parts.append("行业自适应硬门槛通过")
     if cyclical_override:
@@ -366,6 +370,7 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
         data_available=data_available,
         institution_holding_status=holding_status,
         quality_data_completeness=round(completeness, 4),
+        quality_hard_data_complete=hard_data_complete,
         quality_gate_reason=reason,
         quality_multiplier=quality_multiplier,
         quality_profile=profile,
@@ -409,6 +414,7 @@ def get_quality(ticker: str, is_etf: bool = False) -> FundamentalQuality:
             data_available=False,
             institution_holding_status="UNKNOWN",
             quality_data_completeness=0.0,
+            quality_hard_data_complete=True,
             quality_gate_reason="ETF基本面门槛不适用",
             quality_multiplier=QUALITY_MULTIPLIER_PASS,
             quality_profile="ETF",

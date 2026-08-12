@@ -27,7 +27,6 @@ from config import (
     AD_SLOPE_LOOKBACK,
     BB_WIDTH_COMPRESSION_LOOKBACK,
     BREAKOUT_CONFIRM_MIN_VOLUME_RATIO,
-    BREAKOUT_CONFIRM_MIN_VOLUME_SCORE,
     CONSOLIDATION_DAYS,
     CONSOLIDATION_MAX_RANGE_PCT,
     LOG_DIR,
@@ -86,6 +85,7 @@ class ScoreBreakdown:
             "BaseScore": round(self.base_score, 2),
             "BreakoutScore": round(self.breakout_score, 2),
             "EntryScore": round(self.entry_score, 2),
+            "ExecutionScore": round(self.execution_score, 2),
             "ValueTrapRisk": round(self.value_trap_risk, 2),
             "TriggerScore": round(self.trigger_score, 2),
             "TrendScore": round(self.trend, 2),
@@ -723,19 +723,24 @@ def entry_point(
         float(high.iloc[-21:-1].max()) if len(high.dropna()) >= 21 else price
     )
     support = float(low.iloc[-20:].min()) if len(low.dropna()) >= 20 else price
-    vol20 = _rolling_mean(df, "Volume", 20)
+    volume_history = pd.to_numeric(
+        _series(df, "Volume").iloc[-21:-1], errors="coerce"
+    ).replace([np.inf, -np.inf], np.nan)
+    vol20 = (
+        float(volume_history.mean())
+        if len(volume_history) == 20 and volume_history.notna().all()
+        else np.nan
+    )
     volume_now = _latest(df, "Volume")
     volume_ratio = (
         float(volume_now / vol20)
         if _is_finite(volume_now) and _is_finite(vol20) and vol20 > 0
         else np.nan
     )
-    derived_volume_score = 0.0
-    if _is_finite(volume_ratio):
-        derived_volume_score = _clamp((volume_ratio - 0.8) / 0.8) * 25.0
-    effective_volume_score = (
-        float(volume_score) if _is_finite(volume_score) else derived_volume_score
-    )
+    # ``volume_score`` measures long-horizon accumulation and remains in the
+    # public signature for compatibility.  It must not substitute for current
+    # breakout-event volume confirmation.
+    _ = volume_score
     cmf = _latest(df, "CMF")
     ad_slope = _latest(df, "AD_Slope")
     obv = _series(df, "OBV")
@@ -746,11 +751,8 @@ def entry_point(
         or obv_up
     )
     volume_confirmed = bool(
-        (
-            _is_finite(volume_ratio)
-            and volume_ratio >= BREAKOUT_CONFIRM_MIN_VOLUME_RATIO
-        )
-        or effective_volume_score >= BREAKOUT_CONFIRM_MIN_VOLUME_SCORE
+        _is_finite(volume_ratio)
+        and volume_ratio >= BREAKOUT_CONFIRM_MIN_VOLUME_RATIO
     )
     price_breakout = bool(
         breakout >= 75.0
@@ -778,6 +780,9 @@ def entry_point(
             "zone_distance_pct": np.nan,
             "zone_distance_atr": np.nan,
             "pullback_quality": 0.0,
+            "projected_target": np.nan,
+            "stop_distance_pct": np.nan,
+            "reward_risk_ratio": np.nan,
         }
     atr = atr if _is_finite(atr) and atr > 0 else price * 0.03
     # Define a forward-looking support zone.  Anchoring it around the current
@@ -836,13 +841,23 @@ def entry_point(
         signal = "HOLD_WAIT"
     else:
         signal = "AVOID"
+    stop = max((resistance if price_breakout else support) - atr, 0.0)
+    projected_target = (
+        price + atr * 2.5 if price_breakout else max(resistance, price)
+    )
+    risk_amount = max(price - stop, 0.0)
+    reward_amount = max(projected_target - price, 0.0)
+    stop_distance_pct = risk_amount / price * 100.0 if price > 0 else np.nan
+    reward_risk_ratio = (
+        reward_amount / risk_amount if risk_amount > 0 else np.nan
+    )
     return {
         "score": score,
         "signal": signal,
         "low": low_zone,
         "high": high_zone,
         "breakout": resistance,
-        "stop": max(support - atr, 0.0),
+        "stop": stop,
         "volume_ratio": volume_ratio,
         "volume_confirmed": volume_confirmed,
         "flow_confirmed": flow_confirmed,
@@ -850,6 +865,9 @@ def entry_point(
         "zone_distance_pct": zone_distance_pct,
         "zone_distance_atr": zone_distance_atr,
         "pullback_quality": pullback_quality,
+        "projected_target": projected_target,
+        "stop_distance_pct": stop_distance_pct,
+        "reward_risk_ratio": reward_risk_ratio,
     }
 
 
@@ -987,7 +1005,9 @@ def execution_quality_score(
         stop = max(support - effective_atr, 0.0)
 
     score = 0.0
-    distance_support_atr = max(0.0, price - support) / max(effective_atr, 1e-9)
+    price_breakout = bool(entry and entry.get("price_breakout", False))
+    execution_support = resistance if price_breakout else support
+    distance_support_atr = max(0.0, price - execution_support) / max(effective_atr, 1e-9)
     score += (1.0 - _clamp(distance_support_atr / 3.0)) * 35.0
 
     if _is_finite(ma20):
@@ -1002,7 +1022,12 @@ def execution_quality_score(
         elif 0.01 <= risk_distance <= 0.12:
             score += 10.0
 
-    reward = max(0.0, resistance - price)
+    projected_target = (
+        float(entry.get("projected_target", np.nan)) if entry else np.nan
+    )
+    if not _is_finite(projected_target):
+        projected_target = price + effective_atr * 2.5 if price_breakout else resistance
+    reward = max(0.0, projected_target - price)
     risk_amount = max(price - stop, effective_atr * 0.25)
     reward_risk = reward / risk_amount if risk_amount > 0 else 0.0
     score += _clamp(reward_risk / 2.5) * 15.0

@@ -70,6 +70,57 @@ def _to_float_array(series: pd.Series) -> np.ndarray:
     return np.asarray(series.astype(np.float64), dtype=np.float64)
 
 
+def wilder_average(series: pd.Series, period: int) -> pd.Series:
+    """Return Wilder's smoothed average without bridging invalid data gaps.
+
+    The first value is the arithmetic mean of one complete ``period`` window;
+    subsequent values use Wilder's recursive update.  A missing/non-finite
+    observation resets the seed so corrupted bars cannot leak into later ATR
+    or ADX values.
+    """
+    if period <= 0:
+        raise ValueError("period must be positive")
+    values = pd.to_numeric(series, errors="coerce").replace(
+        [np.inf, -np.inf], np.nan
+    )
+    output = np.full(len(values), np.nan, dtype=np.float64)
+    seed_sum = 0.0
+    seed_count = 0
+    previous = np.nan
+    for position, value in enumerate(values.to_numpy(dtype=np.float64)):
+        if not np.isfinite(value):
+            seed_sum = 0.0
+            seed_count = 0
+            previous = np.nan
+            continue
+        if not np.isfinite(previous):
+            seed_sum += float(value)
+            seed_count += 1
+            if seed_count < period:
+                continue
+            previous = seed_sum / period
+        else:
+            previous = (previous * (period - 1) + float(value)) / period
+        output[position] = previous
+    return pd.Series(output, index=values.index, dtype=np.float64)
+
+
+def true_range(df: pd.DataFrame) -> pd.Series:
+    """Compute true range from finite OHLC observations."""
+    high = pd.to_numeric(df["High"], errors="coerce")
+    low = pd.to_numeric(df["Low"], errors="coerce")
+    close = pd.to_numeric(df["Close"], errors="coerce")
+    previous_close = close.shift(1)
+    result = pd.concat(
+        [high - low, (high - previous_close).abs(), (low - previous_close).abs()],
+        axis=1,
+    ).max(axis=1, skipna=True)
+    valid_ohlc = (
+        high.notna() & low.notna() & close.notna() & previous_close.notna()
+    )
+    return result.where(valid_ohlc).replace([np.inf, -np.inf], np.nan)
+
+
 def _rolling_slope(series: pd.Series, window: int) -> pd.Series:
     """Rolling linear regression slope over right-aligned windows."""
     values = pd.to_numeric(series, errors="coerce")
@@ -147,21 +198,13 @@ def compute_ema(df: pd.DataFrame) -> None:
 
 
 def compute_atr(df: pd.DataFrame) -> None:
-    high, low, close = df["High"], df["Low"], df["Close"]
-    prev_close = close.shift(1)
-    tr1 = high - low
-    tr2 = (high - prev_close).abs()
-    tr3 = (low - prev_close).abs()
-    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    ranges = true_range(df)
     for period in ATR_PERIODS:
-        df[f"ATR{period}"] = true_range.rolling(
-            window=period, min_periods=period
-        ).mean()
+        df[f"ATR{period}"] = wilder_average(ranges, period)
 
 
 def compute_adx(df: pd.DataFrame, period: int = ADX_PERIOD) -> None:
-    high, low, close = df["High"], df["Low"], df["Close"]
-    prev_close = close.shift(1)
+    high, low = df["High"], df["Low"]
     up_move = high.diff()
     down_move = -low.diff()
     plus_dm = pd.Series(0.0, index=df.index)
@@ -170,18 +213,20 @@ def compute_adx(df: pd.DataFrame, period: int = ADX_PERIOD) -> None:
     cond_minus = (down_move > up_move) & (down_move > 0)
     plus_dm[cond_plus] = up_move[cond_plus]
     minus_dm[cond_minus] = down_move[cond_minus]
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
-    ).max(axis=1)
-    atr_val = tr.rolling(window=period, min_periods=period // 2).mean()
-    plus_di = 100 * (
-        plus_dm.rolling(window=period, min_periods=period // 2).mean() / atr_val
+    valid_transition = (
+        high.notna()
+        & low.notna()
+        & high.shift(1).notna()
+        & low.shift(1).notna()
     )
-    minus_di = 100 * (
-        minus_dm.rolling(window=period, min_periods=period // 2).mean() / atr_val
-    )
+    plus_dm = plus_dm.where(valid_transition)
+    minus_dm = minus_dm.where(valid_transition)
+    tr = true_range(df)
+    atr_val = wilder_average(tr, period)
+    plus_di = 100 * (wilder_average(plus_dm, period) / atr_val)
+    minus_di = 100 * (wilder_average(minus_dm, period) / atr_val)
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
-    df["ADX"] = dx.rolling(window=period, min_periods=period // 2).mean()
+    df["ADX"] = wilder_average(dx, period)
     df["PLUS_DI"] = plus_di
     df["MINUS_DI"] = minus_di
 

@@ -1969,6 +1969,93 @@ def _apply_backtest_provenance(
     )
     return frame
 
+def _decision_quality_multiplier(
+    frame: pd.DataFrame,
+    *,
+    is_etf: pd.Series,
+    quality_available: pd.Series,
+) -> pd.Series:
+    """Reproduce Fundamental Gate multiplier semantics after backtesting."""
+    holding_status = (
+        frame.get("InstitutionHoldingStatus", pd.Series("", index=frame.index))
+        .fillna("")
+        .astype(str)
+        .str.upper()
+    )
+    quality_applicable = (
+        frame.get("QualityApplicable", pd.Series(~is_etf, index=frame.index))
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .isin({"true", "1", "yes", "y", "是"})
+        & ~is_etf
+    )
+    quality_gate = (
+        frame.get("QualityGate", pd.Series(True, index=frame.index))
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .isin({"true", "1", "yes", "y", "是"})
+    )
+    if "QualityHardDataComplete" in frame:
+        hard_data_complete = (
+            frame["QualityHardDataComplete"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .isin({"true", "1", "yes", "y", "是"})
+        )
+    else:
+        quality_profile = (
+            frame.get("QualityProfile", pd.Series("GENERAL", index=frame.index))
+            .fillna("GENERAL")
+            .astype(str)
+            .str.upper()
+        )
+        roe_available = pd.to_numeric(
+            frame.get("ROE", pd.Series(np.nan, index=frame.index)),
+            errors="coerce",
+        ).notna()
+        profit_available = pd.concat(
+            [
+                pd.to_numeric(
+                    frame.get(column, pd.Series(np.nan, index=frame.index)),
+                    errors="coerce",
+                ).notna()
+                for column in ("NetProfitY1", "NetProfitY2", "NetProfitY3")
+            ],
+            axis=1,
+        ).all(axis=1)
+        margin_available = pd.to_numeric(
+            frame.get(
+                "IndustryGrossMarginPercentile",
+                pd.Series(np.nan, index=frame.index),
+            ),
+            errors="coerce",
+        ).notna()
+        margin_required = ~quality_profile.isin(
+            {"FINANCIAL", "DEFENSIVE", "ETF"}
+        )
+        hard_data_complete = (
+            roe_available
+            & profit_available
+            & (~margin_required | margin_available)
+        )
+    hard_gate_fail = quality_applicable & ~quality_gate
+    quality_uncertain = quality_applicable & (
+        ~quality_available | ~hard_data_complete | holding_status.ne("PASS")
+    )
+    return pd.Series(
+        np.select(
+            [~quality_applicable, hard_gate_fail, quality_uncertain],
+            [1.0, QUALITY_MULTIPLIER_FAIL, QUALITY_MULTIPLIER_UNKNOWN],
+            default=QUALITY_MULTIPLIER_PASS,
+        ),
+        index=frame.index,
+        dtype=float,
+    )
+
+
 def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     path = OUTPUT_DIR / "AllResults.csv"
     if not path.exists() or not summary.by_ticker:
@@ -2359,49 +2446,10 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         .isin({"true", "1", "yes", "y", "是"})
     )
     quality_eligible = quality_available & np.isfinite(quality_score) & ~is_etf
-    holding_periods = pd.to_numeric(
-        frame.get("InstitutionHoldingPeriods", pd.Series(np.nan, index=frame.index)),
-        errors="coerce",
-    )
-    holding_status = (
-        frame.get("InstitutionHoldingStatus", pd.Series("", index=frame.index))
-        .fillna("")
-        .astype(str)
-        .str.upper()
-    )
-    holding_unknown = holding_status.eq("UNKNOWN") | (
-        holding_status.eq("") & holding_periods.lt(2)
-    )
-    known_factor_fail = (
-        (
-            pd.to_numeric(
-                frame.get("ROE", pd.Series(np.nan, index=frame.index)),
-                errors="coerce",
-            ).notna()
-            & ~frame.get("QualityROE", pd.Series(True, index=frame.index))
-            .astype(str)
-            .str.lower()
-            .isin({"true", "1", "yes", "y", "是"})
-        )
-        | (
-            pd.to_numeric(
-                frame.get(
-                    "IndustryGrossMarginPercentile",
-                    pd.Series(np.nan, index=frame.index),
-                ),
-                errors="coerce",
-            ).notna()
-            & ~frame.get("QualityGrossMargin", pd.Series(True, index=frame.index))
-            .astype(str)
-            .str.lower()
-            .isin({"true", "1", "yes", "y", "是"})
-        )
-        | holding_status.eq("FAIL")
-    )
-    frame["QualityMultiplier"] = np.select(
-        [known_factor_fail, holding_unknown],
-        [QUALITY_MULTIPLIER_FAIL, QUALITY_MULTIPLIER_UNKNOWN],
-        default=QUALITY_MULTIPLIER_PASS,
+    frame["QualityMultiplier"] = _decision_quality_multiplier(
+        frame,
+        is_etf=is_etf,
+        quality_available=quality_available,
     )
     quality_weight = float(np.clip(MODEL_QUALITY_WEIGHT, 0.0, 0.5))
     legacy_institutional = pd.Series(

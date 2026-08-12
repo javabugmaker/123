@@ -13,13 +13,13 @@ from config import (
     BACKTEST_NEUTRAL_SCORE,
     BACKTEST_NORMAL_WEIGHT,
     BREAKOUT_CONFIRM_MIN_VOLUME_RATIO,
-    BREAKOUT_CONFIRM_MIN_VOLUME_SCORE,
     CHASE_RISK_DISTANCE_HIGH,
     CHASE_RISK_DISTANCE_START,
     CHASE_RISK_HIGH_THRESHOLD,
     CHASE_RISK_MAX_PENALTY,
     CHASE_RISK_RSI_HARD,
     CHASE_RISK_RSI_START,
+    CROSS_ASSET_PERCENTILE_MAX_ADJUSTMENT,
     DATA_FRESHNESS_DELAYED_FACTOR,
     DATA_FRESHNESS_DELAYED_TRADING_DAYS,
     DATA_FRESHNESS_STALE_FACTOR,
@@ -44,7 +44,9 @@ from config import (
     QUALITY_MULTIPLIER_FAIL,
     QUALITY_MULTIPLIER_PASS,
     QUALITY_MULTIPLIER_UNKNOWN,
+    TRADE_READY_MAX_STOP_DISTANCE_PCT,
     TRADE_READY_MIN_INSTITUTIONAL_SCORE,
+    TRADE_READY_MIN_REWARD_RISK,
     VALUE_TRAP_HARD_RISK_THRESHOLD,
     VALUE_TRAP_RISK_THRESHOLD,
 )
@@ -114,6 +116,35 @@ def _append_reason(current: pd.Series, condition: pd.Series, reason: str) -> pd.
     return existing.where(
         ~condition,
         np.where(existing.eq(""), reason, existing + "；" + reason),
+    )
+
+
+def _execution_risk_block(
+    frame: pd.DataFrame, signal: pd.Series
+) -> pd.Series:
+    """Block current active signals whose exported risk geometry is invalid.
+
+    Old CSV/parquet files without these fields remain readable and neutral;
+    current scanner output always supplies both fields.
+    """
+    stop_distance = _number(
+        frame.get("StopDistancePct", pd.Series(np.nan, index=frame.index)),
+        np.nan,
+    )
+    reward_risk = _number(
+        frame.get("RewardRiskRatio", pd.Series(np.nan, index=frame.index)),
+        np.nan,
+    )
+    available = stop_distance.notna() | reward_risk.notna()
+    stop_ok = (~stop_distance.notna()) | (
+        stop_distance.gt(0.0)
+        & stop_distance.le(TRADE_READY_MAX_STOP_DISTANCE_PCT)
+    )
+    reward_ok = (~reward_risk.notna()) | reward_risk.ge(
+        TRADE_READY_MIN_REWARD_RISK
+    )
+    return signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"}) & available & ~(
+        stop_ok & reward_ok
     )
 
 
@@ -246,16 +277,20 @@ def validate_signal_consistency(frame: pd.DataFrame) -> pd.DataFrame:
     volume_ratio = _number(
         result.get("BreakoutVolumeRatio", pd.Series(np.nan, index=result.index)), np.nan
     )
-    volume_score = _number(
-        result.get("VolumeScore", pd.Series(np.nan, index=result.index)), np.nan
-    )
-    observed_volume_confirmation = volume_ratio.ge(
+    observed_volume_confirmation = volume_ratio.notna() & volume_ratio.ge(
         BREAKOUT_CONFIRM_MIN_VOLUME_RATIO
-    ) | volume_score.ge(BREAKOUT_CONFIRM_MIN_VOLUME_SCORE)
-    volume_metrics_available = volume_ratio.notna() | volume_score.notna()
+    )
     if "BreakoutVolumeConfirmed" in result:
-        volume_confirmed = _bool_series(result, "BreakoutVolumeConfirmed") & (
-            ~volume_metrics_available | observed_volume_confirmation
+        supplied_volume_confirmation = _bool_series(
+            result, "BreakoutVolumeConfirmed"
+        )
+        # Legacy exports predate BreakoutVolumeRatio.  Preserve their explicit
+        # confirmation flag for schema compatibility; whenever the ratio field
+        # exists, current event evidence is authoritative and fail-closed.
+        volume_confirmed = (
+            supplied_volume_confirmation & observed_volume_confirmation
+            if "BreakoutVolumeRatio" in result
+            else supplied_volume_confirmation
         )
     else:
         volume_confirmed = observed_volume_confirmation
@@ -368,6 +403,20 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     )
     quality_profile = _text_series(result, "QualityProfile", "").str.upper()
     gate2_profile = quality_profile.isin({"GENERAL", "FINANCIAL", "CYCLICAL", "DEFENSIVE"})
+    margin_required = quality_profile.isin({"GENERAL", "CYCLICAL"})
+    derived_hard_data_complete = (
+        roe_available
+        & profit_available
+        & (~margin_required | margin_available)
+    )
+    if "QualityHardDataComplete" in result:
+        hard_data_complete = _bool_series(result, "QualityHardDataComplete")
+    else:
+        hard_data_complete = derived_hard_data_complete.where(
+            gate2_profile, True
+        )
+    hard_data_complete = hard_data_complete.where(quality_applicable, True)
+    result["QualityHardDataComplete"] = hard_data_complete
 
     legacy_known_fail = quality_applicable & (
         (roe_available & ~_bool_series(result, "QualityROE", True))
@@ -384,7 +433,7 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         status.eq("UNKNOWN") | ~(roe_available & margin_available & profit_available)
     )
     gate2_uncertain = quality_applicable & gate2_profile & (
-        status.ne("PASS") | result["QualityDataCompleteness"].lt(1.0)
+        status.ne("PASS") | ~hard_data_complete
     )
     any_unknown = legacy_unknown.where(~gate2_profile, gate2_uncertain)
     result["QualityGate"] = ~known_fail
@@ -574,11 +623,18 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     result["CyclicalQualityOverride"] = cyclical_quality_override
     quality_action_block = quality_applicable & (
         result["QualityDataCompleteness"].lt(QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE)
-        | (~result["QualityGate"] & ~cyclical_quality_override)
+        | ~result["QualityHardDataComplete"]
+        | ~result["QualityGate"]
     )
     # Missing legacy columns are treated as compatible; explicit False/FAILED
     # values from current scans are authoritative.
     passed_filters = _bool_series(result, "PassedFilters", True)
+    universe_eligible = _bool_series(result, "UniverseEligible", True)
+    if "UniverseEligible" in result and "SignalConfirmed" in result:
+        passed_filters = universe_eligible & _bool_series(
+            result, "SignalConfirmed", False
+        )
+        result["PassedFilters"] = passed_filters
     signal_status = _text_series(result, "SignalStatus", "").str.upper()
     lifecycle_failed = signal_status.eq("FAILED")
     hard_penalty.loc[avoid] = np.minimum(
@@ -636,23 +692,17 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     asset_percentile = ranked_input.groupby(asset_group).rank(method="average", pct=True) * 100.0
     result["AssetPercentile"] = asset_percentile.round(2)
     use_cross_asset_normalization = valid_asset_score & valid_group_size.ge(5) & asset_percentile.notna()
-    # Relative percentile is useful for comparing stocks with ETFs, but it must
-    # never overwhelm the absolute institutional score.  Keep the absolute score
-    # as the dominant anchor and cap percentile uplift at +15 points.
-    normalized_score = (
-        asset_percentile * 0.45
-        + institutional_raw.clip(0.0, 100.0) * 0.55
+    max_adjustment = float(CROSS_ASSET_PERCENTILE_MAX_ADJUSTMENT)
+    cross_asset_adjustment = (
+        (asset_percentile - 50.0) / 50.0 * max_adjustment
+    ).clip(-max_adjustment, max_adjustment)
+    cross_asset_adjustment = cross_asset_adjustment.where(
+        use_cross_asset_normalization, 0.0
+    ).fillna(0.0)
+    cross_asset_score = (
+        institutional_raw.clip(0.0, 100.0) + cross_asset_adjustment
     ).clip(0.0, 100.0)
-    normalized_score = pd.Series(
-        np.minimum(
-            normalized_score.to_numpy(dtype=float),
-            (institutional_raw.clip(0.0, 100.0) + 15.0).to_numpy(dtype=float),
-        ),
-        index=result.index,
-    )
-    cross_asset_score = institutional_raw.clip(0.0, 100.0).where(
-        ~use_cross_asset_normalization, normalized_score
-    )
+    result["CrossAssetAdjustment"] = cross_asset_adjustment.round(4)
     result["CrossAssetScore"] = cross_asset_score.round(4)
     base_score = cross_asset_score
     minimum_score_risk = institutional_raw.lt(TRADE_READY_MIN_INSTITUTIONAL_SCORE)
@@ -663,7 +713,6 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     )
     result["RankingPenaltyReason"] = ranking_penalty_reason
 
-    universe_eligible = _bool_series(result, "UniverseEligible", True)
     filter_override = (
         ~passed_filters
         & universe_eligible
@@ -686,6 +735,13 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
             & _bool_series(result, "BreakoutFlowConfirmed", False)
         )
     )
+    execution_risk_block = _execution_risk_block(result, signal)
+    ranking_penalty_reason = _append_reason(
+        ranking_penalty_reason,
+        execution_risk_block,
+        "止损距离或预期盈亏比未达执行门槛",
+    )
+    result["RankingPenaltyReason"] = ranking_penalty_reason
     trade_ready = (
         signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
         & breakout_confirmation_ok
@@ -697,6 +753,7 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         & ~data_risk
         & ~stale_data
         & ~minimum_score_risk
+        & ~execution_risk_block
         & chase.lt(CHASE_RISK_HIGH_THRESHOLD)
     )
     hard_decision_block = (
@@ -733,8 +790,12 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         active_signal & minimum_score_risk & ~data_risk & ~hard_filter
     ] = "综合评分未达交易门槛，转为观察"
     readiness_reason.loc[
+        execution_risk_block & ~data_risk & ~hard_filter
+    ] = "止损距离或预期盈亏比未达执行门槛，转为观察"
+    readiness_reason.loc[
         active_signal
         & ~minimum_score_risk
+        & ~execution_risk_block
         & ~data_risk
         & ~hard_filter
         & ~quality_action_block

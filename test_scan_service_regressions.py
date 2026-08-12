@@ -124,8 +124,9 @@ class ScanServiceRegressionTests(unittest.TestCase):
             "RankingScore",
         }
         self.assertTrue(required.issubset(frame.columns))
-        # Model-v2 component internals are intentionally not a schema change.
-        self.assertNotIn("ExecutionScore", frame.columns)
+        # Execution quality is part of the auditable public score contract.
+        self.assertIn("ExecutionScore", frame.columns)
+        self.assertIn("ModelWeightSignature", frame.columns)
         self.assertNotIn("setup_score", frame.columns)
         self.assertNotIn("execution_score", frame.columns)
 
