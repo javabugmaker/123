@@ -7,6 +7,7 @@ on:
       - tools/v39_migrate.py
       - tools/v39_update_contracts.py
       - tools/v39_compat_fix.py
+      - tools/v39_add_legacy_test.py
       - .github/workflows/v39-migration.yml
   workflow_dispatch:
 
@@ -37,6 +38,9 @@ jobs:
 
       - name: Preserve legacy export compatibility
         run: python tools/v39_compat_fix.py
+
+      - name: Add legacy hard-gate export regression
+        run: python tools/v39_add_legacy_test.py
 
       - name: Update forward-compatible history contracts
         run: python tools/v39_update_contracts.py
