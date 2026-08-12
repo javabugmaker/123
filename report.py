@@ -826,82 +826,98 @@ def _diversify_ranked_candidates(
     # refresh_candidate_exports() prepares these columns once for the full wide
     # frame.  Reusing them avoids repeated 200+ column copies for each view.
     working = frame if diversity_prepared else _ensure_diversity_columns(frame)
-    theme_counts: dict[str, int] = {}
-    tracking_counts: dict[str, int] = {}
-    stock_industry_counts: dict[str, int] = {}
-    cluster_counts: dict[str, int] = {}
-    selected: list[int] = []
-    remaining = list(working.index)
+    row_count = len(working)
+    asset_type = working.get(
+        "AssetType", pd.Series("", index=working.index)
+    ).fillna("").astype(str).str.strip().str.lower()
+    is_etf = (
+        working.get("IsETF", pd.Series(False, index=working.index)).map(_truthy)
+        | asset_type.eq("etf")
+    ).to_numpy(dtype=bool)
+
+    def normalized_column(name: str) -> pd.Series:
+        return working.get(
+            name, pd.Series("", index=working.index)
+        ).map(_clean_group_key)
+
+    theme = normalized_column("ETFTheme").where(is_etf, "")
+    tracking = normalized_column("ETFTrackingKey").where(is_etf, "")
+    classification = normalized_column("ModelClassification")
+    industry = normalized_column("Industry")
+    sector = normalized_column("Sector")
+    classification = classification.where(classification.ne(""), industry)
+    classification = classification.where(classification.ne(""), sector)
+    classification = classification.where(~is_etf, "")
+    cluster = normalized_column("ThemeCluster")
+
+    def factorize_groups(values: pd.Series) -> tuple[np.ndarray, np.ndarray]:
+        codes, uniques = pd.factorize(values.where(values.ne("")), sort=False)
+        return codes.astype(np.intp, copy=False), np.zeros(len(uniques), dtype=np.int64)
+
+    theme_codes, theme_counts = factorize_groups(theme)
+    tracking_codes, tracking_counts = factorize_groups(tracking)
+    classification_codes, classification_counts = factorize_groups(classification)
+    cluster_codes, cluster_counts = factorize_groups(cluster)
+
     rank_score = pd.to_numeric(
         working.get("RankingScore", working.get("CrossAssetScore", pd.Series(0.0, index=working.index))),
         errors="coerce",
-    ).fillna(0.0)
+    ).fillna(0.0).to_numpy(dtype=float)
     risk_filtered = working.get(
         "RankingEligibility", pd.Series("观察", index=working.index)
-    ).fillna("观察").astype(str).eq("风险过滤")
-    penalties: dict[int, float] = {}
-    while remaining and len(selected) < int(limit):
-        best_index: int | None = None
-        best_value = -np.inf
-        best_penalty = 1.0
-        for index in remaining:
-            row = working.loc[index]
-            row_is_etf = _truthy(row.get("IsETF", False)) or str(
-                row.get("AssetType", "")
-            ).strip().lower() == "etf"
-            # ETF-only provenance must never participate in stock diversity.
-            # In particular, np.nan used to stringify to "nan", making every
-            # stock look like the same ETF tracking product and capping stocks
-            # in the mixed Top50 at one row.
-            theme = _clean_group_key(row.get("ETFTheme", "")) if row_is_etf else ""
-            tracking = _clean_group_key(row.get("ETFTrackingKey", "")) if row_is_etf else ""
-            classification = (
-                _clean_group_key(row.get("ModelClassification", ""))
-                or _clean_group_key(row.get("Industry", ""))
-                or _clean_group_key(row.get("Sector", ""))
-            )
-            cluster = _clean_group_key(row.get("ThemeCluster", ""))
-            if row_is_etf and tracking and tracking_counts.get(tracking, 0) >= max(1, int(ETF_TRACKING_MAX_PER_TOP_LIST)):
-                continue
-            if row_is_etf and theme and theme_counts.get(theme, 0) >= max(1, int(max_per_theme)):
-                continue
-            if (not row_is_etf) and classification and stock_industry_counts.get(classification, 0) >= max(1, int(max_per_stock_industry)):
-                continue
-            penalty = max(0.70, 1.0 - float(THEME_CLUSTER_SOFT_PENALTY) * cluster_counts.get(cluster, 0)) if cluster else 1.0
-            # _rank_valid_candidates() deliberately puts risk-filtered rows last.
-            # Preserve that bucket priority after diversity reranking: a blocked
-            # row may fill the list only when no feasible non-risk row remains.
-            risk_bucket_penalty = 1_000_000_000.0 if bool(risk_filtered.loc[index]) else 0.0
-            value = float(rank_score.loc[index]) * penalty - risk_bucket_penalty
-            if value > best_value:
-                best_index, best_value, best_penalty = int(index), value, penalty
-        if best_index is None:
-            break
-        row = working.loc[best_index]
-        row_is_etf = _truthy(row.get("IsETF", False)) or str(
-            row.get("AssetType", "")
-        ).strip().lower() == "etf"
-        theme = _clean_group_key(row.get("ETFTheme", "")) if row_is_etf else ""
-        tracking = _clean_group_key(row.get("ETFTrackingKey", "")) if row_is_etf else ""
-        classification = (
-            _clean_group_key(row.get("ModelClassification", ""))
-            or _clean_group_key(row.get("Industry", ""))
-            or _clean_group_key(row.get("Sector", ""))
+    ).fillna("观察").astype(str).eq("风险过滤").to_numpy(dtype=bool)
+    risk_bucket_penalty = risk_filtered.astype(float) * 1_000_000_000.0
+
+    active = np.ones(row_count, dtype=bool)
+    selected_positions: list[int] = []
+    selected_penalties: list[float] = []
+    tracking_limit = max(1, int(ETF_TRACKING_MAX_PER_TOP_LIST))
+    theme_limit = max(1, int(max_per_theme))
+    stock_industry_limit = max(1, int(max_per_stock_industry))
+    cluster_step = float(THEME_CLUSTER_SOFT_PENALTY)
+
+    for _ in range(min(int(limit), row_count)):
+        eligible = active.copy()
+
+        grouped = is_etf & (tracking_codes >= 0)
+        eligible[grouped] &= (
+            tracking_counts[tracking_codes[grouped]] < tracking_limit
         )
-        cluster = _clean_group_key(row.get("ThemeCluster", ""))
-        if row_is_etf and theme:
-            theme_counts[theme] = theme_counts.get(theme, 0) + 1
-        if row_is_etf and tracking:
-            tracking_counts[tracking] = tracking_counts.get(tracking, 0) + 1
-        if (not row_is_etf) and classification:
-            stock_industry_counts[classification] = stock_industry_counts.get(classification, 0) + 1
-        if cluster:
-            cluster_counts[cluster] = cluster_counts.get(cluster, 0) + 1
-        penalties[best_index] = best_penalty
-        selected.append(best_index)
-        remaining.remove(best_index)
-    result = working.loc[selected].copy().reset_index(drop=True)
-    result["ResearchDiversityPenalty"] = [round(penalties.get(index, 1.0), 4) for index in selected]
+        grouped = is_etf & (theme_codes >= 0)
+        eligible[grouped] &= theme_counts[theme_codes[grouped]] < theme_limit
+        grouped = (~is_etf) & (classification_codes >= 0)
+        eligible[grouped] &= (
+            classification_counts[classification_codes[grouped]]
+            < stock_industry_limit
+        )
+
+        penalties = np.ones(row_count, dtype=float)
+        grouped = cluster_codes >= 0
+        penalties[grouped] = np.maximum(
+            0.70,
+            1.0 - cluster_step * cluster_counts[cluster_codes[grouped]],
+        )
+        values = rank_score * penalties - risk_bucket_penalty
+        values[~eligible] = -np.inf
+        best_position = int(np.argmax(values))
+        if np.isneginf(values[best_position]):
+            break
+
+        active[best_position] = False
+        selected_positions.append(best_position)
+        selected_penalties.append(round(float(penalties[best_position]), 4))
+        for codes, counts in (
+            (theme_codes, theme_counts),
+            (tracking_codes, tracking_counts),
+            (classification_codes, classification_counts),
+            (cluster_codes, cluster_counts),
+        ):
+            code = int(codes[best_position])
+            if code >= 0:
+                counts[code] += 1
+
+    result = working.iloc[selected_positions].copy().reset_index(drop=True)
+    result["ResearchDiversityPenalty"] = selected_penalties
     result["ResearchPoolRank"] = np.arange(1, len(result) + 1)
     return result
 
