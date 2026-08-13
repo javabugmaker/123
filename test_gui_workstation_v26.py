@@ -30,9 +30,13 @@ class GuiWorkstationV26Tests(unittest.TestCase):
         self.assertIn("股票 Top50", source)
         self.assertIn("ETF Top50", source)
         self.assertIn("强推荐", source)
-        self.assertIn("新买点", source)
+        self.assertIn("新信号", source)
+        self.assertIn("持续信号", source)
+        self.assertIn("风险警示", source)
         self.assertEqual(gui.NAV_FILES["stocks"], "Top50Stocks.csv")
         self.assertEqual(gui.NAV_FILES["etf"], "Top50ETF.csv")
+        self.assertEqual(gui.NAV_FILES["sustained"], "Top50SustainedSignals.csv")
+        self.assertEqual(gui.NAV_FILES["risk"], "Top50ValueTrapRisk.csv")
 
     def test_scan_and_backtest_remain_primary_actions(self):
         source = inspect.getsource(gui.DecisionScannerGUI._build_ui_controls)
@@ -52,7 +56,7 @@ class GuiWorkstationV26Tests(unittest.TestCase):
             "ETF Top50",
             "综合 Top50",
             "强推荐",
-            "新买点",
+            "新信号",
             "当前选中标的",
         ):
             self.assertIn(label, source)

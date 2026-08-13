@@ -19,8 +19,8 @@ class GuiCleanV25Tests(unittest.TestCase):
         self.assertNotIn("RankingReason", gui.DISPLAY_COLUMNS)
         # v41 clarifies that EntrySignal is the technical setup; the final
         # executable state remains RankingEligibility / TradeReadiness.
-        self.assertEqual(gui.COLUMN_NAMES["EntrySignal"], "技术买点")
-        self.assertEqual(gui.COLUMN_NAMES["SignalStatus"], "近期买点")
+        self.assertEqual(gui.COLUMN_NAMES["EntrySignal"], "技术信号")
+        self.assertEqual(gui.COLUMN_NAMES["SignalStatus"], "近期状态")
         self.assertEqual(gui.COLUMN_NAMES["SignalDays"], "持续天数")
 
     def test_filter_bar_drops_fundamental_and_backtest_controls(self):

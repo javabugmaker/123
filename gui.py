@@ -48,11 +48,11 @@ _core.DISPLAY_COLUMNS = (
 
 _core.COLUMN_NAMES.update(
     {
-        "DisplayRank": "榜单排名",
+        "DisplayRank": "当前排名",
         "IndustryTopic": "行业 / 主题",
         "Close": "当日收盘价",
-        "EntrySignal": "技术买点",
-        "SignalStatus": "近期买点",
+        "EntrySignal": "技术信号",
+        "SignalStatus": "近期状态",
         "SignalDays": "持续天数",
         "ReferenceBuyPrice": "参考买点",
         "RankingScore": "排序分",
@@ -111,30 +111,34 @@ _core.COLUMN_NAMES.update(
 
 _core.COLUMN_WIDTHS.update(
     {
-        "DisplayRank": 68,
-        "IndustryTopic": 112,
+        "DisplayRank": 60,
+        "IndustryTopic": 100,
         "OverallRank": 62,
-        "Ticker": 92,
-        "Name": 112,
-        "AssetType": 58,
+        "Ticker": 84,
+        "Name": 100,
+        "AssetType": 52,
         "Industry": 110,
-        "Close": 88,
-        "EntrySignal": 104,
-        "SignalStatus": 86,
-        "SignalDays": 68,
-        "ReferenceBuyPrice": 112,
-        "StopLoss": 78,
-        "RankingEligibility": 82,
-        "RankingScore": 78,
-        "InstitutionalStrength": 102,
+        "Close": 82,
+        "EntrySignal": 98,
+        "SignalStatus": 80,
+        "SignalDays": 60,
+        "ReferenceBuyPrice": 106,
+        "StopLoss": 74,
+        "RankingEligibility": 76,
+        "RankingScore": 74,
+        "InstitutionalStrength": 94,
     }
 )
+_core.NUMBER_COLUMNS.add("DisplayRank")
+_core.INTEGER_COLUMNS.add("DisplayRank")
 
 NAV_FILES = {
     "mixed": "Top50Mixed.csv",
     "stocks": "Top50Stocks.csv",
     "etf": "Top50ETF.csv",
     "ready": "Top50TradeReady.csv",
+    "sustained": "Top50SustainedSignals.csv",
+    "risk": "Top50ValueTrapRisk.csv",
     "all": "DecisionResults.csv",
 }
 NAV_TITLES = {
@@ -142,7 +146,9 @@ NAV_TITLES = {
     "stocks": "股票 Top50",
     "etf": "ETF Top50",
     "ready": "强推荐",
-    "new": "新买点",
+    "new": "新信号",
+    "sustained": "持续信号",
+    "risk": "风险警示",
     "all": "全部结果",
 }
 BACKTEST_SCOPE_FILES = {
@@ -211,7 +217,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.card_total = tk.StringVar(master=root, value="0")
         self.run_quality = tk.StringVar(master=root, value="运行质量：尚无本轮数据")
         self.detail_title = tk.StringVar(master=root, value="选择一个标的")
-        self.detail_subtitle = tk.StringVar(master=root, value="从左侧列表查看交易决策")
+        self.detail_subtitle = tk.StringVar(master=root, value="从左侧列表查看资格与研究详情")
         self.detail_signal = tk.StringVar(master=root, value="等待选择")
         self.detail_recent = tk.StringVar(master=root, value="-")
         self.detail_buy = tk.StringVar(master=root, value="-")
@@ -238,7 +244,10 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.root.bind("<Control-b>", lambda _event: self.start_backtest())
         self.root.bind("<Control-Shift-R>", lambda _event: self.start_daily_pipeline())
         self.root.bind("<Control-d>", lambda _event: self._toggle_detail_panel())
-        for key, shortcut in zip(("mixed", "stocks", "etf", "ready", "new", "all"), "123456"):
+        for key, shortcut in zip(
+            ("mixed", "stocks", "etf", "ready", "new", "sustained", "risk", "all"),
+            "12345678",
+        ):
             self.root.bind(f"<Control-Key-{shortcut}>", lambda _event, nav_key=key: self._load_navigation(nav_key))
         self.root.after(80, self._update_run_quality_summary)
 
@@ -467,14 +476,16 @@ class DecisionScannerGUI(_core.ScannerGUI):
             ("stocks", "股票 Top50"),
             ("etf", "ETF Top50"),
             ("ready", "强推荐"),
-            ("new", "新买点"),
+            ("new", "新信号"),
+            ("sustained", "持续信号"),
+            ("risk", "风险警示"),
             ("all", "全部结果"),
         )
         for key, label in nav_items:
             button = ctk.CTkButton(
                 nav,
                 text=label,
-                width=104,
+                width=92,
                 height=34,
                 fg_color="transparent",
                 hover_color="#eaf2fb",
@@ -513,7 +524,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         card_specs = (
             ("推荐", self.card_recommended, "#166534"),
             ("谨慎候选", self.card_cautious, "#92400e"),
-            ("新买点", self.card_new, "#1d4ed8"),
+            ("新信号", self.card_new, "#1d4ed8"),
             ("资产结构", self.card_total, "#334e68"),
         )
         for column, (title, variable, accent) in enumerate(card_specs):
@@ -554,7 +565,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         _panel_label(top_filters, "行业 / 主题", row=0, column=2, padx=(0, 4), sticky="w")
         self.industry_box = ttk.Combobox(top_filters, textvariable=self.industry_filter, state="readonly", width=14)
         self.industry_box.grid(row=0, column=3, padx=(0, 10), sticky="w")
-        _panel_label(top_filters, "技术买点", row=0, column=4, padx=(0, 4), sticky="w")
+        _panel_label(top_filters, "技术信号", row=0, column=4, padx=(0, 4), sticky="w")
         self.entry_box = ttk.Combobox(top_filters, textvariable=self.entry_filter, state="readonly", width=15)
         self.entry_box.grid(row=0, column=5, padx=(0, 10), sticky="w")
         _panel_label(top_filters, "资格", row=0, column=6, padx=(0, 4), sticky="w")
@@ -702,7 +713,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
     def _build_ui_decision_card(self) -> None:
         tk = _core.tk
         body = self.body_paned
-        detail = ctk.CTkFrame(body, width=280, corner_radius=10, fg_color="#ffffff")
+        detail = ctk.CTkFrame(body, width=300, corner_radius=10, fg_color="#ffffff")
         self.detail_panel = detail
         detail.pack_propagate(False)
         ctk.CTkLabel(detail, text="当前标的", text_color="#64748b", font=("Microsoft YaHei UI", 9)).pack(
@@ -757,7 +768,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
             text_color="#334e68",
             justify="left",
             anchor="nw",
-            wraplength=240,
+            wraplength=260,
         ).pack(fill=tk.X, padx=18)
         detail_actions = ctk.CTkFrame(detail, fg_color="transparent")
         detail_actions.pack(side=tk.BOTTOM, fill=tk.X, padx=18, pady=18)
@@ -777,8 +788,8 @@ class DecisionScannerGUI(_core.ScannerGUI):
             fg_color="#64748b",
             hover_color="#475569",
         ).pack(side=tk.RIGHT)
-        body.add(self._table_frame, weight=5)
-        body.add(detail, weight=1)
+        body.add(self._table_frame, weight=1)
+        body.add(detail, weight=0)
 
     def _build_ui_footer(self) -> None:
         tk = _core.tk
@@ -790,7 +801,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.backtest_scope_menu = ctk.CTkOptionMenu(
             footer,
             variable=self.backtest_scope,
-            values=["当前页面", "当前筛选", "股票 Top50", "ETF Top50", "综合 Top50", "强推荐", "新买点", "当前选中标的"],
+            values=["当前页面", "当前筛选", "股票 Top50", "ETF Top50", "综合 Top50", "强推荐", "新信号", "当前选中标的"],
             width=136,
         )
         self.backtest_scope_menu.pack(side=tk.LEFT, pady=9)
@@ -996,6 +1007,11 @@ class DecisionScannerGUI(_core.ScannerGUI):
 
     def _format_table_value(self, column: str, value: str) -> str:
         text = self._cell_text(value)
+        detail_data = getattr(self, "_detail_format_data", None)
+        if column in {"Close", "StopLoss", "BreakoutBuyPrice", "ProjectedTarget"} and isinstance(
+            detail_data, dict
+        ):
+            return self._format_asset_price(value, detail_data)
         if column == "SignalStatus":
             if self._is_missing_text(text):
                 return "-"
@@ -1012,6 +1028,60 @@ class DecisionScannerGUI(_core.ScannerGUI):
             }.get(text.strip().upper(), text)
         return _core.ScannerGUI._format_table_value(self, column, value)
 
+    def _format_asset_price(self, value: object, data: dict[str, str]) -> str:
+        text = self._cell_text(value)
+        number = self._numeric_value(text)
+        if number is None:
+            return "—" if self._is_missing_text(text) else text
+        asset_type = str(data.get("AssetType", "") or "").strip().casefold()
+        is_etf = asset_type == "etf" or str(data.get("IsETF", "") or "").strip().casefold() in {
+            "true",
+            "1",
+            "yes",
+            "y",
+            "是",
+        }
+        precision = 3 if is_etf else 2
+        return f"{number:,.{precision}f}"
+
+    def _apply_visible_price_precision(self) -> None:
+        columns = tuple(self.table["columns"])
+        price_columns = tuple(
+            column for column in ("Close", "StopLoss") if column in columns
+        )
+        if not price_columns:
+            return
+        for item_id in self.table.get_children():
+            data = self._row_details.get(item_id, {})
+            if not data:
+                continue
+            for column in price_columns:
+                self.table.set(
+                    item_id,
+                    column,
+                    self._format_asset_price(data.get(column, ""), data),
+                )
+
+    def _restore_table_selection(self, ticker: str) -> None:
+        children = tuple(self.table.get_children())
+        if not children:
+            self._reset_decision_card_if_needed()
+            return
+        normalized = str(ticker or "").strip().upper()
+        target = next(
+            (
+                item_id
+                for item_id in children
+                if str(self._row_details.get(item_id, {}).get("Ticker", "")).strip().upper()
+                == normalized
+            ),
+            children[0],
+        )
+        self.table.selection_set(target)
+        self.table.focus(target)
+        self.table.see(target)
+        self._update_decision_card()
+
     def _update_market_overview(self, rows, indexes) -> None:
         if not hasattr(self, "market_overview"):
             return
@@ -1021,6 +1091,9 @@ class DecisionScannerGUI(_core.ScannerGUI):
         )
 
     def _render_cached_rows(self) -> bool:
+        selected_ticker = ""
+        if hasattr(self, "table") and hasattr(self, "_row_details"):
+            selected_ticker = str(self._selected_detail().get("Ticker", "") or "")
         rendered = _core.ScannerGUI._render_cached_rows(self)
         if not rendered:
             return False
@@ -1031,8 +1104,19 @@ class DecisionScannerGUI(_core.ScannerGUI):
         if hasattr(self, "card_recommended"):
             self._update_dashboard_cards()
         if hasattr(self, "detail_title") and hasattr(self, "table"):
-            self._reset_decision_card_if_needed()
+            self._apply_visible_price_precision()
+            self._restore_table_selection(selected_ticker)
         return True
+
+    def show_selected_detail(self, _event=None) -> None:
+        data = self._selected_detail()
+        if not data:
+            return
+        self._detail_format_data = data
+        try:
+            _core.ScannerGUI.show_selected_detail(self, _event)
+        finally:
+            self._detail_format_data = None
 
     def _quality_tag(self, quality: str) -> str:
         # Preserve the historical method contract.  v26 intentionally does
@@ -1246,7 +1330,9 @@ class DecisionScannerGUI(_core.ScannerGUI):
         for row in self._csv_rows:
             if len(row) < len(self._csv_headers):
                 row.extend([""] * (len(self._csv_headers) - len(row)))
-            pool_rank = _value_for(indexes, row, "ResearchPoolRank")
+            pool_rank = _value_for(indexes, row, "CandidateViewRank") or _value_for(
+                indexes, row, "ResearchPoolRank"
+            )
             overall_rank = _value_for(indexes, row, "OverallRank")
             row[indexes["DisplayRank"]] = pool_rank or overall_rank
 
@@ -1284,7 +1370,12 @@ class DecisionScannerGUI(_core.ScannerGUI):
         # move the long explanation out of the real table into the decision card.
         if "TradeReadinessReason" in columns:
             columns.remove("TradeReadinessReason")
-        if filename in {"Top50Stocks.csv", "Top50ETF.csv"} and "AssetType" in columns:
+        if filename in {
+            "Top50Stocks.csv",
+            "Top50ETF.csv",
+            "Top50SustainedSignals.csv",
+            "Top50ValueTrapRisk.csv",
+        } and "AssetType" in columns:
             columns.remove("AssetType")
         self._display_headers = [column for column in columns if column in self._csv_headers]
         self._display_indexes = [self._csv_indexes[column] for column in self._display_headers]
@@ -1293,6 +1384,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
     def load_csv(self, filename: str, preserve_new_signal: bool = False) -> bool:
         if not preserve_new_signal:
             self._new_signal_only = False
+        previous_file = getattr(self, "current_file", None)
         loaded = self._call_core_with_legacy_output_dir(_core.ScannerGUI.load_csv, filename)
         if not loaded:
             return False
@@ -1302,6 +1394,10 @@ class DecisionScannerGUI(_core.ScannerGUI):
             return loaded
         self._ensure_derived_columns()
         self._set_display_columns_for_file(filename)
+        if previous_file != filename:
+            self._sort_column = "DisplayRank"
+            self._sort_descending = False
+            self._current_page = 0
         rendered = self._render_cached_rows()
         key = self._infer_nav_key(filename)
         if preserve_new_signal:
@@ -1428,7 +1524,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         if self.table.selection():
             return
         self.detail_title.set("选择一个标的")
-        self.detail_subtitle.set("从左侧列表查看交易决策")
+        self.detail_subtitle.set("从左侧列表查看资格与研究详情")
         self.detail_signal.set("等待选择")
         self.detail_recent.set("-")
         self.detail_buy.set("-")
@@ -1459,10 +1555,11 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.detail_signal.set(signal)
         self.detail_recent.set(recent)
         self.detail_buy.set(reference or "-")
-        self.detail_stop.set(self._format_table_value("StopLoss", data.get("StopLoss", "")) or "-")
+        self.detail_stop.set(self._format_asset_price(data.get("StopLoss", ""), data) or "-")
         eligibility = data.get("RankingEligibility", "") or "-"
         self.detail_eligibility.set(eligibility)
-        display_rank = self._format_table_value("ResearchPoolRank", data.get("ResearchPoolRank", ""))
+        view_rank = data.get("CandidateViewRank", "") or data.get("ResearchPoolRank", "")
+        display_rank = self._format_table_value("CandidateViewRank", view_rank)
         overall_rank = self._format_table_value("OverallRank", data.get("OverallRank", ""))
         self.detail_rank.set(f"{display_rank or '-'} / {overall_rank or '-'}")
         ranking = self._format_table_value("RankingScore", data.get("RankingScore", "")) or "-"
@@ -1552,7 +1649,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
             return list(dict.fromkeys(self.filtered_tickers))
         if scope in BACKTEST_SCOPE_FILES:
             return self._tickers_from_output_file(BACKTEST_SCOPE_FILES[scope])
-        if scope == "新买点":
+        if scope in {"新信号", "新买点"}:
             indexes = getattr(self, "_csv_indexes", {})
             ticker_index = indexes.get("Ticker")
             status_index = indexes.get("SignalStatus")

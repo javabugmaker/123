@@ -655,44 +655,70 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
             "EntrySignal", pd.Series("", index=frame.index)
         ).fillna("").astype(str).str.upper()
         breakout_actionable = actionable & signal.eq("BREAKOUT_CONFIRM")
+        confirmation_flags = {
+            "BreakoutVolumeConfirmed",
+            "BreakoutFlowConfirmed",
+        }
+        if (
+            breakout_actionable.any()
+            and "BreakoutVolumeRatio" in frame.columns
+            and not confirmation_flags.issubset(frame.columns)
+        ):
+            violations.append(
+                "actionable breakouts have incomplete confirmation schema"
+            )
+        breakout_confirmation_bad = pd.Series(False, index=frame.index)
+        for confirmation_column in (
+            "BreakoutVolumeConfirmed",
+            "BreakoutFlowConfirmed",
+        ):
+            if confirmation_column in frame.columns:
+                breakout_confirmation_bad |= (
+                    breakout_actionable
+                    & ~_bool_series_for_integrity(frame, confirmation_column)
+                )
         if "BreakoutVolumeRatio" in frame.columns:
             volume_ratio = pd.to_numeric(
                 frame["BreakoutVolumeRatio"], errors="coerce"
             )
-            bad = (
+            breakout_confirmation_bad |= (
                 breakout_actionable
-                & volume_ratio.notna()
-                & volume_ratio.lt(BREAKOUT_CONFIRM_MIN_VOLUME_RATIO)
-            )
-            if bad.any():
-                violations.append(
-                    "actionable breakouts lack event-volume confirmation: "
-                    + ",".join(ticker.loc[bad].head(5))
+                & (
+                    volume_ratio.isna()
+                    | volume_ratio.lt(BREAKOUT_CONFIRM_MIN_VOLUME_RATIO)
                 )
+            )
+        if breakout_confirmation_bad.any():
+            violations.append(
+                "actionable breakouts lack valid event-volume confirmation: "
+                + ",".join(ticker.loc[breakout_confirmation_bad].head(5))
+            )
 
         if "StopDistancePct" in frame.columns:
             stop_distance = pd.to_numeric(
                 frame["StopDistancePct"], errors="coerce"
             )
-            bad = actionable & stop_distance.notna() & (
-                stop_distance.le(0.0)
+            bad = actionable & (
+                stop_distance.isna()
+                | stop_distance.le(0.0)
                 | stop_distance.gt(TRADE_READY_MAX_STOP_DISTANCE_PCT)
             )
             if bad.any():
                 violations.append(
-                    "actionable rows exceed stop-distance bounds: "
+                    "actionable rows lack valid stop-distance bounds: "
                     + ",".join(ticker.loc[bad].head(5))
                 )
         if "RewardRiskRatio" in frame.columns:
             reward_risk = pd.to_numeric(
                 frame["RewardRiskRatio"], errors="coerce"
             )
-            bad = actionable & reward_risk.notna() & reward_risk.lt(
-                TRADE_READY_MIN_REWARD_RISK
+            bad = actionable & (
+                reward_risk.isna()
+                | reward_risk.lt(TRADE_READY_MIN_REWARD_RISK)
             )
             if bad.any():
                 violations.append(
-                    "actionable rows fail reward-risk bounds: "
+                    "actionable rows lack valid reward-risk bounds: "
                     + ",".join(ticker.loc[bad].head(5))
                 )
 

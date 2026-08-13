@@ -124,9 +124,15 @@ def _execution_risk_block(
 ) -> pd.Series:
     """Block current active signals whose exported risk geometry is invalid.
 
-    Old CSV/parquet files without these fields remain readable and neutral;
-    current scanner output always supplies both fields.
+    A field that is absent from a legacy schema remains neutral.  Every field
+    present in the schema must be finite and valid, so current scanner rows
+    (which export both fields) cannot become trade-ready through a NaN value.
     """
+    stop_present = "StopDistancePct" in frame.columns
+    reward_present = "RewardRiskRatio" in frame.columns
+    if not (stop_present or reward_present):
+        return pd.Series(False, index=frame.index)
+
     stop_distance = _number(
         frame.get("StopDistancePct", pd.Series(np.nan, index=frame.index)),
         np.nan,
@@ -135,17 +141,33 @@ def _execution_risk_block(
         frame.get("RewardRiskRatio", pd.Series(np.nan, index=frame.index)),
         np.nan,
     )
-    available = stop_distance.notna() | reward_risk.notna()
-    stop_ok = (~stop_distance.notna()) | (
-        stop_distance.gt(0.0)
+    stop_ok = pd.Series(True, index=frame.index) if not stop_present else (
+        stop_distance.notna()
+        & stop_distance.gt(0.0)
         & stop_distance.le(TRADE_READY_MAX_STOP_DISTANCE_PCT)
     )
-    reward_ok = (~reward_risk.notna()) | reward_risk.ge(
-        TRADE_READY_MIN_REWARD_RISK
+    reward_ok = pd.Series(True, index=frame.index) if not reward_present else (
+        reward_risk.notna()
+        & reward_risk.ge(TRADE_READY_MIN_REWARD_RISK)
     )
-    return signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"}) & available & ~(
+    return signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"}) & ~(
         stop_ok & reward_ok
     )
+
+
+def _breakout_confirmation_ok(
+    frame: pd.DataFrame, signal: pd.Series
+) -> pd.Series:
+    """Require boolean confirmations and the event-volume ratio when present."""
+    breakout = signal.eq("BREAKOUT_CONFIRM")
+    confirmed = (
+        _bool_series(frame, "BreakoutVolumeConfirmed", False)
+        & _bool_series(frame, "BreakoutFlowConfirmed", False)
+    )
+    if "BreakoutVolumeRatio" in frame.columns:
+        ratio = _number(frame["BreakoutVolumeRatio"], np.nan)
+        confirmed &= ratio.notna() & ratio.ge(BREAKOUT_CONFIRM_MIN_VOLUME_RATIO)
+    return ~breakout | confirmed
 
 
 def _holding_status(frame: pd.DataFrame) -> pd.Series:
@@ -751,6 +773,7 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         & signal.eq("BREAKOUT_CONFIRM")
         & _bool_series(result, "BreakoutVolumeConfirmed", False)
         & _bool_series(result, "BreakoutFlowConfirmed", False)
+        & _breakout_confirmation_ok(result, signal)
         & ~lifecycle_failed
     )
     ranking_penalty_reason = _append_reason(
@@ -760,13 +783,7 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     )
     result["RankingPenaltyReason"] = ranking_penalty_reason
 
-    breakout_confirmation_ok = (
-        ~signal.eq("BREAKOUT_CONFIRM")
-        | (
-            _bool_series(result, "BreakoutVolumeConfirmed", False)
-            & _bool_series(result, "BreakoutFlowConfirmed", False)
-        )
-    )
+    breakout_confirmation_ok = _breakout_confirmation_ok(result, signal)
     execution_risk_block = _execution_risk_block(result, signal)
     ranking_penalty_reason = _append_reason(
         ranking_penalty_reason,
@@ -825,7 +842,13 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         execution_risk_block & ~data_risk & ~hard_filter
     ] = "止损距离或预期盈亏比未达执行门槛，转为观察"
     readiness_reason.loc[
+        signal.eq("BREAKOUT_CONFIRM")
+        & ~breakout_confirmation_ok
+        & ~hard_filter
+    ] = "突破事件量能或资金确认不足，转为观察"
+    readiness_reason.loc[
         active_signal
+        & breakout_confirmation_ok
         & ~minimum_score_risk
         & ~execution_risk_block
         & ~data_risk

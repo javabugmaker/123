@@ -175,7 +175,7 @@ class V41OutputIntegrityTests(unittest.TestCase):
         self.assertIn("v39", config.SCORING_VERSION)
         self.assertNotIn("v41", config.SCORING_VERSION)
         self.assertIn("v38", config.FUNDAMENTAL_GATE_VERSION)
-        self.assertEqual(gui.COLUMN_NAMES["EntrySignal"], "技术买点")
+        self.assertEqual(gui.COLUMN_NAMES["EntrySignal"], "技术信号")
 
 
 if __name__ == "__main__":

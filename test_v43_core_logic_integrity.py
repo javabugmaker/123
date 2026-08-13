@@ -158,6 +158,32 @@ class V43CoreLogicIntegrityTests(unittest.TestCase):
         self.assertEqual(wide.loc[0, "DecisionState"], "OBSERVE")
         self.assertIn("止损距离", wide.loc[0, "TradeReadinessReason"])
 
+        for missing_field in ("StopDistancePct", "RewardRiskRatio"):
+            missing = finalize_signal_ranking(
+                pd.DataFrame([_lifecycle_row(**{missing_field: np.nan})])
+            )
+            self.assertEqual(missing.loc[0, "DecisionState"], "OBSERVE")
+            self.assertIn("止损距离", missing.loc[0, "TradeReadinessReason"])
+
+    def test_breakout_ratio_is_mandatory_when_current_schema_is_present(self) -> None:
+        common = {
+            "EntrySignal": "BREAKOUT_CONFIRM",
+            "RawEntrySignal": "BREAKOUT_CONFIRM",
+            "BreakoutVolumeConfirmed": True,
+            "BreakoutFlowConfirmed": True,
+        }
+        for ratio in (np.nan, 1.19):
+            result = finalize_signal_ranking(
+                pd.DataFrame([_lifecycle_row(**common, BreakoutVolumeRatio=ratio)])
+            )
+            self.assertEqual(result.loc[0, "DecisionState"], "OBSERVE")
+            self.assertIn("量能或资金确认不足", result.loc[0, "TradeReadinessReason"])
+
+        confirmed = finalize_signal_ranking(
+            pd.DataFrame([_lifecycle_row(**common, BreakoutVolumeRatio=1.20)])
+        )
+        self.assertEqual(confirmed.loc[0, "DecisionState"], "READY")
+
     def test_etf_price_and_market_cap_exemptions_reach_passed_filters(self) -> None:
         index = pd.date_range("2025-01-01", periods=300, freq="B")
         close = pd.Series(np.linspace(1.8, 2.2, len(index)), index=index)

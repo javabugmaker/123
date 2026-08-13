@@ -16,7 +16,7 @@ class V28GuiBacktestTests(unittest.TestCase):
         self.assertIn("IndustryTopic", gui.DISPLAY_COLUMNS)
         self.assertNotIn("OverallRank", gui.DISPLAY_COLUMNS)
         self.assertNotIn("Industry", gui.DISPLAY_COLUMNS)
-        self.assertEqual(gui.COLUMN_NAMES["DisplayRank"], "榜单排名")
+        self.assertEqual(gui.COLUMN_NAMES["DisplayRank"], "当前排名")
         self.assertEqual(gui.COLUMN_NAMES["IndustryTopic"], "行业 / 主题")
 
     def test_derived_rank_topic_and_compact_institution_strength(self):

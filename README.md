@@ -115,8 +115,8 @@ python main.py scan --refresh-fundamentals
 
 所有候选 CSV 与 `Top200.parquet` 均带 `CandidateView` / `CandidateViewRank`，
 并以相同顺序保留 `ResearchPoolRank` / `ResearchDiversityPenalty`，避免跨格式读取时
-把“研究榜排名”、“技术买点”和最终“推荐资格”混成同一个概念。GUI 中的
-`技术买点` 只描述价格/量价结构，是否可执行以 `交易资格` 和 `执行说明` 为准。
+把“研究榜排名”、“技术信号”和最终“推荐资格”混成同一个概念。GUI 中的
+`技术信号` 只描述价格/量价结构，是否满足规则以 `交易资格` 和 `执行说明` 为准。
 
 行情缓存位于 `cache/v3-tickflow-forward/`。旧行情源缓存不会被 TickFlow 行情层读取。
 

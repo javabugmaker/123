@@ -2125,6 +2125,9 @@ class ScannerGUI:
         asset_type_display_index = (
             display_headers.index("AssetType") if "AssetType" in display_headers else None
         )
+        display_rank_index = (
+            display_headers.index("DisplayRank") if "DisplayRank" in display_headers else None
+        )
         passed_filters_display_index = (
             display_headers.index("PassedFilters")
             if "PassedFilters" in display_headers
@@ -2135,12 +2138,16 @@ class ScannerGUI:
         start_index = self._current_page * MAX_RENDERED_ROWS
         page_rows = filtered[start_index : start_index + MAX_RENDERED_ROWS]
         rendered_count = len(page_rows)
-        for row in page_rows:
+        for page_offset, row in enumerate(page_rows):
             values = row + [""] * max(0, len(headers) - len(row))
             display_values = [
                 self._format_table_value(header, values[index])
                 for header, index in zip(display_headers, header_indexes)
             ]
+            if display_rank_index is not None:
+                display_values[display_rank_index] = str(
+                    start_index + page_offset + 1
+                )
             if asset_type_display_index is not None:
                 display_values[asset_type_display_index] = (
                     "ETF"

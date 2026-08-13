@@ -349,19 +349,14 @@ def _recompute_tiers_and_decisions(
 
     passed_filters = _core._bool_series(result, "PassedFilters", True)
     universe_eligible = _core._bool_series(result, "UniverseEligible", True)
-    breakout_confirmation_ok = (
-        ~signal.eq("BREAKOUT_CONFIRM")
-        | (
-            _core._bool_series(result, "BreakoutVolumeConfirmed")
-            & _core._bool_series(result, "BreakoutFlowConfirmed")
-        )
-    )
+    breakout_confirmation_ok = _core._breakout_confirmation_ok(result, signal)
     filter_override = (
         ~passed_filters
         & universe_eligible
         & signal.eq("BREAKOUT_CONFIRM")
         & _core._bool_series(result, "BreakoutVolumeConfirmed")
         & _core._bool_series(result, "BreakoutFlowConfirmed")
+        & _core._breakout_confirmation_ok(result, signal)
         & ~terminal
         & ~weakening
     )
@@ -440,6 +435,11 @@ def _recompute_tiers_and_decisions(
     reason.loc[execution_risk_block & ~hard_block] = (
         "止损距离或预期盈亏比未达执行门槛，转为观察"
     )
+    reason.loc[
+        signal.eq("BREAKOUT_CONFIRM")
+        & ~breakout_confirmation_ok
+        & ~hard_block
+    ] = "突破事件量能或资金确认不足，转为观察"
     reason.loc[weakening & ~terminal] = (
         "信号处于WEAKEN且快速下降，等待重新增强后再进入推荐"
     )
