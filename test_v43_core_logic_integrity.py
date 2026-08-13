@@ -207,6 +207,8 @@ class V43CoreLogicIntegrityTests(unittest.TestCase):
         self.assertTrue(result.passed_filters)
         self.assertTrue(result.filter_details["min_price"])
         self.assertTrue(result.filter_details["min_market_cap"])
+        self.assertEqual(result.filter_details["signal_count"], 3)
+        self.assertEqual(result.filter_details["filter_count"], 8)
 
     def test_legacy_etf_filter_flag_is_repaired_from_split_gates(self) -> None:
         row = _lifecycle_row(

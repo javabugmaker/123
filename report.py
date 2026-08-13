@@ -30,6 +30,7 @@ from classification import (
     theme_cluster,
 )
 from config import (
+    BACKTEST_MIN_SAMPLES_FOR_RANKING,
     BREAKOUT_CONFIRM_MIN_VOLUME_RATIO,
     ETF_THEME_MAX_PER_TOP_LIST,
     ETF_TRACKING_MAX_PER_TOP_LIST,
@@ -227,11 +228,11 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "MarketCapPassed": bool(
                     r.filter_details.get("min_market_cap", False)
                 ),
-                "Score": round(r.score.total, 2),
-                "BaseScore": round(r.base_score, 2) if np.isfinite(r.base_score) else None,
-                "TriggerScore": round(r.trigger_score, 2) if np.isfinite(r.trigger_score) else None,
-                "ExecutionScore": round(r.score.execution_score, 2),
-                "FinalScore": round(r.final_score, 2) if np.isfinite(r.final_score) else None,
+                "Score": round(r.score.total, 4),
+                "BaseScore": round(r.base_score, 4) if np.isfinite(r.base_score) else None,
+                "TriggerScore": round(r.trigger_score, 4) if np.isfinite(r.trigger_score) else None,
+                "ExecutionScore": round(r.score.execution_score, 4),
+                "FinalScore": round(r.final_score, 4) if np.isfinite(r.final_score) else None,
                 "ModelWeightSignature": model_weight_signature(),
                 "BreakoutScore": round(r.breakout_score, 2) if np.isfinite(r.breakout_score) else None,
                 "SmartMoneyStage": r.smart_money_stage,
@@ -256,7 +257,7 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "ValueTrapRisk": round(r.value_trap_risk, 2) if np.isfinite(r.value_trap_risk) else None,
                 "RiskWarning": r.risk_warning,
                 "OperationAdvice": r.operation_advice,
-                "BacktestScore": round(r.backtest_score, 2)
+                "BacktestScore": round(r.backtest_score, 4)
                 if np.isfinite(r.backtest_score)
                 else None,
                 "BacktestReliability": round(r.backtest_reliability, 4)
@@ -267,11 +268,11 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 else None,
                 "BacktestEffectiveWeight": round(r.backtest_effective_weight, 4),
                 "BacktestConfidenceTier": r.backtest_confidence_tier,
-                "CompositeScore": round(r.composite_score, 2)
+                "CompositeScore": round(r.composite_score, 4)
                 if np.isfinite(r.composite_score)
                 else None,
                 "FailureSignalFactor": round(r.failure_signal_factor, 4),
-                "FailureAdjustedScore": round(r.failure_adjusted_score, 2)
+                "FailureAdjustedScore": round(r.failure_adjusted_score, 4)
                 if np.isfinite(r.failure_adjusted_score)
                 else None,
                 "SectorConfirmationFactor": round(r.sector_confirmation_factor, 4),
@@ -280,7 +281,7 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 else None,
                 "SignalRecencyFactor": round(r.signal_recency_factor, 4),
                 "BreakoutQualityFactor": round(r.breakout_quality_factor, 4),
-                "InstitutionalScore": round(r.institutional_score, 2)
+                "InstitutionalScore": round(r.institutional_score, 4)
                 if np.isfinite(r.institutional_score)
                 else None,
                 "PreBacktestInstitutionalScore": round(
@@ -396,8 +397,8 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "OBV": r.obv if not np.isnan(r.obv) else None,
                 "CMF": round(r.cmf, 4) if not np.isnan(r.cmf) else None,
                 "AD": r.ad if not np.isnan(r.ad) else None,
-                "ATR14": round(r.atr14, 4) if not np.isnan(r.atr14) else None,
-                "ATR50": round(r.atr50, 4) if np.isfinite(r.atr50) else None,
+                "ATR14": round(r.atr14, 6) if np.isfinite(r.atr14) else None,
+                "ATR50": round(r.atr50, 6) if np.isfinite(r.atr50) else None,
                 "ATRExpansionSource": r.atr_expansion_source,
                 "RSI14": round(r.rsi14, 2) if not np.isnan(r.rsi14) else None,
                 "DistToLow52W": round(r.dist_to_low_52w, 2)
@@ -428,6 +429,7 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "VolAccumDays": r.volume_accum_days,
                 "SignalCount": r.filter_details.get("signal_count", 0),
                 "FilterCount": r.filter_details.get("filter_count", 0),
+                "FilterSchemaEvaluated": _hard_gate_evaluated(r),
                 # Compatibility field: historically this meant the combined
                 # hard-gate + accumulation/structure recipe, not "every filter".
                 "PassedFilters": r.passed_filters,
@@ -562,13 +564,421 @@ def _apply_research_policy(frame: pd.DataFrame) -> pd.DataFrame:
     return working
 
 
+def _candidate_generation_stage(backtest_stage: pd.Series) -> pd.Series:
+    """Map ticker-level backtest provenance to the published candidate stage."""
+    normalized = backtest_stage.fillna("").astype(str).str.upper().str.strip()
+    return normalized.map(
+        {
+            "EXACT": "EXACT_REFINED",
+            "EXACT_REFINEMENT": "EXACT_REFINED",
+            "FAST_SCREEN": "FAST_SCREEN",
+            "NOT_EVALUATED": "NOT_EVALUATED",
+        }
+    ).fillna("UNKNOWN")
+
+
 def validate_decision_integrity(frame: pd.DataFrame) -> None:
-    """Fail closed on contradictions between eligibility, gate and lifecycle."""
+    """Fail closed on identity, numeric provenance and decision contradictions."""
     if frame.empty:
         return
 
+    # Failed-download placeholders do not contain a meaningful decision record
+    # and are never publishable candidates.  Validate every successful row,
+    # including research-ineligible rows, while leaving provider errors visible
+    # in AllResults instead of letting their empty fields abort publication.
+    if "Error" in frame.columns:
+        successful = frame["Error"].fillna("").astype(str).str.strip().eq("")
+        frame = frame.loc[successful].copy()
+        if frame.empty:
+            return
+
     violations: list[str] = []
-    ticker = frame.get("Ticker", pd.Series("", index=frame.index)).fillna("").astype(str)
+    ticker = (
+        frame.get("Ticker", pd.Series("", index=frame.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    def record(message: str, bad: pd.Series) -> None:
+        if bad.any():
+            violations.append(message + ": " + ",".join(ticker.loc[bad].head(5)))
+
+    def numeric(column: str) -> pd.Series:
+        return pd.to_numeric(frame[column], errors="coerce").replace(
+            [np.inf, -np.inf], np.nan
+        )
+
+    if "Ticker" in frame.columns:
+        record("blank successful ticker identity", ticker.eq(""))
+        record("duplicate successful ticker identity", ticker.duplicated(keep=False))
+
+    score_columns = {
+        "BaseScore",
+        "TriggerScore",
+        "ExecutionScore",
+        "FinalScore",
+        "ModelWeightSignature",
+    }
+    if score_columns.issubset(frame.columns):
+        parsed_weights: list[tuple[float, ...] | None] = []
+        for signature in frame["ModelWeightSignature"].fillna("").astype(str):
+            try:
+                values = tuple(float(value) for value in signature.split(":"))
+            except ValueError:
+                values = ()
+            valid = (
+                len(values) == 3
+                and all(np.isfinite(value) and value >= 0.0 for value in values)
+                and abs(sum(values) - 1.0) <= 1e-6
+            )
+            parsed_weights.append(values if valid else None)
+        signature_bad = pd.Series(
+            [values is None for values in parsed_weights], index=frame.index
+        )
+        record("invalid model-weight signature", signature_bad)
+        weights = pd.DataFrame(
+            [values or (np.nan, np.nan, np.nan) for values in parsed_weights],
+            index=frame.index,
+            columns=("setup", "trigger", "execution"),
+        )
+        base = numeric("BaseScore")
+        trigger = numeric("TriggerScore")
+        execution = numeric("ExecutionScore")
+        final = numeric("FinalScore")
+        complete = (
+            ~signature_bad
+            & base.notna()
+            & trigger.notna()
+            & execution.notna()
+            & final.notna()
+        )
+        expected = (
+            base * weights["setup"]
+            + trigger * weights["trigger"]
+            + execution * weights["execution"]
+        )
+        if "ScoreCoverage" in frame.columns:
+            coverage = numeric("ScoreCoverage")
+            complete &= coverage.notna()
+            expected = pd.Series(
+                np.minimum(expected, 40.0 + 60.0 * coverage), index=frame.index
+            )
+        model_version = frame.get(
+            "ModelVersion", pd.Series("", index=frame.index)
+        ).fillna("").astype(str)
+        tolerance = pd.Series(
+            np.where(model_version.str.contains("-v48-", regex=False), 0.006, 0.02),
+            index=frame.index,
+        )
+        record(
+            "final score disagrees with signed model weights",
+            complete & final.sub(expected).abs().gt(tolerance),
+        )
+
+    risk_columns = {
+        "Close",
+        "StopLoss",
+        "ProjectedTarget",
+        "StopDistancePct",
+        "RewardRiskRatio",
+    }
+    if risk_columns.issubset(frame.columns):
+        close = numeric("Close")
+        stop = numeric("StopLoss")
+        target = numeric("ProjectedTarget")
+        stop_distance = numeric("StopDistancePct")
+        reward_risk = numeric("RewardRiskRatio")
+        complete = (
+            close.notna()
+            & stop.notna()
+            & target.notna()
+            & stop_distance.notna()
+            & reward_risk.notna()
+        )
+        geometry_bad = complete & (
+            close.le(0.0)
+            | stop.le(0.0)
+            | stop.ge(close)
+            | target.lt(close)
+            | stop_distance.le(0.0)
+            | reward_risk.lt(0.0)
+        )
+        record("invalid exported risk geometry", geometry_bad)
+        denominator = close - stop
+        expected_stop_distance = denominator.div(close).mul(100.0)
+        expected_reward_risk = (target - close).div(denominator)
+        record(
+            "stop-distance percentage disagrees with exported prices",
+            complete
+            & ~geometry_bad
+            & stop_distance.sub(expected_stop_distance).abs().gt(0.01),
+        )
+        record(
+            "reward-risk ratio disagrees with exported prices",
+            complete
+            & ~geometry_bad
+            & reward_risk.sub(expected_reward_risk).abs().gt(0.01),
+        )
+
+    atr_columns = {"ATR14", "ATR50", "ATRExpansion"}
+    if atr_columns.issubset(frame.columns):
+        atr14 = numeric("ATR14")
+        atr50 = numeric("ATR50")
+        expansion = numeric("ATRExpansion")
+        complete = atr14.notna() & atr50.notna() & expansion.notna()
+        positive = atr14.gt(0.0) & atr50.gt(0.0) & expansion.gt(0.0)
+        record("non-positive ATR audit values", complete & ~positive)
+        model_version = frame.get(
+            "ModelVersion", pd.Series("", index=frame.index)
+        ).fillna("").astype(str)
+        tolerance = pd.Series(
+            np.where(model_version.str.contains("-v48-", regex=False), 0.001, 0.01),
+            index=frame.index,
+        )
+        record(
+            "ATR expansion disagrees with ATR14/ATR50",
+            complete & positive & expansion.sub(atr14.div(atr50)).abs().gt(tolerance),
+        )
+        if "ATRExpansionSource" in frame.columns:
+            source = frame["ATRExpansionSource"].fillna("").astype(str).str.strip()
+            record(
+                "finite ATR expansion has invalid provenance",
+                complete & ~source.isin({"indicator", "ohlc_fallback"}),
+            )
+
+    hard_columns = {
+        "MinPricePassed": "min_price",
+        "MinVolumePassed": "min_volume",
+        "MinMarketCapPassed": "min_market_cap",
+        "SufficientHistoryPassed": "sufficient_history",
+    }
+    signal_columns = {
+        "VolAccum": "volume_accumulation",
+        "OBV_Div": "obv_divergence",
+        "CMF_Pos": "cmf_positive",
+        "AD_SlopePos": "ad_slope",
+        "Consolidation": "consolidation",
+        "VolContract": "volatility_contraction",
+    }
+    filter_schema = set(hard_columns) | set(signal_columns) | {
+        "BearMarket",
+        "UniverseEligible",
+        "HardGatePassed",
+        "SignalConfirmed",
+        "PassedFilters",
+        "SignalCount",
+        "FilterCount",
+    }
+    filter_evaluated = pd.Series(False, index=frame.index)
+    if filter_schema.issubset(frame.columns):
+        filter_evaluated = (
+            _bool_series_for_integrity(frame, "FilterSchemaEvaluated")
+            if "FilterSchemaEvaluated" in frame.columns
+            else numeric("FilterCount").gt(0.0)
+        )
+        hard_state = pd.DataFrame(
+            {
+                column: _bool_series_for_integrity(frame, column)
+                for column in hard_columns
+            }
+        )
+        signal_state = pd.DataFrame(
+            {
+                column: _bool_series_for_integrity(frame, column)
+                for column in signal_columns
+            }
+        )
+        hard_passed = hard_state.all(axis=1)
+        signal_confirmed = (
+            signal_state[["VolAccum", "OBV_Div", "CMF_Pos", "AD_SlopePos"]]
+            .sum(axis=1)
+            .ge(2)
+            & signal_state[["Consolidation", "VolContract"]].any(axis=1)
+        )
+        record(
+            "universe eligibility disagrees with hard filters",
+            filter_evaluated
+            & _bool_series_for_integrity(frame, "UniverseEligible").ne(hard_passed),
+        )
+        record(
+            "hard-gate result disagrees with hard filters",
+            filter_evaluated
+            & _bool_series_for_integrity(frame, "HardGatePassed").ne(hard_passed),
+        )
+        record(
+            "signal confirmation disagrees with accumulation/structure evidence",
+            filter_evaluated
+            & _bool_series_for_integrity(frame, "SignalConfirmed").ne(signal_confirmed),
+        )
+        record(
+            "combined filter result disagrees with gate and signal evidence",
+            filter_evaluated
+            & _bool_series_for_integrity(frame, "PassedFilters").ne(
+                hard_passed & signal_confirmed
+            ),
+        )
+        expected_signal_count = signal_state.sum(axis=1)
+        record(
+            "signal count disagrees with exported signal flags",
+            filter_evaluated & numeric("SignalCount").ne(expected_signal_count),
+        )
+        expected_filter_count = (
+            hard_state.sum(axis=1)
+            + signal_state.sum(axis=1)
+            + _bool_series_for_integrity(frame, "BearMarket").astype(int)
+        )
+        actual_filter_count = numeric("FilterCount")
+        asset_type = frame.get(
+            "AssetType", pd.Series("", index=frame.index)
+        ).fillna("").astype(str).str.lower()
+        is_etf = _bool_series_for_integrity(frame, "IsETF") | asset_type.eq("etf")
+        model_version = frame.get(
+            "ModelVersion", pd.Series("", index=frame.index)
+        ).fillna("").astype(str)
+        legacy_etf_count = (
+            is_etf
+            & ~model_version.str.contains("-v48-", regex=False)
+            & (
+                actual_filter_count.eq(expected_filter_count - 1)
+                | actual_filter_count.eq(expected_filter_count - 2)
+            )
+        )
+        record(
+            "filter count disagrees with exported filter flags",
+            filter_evaluated
+            & actual_filter_count.ne(expected_filter_count)
+            & ~legacy_etf_count,
+        )
+
+        if {"HardGateFailedCount", "HardGateFailedNames"}.issubset(frame.columns):
+            expected_names = hard_state.apply(
+                lambda row: ",".join(
+                    hard_columns[column]
+                    for column in hard_columns
+                    if not bool(row[column])
+                ),
+                axis=1,
+            )
+            record(
+                "hard-gate failed count disagrees with exported flags",
+                filter_evaluated
+                & numeric("HardGateFailedCount").ne((~hard_state).sum(axis=1)),
+            )
+            recorded_names = (
+                frame["HardGateFailedNames"].fillna("").astype(str).str.strip()
+            )
+            record(
+                "hard-gate failed names disagree with exported flags",
+                filter_evaluated & recorded_names.ne(expected_names),
+            )
+
+        if {"DiagnosticFailedCount", "DiagnosticFailedNames"}.issubset(frame.columns):
+            diagnostic_order = (
+                "VolAccum",
+                "OBV_Div",
+                "CMF_Pos",
+                "AD_SlopePos",
+                "Consolidation",
+                "VolContract",
+            )
+            expected_names = signal_state.apply(
+                lambda row: ",".join(
+                    signal_columns[column]
+                    for column in diagnostic_order
+                    if not bool(row[column])
+                ),
+                axis=1,
+            )
+            record(
+                "diagnostic failed count disagrees with exported flags",
+                filter_evaluated
+                & numeric("DiagnosticFailedCount").ne((~signal_state).sum(axis=1)),
+            )
+            recorded_names = (
+                frame["DiagnosticFailedNames"].fillna("").astype(str).str.strip()
+            )
+            record(
+                "diagnostic failed names disagree with exported flags",
+                filter_evaluated & recorded_names.ne(expected_names),
+            )
+
+    etf_quality_columns = {
+        "IsETF",
+        "AssetType",
+        "QualityApplicable",
+        "QualityGate",
+        "QualityHardDataComplete",
+        "QualityMultiplier",
+    }
+    if etf_quality_columns.issubset(frame.columns):
+        asset_type = frame["AssetType"].fillna("").astype(str).str.lower()
+        is_etf = _bool_series_for_integrity(frame, "IsETF") | asset_type.eq("etf")
+        neutral = (
+            ~_bool_series_for_integrity(frame, "QualityApplicable")
+            & _bool_series_for_integrity(frame, "QualityGate")
+            & _bool_series_for_integrity(frame, "QualityHardDataComplete")
+            & numeric("QualityMultiplier").sub(1.0).abs().le(1e-9)
+        )
+        record(
+            "ETF fundamental neutrality is inconsistent",
+            is_etf & filter_evaluated & ~neutral,
+        )
+
+    backtest_columns = {
+        "BacktestRequested",
+        "BacktestMode",
+        "BacktestStage",
+        "BacktestSamples",
+        "BacktestStatus",
+        "BacktestEligibleForRanking",
+    }
+    if backtest_columns.issubset(frame.columns):
+        requested = _bool_series_for_integrity(frame, "BacktestRequested")
+        mode = frame["BacktestMode"].fillna("").astype(str).str.upper().str.strip()
+        stage = frame["BacktestStage"].fillna("").astype(str).str.upper().str.strip()
+        samples = numeric("BacktestSamples").fillna(0.0)
+        status = frame["BacktestStatus"].fillna("").astype(str).str.upper().str.strip()
+        stage_bad = (
+            (mode.eq("FAST") & stage.ne("FAST_SCREEN"))
+            | (mode.eq("EXACT") & ~stage.isin({"EXACT", "EXACT_REFINEMENT"}))
+            | (~requested & ~stage.isin({"", "NOT_EVALUATED"}))
+        )
+        record("per-ticker backtest mode disagrees with stage", stage_bad)
+        expected_status = pd.Series(
+            np.select(
+                [~requested, samples.gt(0.0)],
+                ["SKIPPED", "SAMPLES"],
+                default="NO_SIGNAL_SAMPLES",
+            ),
+            index=frame.index,
+        )
+        record(
+            "backtest status disagrees with request/sample provenance",
+            status.ne(expected_status),
+        )
+        expected_eligible = requested & samples.ge(BACKTEST_MIN_SAMPLES_FOR_RANKING)
+        record(
+            "backtest ranking eligibility disagrees with sample provenance",
+            _bool_series_for_integrity(frame, "BacktestEligibleForRanking").ne(
+                expected_eligible
+            ),
+        )
+
+        if "CandidateGenerationStage" in frame.columns:
+            expected_generation = _candidate_generation_stage(stage)
+            generation = (
+                frame["CandidateGenerationStage"]
+                .fillna("")
+                .astype(str)
+                .str.upper()
+                .str.strip()
+            )
+            comparable = expected_generation.ne("UNKNOWN")
+            record(
+                "candidate generation stage disagrees with backtest provenance",
+                comparable & generation.ne(expected_generation),
+            )
 
     if {"ResearchEligible", "HardGatePassed"}.issubset(frame.columns):
         bad = _bool_series_for_integrity(frame, "ResearchEligible") & ~_bool_series_for_integrity(
@@ -1298,9 +1708,8 @@ def refresh_candidate_exports(
     ranked["BacktestCacheVersion"] = ranked.get("BacktestCacheVersion", pd.Series(BACKTEST_CACHE_VERSION, index=ranked.index)).replace("", BACKTEST_CACHE_VERSION).fillna(BACKTEST_CACHE_VERSION)
     ranked["PipelineVersion"] = ranked.get("PipelineVersion", pd.Series(PIPELINE_VERSION, index=ranked.index)).replace("", PIPELINE_VERSION).fillna(PIPELINE_VERSION)
     if "BacktestStage" in ranked:
-        ranked["CandidateGenerationStage"] = np.where(
-            ranked["BacktestStage"].fillna("").astype(str).eq("EXACT_REFINEMENT"),
-            "EXACT_REFINED", "FAST_SCREEN"
+        ranked["CandidateGenerationStage"] = _candidate_generation_stage(
+            ranked["BacktestStage"]
         )
 
     # The GUI's all-results view reads this compact projection instead of the

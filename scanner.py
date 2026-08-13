@@ -512,6 +512,23 @@ def scan_single_from_df(
         )
         passed = bool(universe_eligible and signal_confirmed)
         filter_map.update(base_filter_states)
+        # Keep the exported count aligned with the canonical, asset-aware
+        # booleans above.  ``FilterResults.passed_count`` is evaluated before
+        # the ETF price/market-cap exemptions are applied and therefore
+        # understated ETF rows by as many as two gates.
+        filter_map["signal_count"] = sum(
+            bool(value)
+            for value in (*accumulation_states.values(), *structure_states.values())
+        )
+        filter_map["filter_count"] = sum(
+            bool(value)
+            for value in (
+                *base_filter_states.values(),
+                filter_results.bear_market.passed,
+                *accumulation_states.values(),
+                *structure_states.values(),
+            )
+        )
         failed_filter_names = [
             name
             for name, state in {**base_filter_states, **accumulation_states, **structure_states}.items()

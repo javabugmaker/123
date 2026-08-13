@@ -227,6 +227,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.detail_recent = tk.StringVar(master=root, value="-")
         self.detail_buy = tk.StringVar(master=root, value="-")
         self.detail_stop = tk.StringVar(master=root, value="-")
+        self.detail_risk_geometry = tk.StringVar(master=root, value="-")
         self.detail_eligibility = tk.StringVar(master=root, value="-")
         self.detail_rank = tk.StringVar(master=root, value="-")
         self.detail_score = tk.StringVar(master=root, value="-")
@@ -747,6 +748,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
             ("近期状态", self.detail_recent),
             ("参考买点", self.detail_buy),
             ("止损位", self.detail_stop),
+            ("目标 / 盈亏比", self.detail_risk_geometry),
             ("交易资格", self.detail_eligibility),
             ("榜单 / 全局", self.detail_rank),
             ("排序 / 机构", self.detail_score),
@@ -1590,6 +1592,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.detail_recent.set("-")
         self.detail_buy.set("-")
         self.detail_stop.set("-")
+        self.detail_risk_geometry.set("-")
         self.detail_eligibility.set("-")
         self.detail_rank.set("-")
         self.detail_score.set("-")
@@ -1617,6 +1620,11 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.detail_recent.set(recent)
         self.detail_buy.set(reference or "-")
         self.detail_stop.set(self._format_asset_price(data.get("StopLoss", ""), data) or "-")
+        target = self._format_asset_price(data.get("ProjectedTarget", ""), data) or "-"
+        reward_risk = self._format_table_value(
+            "RewardRiskRatio", data.get("RewardRiskRatio", "")
+        ) or "-"
+        self.detail_risk_geometry.set(f"{target} / {reward_risk}")
         eligibility = data.get("RankingEligibility", "") or "-"
         self.detail_eligibility.set(eligibility)
         view_rank = data.get("CandidateViewRank", "") or data.get("ResearchPoolRank", "")

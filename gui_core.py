@@ -78,6 +78,9 @@ COLUMN_NAMES = {
     "EntryScore": "买点评分",
     "EntrySignal": "买点信号",
     "EntryZone": "买入区间",
+    "EntryZoneDistancePct": "距买入区间",
+    "EntryZoneDistanceATR": "距买入区间（ATR）",
+    "PullbackQualityScore": "回踩质量分",
     "BreakoutBuyPrice": "突破买入价",
     "BreakoutVolumeRatio": "突破量比",
     "BreakoutVolumeConfirmed": "突破量能确认",
@@ -126,7 +129,10 @@ COLUMN_NAMES = {
     "OBV": "能量潮指标",
     "CMF": "资金流量指标",
     "AD": "累积派发指标",
-    "ATR14": "平均真实波幅",
+    "ATR14": "14日平均真实波幅",
+    "ATR50": "50日平均真实波幅",
+    "ATRExpansion": "ATR扩张比",
+    "ATRExpansionSource": "ATR计算来源",
     "MA20": "20日均线",
     "MA50": "50日均线",
     "MA200": "200日均线",
@@ -148,7 +154,9 @@ COLUMN_NAMES = {
     "DataFreshnessFactor": "行情时效系数",
     "DataFreshnessReason": "行情时效说明",
     "InstitutionHoldingStatus": "机构持仓状态",
+    "QualityApplicable": "基本面门槛适用",
     "QualityDataCompleteness": "质量数据完整度",
+    "QualityHardDataComplete": "关键基本面完整",
     "QualityGateReason": "质量门槛原因",
     "QualityMultiplier": "质量系数",
     "SignalAdjustmentReason": "信号调整原因",
@@ -176,7 +184,14 @@ COLUMN_NAMES = {
     "ScoreContributionStructure": "结构贡献",
     "SignalCount": "信号数",
     "FilterCount": "通过项数",
+    "FilterSchemaEvaluated": "筛选口径已评估",
     "PassedFilters": "基础筛选",
+    "UniverseEligible": "标的池硬准入",
+    "HardGatePassed": "基础硬准入",
+    "HardGateFailedCount": "硬准入未通过数",
+    "HardGateFailedNames": "硬准入未通过项",
+    "DiagnosticFailedCount": "诊断未通过数",
+    "DiagnosticFailedNames": "诊断未通过项",
     "FilterOverrideApplied": "基础筛选严格覆盖",
     "FilterOverrideReason": "基础筛选覆盖说明",
     "OBV_Div": "OBV背离",
@@ -280,6 +295,9 @@ NUMBER_COLUMNS = {
     "BreakoutScore",
     "EntryScore",
     "BreakoutVolumeRatio",
+    "EntryZoneDistancePct",
+    "EntryZoneDistanceATR",
+    "PullbackQualityScore",
     "StopLoss",
     "ProjectedTarget",
     "StopDistancePct",
@@ -303,6 +321,9 @@ NUMBER_COLUMNS = {
     "BacktestEffectiveWeight",
     "BacktestAdjustedScore",
     "Close",
+    "ATR14",
+    "ATR50",
+    "ATRExpansion",
     "DistToLow52W",
     "VolAccumDays",
     "SignalCount",
@@ -361,6 +382,8 @@ INTEGER_COLUMNS = {
 }
 PERCENTAGE_COLUMNS = {
     "DistToLow52W",
+    "EntryZoneDistancePct",
+    "StopDistancePct",
     "ScoreCoverage",
     "ScoreConfidence",
     "ScoreConfidencePct",
@@ -383,7 +406,13 @@ FRACTION_PERCENTAGE_COLUMNS = {
     "MarketRegimeConfidence",
     "DataFreshnessFactor",
 }
-FOUR_DECIMAL_COLUMNS = {"BacktestObjectiveValue"}
+FOUR_DECIMAL_COLUMNS = {
+    "ATR14",
+    "ATR50",
+    "ATRExpansion",
+    "BacktestObjectiveValue",
+    "EntryZoneDistanceATR",
+}
 MAX_RENDERED_ROWS = 500
 DOWNLOAD_PROGRESS_RE = re.compile(
     r"DOWNLOAD progress: (\d+)/(\d+) \((\d+) succeeded, (\d+) no-data/failed\)\."
@@ -1442,8 +1471,10 @@ class ScannerGUI:
             "InstitutionalRank",
             "InstitutionalTierReason",
             "Quality",
+            "QualityApplicable",
             "QualityGate",
             "QualityDataCompleteness",
+            "QualityHardDataComplete",
             "QualityGateReason",
             "InstitutionHoldingStatus",
             "Score",
@@ -1475,6 +1506,9 @@ class ScannerGUI:
             "EntryScore",
             "EntrySignal",
             "EntryZone",
+            "EntryZoneDistancePct",
+            "EntryZoneDistanceATR",
+            "PullbackQualityScore",
             "BreakoutBuyPrice",
             "BreakoutVolumeRatio",
             "BreakoutVolumeConfirmed",
@@ -1518,6 +1552,10 @@ class ScannerGUI:
             "AccumulationScore",
             "CompressionScore",
             "StructureScore",
+            "ATR14",
+            "ATR50",
+            "ATRExpansion",
+            "ATRExpansionSource",
             "WyckoffPhase",
             "IndustryRelativeStrength",
             "DataSource",
@@ -1542,7 +1580,14 @@ class ScannerGUI:
             "SignalAdjustmentReason",
             "SignalCount",
             "FilterCount",
+            "FilterSchemaEvaluated",
             "PassedFilters",
+            "UniverseEligible",
+            "HardGatePassed",
+            "HardGateFailedCount",
+            "HardGateFailedNames",
+            "DiagnosticFailedCount",
+            "DiagnosticFailedNames",
             "FilterOverrideApplied",
             "FilterOverrideReason",
             "OBV_Div",
@@ -1960,7 +2005,21 @@ class ScannerGUI:
         text = self._cell_text(value)
         if column in {"SmartMoneyStage", "EntrySignal", "AssetType", "DataSource", "UniverseType"}:
             return DISPLAY_VALUE_NAMES.get(text, text)
-        if column in {"QualityGate", "PassedFilters", "FilterOverrideApplied"}:
+        if column == "ATRExpansionSource":
+            return {
+                "indicator": "指标计算",
+                "ohlc_fallback": "OHLC回退计算",
+                "unavailable": "不可用",
+            }.get(text, text)
+        if column in {
+            "FilterOverrideApplied",
+            "FilterSchemaEvaluated",
+            "HardGatePassed",
+            "PassedFilters",
+            "QualityGate",
+            "QualityHardDataComplete",
+            "UniverseEligible",
+        }:
             return self._format_boolean_status(text)
         if column == "HardRiskFlag":
             if self._is_missing_text(text):
@@ -1975,7 +2034,14 @@ class ScannerGUI:
             return f"{number:,.0f}"
         if column in PERCENTAGE_COLUMNS:
             percent = number * 100 if column in FRACTION_PERCENTAGE_COLUMNS else number
-            return f"{percent:.2f}%" if column == "DistToLow52W" else f"{percent:.0f}%"
+            precise_percentage = {
+                "DistToLow52W",
+                "EntryZoneDistancePct",
+                "StopDistancePct",
+            }
+            return f"{percent:.2f}%" if column in precise_percentage else f"{percent:.0f}%"
+        if column in FOUR_DECIMAL_COLUMNS:
+            return f"{number:,.4f}"
         return f"{number:,.2f}"
 
     def _format_boolean_status(self, value: object) -> str:
