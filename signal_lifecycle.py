@@ -71,15 +71,7 @@ def _rescale_ranking_for_cross_asset(
 
 
 def _lifecycle_masks(result: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
-    status = _core._text_series(result, "SignalStatus", "").str.upper()
-    trend = _core._text_series(result, "SignalTrend", "").str.upper()
-    terminal = status.isin({"FAILED", "EXPIRED", "INACTIVE"})
-    weakening = status.eq("WEAKEN") & (
-        trend.str.contains("快速", regex=False)
-        | trend.str.contains("FAST", regex=False)
-        | trend.str.contains("RAPID", regex=False)
-    )
-    return terminal, weakening
+    return _core._lifecycle_risk_masks(result)
 
 
 def _apply_lifecycle_integrity(
@@ -178,9 +170,12 @@ def _sync_final_explanations(
     result["RankingReason"] = ranking_reason
 
     penalty = _core._text_series(result, "RankingPenaltyReason", "")
+    unresolved_filter_failure = (
+        ~_core._bool_series(result, "PassedFilters", True) & ~filter_override
+    )
     penalty = _core._append_reason(
         penalty,
-        ~_core._bool_series(result, "PassedFilters", True) & ~filter_override,
+        unresolved_filter_failure,
         "基础筛选未全通过",
     )
     if strong_ready.any():
@@ -193,6 +188,20 @@ def _sync_final_explanations(
         )
         penalty.loc[strong_ready] = cleaned
     result["RankingPenaltyReason"] = penalty
+
+    # A later lifecycle pass can revoke a previously valid breakout override
+    # (for example WEAKEN + rapid decline).  Reconcile the decision text at the
+    # same final boundary as the penalty text so exports remain self-consistent.
+    readiness_reason = _core._text_series(
+        result, "TradeReadinessReason", "等待趋势、量能或风险条件改善"
+    )
+    readiness_reason = _core._append_reason(
+        readiness_reason,
+        unresolved_filter_failure,
+        "基础筛选未全通过，转为观察",
+    )
+    result["TradeReadinessReason"] = readiness_reason
+    result["DecisionReason"] = readiness_reason
 
 
 def _sync_final_action_text(
@@ -355,15 +364,17 @@ def _recompute_tiers_and_decisions(
     passed_filters = _core._bool_series(result, "PassedFilters", True)
     universe_eligible = _core._bool_series(result, "UniverseEligible", True)
     breakout_confirmation_ok = _core._breakout_confirmation_ok(result, signal)
-    filter_override = (
-        ~passed_filters
-        & universe_eligible
-        & signal.eq("BREAKOUT_CONFIRM")
-        & _core._bool_series(result, "BreakoutVolumeConfirmed")
-        & _core._bool_series(result, "BreakoutFlowConfirmed")
-        & _core._breakout_confirmation_ok(result, signal)
-        & ~terminal
-        & ~weakening
+    filter_override = _core.strict_filter_override_mask(
+        result,
+        signal=signal,
+        passed_filters=passed_filters,
+        universe_eligible=universe_eligible,
+    )
+    result["FilterOverrideApplied"] = filter_override
+    result["FilterOverrideReason"] = np.where(
+        filter_override,
+        "量价资金确认突破，严格覆盖基础筛选缺口",
+        "",
     )
     stage_risk = lifecycle.isin({"加速风险", "派发", "DISTRIBUTION"})
     trap_observe = trap.ge(_config.VALUE_TRAP_RISK_THRESHOLD)

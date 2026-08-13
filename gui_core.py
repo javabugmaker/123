@@ -177,6 +177,8 @@ COLUMN_NAMES = {
     "SignalCount": "信号数",
     "FilterCount": "通过项数",
     "PassedFilters": "基础筛选",
+    "FilterOverrideApplied": "基础筛选严格覆盖",
+    "FilterOverrideReason": "基础筛选覆盖说明",
     "OBV_Div": "OBV背离",
     "CMF_Pos": "CMF为正或改善",
     "CMF_Improving": "CMF改善",
@@ -1541,6 +1543,8 @@ class ScannerGUI:
             "SignalCount",
             "FilterCount",
             "PassedFilters",
+            "FilterOverrideApplied",
+            "FilterOverrideReason",
             "OBV_Div",
             "CMF_Pos",
             "CMF_Improving",
@@ -1956,7 +1960,7 @@ class ScannerGUI:
         text = self._cell_text(value)
         if column in {"SmartMoneyStage", "EntrySignal", "AssetType", "DataSource", "UniverseType"}:
             return DISPLAY_VALUE_NAMES.get(text, text)
-        if column in {"QualityGate", "PassedFilters"}:
+        if column in {"QualityGate", "PassedFilters", "FilterOverrideApplied"}:
             return self._format_boolean_status(text)
         if column == "HardRiskFlag":
             if self._is_missing_text(text):

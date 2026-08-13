@@ -177,6 +177,66 @@ def _breakout_confirmation_ok(
     return ~breakout | confirmed
 
 
+def _lifecycle_risk_masks(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Return terminal and rapidly weakening lifecycle masks.
+
+    Strict base-filter overrides, final eligibility and integrity validation
+    must consume one lifecycle definition.  Keeping this logic here prevents a
+    confirmed breakout from being treated as an override in the core pass and
+    then losing that override only after the final policy pass.
+    """
+    status = _text_series(frame, "SignalStatus", "").str.upper()
+    trend = _text_series(frame, "SignalTrend", "").str.upper()
+    terminal = status.isin({"FAILED", "EXPIRED", "INACTIVE"})
+    weakening = status.eq("WEAKEN") & (
+        trend.str.contains("快速", regex=False)
+        | trend.str.contains("FAST", regex=False)
+        | trend.str.contains("RAPID", regex=False)
+    )
+    return terminal, weakening
+
+
+def strict_filter_override_mask(
+    frame: pd.DataFrame,
+    signal: pd.Series | None = None,
+    passed_filters: pd.Series | None = None,
+    universe_eligible: pd.Series | None = None,
+) -> pd.Series:
+    """Canonical mask for the narrow breakout override of base filters.
+
+    The override is intentionally fail-closed: both confirmations, the event
+    volume ratio (when present), universe eligibility and a healthy lifecycle
+    are mandatory.  This helper is shared by scoring, final decisions and the
+    export integrity gate; it does not relax any execution threshold.
+    """
+    normalized_signal = (
+        signal.fillna("AVOID").astype(str).str.strip().str.upper()
+        if signal is not None
+        else _text_series(frame, "EntrySignal", "AVOID").str.upper()
+    )
+    passed = (
+        passed_filters.map(_bool)
+        if passed_filters is not None
+        else _bool_series(frame, "PassedFilters", True)
+    )
+    eligible = (
+        universe_eligible.map(_bool)
+        if universe_eligible is not None
+        else _bool_series(frame, "UniverseEligible", True)
+    )
+    terminal, weakening = _lifecycle_risk_masks(frame)
+    return (
+        ~passed
+        & eligible
+        & normalized_signal.eq("BREAKOUT_CONFIRM")
+        & _bool_series(frame, "BreakoutVolumeConfirmed", False)
+        & _bool_series(frame, "BreakoutFlowConfirmed", False)
+        & _breakout_confirmation_ok(frame, normalized_signal)
+        & ~terminal
+        & ~weakening
+    )
+
+
 def _holding_status(frame: pd.DataFrame) -> pd.Series:
     existing = _text_series(frame, "InstitutionHoldingStatus", "").str.upper()
     periods = _number(
@@ -774,14 +834,17 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     )
     result["RankingPenaltyReason"] = ranking_penalty_reason
 
-    filter_override = (
-        ~passed_filters
-        & universe_eligible
-        & signal.eq("BREAKOUT_CONFIRM")
-        & _bool_series(result, "BreakoutVolumeConfirmed", False)
-        & _bool_series(result, "BreakoutFlowConfirmed", False)
-        & _breakout_confirmation_ok(result, signal)
-        & ~lifecycle_failed
+    filter_override = strict_filter_override_mask(
+        result,
+        signal=signal,
+        passed_filters=passed_filters,
+        universe_eligible=universe_eligible,
+    )
+    result["FilterOverrideApplied"] = filter_override
+    result["FilterOverrideReason"] = np.where(
+        filter_override,
+        "量价资金确认突破，严格覆盖基础筛选缺口",
+        "",
     )
     ranking_penalty_reason = _append_reason(
         ranking_penalty_reason,

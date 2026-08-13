@@ -54,7 +54,11 @@ from evidence import enrich_evidence_fields
 from performance_cache import BACKTEST_CACHE_VERSION, INDICATOR_CACHE_VERSION
 from scanner import ScanReport, ScanResult
 from score import model_weight_signature, tradable_price_decimals
-from signal_lifecycle import enrich_signal_lifecycle, finalize_signal_ranking
+from signal_lifecycle import (
+    enrich_signal_lifecycle,
+    finalize_signal_ranking,
+    strict_filter_override_mask,
+)
 
 logger = logging.getLogger("institution_scanner.report")
 
@@ -686,45 +690,40 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
             universe_eligible = frame.get(
                 "UniverseEligible", pd.Series(True, index=frame.index)
             ).map(_truthy)
-            status = frame.get(
-                "SignalStatus", pd.Series("", index=frame.index)
-            ).fillna("").astype(str).str.upper()
-            trend = frame.get(
-                "SignalTrend", pd.Series("", index=frame.index)
-            ).fillna("").astype(str).str.upper()
-            terminal = status.isin({"FAILED", "EXPIRED", "INACTIVE"})
-            weakening = status.eq("WEAKEN") & (
-                trend.str.contains("快速", regex=False)
-                | trend.str.contains("FAST", regex=False)
-                | trend.str.contains("RAPID", regex=False)
+            filter_override = strict_filter_override_mask(
+                frame,
+                signal=signal,
+                passed_filters=passed_filters,
+                universe_eligible=universe_eligible,
             )
-            volume_confirmed = _bool_series_for_integrity(
-                frame, "BreakoutVolumeConfirmed"
-            )
-            flow_confirmed = _bool_series_for_integrity(
-                frame, "BreakoutFlowConfirmed"
-            )
-            volume_ratio = pd.to_numeric(
-                frame.get(
-                    "BreakoutVolumeRatio", pd.Series(np.nan, index=frame.index)
-                ),
-                errors="coerce",
-            )
-            volume_ratio_ok = (
-                volume_ratio.ge(BREAKOUT_CONFIRM_MIN_VOLUME_RATIO)
-                if "BreakoutVolumeRatio" in frame.columns
-                else pd.Series(True, index=frame.index)
-            )
-            filter_override = (
-                ~passed_filters
-                & universe_eligible
-                & signal.eq("BREAKOUT_CONFIRM")
-                & volume_confirmed
-                & flow_confirmed
-                & volume_ratio_ok
-                & ~terminal
-                & ~weakening
-            )
+            if "FilterOverrideApplied" in frame.columns:
+                recorded_override = _bool_series_for_integrity(
+                    frame, "FilterOverrideApplied"
+                )
+                bad = recorded_override.ne(filter_override)
+                if bad.any():
+                    violations.append(
+                        "recorded base-filter override disagrees with canonical policy: "
+                        + ",".join(ticker.loc[bad].head(5))
+                    )
+            if "FilterOverrideReason" in frame.columns:
+                override_reason = (
+                    frame["FilterOverrideReason"].fillna("").astype(str).str.strip()
+                )
+                bad = filter_override & ~override_reason.str.contains(
+                    "严格覆盖基础筛选缺口", regex=False
+                )
+                if bad.any():
+                    violations.append(
+                        "active base-filter override lacks audit reason: "
+                        + ",".join(ticker.loc[bad].head(5))
+                    )
+                bad = ~filter_override & override_reason.ne("")
+                if bad.any():
+                    violations.append(
+                        "inactive base-filter override carries stale audit reason: "
+                        + ",".join(ticker.loc[bad].head(5))
+                    )
             unresolved_filter_failure = ~passed_filters & ~filter_override
             penalty_reason = frame["RankingPenaltyReason"].fillna("").astype(str)
             bad = unresolved_filter_failure & ~penalty_reason.str.contains(
@@ -1283,10 +1282,16 @@ def refresh_candidate_exports(
     top_n_csv: int = TOP_N_REPORT,
     top_n_parquet: int = TOP_N_PARQUET,
     output_dir: Path | None = None,
+    *,
+    _prevalidated_ranked: pd.DataFrame | None = None,
 ) -> tuple[Path, Path, pd.DataFrame]:
     """Refresh every GUI-facing candidate export from one ranked result frame."""
     destination = output_dir if output_dir is not None else OUTPUT_DIR
-    ranked = _rank_valid_candidates(frame)
+    ranked = (
+        _prevalidated_ranked.copy()
+        if _prevalidated_ranked is not None
+        else _rank_valid_candidates(frame)
+    )
     ranked = _ensure_diversity_columns(ranked)
     ranked["ModelVersion"] = ranked.get("ModelVersion", pd.Series(SCORING_VERSION, index=ranked.index)).replace("", SCORING_VERSION).fillna(SCORING_VERSION)
     ranked["IndicatorCacheVersion"] = ranked.get("IndicatorCacheVersion", pd.Series(INDICATOR_CACHE_VERSION, index=ranked.index)).replace("", INDICATOR_CACHE_VERSION).fillna(INDICATOR_CACHE_VERSION)
@@ -1500,9 +1505,9 @@ def export_all(
     df = enrich_evidence_fields(
         _apply_research_policy(enrich_signal_lifecycle(_results_to_dataframe(results)))
     )
-    research_history = refresh_research_outcomes(data_source)
-    write_research_reports(research_history)
     if df.empty:
+        research_history = refresh_research_outcomes(data_source)
+        write_research_reports(research_history)
         csv_path = export_top_csv(results, n=top_n_csv)
         parquet_path = export_top_parquet(results, n=top_n_parquet)
         full_csv = export_full_csv(results)
@@ -1522,6 +1527,15 @@ def export_all(
             _atomic_write_csv(df, OUTPUT_DIR / name)
         return csv_path, parquet_path, full_csv, full_parquet_path
 
+    # Validate and prepare the complete candidate set before publishing even
+    # AllResults.  Previously an integrity failure could replace the full
+    # files while leaving every Top list on the prior run outside DAILY mode.
+    # DAILY's transaction remains the outer safety net; this preflight makes a
+    # normal scan fail before any result artifact is replaced as well.
+    rankable = _rank_valid_candidates(df)
+    research_history = refresh_research_outcomes(data_source)
+    write_research_reports(research_history)
+
     full_csv = OUTPUT_DIR / "AllResults.csv"
     _atomic_write_csv(df, full_csv)
     logger.info("Exported all %d results to %s", len(df), full_csv)
@@ -1534,6 +1548,7 @@ def export_all(
         top_n_csv=top_n_csv,
         top_n_parquet=top_n_parquet,
         output_dir=OUTPUT_DIR,
+        _prevalidated_ranked=rankable,
     )
     signal_counts = rankable.get("EntrySignal", pd.Series(dtype=str)).value_counts()
     logger.info(
