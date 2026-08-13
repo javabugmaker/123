@@ -72,7 +72,12 @@ _core.COLUMN_NAMES.update(
         "QualityDataCompleteness": "基本面完整度",
         "BacktestMode": "回测模式",
         "BacktestCacheHit": "回测缓存",
-        "BacktestLastEvaluatedDate": "回测截至",
+        "BacktestLastEvaluatedDate": "回测基准数据截止（兼容）",
+        "BacktestDataCutoffDate": "回测基准数据截止",
+        "BacktestLastMatureSignalDate": "最近成熟信号日",
+        "BacktestFreshnessTradingDays": "回测时效差",
+        "BacktestFreshnessStatus": "回测时效",
+        "BacktestFreshnessReason": "回测时效说明",
         "BacktestEngine": "回测引擎",
         "ETFTheme": "ETF主题",
         "ResearchPoolRank": "研究池排名",
@@ -1008,10 +1013,63 @@ class DecisionScannerGUI(_core.ScannerGUI):
     def _format_table_value(self, column: str, value: str) -> str:
         text = self._cell_text(value)
         detail_data = getattr(self, "_detail_format_data", None)
+        if isinstance(detail_data, dict):
+            asset_type = str(detail_data.get("AssetType", "") or "").strip().casefold()
+            raw_is_etf = str(detail_data.get("IsETF", "") or "").strip().casefold()
+            is_etf = asset_type == "etf" or raw_is_etf in {
+                "true",
+                "1",
+                "yes",
+                "y",
+                "是",
+            }
+            raw_applicable = str(
+                detail_data.get("QualityApplicable", "") or ""
+            ).strip().casefold()
+            quality_applicable = (
+                raw_applicable in {"true", "1", "yes", "y", "是"}
+                if raw_applicable
+                else not is_etf
+            )
+            if column == "QualityGate" and (is_etf or not quality_applicable):
+                return "不适用（ETF豁免）" if is_etf else "不适用"
+            if column == "QualityApplicable":
+                if is_etf or not quality_applicable:
+                    return "不适用（ETF）" if is_etf else "不适用"
+                return "适用"
+            if column == "ProjectedTarget":
+                target = self._numeric_value(text)
+                close = self._numeric_value(detail_data.get("Close", ""))
+                reward_risk = self._numeric_value(
+                    detail_data.get("RewardRiskRatio", "")
+                )
+                decision = str(
+                    detail_data.get("DecisionState", "") or ""
+                ).strip().upper()
+                eligibility = str(
+                    detail_data.get("RankingEligibility", "") or ""
+                ).strip()
+                decision_known = bool(decision or eligibility)
+                actionable = decision in {"READY", "CAUTIOUS"} or eligibility in {
+                    "推荐",
+                    "谨慎候选",
+                }
+                invalid_target = target is not None and (
+                    (close is not None and target <= close)
+                    or (reward_risk is not None and reward_risk <= 0.0)
+                )
+                if decision_known and not actionable and invalid_target:
+                    return "暂不适用"
         if column in {"Close", "StopLoss", "BreakoutBuyPrice", "ProjectedTarget"} and isinstance(
             detail_data, dict
         ):
             return self._format_asset_price(value, detail_data)
+        if column == "StopDistancePct":
+            number = self._numeric_value(text)
+            return f"{number:.2f}%" if number is not None else "—"
+        if column == "RewardRiskRatio":
+            number = self._numeric_value(text)
+            return f"{number:.2f}" if number is not None else "—"
         if column == "SignalStatus":
             if self._is_missing_text(text):
                 return "-"
@@ -1453,6 +1511,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
             return
         universe = payload.get("universe", {}) if isinstance(payload.get("universe", {}), dict) else {}
         freshness = payload.get("freshness", {}) if isinstance(payload.get("freshness", {}), dict) else {}
+        quality_gate = payload.get("quality_gate", {}) if isinstance(payload.get("quality_gate", {}), dict) else {}
         scan = payload.get("scan_breakdown", {}) if isinstance(payload.get("scan_breakdown", {}), dict) else {}
         backtest = payload.get("backtest", {}) if isinstance(payload.get("backtest", {}), dict) else {}
         lines = [
@@ -1461,6 +1520,8 @@ class DecisionScannerGUI(_core.ScannerGUI):
             f"总耗时：{_duration_label(float(payload.get('elapsed_seconds', 0.0) or 0.0))}",
             f"标的：{int(universe.get('rows', 0) or 0)} · 股票 {int(universe.get('stocks', 0) or 0)} · ETF {int(universe.get('etfs', 0) or 0)}",
             f"最新覆盖：{float(freshness.get('all_results_ratio', 0.0) or 0.0):.2%}",
+            f"基本面门槛：{int(quality_gate.get('passed_stocks', 0) or 0)}/{int(quality_gate.get('applicable_stocks', 0) or 0)} · {float(quality_gate.get('pass_rate', 0.0) or 0.0):.2%}",
+            f"基本面硬数据完整：{float(quality_gate.get('hard_data_complete_rate', 0.0) or 0.0):.2%}",
             "",
             "扫描阶段",
             f"  股票池：{_duration_label(float(scan.get('universe_seconds', 0.0) or 0.0))}",
@@ -1581,7 +1642,30 @@ class DecisionScannerGUI(_core.ScannerGUI):
             if not ranking_enabled:
                 backtest_parts.append("不参与排名")
         ticker_evidence = str(data.get("TickerEvidence", "") or "").strip()
-        self.detail_backtest.set(ticker_evidence or " · ".join(value for value in backtest_parts if value) or "-")
+        freshness_status = str(
+            data.get("BacktestFreshnessStatus", "") or ""
+        ).strip()
+        cutoff = str(
+            data.get("BacktestDataCutoffDate", "")
+            or data.get("BacktestLastEvaluatedDate", "")
+            or ""
+        ).strip()
+        backtest_summary = ticker_evidence or " · ".join(
+            value for value in backtest_parts if value
+        )
+        freshness_parts = []
+        if freshness_status:
+            freshness_parts.append(f"时效{freshness_status}")
+        if cutoff:
+            freshness_parts.append(f"数据截至{cutoff}")
+        self.detail_backtest.set(
+            " · ".join(
+                value
+                for value in (backtest_summary, *freshness_parts)
+                if value
+            )
+            or "-"
+        )
         peer_evidence = str(data.get("PeerCalibrationEvidence", "") or "").strip()
         self.detail_peer_calibration.set(peer_evidence or "-")
         evidence_tier = str(data.get("EvidenceTier", "") or "").strip()
@@ -1600,6 +1684,11 @@ class DecisionScannerGUI(_core.ScannerGUI):
             reason = f"{reason}\n\n回测：{skip_reason}。"
         elif confidence == "样本不足":
             reason = f"{reason}\n\n历史样本不足，回测暂不作为主要排序依据。"
+        freshness_reason = str(
+            data.get("BacktestFreshnessReason", "") or ""
+        ).strip()
+        if freshness_reason and freshness_status in {"延迟", "过期", "异常", "未知"}:
+            reason = f"{reason}\n\n回测时效：{freshness_reason}。"
         self.detail_reason.set(reason)
         if eligibility == "推荐":
             self.detail_signal_label.configure(fg_color="#ecfdf3", text_color="#166534")

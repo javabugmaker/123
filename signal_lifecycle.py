@@ -178,6 +178,11 @@ def _sync_final_explanations(
     result["RankingReason"] = ranking_reason
 
     penalty = _core._text_series(result, "RankingPenaltyReason", "")
+    penalty = _core._append_reason(
+        penalty,
+        ~_core._bool_series(result, "PassedFilters", True) & ~filter_override,
+        "基础筛选未全通过",
+    )
     if strong_ready.any():
         cleaned = _strip_reason_tokens(
             penalty.loc[strong_ready],
@@ -431,19 +436,31 @@ def _recompute_tiers_and_decisions(
     )
     reason.loc[strong_ready] = "买点、质量、数据与综合评分均满足执行条件"
     reason.loc[cautious_ready] = "B级观察但量价资金突破确认，列为谨慎候选"
-    reason.loc[tier_demoted] = "研究等级未达到A级执行门槛，转为观察"
-    reason.loc[execution_risk_block & ~hard_block] = (
-        "止损距离或预期盈亏比未达执行门槛，转为观察"
+    reason = _core._append_reason(
+        reason, tier_demoted, "研究等级未达到A级执行门槛，转为观察"
     )
-    reason.loc[
+    reason = _core._append_reason(
+        reason,
+        execution_risk_block & ~hard_block,
+        "止损距离或预期盈亏比未达执行门槛，转为观察",
+    )
+    reason = _core._append_reason(
+        reason,
         signal.eq("BREAKOUT_CONFIRM")
         & ~breakout_confirmation_ok
-        & ~hard_block
-    ] = "突破事件量能或资金确认不足，转为观察"
-    reason.loc[weakening & ~terminal] = (
-        "信号处于WEAKEN且快速下降，等待重新增强后再进入推荐"
+        & ~hard_block,
+        "突破事件量能或资金确认不足，转为观察",
     )
-    reason.loc[terminal] = "信号生命周期已结束，禁止作为当前交易信号"
+    reason = _core._append_reason(
+        reason,
+        weakening & ~terminal,
+        "信号处于WEAKEN且快速下降，等待重新增强后再进入推荐",
+    )
+    reason = _core._append_reason(
+        reason,
+        terminal,
+        "信号生命周期已结束，禁止作为当前交易信号",
+    )
     result["TradeReadinessReason"] = reason
     result["DecisionReason"] = reason
     _sync_final_explanations(result, strong_ready, cautious_ready, filter_override)

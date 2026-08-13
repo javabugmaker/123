@@ -7,7 +7,7 @@ import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -27,6 +27,8 @@ from config import (
     BACKTEST_FAST_CHUNK_SIZE,
     BACKTEST_FAST_COOLDOWN_DAYS,
     BACKTEST_FAST_SCORE_WINDOW_BARS,
+    BACKTEST_FRESHNESS_DELAYED_TRADING_DAYS,
+    BACKTEST_FRESHNESS_STALE_TRADING_DAYS,
     BACKTEST_FULL_WEIGHT_SAMPLES,
     BACKTEST_INCREMENTAL_TAIL_BARS,
     BACKTEST_LOW_CONFIDENCE_MAX_SAMPLES,
@@ -86,7 +88,7 @@ from score import (
 )
 from signal_lifecycle import finalize_signal_ranking
 from tradeability import is_entry_tradeable
-from trading_calendar import trading_age_days
+from trading_calendar import is_trading_day, trading_age_days
 
 logger = logging.getLogger("institution_scanner.analytics")
 
@@ -1664,6 +1666,11 @@ def _ticker_backtest_rows(
             if signal_dates.notna().any()
             else 0
         )
+        last_mature_signal_date = (
+            signal_dates.max().strftime("%Y-%m-%d")
+            if signal_dates.notna().any()
+            else ""
+        )
         negative_returns60 = group.loc[group["return60"] < 0, "return60"]
         downside60 = (
             _robust_mean(negative_returns60)
@@ -1727,6 +1734,7 @@ def _ticker_backtest_rows(
                     else np.nan
                 ),
                 "signal_span_days": signal_span_days,
+                "backtest_last_mature_signal_date": last_mature_signal_date,
                 "return_std_20d": (
                     round(std20, 4) if np.isfinite(std20) else np.nan
                 ),
@@ -1981,6 +1989,101 @@ def _apply_backtest_provenance(
     )
     return frame
 
+
+def _trading_days_between(start: date, end: date) -> int:
+    """Count completed China trading sessions after ``start`` through ``end``."""
+    if end <= start:
+        return 0
+    count = 0
+    cursor = start + timedelta(days=1)
+    while cursor <= end:
+        if is_trading_day(cursor):
+            count += 1
+        cursor += timedelta(days=1)
+    return count
+
+
+def _apply_backtest_freshness(
+    frame: pd.DataFrame, summary: BacktestSummary
+) -> pd.DataFrame:
+    """Expose benchmark cutoff freshness without changing any model weight."""
+    result = frame.copy()
+    requested = result.get(
+        "BacktestRequested", pd.Series(False, index=result.index)
+    ).fillna(False).astype(bool)
+    legacy_cutoff = result.get(
+        "BacktestLastEvaluatedDate", pd.Series("", index=result.index)
+    ).fillna("").astype(str).str.strip()
+    explicit_cutoff = result.get(
+        "BacktestDataCutoffDate", pd.Series("", index=result.index)
+    ).fillna("").astype(str).str.strip()
+    cutoff = explicit_cutoff.where(explicit_cutoff.ne(""), legacy_cutoff)
+    run_cutoff = str((getattr(summary, "split_dates", {}) or {}).get("global_end") or "")
+    cutoff = cutoff.where(cutoff.ne("") | ~requested, run_cutoff)
+    result["BacktestDataCutoffDate"] = cutoff
+    # Keep the old field as a compatibility alias, but make its exact meaning
+    # explicit through the new canonical field and GUI label.
+    result["BacktestLastEvaluatedDate"] = cutoff
+
+    data_asof = pd.to_datetime(
+        result.get("DataAsOf", pd.Series(pd.NaT, index=result.index)),
+        errors="coerce",
+    )
+    cutoff_dates = pd.to_datetime(cutoff, errors="coerce")
+    delayed_limit = max(0, int(BACKTEST_FRESHNESS_DELAYED_TRADING_DAYS))
+    stale_limit = max(delayed_limit, int(BACKTEST_FRESHNESS_STALE_TRADING_DAYS))
+    statuses: list[str] = []
+    reasons: list[str] = []
+    gaps: list[float] = []
+    for is_requested, asof_value, cutoff_value in zip(
+        requested, data_asof, cutoff_dates
+    ):
+        if not bool(is_requested):
+            statuses.append("未请求")
+            reasons.append("本标的不在本轮回测范围")
+            gaps.append(np.nan)
+            continue
+        if pd.isna(cutoff_value):
+            statuses.append("未知")
+            reasons.append("未取得回测基准数据截止日")
+            gaps.append(np.nan)
+            continue
+        if pd.isna(asof_value):
+            statuses.append("未知")
+            reasons.append("行情数据日期缺失，无法判断回测时效")
+            gaps.append(np.nan)
+            continue
+        cutoff_day = pd.Timestamp(cutoff_value).date()
+        asof_day = pd.Timestamp(asof_value).date()
+        if cutoff_day > asof_day:
+            statuses.append("异常")
+            reasons.append(
+                f"回测基准数据截止日 {cutoff_day.isoformat()} 晚于行情日期 {asof_day.isoformat()}"
+            )
+            gaps.append(0.0)
+            continue
+        gap = _trading_days_between(cutoff_day, asof_day)
+        gaps.append(float(gap))
+        if gap <= delayed_limit:
+            statuses.append("同步")
+            reasons.append(
+                f"回测基准数据截至 {cutoff_day.isoformat()}，与行情日期相差 {gap} 个交易日"
+            )
+        elif gap <= stale_limit:
+            statuses.append("延迟")
+            reasons.append(
+                f"回测基准数据比行情日期落后 {gap} 个交易日，仅作历史校准"
+            )
+        else:
+            statuses.append("过期")
+            reasons.append(
+                f"回测基准数据比行情日期落后 {gap} 个交易日，请刷新基准缓存后重跑"
+            )
+    result["BacktestFreshnessTradingDays"] = gaps
+    result["BacktestFreshnessStatus"] = statuses
+    result["BacktestFreshnessReason"] = reasons
+    return result
+
 def _decision_quality_multiplier(
     frame: pd.DataFrame,
     *,
@@ -2119,6 +2222,8 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
                         "effective_samples": 0.0, "backtest_score": BACKTEST_NEUTRAL_SCORE,
                         "backtest_mode": "EXACT", "backtest_cache_hit": False,
                         "backtest_last_evaluated_date": exact.split_dates.get("global_end") or "",
+                        "backtest_data_cutoff_date": exact.split_dates.get("global_end") or "",
+                        "backtest_last_mature_signal_date": "",
                         "backtest_engine": exact.engine, "backtest_stage": "EXACT_REFINEMENT",
                     })
             for row in exact_rows:
@@ -2187,6 +2292,8 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "backtest_mode": "BacktestMode",
         "backtest_cache_hit": "BacktestCacheHit",
         "backtest_last_evaluated_date": "BacktestLastEvaluatedDate",
+        "backtest_data_cutoff_date": "BacktestDataCutoffDate",
+        "backtest_last_mature_signal_date": "BacktestLastMatureSignalDate",
         "backtest_engine": "BacktestEngine",
         "backtest_stage": "BacktestStage",
     }
@@ -2224,6 +2331,11 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         "BacktestMode",
         "BacktestCacheHit",
         "BacktestLastEvaluatedDate",
+        "BacktestDataCutoffDate",
+        "BacktestLastMatureSignalDate",
+        "BacktestFreshnessTradingDays",
+        "BacktestFreshnessStatus",
+        "BacktestFreshnessReason",
         "BacktestEngine",
         "BacktestStatus",
         "BacktestStage",
@@ -2292,6 +2404,7 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
 
     observed = pd.to_numeric(frame["BacktestSamples"], errors="coerce").fillna(0.0)
     frame = _apply_backtest_provenance(frame, summary, observed)
+    frame = _apply_backtest_freshness(frame, summary)
     observed = pd.to_numeric(frame["BacktestSamples"], errors="coerce").fillna(0.0)
     frame["BacktestCacheHit"] = frame.get(
         "BacktestCacheHit", pd.Series(False, index=frame.index)
@@ -3104,6 +3217,7 @@ def run_historical_backtest(
             row["backtest_mode"] = profile.name.upper()
             row["backtest_cache_hit"] = str(row.get("ticker", "")) in cache_hit_tickers
             row["backtest_last_evaluated_date"] = last_evaluated
+            row["backtest_data_cutoff_date"] = last_evaluated
             row["backtest_engine"] = engine
             row["backtest_stage"] = "FAST_SCREEN" if profile.name == "fast" else "EXACT"
         summary.by_score_bucket = _bucket_rows(sample_frame)

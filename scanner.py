@@ -233,6 +233,11 @@ class ScanResult:
     backtest_mode: str = ""
     backtest_cache_hit: bool = False
     backtest_last_evaluated_date: str = ""
+    backtest_data_cutoff_date: str = ""
+    backtest_last_mature_signal_date: str = ""
+    backtest_freshness_trading_days: float = np.nan
+    backtest_freshness_status: str = "未请求"
+    backtest_freshness_reason: str = "尚未执行回测"
     backtest_engine: str = ""
     backtest_status: str = ""
     global_calibration_score: float = np.nan
@@ -1039,6 +1044,26 @@ def run_scan(
                         backtest_mode=str(row.get("BacktestMode", "") or ""),
                         backtest_cache_hit=_parse_bool(row.get("BacktestCacheHit", False)),
                         backtest_last_evaluated_date=str(row.get("BacktestLastEvaluatedDate", "") or ""),
+                        backtest_data_cutoff_date=str(
+                            row.get(
+                                "BacktestDataCutoffDate",
+                                row.get("BacktestLastEvaluatedDate", ""),
+                            )
+                            or ""
+                        ),
+                        backtest_last_mature_signal_date=str(
+                            row.get("BacktestLastMatureSignalDate", "") or ""
+                        ),
+                        backtest_freshness_trading_days=_parse_float(
+                            row.get("BacktestFreshnessTradingDays", np.nan)
+                        ),
+                        backtest_freshness_status=str(
+                            row.get("BacktestFreshnessStatus", "未请求") or "未请求"
+                        ),
+                        backtest_freshness_reason=str(
+                            row.get("BacktestFreshnessReason", "尚未执行回测")
+                            or "尚未执行回测"
+                        ),
                         backtest_engine=str(row.get("BacktestEngine", "") or ""),
                         backtest_status=str(row.get("BacktestStatus", "") or ""),
                         global_calibration_score=_parse_float(row.get("GlobalCalibrationScore", np.nan)),

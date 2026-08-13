@@ -113,8 +113,15 @@ def _text_series(frame: pd.DataFrame, column: str, default: str = "") -> pd.Seri
 
 def _append_reason(current: pd.Series, condition: pd.Series, reason: str) -> pd.Series:
     existing = current.fillna("").astype(str)
+    # Reason construction happens in both the stable engine and the current
+    # policy facade.  Make appends idempotent so a blocker can be reconciled
+    # more than once without producing duplicated audit text.
+    has_reason = ("；" + existing + "；").str.contains(
+        "；" + str(reason) + "；", regex=False
+    )
+    should_append = condition.fillna(False).astype(bool) & ~has_reason
     return existing.where(
-        ~condition,
+        ~should_append,
         np.where(existing.eq(""), reason, existing + "；" + reason),
     )
 
@@ -781,6 +788,11 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         filter_override,
         "基础筛选未全通过，但量价资金突破满足严格覆盖条件",
     )
+    ranking_penalty_reason = _append_reason(
+        ranking_penalty_reason,
+        ~passed_filters & ~filter_override,
+        "基础筛选未全通过",
+    )
     result["RankingPenaltyReason"] = ranking_penalty_reason
 
     breakout_confirmation_ok = _breakout_confirmation_ok(result, signal)
@@ -819,7 +831,7 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         {"READY": "推荐", "OBSERVE": "观察", "BLOCKED": "风险过滤"}
     ).fillna("观察")
     result["TradeReadiness"] = result["RankingEligibility"]
-    readiness_reason = pd.Series("等待趋势、量能或风险条件改善", index=result.index)
+    readiness_reason = pd.Series("", index=result.index, dtype=object)
     active_signal = signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
     hard_filter = (
         avoid
@@ -827,43 +839,63 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         | lifecycle.isin({"派发", "DISTRIBUTION"})
         | stale_data
     )
-    readiness_reason.loc[hard_filter] = "硬风险过滤，不纳入交易就绪组"
-    readiness_reason.loc[lifecycle_failed & ~hard_filter] = "历史信号生命周期已失败，转为观察"
-    readiness_reason.loc[
-        ~passed_filters & ~filter_override & ~hard_filter & ~lifecycle_failed
-    ] = "基础筛选未全通过，转为观察"
-    readiness_reason.loc[active_signal & data_risk & ~hard_filter] = (
-        "技术数据覆盖不足，转为观察"
+    readiness_reason = _append_reason(
+        readiness_reason, hard_filter, "硬风险过滤，不纳入交易就绪组"
     )
-    readiness_reason.loc[
-        active_signal & minimum_score_risk & ~data_risk & ~hard_filter
-    ] = "综合评分未达交易门槛，转为观察"
-    readiness_reason.loc[
-        execution_risk_block & ~data_risk & ~hard_filter
-    ] = "止损距离或预期盈亏比未达执行门槛，转为观察"
-    readiness_reason.loc[
-        signal.eq("BREAKOUT_CONFIRM")
-        & ~breakout_confirmation_ok
-        & ~hard_filter
-    ] = "突破事件量能或资金确认不足，转为观察"
-    readiness_reason.loc[
-        active_signal
-        & breakout_confirmation_ok
-        & ~minimum_score_risk
-        & ~execution_risk_block
-        & ~data_risk
-        & ~hard_filter
-        & ~quality_action_block
-        & ~trap_observe
-        & ~lifecycle_failed
-        & (passed_filters | filter_override)
-    ] = "买点、质量、数据与综合评分均满足执行条件"
-    readiness_reason.loc[quality_action_block & ~hard_filter] = (
-        "质量门槛未通过或数据不足，转为观察"
+    readiness_reason = _append_reason(
+        readiness_reason,
+        lifecycle_failed & ~hard_filter,
+        "历史信号生命周期已失败，转为观察",
     )
-    readiness_reason.loc[
-        chase.ge(CHASE_RISK_HIGH_THRESHOLD) & ~hard_filter
-    ] = "追高风险过高，转为观察"
+    readiness_reason = _append_reason(
+        readiness_reason,
+        ~passed_filters & ~filter_override & ~hard_filter & ~lifecycle_failed,
+        "基础筛选未全通过，转为观察",
+    )
+    readiness_reason = _append_reason(
+        readiness_reason,
+        active_signal & data_risk & ~hard_filter,
+        "技术数据覆盖不足，转为观察",
+    )
+    readiness_reason = _append_reason(
+        readiness_reason,
+        active_signal & minimum_score_risk & ~hard_filter,
+        "综合评分未达交易门槛，转为观察",
+    )
+    readiness_reason = _append_reason(
+        readiness_reason,
+        execution_risk_block & ~hard_filter,
+        "止损距离或预期盈亏比未达执行门槛，转为观察",
+    )
+    readiness_reason = _append_reason(
+        readiness_reason,
+        signal.eq("BREAKOUT_CONFIRM") & ~breakout_confirmation_ok & ~hard_filter,
+        "突破事件量能或资金确认不足，转为观察",
+    )
+    readiness_reason = _append_reason(
+        readiness_reason,
+        quality_action_block & ~hard_filter,
+        "质量门槛未通过或数据不足，转为观察",
+    )
+    readiness_reason = _append_reason(
+        readiness_reason,
+        trap_observe & ~trap_risk & ~hard_filter,
+        "价值陷阱风险，转为观察",
+    )
+    readiness_reason = _append_reason(
+        readiness_reason,
+        stage_risk & ~hard_filter,
+        "生命周期风险阶段，转为观察",
+    )
+    readiness_reason = _append_reason(
+        readiness_reason,
+        chase.ge(CHASE_RISK_HIGH_THRESHOLD) & ~hard_filter,
+        "追高风险过高，转为观察",
+    )
+    readiness_reason.loc[trade_ready] = "买点、质量、数据与综合评分均满足执行条件"
+    readiness_reason = readiness_reason.where(
+        readiness_reason.str.strip().ne(""), "等待趋势、量能或风险条件改善"
+    )
     result["TradeReadinessReason"] = readiness_reason
     result["DecisionReason"] = readiness_reason
     operation_advice = _text_series(result, "OperationAdvice", "")
@@ -1031,12 +1063,14 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         }
     ).fillna("观察")
     result["TradeReadiness"] = result["RankingEligibility"]
-    result.loc[cautious_ready, "TradeReadinessReason"] = (
-        "B级观察但量价资金突破确认，列为谨慎候选"
+    tier_reason = _text_series(
+        result, "TradeReadinessReason", "等待趋势、量能或风险条件改善"
     )
-    result.loc[tier_demoted, "TradeReadinessReason"] = (
-        "研究等级未达到A级执行门槛，转为观察"
+    tier_reason.loc[cautious_ready] = "B级观察但量价资金突破确认，列为谨慎候选"
+    tier_reason = _append_reason(
+        tier_reason, tier_demoted, "研究等级未达到A级执行门槛，转为观察"
     )
+    result["TradeReadinessReason"] = tier_reason
     result["DecisionReason"] = result["TradeReadinessReason"]
     result.loc[cautious_ready, "OperationAdvice"] = (
         "B级突破确认，仅列谨慎候选；控制仓位并等待进一步确认。"

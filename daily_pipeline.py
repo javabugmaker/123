@@ -137,6 +137,11 @@ def _csv_profile(path: Path, expected_date: str) -> dict[str, object]:
         "valid_etf_ratio": 0.0,
         "fresh_rows": 0,
         "fresh_ratio": 0.0,
+        "quality_applicable_stocks": 0,
+        "quality_gate_passed_stocks": 0,
+        "quality_gate_pass_rate": 0.0,
+        "quality_hard_data_complete_stocks": 0,
+        "quality_hard_data_complete_rate": 0.0,
         "run_ids": [],
     }
     if not path.exists():
@@ -144,6 +149,8 @@ def _csv_profile(path: Path, expected_date: str) -> dict[str, object]:
     run_ids: set[str] = set()
     rows = stocks = etfs = fresh = 0
     valid_rows = valid_stocks = valid_etfs = error_rows = 0
+    quality_applicable_stocks = quality_gate_passed_stocks = 0
+    quality_hard_data_complete_stocks = 0
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as file:
             for row in csv.DictReader(file):
@@ -165,6 +172,17 @@ def _csv_profile(path: Path, expected_date: str) -> dict[str, object]:
                         valid_etfs += 1
                     else:
                         valid_stocks += 1
+                        quality_applicable = _truthy(
+                            row.get("QualityApplicable", True)
+                        )
+                        if quality_applicable:
+                            quality_applicable_stocks += 1
+                            quality_gate_passed_stocks += int(
+                                _truthy(row.get("QualityGate", False))
+                            )
+                            quality_hard_data_complete_stocks += int(
+                                _truthy(row.get("QualityHardDataComplete", False))
+                            )
                 if str(row.get("DataAsOf", "")).strip() == expected_date:
                     fresh += 1
                 run_id = str(row.get("RunId", "")).strip()
@@ -185,6 +203,19 @@ def _csv_profile(path: Path, expected_date: str) -> dict[str, object]:
             "valid_etf_ratio": round(valid_etfs / etfs, 4) if etfs else 0.0,
             "fresh_rows": fresh,
             "fresh_ratio": round(fresh / rows, 4) if rows else 0.0,
+            "quality_applicable_stocks": quality_applicable_stocks,
+            "quality_gate_passed_stocks": quality_gate_passed_stocks,
+            "quality_gate_pass_rate": round(
+                quality_gate_passed_stocks / quality_applicable_stocks, 4
+            )
+            if quality_applicable_stocks
+            else 0.0,
+            "quality_hard_data_complete_stocks": quality_hard_data_complete_stocks,
+            "quality_hard_data_complete_rate": round(
+                quality_hard_data_complete_stocks / quality_applicable_stocks, 4
+            )
+            if quality_applicable_stocks
+            else 0.0,
             "run_ids": sorted(run_ids),
         }
     )
@@ -460,6 +491,23 @@ def _write_manifest(
                 name: float(profile.get("fresh_ratio", 0.0) or 0.0)
                 for name, profile in final_profiles.items()
             },
+        },
+        "quality_gate": {
+            "applicable_stocks": int(
+                scan_profile.get("quality_applicable_stocks", 0) or 0
+            ),
+            "passed_stocks": int(
+                scan_profile.get("quality_gate_passed_stocks", 0) or 0
+            ),
+            "pass_rate": float(
+                scan_profile.get("quality_gate_pass_rate", 0.0) or 0.0
+            ),
+            "hard_data_complete_stocks": int(
+                scan_profile.get("quality_hard_data_complete_stocks", 0) or 0
+            ),
+            "hard_data_complete_rate": float(
+                scan_profile.get("quality_hard_data_complete_rate", 0.0) or 0.0
+            ),
         },
         "stage_seconds": {
             key: round(float(value), 3) for key, value in stage_seconds.items()

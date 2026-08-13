@@ -40,6 +40,7 @@ from config import (
     INSTITUTIONAL_TIER_WAIT_LABEL,
     OUTPUT_DIR,
     PIPELINE_VERSION,
+    QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE,
     SCORING_VERSION,
     STOCK_INDUSTRY_MAX_PER_TOP_LIST,
     THEME_CLUSTER_SOFT_PENALTY,
@@ -347,6 +348,17 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "BacktestMode": r.backtest_mode,
                 "BacktestCacheHit": r.backtest_cache_hit,
                 "BacktestLastEvaluatedDate": r.backtest_last_evaluated_date,
+                "BacktestDataCutoffDate": (
+                    r.backtest_data_cutoff_date or r.backtest_last_evaluated_date
+                ),
+                "BacktestLastMatureSignalDate": r.backtest_last_mature_signal_date,
+                "BacktestFreshnessTradingDays": (
+                    round(r.backtest_freshness_trading_days, 4)
+                    if np.isfinite(r.backtest_freshness_trading_days)
+                    else None
+                ),
+                "BacktestFreshnessStatus": r.backtest_freshness_status,
+                "BacktestFreshnessReason": r.backtest_freshness_reason,
                 "BacktestEngine": r.backtest_engine,
                 "BacktestStatus": r.backtest_status,
                 "GlobalCalibrationScore": round(r.global_calibration_score, 4) if np.isfinite(r.global_calibration_score) else None,
@@ -618,6 +630,16 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
                     + ",".join(ticker.loc[bad].head(5))
                 )
 
+        if {"TradeReadinessReason", "DecisionReason"}.issubset(frame.columns):
+            readiness_reason = frame["TradeReadinessReason"].fillna("").astype(str)
+            decision_reason = frame["DecisionReason"].fillna("").astype(str)
+            bad = decision_reason.ne(readiness_reason)
+            if bad.any():
+                violations.append(
+                    "decision reason disagrees with trade-readiness reason: "
+                    + ",".join(ticker.loc[bad].head(5))
+                )
+
         actionable = eligibility.isin({"推荐", "谨慎候选"})
         asset_type = frame.get(
             "AssetType", pd.Series("", index=frame.index)
@@ -654,6 +676,143 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
         signal = frame.get(
             "EntrySignal", pd.Series("", index=frame.index)
         ).fillna("").astype(str).str.upper()
+
+        if {
+            "PassedFilters",
+            "ReadinessPenaltyFactor",
+            "RankingPenaltyReason",
+        }.issubset(frame.columns):
+            passed_filters = _bool_series_for_integrity(frame, "PassedFilters")
+            universe_eligible = frame.get(
+                "UniverseEligible", pd.Series(True, index=frame.index)
+            ).map(_truthy)
+            status = frame.get(
+                "SignalStatus", pd.Series("", index=frame.index)
+            ).fillna("").astype(str).str.upper()
+            trend = frame.get(
+                "SignalTrend", pd.Series("", index=frame.index)
+            ).fillna("").astype(str).str.upper()
+            terminal = status.isin({"FAILED", "EXPIRED", "INACTIVE"})
+            weakening = status.eq("WEAKEN") & (
+                trend.str.contains("快速", regex=False)
+                | trend.str.contains("FAST", regex=False)
+                | trend.str.contains("RAPID", regex=False)
+            )
+            volume_confirmed = _bool_series_for_integrity(
+                frame, "BreakoutVolumeConfirmed"
+            )
+            flow_confirmed = _bool_series_for_integrity(
+                frame, "BreakoutFlowConfirmed"
+            )
+            volume_ratio = pd.to_numeric(
+                frame.get(
+                    "BreakoutVolumeRatio", pd.Series(np.nan, index=frame.index)
+                ),
+                errors="coerce",
+            )
+            volume_ratio_ok = (
+                volume_ratio.ge(BREAKOUT_CONFIRM_MIN_VOLUME_RATIO)
+                if "BreakoutVolumeRatio" in frame.columns
+                else pd.Series(True, index=frame.index)
+            )
+            filter_override = (
+                ~passed_filters
+                & universe_eligible
+                & signal.eq("BREAKOUT_CONFIRM")
+                & volume_confirmed
+                & flow_confirmed
+                & volume_ratio_ok
+                & ~terminal
+                & ~weakening
+            )
+            unresolved_filter_failure = ~passed_filters & ~filter_override
+            penalty_reason = frame["RankingPenaltyReason"].fillna("").astype(str)
+            bad = unresolved_filter_failure & ~penalty_reason.str.contains(
+                "基础筛选未全通过", regex=False
+            )
+            if bad.any():
+                violations.append(
+                    "readiness penalty lacks base-filter explanation: "
+                    + ",".join(ticker.loc[bad].head(5))
+                )
+
+            readiness_reason = frame.get(
+                "TradeReadinessReason", pd.Series("", index=frame.index)
+            ).fillna("").astype(str)
+            nonblocked = eligibility.ne("风险过滤")
+            bad = (
+                unresolved_filter_failure
+                & nonblocked
+                & ~readiness_reason.str.contains("基础筛选未全通过", regex=False)
+            )
+            if bad.any():
+                violations.append(
+                    "trade-readiness reason omits base-filter blocker: "
+                    + ",".join(ticker.loc[bad].head(5))
+                )
+
+            quality_hard_complete = frame.get(
+                "QualityHardDataComplete", pd.Series(True, index=frame.index)
+            ).map(_truthy)
+            quality_completeness = pd.to_numeric(
+                frame.get(
+                    "QualityDataCompleteness", pd.Series(1.0, index=frame.index)
+                ),
+                errors="coerce",
+            ).fillna(0.0)
+            quality_block = quality_applicable & (
+                ~_bool_series_for_integrity(frame, "QualityGate")
+                | ~quality_hard_complete
+                | quality_completeness.lt(QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE)
+            )
+            bad = (
+                quality_block
+                & nonblocked
+                & ~readiness_reason.str.contains("质量门槛", regex=False)
+            )
+            if bad.any():
+                violations.append(
+                    "trade-readiness reason omits quality blocker: "
+                    + ",".join(ticker.loc[bad].head(5))
+                )
+
+            stop_present = "StopDistancePct" in frame.columns
+            reward_present = "RewardRiskRatio" in frame.columns
+            stop_distance = pd.to_numeric(
+                frame.get("StopDistancePct", pd.Series(np.nan, index=frame.index)),
+                errors="coerce",
+            )
+            reward_risk = pd.to_numeric(
+                frame.get("RewardRiskRatio", pd.Series(np.nan, index=frame.index)),
+                errors="coerce",
+            )
+            stop_bad = pd.Series(False, index=frame.index)
+            reward_bad = pd.Series(False, index=frame.index)
+            if stop_present:
+                stop_bad = (
+                    stop_distance.isna()
+                    | stop_distance.le(0.0)
+                    | stop_distance.gt(TRADE_READY_MAX_STOP_DISTANCE_PCT)
+                )
+            if reward_present:
+                reward_bad = reward_risk.isna() | reward_risk.lt(
+                    TRADE_READY_MIN_REWARD_RISK
+                )
+            active_signal = signal.isin({"BUY_NOW", "BREAKOUT_CONFIRM"})
+            execution_block = active_signal & (stop_bad | reward_bad)
+            bad = (
+                execution_block
+                & nonblocked
+                & ~readiness_reason.str.contains(
+                    "止损距离或预期盈亏比", regex=False
+                )
+            )
+            if bad.any():
+                violations.append(
+                    "trade-readiness reason omits execution-risk blocker: "
+                    + ",".join(ticker.loc[bad].head(5))
+                )
+
         breakout_actionable = actionable & signal.eq("BREAKOUT_CONFIRM")
         confirmation_flags = {
             "BreakoutVolumeConfirmed",
@@ -1046,6 +1205,7 @@ DECISION_RESULT_COLUMNS: tuple[str, ...] = (
     "BacktestMode", "BacktestStage", "BacktestSamples", "BacktestEffectiveSamples",
     "BacktestStatus", "BacktestConfidenceTier", "BacktestRequested",
     "BacktestEligibleForRanking", "BacktestSkipReason", "BacktestCacheHit",
+    "BacktestDataCutoffDate", "BacktestFreshnessStatus",
     "GlobalCalibrationSamples", "GlobalCalibrationEffectiveSamples",
     "GlobalCalibrationConfidence", "GlobalCalibrationLevel", "TickerEvidence",
     "PeerCalibrationEvidence", "EvidenceStrengthScore", "EvidenceTier", "EvidenceReason",
