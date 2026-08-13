@@ -162,6 +162,11 @@ def model_weight_signature() -> str:
     return f"{setup:.4f}:{trigger:.4f}:{execution:.4f}"
 
 
+def tradable_price_decimals(is_etf: bool) -> int:
+    """Return the canonical exchange-price precision for the asset class."""
+    return 3 if is_etf else 2
+
+
 def _is_finite(value: Any) -> bool:
     try:
         return bool(pd.notna(value) and np.isfinite(float(value)))
@@ -711,7 +716,16 @@ def entry_point(
     breakout: float | None = None,
     volume_score: float | None = None,
     value_trap_risk_value: float | None = None,
+    price_decimals: int | None = None,
 ) -> dict[str, Any]:
+    if price_decimals is not None and price_decimals < 0:
+        raise ValueError("price_decimals must be non-negative")
+
+    def tradable_price(value: float) -> float:
+        if price_decimals is None or not _is_finite(value):
+            return value
+        return round(float(value), price_decimals)
+
     breakout = breakout_score(df) if breakout is None else breakout
     close = _series(df, "Close")
     high = _series(df, "High")
@@ -722,6 +736,7 @@ def entry_point(
     resistance = (
         float(high.iloc[-21:-1].max()) if len(high.dropna()) >= 21 else price
     )
+    resistance = tradable_price(resistance)
     support = float(low.iloc[-20:].min()) if len(low.dropna()) >= 20 else price
     volume_history = pd.to_numeric(
         _series(df, "Volume").iloc[-21:-1], errors="coerce"
@@ -793,6 +808,8 @@ def entry_point(
     support_anchor = min(support_anchor, price)
     low_zone = max(support, support_anchor - atr * 0.35)
     high_zone = min(resistance, support_anchor + atr * 0.35)
+    low_zone = tradable_price(low_zone)
+    high_zone = tradable_price(high_zone)
     if high_zone < low_zone:
         high_zone = low_zone
     if low_zone <= price <= high_zone:
@@ -845,6 +862,8 @@ def entry_point(
     projected_target = (
         price + atr * 2.5 if price_breakout else max(resistance, price)
     )
+    stop = tradable_price(stop)
+    projected_target = tradable_price(projected_target)
     risk_amount = max(price - stop, 0.0)
     reward_amount = max(projected_target - price, 0.0)
     stop_distance_pct = risk_amount / price * 100.0 if price > 0 else np.nan
@@ -1105,6 +1124,7 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
         breakout,
         volume_score=volume,
         value_trap_risk_value=trap,
+        price_decimals=tradable_price_decimals(is_etf),
     )
     execution_raw = execution_quality_score(df, entry)
 

@@ -476,8 +476,10 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     result["DataFreshnessReason"] = freshness_reason
     stale_advice = freshness_status.eq("过期")
     if "OperationAdvice" in result:
+        result["OperationAdvice"] = _text_series(result, "OperationAdvice", "")
         result.loc[stale_advice, "OperationAdvice"] = "行情数据已过期，请刷新后再判断。"
     if "RiskWarning" in result:
+        result["RiskWarning"] = _text_series(result, "RiskWarning", "")
         result.loc[stale_advice, "RiskWarning"] = "行情数据过期"
     result["MarketRegimeFast"] = _text_series(
         result,
@@ -509,21 +511,51 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         result.get("BacktestReturnStd20D", pd.Series(np.nan, index=result.index)),
         np.nan,
     )
-    reliability, effective_weight, confidence_tier = _backtest_confidence(
+    derived_reliability, derived_weight, derived_tier = _backtest_confidence(
         samples, effective_samples, return_std
     )
-    result["BacktestReliability"] = reliability
-    result["BacktestEffectiveWeight"] = effective_weight
-    result["BacktestConfidenceTier"] = confidence_tier
     backtest_score = _number(
         result.get(
             "BacktestScore", pd.Series(BACKTEST_NEUTRAL_SCORE, index=result.index)
         ),
         BACKTEST_NEUTRAL_SCORE,
     )
-    result["BacktestAdjustedScore"] = (
+    derived_adjusted_score = (
         BACKTEST_NEUTRAL_SCORE
-        + (backtest_score - BACKTEST_NEUTRAL_SCORE) * reliability
+        + (backtest_score - BACKTEST_NEUTRAL_SCORE) * derived_reliability
+    ).round(4)
+    supplied_reliability = _number(
+        result.get("BacktestReliability", pd.Series(np.nan, index=result.index)),
+        np.nan,
+    )
+    supplied_weight = _number(
+        result.get("BacktestEffectiveWeight", pd.Series(np.nan, index=result.index)),
+        np.nan,
+    )
+    supplied_tier = _text_series(result, "BacktestConfidenceTier", "")
+    supplied_adjusted_score = _number(
+        result.get("BacktestAdjustedScore", pd.Series(np.nan, index=result.index)),
+        np.nan,
+    )
+    upstream_calibration = (
+        supplied_reliability.between(0.0, 1.0)
+        & supplied_weight.between(0.0, 1.0)
+        & supplied_adjusted_score.between(0.0, 100.0)
+        & supplied_tier.ne("")
+    )
+    # The analytics pass has richer ticker/peer calibration than this fallback.
+    # Preserve a complete upstream audit tuple and derive only missing rows.
+    result["BacktestReliability"] = supplied_reliability.where(
+        upstream_calibration, derived_reliability
+    )
+    result["BacktestEffectiveWeight"] = supplied_weight.where(
+        upstream_calibration, derived_weight
+    )
+    result["BacktestConfidenceTier"] = supplied_tier.where(
+        upstream_calibration, derived_tier
+    )
+    result["BacktestAdjustedScore"] = supplied_adjusted_score.where(
+        upstream_calibration, derived_adjusted_score
     ).round(4)
     result.loc[
         samples.lt(BACKTEST_MIN_SAMPLES_FOR_RANKING), "FailureSignalFactor"

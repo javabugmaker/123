@@ -65,6 +65,7 @@ from score import (
     entry_point,
     score_ticker,
     smart_money_stage,
+    tradable_price_decimals,
 )
 
 logger = setup_logging(
@@ -177,6 +178,7 @@ class ScanResult:
     signal_recency_factor: float = 1.0
     signal_recency_days: int = -1
     breakout_quality_factor: float = 1.0
+    pre_backtest_institutional_score: float = np.nan
     institutional_score: float = np.nan
     quality_roe: float = np.nan
     quality_gross_margin: float = np.nan
@@ -210,6 +212,7 @@ class ScanResult:
     data_trading_age_days: int = -1
     data_coverage: float = 0.0
     backtest_score: float = np.nan
+    backtest_reliability: float = np.nan
     backtest_samples: int = 0
     backtest_effective_samples: float = 0.0
     backtest_win_rate_20d: float = np.nan
@@ -621,10 +624,12 @@ def scan_single_from_df(
             breakout,
             volume_score=_parse_float(getattr(sb, "volume", np.nan)),
             value_trap_risk_value=trap,
+            price_decimals=tradable_price_decimals(ticker_info.is_etf),
         )
         smart_stage = smart_money_stage(df, breakout, trap)
+        price_decimals = tradable_price_decimals(ticker_info.is_etf)
         entry_zone = (
-            f"{entry['low']:.2f}-{entry['high']:.2f}"
+            f"{entry['low']:.{price_decimals}f}-{entry['high']:.{price_decimals}f}"
             if np.isfinite(entry["low"]) and np.isfinite(entry["high"])
             else ""
         )
@@ -976,6 +981,9 @@ def run_scan(
                         backtest_score=_parse_float(
                             row.get("BacktestScore", np.nan)
                         ),
+                        backtest_reliability=_parse_float(
+                            row.get("BacktestReliability", np.nan)
+                        ),
                         backtest_samples=_parse_int(
                             row.get("BacktestSamples", 0), 0
                         ),
@@ -1053,6 +1061,9 @@ def run_scan(
                         ),
                         breakout_quality_factor=_parse_float(
                             row.get("BreakoutQualityFactor", 1.0), 1.0
+                        ),
+                        pre_backtest_institutional_score=_parse_float(
+                            row.get("PreBacktestInstitutionalScore", np.nan)
                         ),
                         institutional_score=_parse_float(
                             row.get("InstitutionalScore", np.nan)

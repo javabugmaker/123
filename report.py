@@ -52,7 +52,7 @@ from config import (
 from evidence import enrich_evidence_fields
 from performance_cache import BACKTEST_CACHE_VERSION, INDICATOR_CACHE_VERSION
 from scanner import ScanReport, ScanResult
-from score import model_weight_signature
+from score import model_weight_signature, tradable_price_decimals
 from signal_lifecycle import enrich_signal_lifecycle, finalize_signal_ranking
 
 logger = logging.getLogger("institution_scanner.report")
@@ -193,6 +193,9 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
     run_id = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d-%H%M%S")
     rows = []
     for r in results:
+        price_decimals = tradable_price_decimals(
+            r.is_etf or r.asset_type.lower() == "etf"
+        )
         rows.append(
             {
                 "Ticker": r.ticker,
@@ -236,13 +239,13 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "EntryZoneDistancePct": round(r.entry_zone_distance_pct, 4) if np.isfinite(r.entry_zone_distance_pct) else None,
                 "EntryZoneDistanceATR": round(r.entry_zone_distance_atr, 4) if np.isfinite(r.entry_zone_distance_atr) else None,
                 "PullbackQualityScore": round(r.pullback_quality_score, 2) if np.isfinite(r.pullback_quality_score) else None,
-                "BreakoutBuyPrice": round(r.breakout_buy_price, 2) if np.isfinite(r.breakout_buy_price) else None,
+                "BreakoutBuyPrice": round(r.breakout_buy_price, price_decimals) if np.isfinite(r.breakout_buy_price) else None,
                 "BreakoutVolumeRatio": round(r.breakout_volume_ratio, 4) if np.isfinite(r.breakout_volume_ratio) else None,
                 "BreakoutVolumeConfirmed": r.breakout_volume_confirmed,
                 "BreakoutFlowConfirmed": r.breakout_flow_confirmed,
                 "PriceBreakout": r.price_breakout,
-                "StopLoss": round(r.stop_loss, 2) if np.isfinite(r.stop_loss) else None,
-                "ProjectedTarget": round(r.projected_target, 2) if np.isfinite(r.projected_target) else None,
+                "StopLoss": round(r.stop_loss, price_decimals) if np.isfinite(r.stop_loss) else None,
+                "ProjectedTarget": round(r.projected_target, price_decimals) if np.isfinite(r.projected_target) else None,
                 "StopDistancePct": round(r.stop_distance_pct, 4) if np.isfinite(r.stop_distance_pct) else None,
                 "RewardRiskRatio": round(r.reward_risk_ratio, 4) if np.isfinite(r.reward_risk_ratio) else None,
                 "ValueTrapRisk": round(r.value_trap_risk, 2) if np.isfinite(r.value_trap_risk) else None,
@@ -250,6 +253,9 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "OperationAdvice": r.operation_advice,
                 "BacktestScore": round(r.backtest_score, 2)
                 if np.isfinite(r.backtest_score)
+                else None,
+                "BacktestReliability": round(r.backtest_reliability, 4)
+                if np.isfinite(r.backtest_reliability)
                 else None,
                 "BacktestAdjustedScore": round(r.backtest_adjusted_score, 4)
                 if np.isfinite(r.backtest_adjusted_score)
@@ -271,6 +277,11 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "BreakoutQualityFactor": round(r.breakout_quality_factor, 4),
                 "InstitutionalScore": round(r.institutional_score, 2)
                 if np.isfinite(r.institutional_score)
+                else None,
+                "PreBacktestInstitutionalScore": round(
+                    r.pre_backtest_institutional_score, 4
+                )
+                if np.isfinite(r.pre_backtest_institutional_score)
                 else None,
                 "ROE": round(r.quality_roe, 4) if np.isfinite(r.quality_roe) else None,
                 "GrossMargin": round(r.quality_gross_margin, 4) if np.isfinite(r.quality_gross_margin) else None,

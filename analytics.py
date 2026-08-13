@@ -76,7 +76,14 @@ from performance_cache import (
     market_prefix_matches,
     save_backtest_cache,
 )
-from score import breakout_score, entry_point, model_weight_signature, score_ticker, value_trap_risk
+from score import (
+    breakout_score,
+    entry_point,
+    model_weight_signature,
+    score_ticker,
+    tradable_price_decimals,
+    value_trap_risk,
+)
 from signal_lifecycle import finalize_signal_ranking
 from tradeability import is_entry_tradeable
 from trading_calendar import trading_age_days
@@ -1042,6 +1049,7 @@ def _signal_evaluations(
             breakout=quick_breakout,
             volume_score=None,
             value_trap_risk_value=quick_trap,
+            price_decimals=tradable_price_decimals(is_etf),
         )
         quick_signal = str(quick_entry.get("signal", "AVOID")).upper()
         # volume_score can only change the price-breakout branch into
@@ -1067,6 +1075,7 @@ def _signal_evaluations(
             breakout=_finite_float(getattr(historical_score, "breakout_score", np.nan), np.nan),
             volume_score=_finite_float(getattr(historical_score, "volume", np.nan), np.nan),
             value_trap_risk_value=_finite_float(getattr(historical_score, "value_trap_risk", np.nan), np.nan),
+            price_decimals=tradable_price_decimals(is_etf),
         )
         signal = str(historical_entry.get("signal", "AVOID")).upper()
         if signal not in _BACKTEST_ACTIONABLE_SIGNALS:
@@ -1112,7 +1121,7 @@ def _signal_points(
 
 
 def _historical_entry_signal(
-    historical: pd.DataFrame, historical_score: Any
+    historical: pd.DataFrame, historical_score: Any, is_etf: bool = False
 ) -> str:
     try:
         entry = entry_point(
@@ -1126,6 +1135,7 @@ def _historical_entry_signal(
             value_trap_risk_value=_finite_float(
                 getattr(historical_score, "value_trap_risk", np.nan), np.nan
             ),
+            price_decimals=tradable_price_decimals(is_etf),
         )
     except (ArithmeticError, TypeError, ValueError, KeyError, IndexError):
         return "UNKNOWN"
@@ -1198,7 +1208,9 @@ def _backtest_one_ticker(
                 )
             evaluation_map[int(index)] = (
                 float(final_score),
-                _historical_entry_signal(historical, historical_score),
+                _historical_entry_signal(
+                    historical, historical_score, is_etf=is_etf
+                ),
             )
             component_map[int(index)] = (
                 _finite_float(getattr(historical_score, "base_score", np.nan), 0.0),
@@ -2134,10 +2146,23 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
 
     postprocess_started = time.perf_counter()
 
-    prior_institutional_score = pd.to_numeric(
+    current_institutional_score = pd.to_numeric(
         frame.get("InstitutionalScore", pd.Series(np.nan, index=frame.index)),
         errors="coerce",
+    ).replace([np.inf, -np.inf], np.nan)
+    stored_institutional_score = pd.to_numeric(
+        frame.get(
+            "PreBacktestInstitutionalScore",
+            pd.Series(np.nan, index=frame.index),
+        ),
+        errors="coerce",
+    ).replace([np.inf, -np.inf], np.nan)
+    prior_institutional_score = stored_institutional_score.where(
+        stored_institutional_score.notna(), current_institutional_score
     )
+    # Preserve the pre-calibration anchor so repeated post-processing is
+    # numerically idempotent instead of compounding the prior run's multiplier.
+    frame["PreBacktestInstitutionalScore"] = prior_institutional_score.round(4)
     metric_columns = {
         "samples": "BacktestSamples",
         "effective_samples": "BacktestEffectiveSamples",
