@@ -17,6 +17,13 @@ from pathlib import Path
 import customtkinter as ctk
 
 import gui_core as _core
+from config import (
+    DECISION_INTEGRITY_VERSION,
+    FUNDAMENTAL_GATE_VERSION,
+    OUTPUT_CONTRACT_VERSION,
+    PIPELINE_VERSION,
+    SCORING_VERSION,
+)
 
 # Compatibility alias: external callers historically patched gui.OUTPUT_DIR.
 OUTPUT_DIR = _core.OUTPUT_DIR
@@ -111,6 +118,11 @@ _core.COLUMN_NAMES.update(
         "QualityProfile": "基本面模型",
         "ProfitTrendStatus": "利润趋势",
         "CyclicalQualityOverride": "周期恢复放行",
+        "ModelVersion": "评分版本",
+        "PipelineVersion": "流水线版本",
+        "OutputContractVersion": "输出契约版本",
+        "DecisionIntegrityVersion": "决策校验版本",
+        "FundamentalGateVersion": "基本面门槛版本",
     }
 )
 
@@ -191,6 +203,76 @@ def _asset_label(indexes: dict[str, int], row: list[str]) -> str:
     has_asset_evidence = bool(raw_asset or raw_is_etf)
     is_etf = raw_asset == "etf" or raw_is_etf in {"true", "1", "yes", "y", "是"}
     return "ETF" if is_etf else "股票" if has_asset_evidence else ""
+
+
+_VERSION_TAG_RE = re.compile(r"(?:^|-)(v\d+)(?:-|$)", re.IGNORECASE)
+
+
+def _primary_version_tag(value: object) -> str:
+    match = _VERSION_TAG_RE.search(str(value or "").strip())
+    return match.group(1).lower() if match else "未知版本"
+
+
+def _result_contract_warning(
+    headers: Sequence[str], rows: Sequence[Sequence[object]]
+) -> str:
+    """Return a non-blocking warning for stale or internally mixed results."""
+    if not rows:
+        return ""
+    indexes = {header: index for index, header in enumerate(headers)}
+
+    def distinct(column: str) -> set[str]:
+        index = indexes.get(column)
+        if index is None:
+            return set()
+        return {
+            str(row[index]).strip()
+            for row in rows
+            if index < len(row) and str(row[index]).strip()
+        }
+
+    run_ids = distinct("RunId")
+    if not run_ids:
+        return "⚠ 结果缺少 RunId，请运行“今日一键更新”"
+    if len(run_ids) > 1:
+        return "⚠ 结果包含多个 RunId，请运行“今日一键更新”"
+
+    required_versions = {
+        "ModelVersion": SCORING_VERSION,
+        "PipelineVersion": PIPELINE_VERSION,
+    }
+    optional_versions = {
+        "OutputContractVersion": OUTPUT_CONTRACT_VERSION,
+        "DecisionIntegrityVersion": DECISION_INTEGRITY_VERSION,
+        "FundamentalGateVersion": FUNDAMENTAL_GATE_VERSION,
+    }
+    observed_pipeline = distinct("PipelineVersion")
+    observed_model = distinct("ModelVersion")
+    observed_version = next(iter(observed_pipeline or observed_model), "")
+    result_tag = _primary_version_tag(observed_version)
+    runtime_tag = _primary_version_tag(PIPELINE_VERSION)
+
+    for column, expected in required_versions.items():
+        values = distinct(column)
+        if len(values) > 1:
+            return "⚠ 结果文件包含混合版本，请运行“今日一键更新”"
+        if values != {expected}:
+            return (
+                f"⚠ 结果 {result_tag} / 程序 {runtime_tag}，"
+                "请运行“今日一键更新”"
+            )
+    for column, expected in optional_versions.items():
+        if column not in indexes:
+            continue
+        values = distinct(column)
+        if len(values) > 1:
+            return "⚠ 结果文件包含混合版本，请运行“今日一键更新”"
+        if values != {expected}:
+            return (
+                f"⚠ 结果 {result_tag} / 程序 {runtime_tag}，"
+                "请运行“今日一键更新”"
+            )
+    return ""
 
 
 def _configure_filter_box(widget, variable, default: str, values: list[str], enabled: bool) -> None:
@@ -1160,7 +1242,15 @@ class DecisionScannerGUI(_core.ScannerGUI):
         if hasattr(self, "result_summary"):
             summary = re.sub(r" · 过期 \d+", "", self.result_summary.get())
             summary = summary.replace("当前文件：", "")
+            contract_warning = _result_contract_warning(
+                getattr(self, "_csv_headers", ()),
+                getattr(self, "_csv_rows", ()),
+            )
+            if contract_warning:
+                summary = f"{summary} · {contract_warning}"
             self.result_summary.set(summary)
+            if contract_warning and hasattr(self, "status"):
+                self.status.set(contract_warning)
         if hasattr(self, "card_recommended"):
             self._update_dashboard_cards()
         if hasattr(self, "detail_title") and hasattr(self, "table"):

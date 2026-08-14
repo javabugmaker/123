@@ -131,6 +131,41 @@ def _strip_reason_tokens(series: pd.Series, tokens: tuple[str, ...]) -> pd.Serie
     return cleaned.str.strip("；， ")
 
 
+def _local_backtest_evidence_limitation(
+    result: pd.DataFrame, actionable: pd.Series
+) -> pd.Series:
+    """Identify actionable rows whose own history cannot calibrate the score."""
+    eligible = _core._bool_series(result, "BacktestEligibleForRanking")
+    samples = _core._number(
+        result.get("BacktestSamples", pd.Series(0.0, index=result.index)), 0.0
+    )
+    confidence = _core._text_series(result, "BacktestConfidenceTier", "")
+    status = _core._text_series(result, "BacktestStatus", "").str.upper()
+    evidence_present = (
+        confidence.str.contains("样本不足", regex=False)
+        | status.isin({"SAMPLES", "NO_SIGNAL_SAMPLES"})
+        | (
+            pd.Series("BacktestSamples" in result.columns, index=result.index)
+            & samples.gt(0.0)
+        )
+    )
+    requested = (
+        _core._bool_series(result, "BacktestRequested")
+        if "BacktestRequested" in result.columns
+        else evidence_present
+    )
+    return (
+        actionable
+        & requested
+        & ~eligible
+        & evidence_present
+        & (
+            samples.lt(_config.BACKTEST_MIN_SAMPLES_FOR_RANKING)
+            | confidence.str.contains("样本不足", regex=False)
+        )
+    )
+
+
 def _sync_final_explanations(
     result: pd.DataFrame,
     strong_ready: pd.Series,
@@ -145,16 +180,13 @@ def _sync_final_explanations(
     ranking_reason = _core._text_series(result, "RankingReason", "")
     ranking_reason.loc[actionable] = readiness_reason.loc[actionable]
 
-    backtest_eligible = _core._bool_series(result, "BacktestEligibleForRanking")
-    confidence = _core._text_series(result, "BacktestConfidenceTier", "")
-    backtest_status = _core._text_series(result, "BacktestStatus", "").str.upper()
-    insufficient_evidence = actionable & ~backtest_eligible & (
-        confidence.str.contains("样本不足", regex=False)
-        | backtest_status.isin({"SAMPLES", "NO_SIGNAL_SAMPLES"})
+    insufficient_evidence = _local_backtest_evidence_limitation(
+        result, actionable
     )
-    ranking_reason.loc[insufficient_evidence] = (
-        ranking_reason.loc[insufficient_evidence].str.rstrip("；")
-        + "；回测样本不足，不参与校准"
+    ranking_reason = _core._append_reason(
+        ranking_reason,
+        insufficient_evidence,
+        "回测样本不足，不参与本票校准",
     )
 
     strict_override = actionable & filter_override
@@ -200,8 +232,25 @@ def _sync_final_explanations(
         unresolved_filter_failure,
         "基础筛选未全通过，转为观察",
     )
+    readiness_reason = _core._append_reason(
+        readiness_reason,
+        insufficient_evidence,
+        "本票回测样本不足，仅使用同类证据，不参与本票校准",
+    )
     result["TradeReadinessReason"] = readiness_reason
     result["DecisionReason"] = readiness_reason
+
+
+def _sync_local_backtest_advice(
+    result: pd.DataFrame, actionable: pd.Series
+) -> None:
+    """Append the local-evidence limitation after action copy is finalized."""
+    advice = _core._text_series(result, "OperationAdvice", "")
+    result["OperationAdvice"] = _core._append_reason(
+        advice,
+        _local_backtest_evidence_limitation(result, actionable),
+        "本票回测样本不足，仅参考同类证据，不参与本票校准",
+    )
 
 
 def _sync_final_action_text(
@@ -494,6 +543,7 @@ def _recompute_tiers_and_decisions(
     )
     advice.loc[terminal] = "信号生命周期已结束，当前不参与。"
     result["OperationAdvice"] = advice
+    _sync_local_backtest_advice(result, strong_ready | cautious_ready)
     _sync_final_action_text(
         result,
         signal=signal,
@@ -537,5 +587,6 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
 
 _core.finalize_signal_ranking = finalize_signal_ranking
 _core._sync_final_explanations = _sync_final_explanations
+_core._sync_local_backtest_advice = _sync_local_backtest_advice
 _core._sync_final_action_text = _sync_final_action_text
 sys.modules[__name__] = _core

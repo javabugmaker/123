@@ -24,6 +24,7 @@ import pyarrow.parquet as pq
 
 from analytics import refresh_research_outcomes, write_research_reports
 from classification import (
+    ETF_CANONICAL_TRACKING_KEYS,
     etf_research_eligibility,
     etf_theme_key,
     etf_tracking_key,
@@ -32,13 +33,16 @@ from classification import (
 from config import (
     BACKTEST_MIN_SAMPLES_FOR_RANKING,
     BREAKOUT_CONFIRM_MIN_VOLUME_RATIO,
+    DECISION_INTEGRITY_VERSION,
     ETF_THEME_MAX_PER_TOP_LIST,
     ETF_TRACKING_MAX_PER_TOP_LIST,
+    FUNDAMENTAL_GATE_VERSION,
     INSTITUTIONAL_TIER_A_SCORE,
     INSTITUTIONAL_TIER_B_SCORE,
     INSTITUTIONAL_TIER_C_SCORE,
     INSTITUTIONAL_TIER_TRAP_LABEL,
     INSTITUTIONAL_TIER_WAIT_LABEL,
+    OUTPUT_CONTRACT_VERSION,
     OUTPUT_DIR,
     PIPELINE_VERSION,
     QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE,
@@ -474,6 +478,9 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "Error": r.error if r.error else "",
                 "ModelVersion": SCORING_VERSION,
                 "PipelineVersion": PIPELINE_VERSION,
+                "OutputContractVersion": OUTPUT_CONTRACT_VERSION,
+                "DecisionIntegrityVersion": DECISION_INTEGRITY_VERSION,
+                "FundamentalGateVersion": FUNDAMENTAL_GATE_VERSION,
                 "IndicatorCacheVersion": INDICATOR_CACHE_VERSION,
                 "BacktestCacheVersion": BACKTEST_CACHE_VERSION,
                 "RunId": run_id,
@@ -599,6 +606,13 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
         .astype(str)
         .str.strip()
     )
+    pipeline_version = (
+        frame.get("PipelineVersion", pd.Series("", index=frame.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    current_contract = pipeline_version.str.contains("-v49-", regex=False)
 
     def record(message: str, bad: pd.Series) -> None:
         if bad.any():
@@ -612,6 +626,24 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
     if "Ticker" in frame.columns:
         record("blank successful ticker identity", ticker.eq(""))
         record("duplicate successful ticker identity", ticker.duplicated(keep=False))
+
+    if current_contract.any():
+        expected_versions = {
+            "ModelVersion": SCORING_VERSION,
+            "PipelineVersion": PIPELINE_VERSION,
+            "OutputContractVersion": OUTPUT_CONTRACT_VERSION,
+            "DecisionIntegrityVersion": DECISION_INTEGRITY_VERSION,
+            "FundamentalGateVersion": FUNDAMENTAL_GATE_VERSION,
+        }
+        for column, expected in expected_versions.items():
+            if column not in frame.columns:
+                record(f"v49 output missing {column}", current_contract)
+                continue
+            actual = frame[column].fillna("").astype(str).str.strip()
+            record(
+                f"v49 output has mismatched {column}",
+                current_contract & actual.ne(expected),
+            )
 
     score_columns = {
         "BaseScore",
@@ -1055,6 +1087,33 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
                 )
 
         actionable = eligibility.isin({"推荐", "谨慎候选"})
+        evidence_columns = {
+            "BacktestRequested",
+            "BacktestSamples",
+            "BacktestEligibleForRanking",
+            "TradeReadinessReason",
+        }
+        if current_contract.any() and evidence_columns.issubset(frame.columns):
+            requested = _bool_series_for_integrity(frame, "BacktestRequested")
+            samples = numeric("BacktestSamples").fillna(0.0)
+            eligible_for_calibration = _bool_series_for_integrity(
+                frame, "BacktestEligibleForRanking"
+            )
+            readiness_reason = (
+                frame["TradeReadinessReason"].fillna("").astype(str)
+            )
+            insufficient_local_evidence = (
+                actionable
+                & requested
+                & ~eligible_for_calibration
+                & samples.lt(BACKTEST_MIN_SAMPLES_FOR_RANKING)
+            )
+            record(
+                "actionable row omits local backtest evidence limitation",
+                current_contract
+                & insufficient_local_evidence
+                & ~readiness_reason.str.contains("回测样本不足", regex=False),
+            )
         asset_type = frame.get(
             "AssetType", pd.Series("", index=frame.index)
         ).fillna("").astype(str).str.lower()
@@ -1453,17 +1512,29 @@ def _ensure_diversity_columns(frame: pd.DataFrame) -> pd.DataFrame:
     if "ETFTrackingKey" not in working:
         working["ETFTrackingKey"] = ""
     working["ETFTrackingKey"] = working["ETFTrackingKey"].astype("object")
-    missing_tracking = is_etf & working["ETFTrackingKey"].fillna("").astype(str).str.strip().eq("")
-    if missing_tracking.any():
-        working.loc[missing_tracking, "ETFTrackingKey"] = working.loc[missing_tracking].apply(
+    if is_etf.any():
+        inferred_tracking = working.loc[is_etf].apply(
             lambda row: etf_tracking_key(
                 name=row.get("Name", ""),
                 industry=row.get("Industry", ""),
-                sector="",
+                sector=row.get("Sector", ""),
                 ticker=row.get("Ticker", ""),
             ),
             axis=1,
         )
+        existing_tracking = (
+            working.loc[is_etf, "ETFTrackingKey"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+        replace_tracking = existing_tracking.eq("") | inferred_tracking.isin(
+            ETF_CANONICAL_TRACKING_KEYS
+        )
+        replace_index = replace_tracking.index[replace_tracking]
+        working.loc[replace_index, "ETFTrackingKey"] = inferred_tracking.loc[
+            replace_index
+        ]
 
     if "ThemeCluster" not in working:
         working["ThemeCluster"] = ""
@@ -1707,6 +1778,18 @@ def refresh_candidate_exports(
     ranked["IndicatorCacheVersion"] = ranked.get("IndicatorCacheVersion", pd.Series(INDICATOR_CACHE_VERSION, index=ranked.index)).replace("", INDICATOR_CACHE_VERSION).fillna(INDICATOR_CACHE_VERSION)
     ranked["BacktestCacheVersion"] = ranked.get("BacktestCacheVersion", pd.Series(BACKTEST_CACHE_VERSION, index=ranked.index)).replace("", BACKTEST_CACHE_VERSION).fillna(BACKTEST_CACHE_VERSION)
     ranked["PipelineVersion"] = ranked.get("PipelineVersion", pd.Series(PIPELINE_VERSION, index=ranked.index)).replace("", PIPELINE_VERSION).fillna(PIPELINE_VERSION)
+    ranked["OutputContractVersion"] = ranked.get(
+        "OutputContractVersion",
+        pd.Series(OUTPUT_CONTRACT_VERSION, index=ranked.index),
+    ).replace("", OUTPUT_CONTRACT_VERSION).fillna(OUTPUT_CONTRACT_VERSION)
+    ranked["DecisionIntegrityVersion"] = ranked.get(
+        "DecisionIntegrityVersion",
+        pd.Series(DECISION_INTEGRITY_VERSION, index=ranked.index),
+    ).replace("", DECISION_INTEGRITY_VERSION).fillna(DECISION_INTEGRITY_VERSION)
+    ranked["FundamentalGateVersion"] = ranked.get(
+        "FundamentalGateVersion",
+        pd.Series(FUNDAMENTAL_GATE_VERSION, index=ranked.index),
+    ).replace("", FUNDAMENTAL_GATE_VERSION).fillna(FUNDAMENTAL_GATE_VERSION)
     if "BacktestStage" in ranked:
         ranked["CandidateGenerationStage"] = _candidate_generation_stage(
             ranked["BacktestStage"]
