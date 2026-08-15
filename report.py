@@ -60,9 +60,11 @@ from evidence import enrich_evidence_fields
 from performance_cache import BACKTEST_CACHE_VERSION, INDICATOR_CACHE_VERSION
 from result_contract import (
     FULL_UNIVERSE_SCOPE,
-    candidate_generation_stage as _candidate_generation_stage,
     decision_policy_signature,
     validate_ranking_input,
+)
+from result_contract import (
+    candidate_generation_stage as _candidate_generation_stage,
 )
 from scanner import ScanReport, ScanResult
 from score import model_weight_signature, tradable_price_decimals
