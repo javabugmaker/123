@@ -15,8 +15,8 @@ import pandas as pd
 
 import config as _config
 import signal_lifecycle_core as _core
-from signal_lifecycle_core import *  # noqa: F403
 from result_contract import stamp_ranking_contract, validate_ranking_input
+from signal_lifecycle_core import *  # noqa: F403
 
 _legacy_finalize_signal_ranking = _core.finalize_signal_ranking
 

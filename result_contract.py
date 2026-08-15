@@ -223,7 +223,7 @@ def stamp_ranking_contract(frame: pd.DataFrame) -> pd.DataFrame:
     if len(run_ids) > 1:
         raise ValueError(f"mixed RunId values: {run_ids}")
     frame["RankingScope"] = FULL_UNIVERSE_SCOPE
-    frame["RankingUniverseSize"] = int(len(frame))
+    frame["RankingUniverseSize"] = len(frame)
     frame["RankingRunId"] = run_ids[0] if len(run_ids) == 1 else "UNSCOPED"
     frame["DecisionPolicySignature"] = decision_policy_signature()
     return frame

@@ -18,11 +18,12 @@ import pandas as pd
 from calibration_bridge import bridge_global_calibration
 from classification import etf_tracking_key, model_classification, theme_cluster
 from config import (
+    BACKTEST_ASSUMED_TRADE_NOTIONAL,
     BACKTEST_AUTO_EXACT_MAX_TICKERS,
     BACKTEST_AUTO_EXACT_REFINEMENT,
-    BACKTEST_ASSUMED_TRADE_NOTIONAL,
     BACKTEST_CACHE_ENABLED,
     BACKTEST_CHUNK_SIZE,
+    BACKTEST_ETF_COMMISSION_RATE,
     BACKTEST_EXACT_REFINEMENT_CANDIDATES,
     BACKTEST_FAST_CANDIDATE_GAP_DAYS,
     BACKTEST_FAST_CHUNK_SIZE,
@@ -31,11 +32,10 @@ from config import (
     BACKTEST_FRESHNESS_DELAYED_TRADING_DAYS,
     BACKTEST_FRESHNESS_STALE_TRADING_DAYS,
     BACKTEST_FULL_WEIGHT_SAMPLES,
-    BACKTEST_ETF_COMMISSION_RATE,
     BACKTEST_INCREMENTAL_TAIL_BARS,
     BACKTEST_LOW_CONFIDENCE_MAX_SAMPLES,
-    BACKTEST_MAX_PROCESSES,
     BACKTEST_MAX_EXIT_DELAY_DAYS,
+    BACKTEST_MAX_PROCESSES,
     BACKTEST_MIN_SAMPLES_FOR_RANKING,
     BACKTEST_NEUTRAL_SCORE,
     BACKTEST_NORMAL_WEIGHT,
@@ -69,13 +69,13 @@ from downloader import (
     is_etf_ticker,
 )
 from execution_costs import BrokerFeeSchedule, round_trip_cost_percent
-from indicators import compute_all_indicators, compute_volume_profile
 from historical_universe import historical_universe_status, point_in_time_eligibility
+from indicators import compute_all_indicators, compute_volume_profile
 from model_calibration import (
     build_global_calibration,
-    calibration_stability_stats,
     calibrate_component_weights,
     calibration_details_for_frame,
+    calibration_stability_stats,
     walk_forward_stats,
 )
 from performance_cache import (
