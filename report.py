@@ -60,6 +60,7 @@ from evidence import enrich_evidence_fields
 from performance_cache import BACKTEST_CACHE_VERSION, INDICATOR_CACHE_VERSION
 from result_contract import (
     FULL_UNIVERSE_SCOPE,
+    candidate_generation_stage as _candidate_generation_stage,
     decision_policy_signature,
     validate_ranking_input,
 )
@@ -580,19 +581,6 @@ def _apply_research_policy(frame: pd.DataFrame) -> pd.DataFrame:
     working["ResearchEligible"] = eligibility
     working["ResearchExclusionReason"] = reasons
     return working
-
-
-def _candidate_generation_stage(backtest_stage: pd.Series) -> pd.Series:
-    """Map ticker-level backtest provenance to the published candidate stage."""
-    normalized = backtest_stage.fillna("").astype(str).str.upper().str.strip()
-    return normalized.map(
-        {
-            "EXACT": "EXACT_REFINED",
-            "EXACT_REFINEMENT": "EXACT_REFINED",
-            "FAST_SCREEN": "FAST_SCREEN",
-            "NOT_EVALUATED": "NOT_EVALUATED",
-        }
-    ).fillna("UNKNOWN")
 
 
 def validate_decision_integrity(frame: pd.DataFrame) -> None:

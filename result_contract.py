@@ -166,6 +166,19 @@ def decision_policy_signature() -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
+def candidate_generation_stage(backtest_stage: pd.Series) -> pd.Series:
+    """Map ticker-level backtest provenance to the published candidate stage."""
+    normalized = backtest_stage.fillna("").astype(str).str.upper().str.strip()
+    return normalized.map(
+        {
+            "EXACT": "EXACT_REFINED",
+            "EXACT_REFINEMENT": "EXACT_REFINED",
+            "FAST_SCREEN": "FAST_SCREEN",
+            "NOT_EVALUATED": "NOT_EVALUATED",
+        }
+    ).fillna("UNKNOWN")
+
+
 def _unique_text(frame: pd.DataFrame, column: str) -> list[str]:
     if column not in frame:
         return []

@@ -48,6 +48,32 @@ class V29PipelineReliabilityTests(unittest.TestCase):
         self.assertEqual(result.loc[2, "BacktestStatus"], "SKIPPED")
         self.assertEqual(result.loc[1, "BacktestSamples"], 0)
 
+    def test_hybrid_backtest_replaces_scan_stage_before_integrity_check(self):
+        frame = pd.DataFrame(
+            {
+                "Ticker": ["A", "B", "C"],
+                "CandidateGenerationStage": ["SCAN", "SCAN", "SCAN"],
+                "BacktestMode": ["EXACT", "FAST", ""],
+                "BacktestEngine": ["sequential", "process", ""],
+                "BacktestStage": ["EXACT_REFINEMENT", "FAST_SCREEN", ""],
+                "BacktestEffectiveSamples": [12.0, 6.0, np.nan],
+            }
+        )
+        summary = analytics.BacktestSummary(
+            ticker_count=2, mode="hybrid", engine="process+exact:sequential"
+        )
+        summary.requested_tickers = ["A", "B"]
+
+        result = analytics._apply_backtest_provenance(
+            frame, summary, pd.Series([12.0, 6.0, 0.0])
+        )
+
+        self.assertEqual(
+            result["CandidateGenerationStage"].tolist(),
+            ["EXACT_REFINED", "FAST_SCREEN", "NOT_EVALUATED"],
+        )
+        report.validate_decision_integrity(result)
+
     def test_decision_projection_is_lightweight_and_keeps_decision_fields(self):
         frame = pd.DataFrame(
             [

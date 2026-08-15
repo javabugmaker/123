@@ -86,6 +86,7 @@ from performance_cache import (
     market_prefix_matches,
     save_backtest_cache,
 )
+from result_contract import candidate_generation_stage
 from score import (
     breakout_score,
     entry_point,
@@ -2042,6 +2043,10 @@ def _apply_backtest_provenance(
     frame["BacktestMode"] = ticker_mode
     frame["BacktestEngine"] = ticker_engine
     frame["BacktestStage"] = stage
+    # CandidateGenerationStage is initialized as SCAN by the scanner.  Once a
+    # backtest has run it must be replaced from the final per-ticker provenance
+    # before decision-integrity validation sees the frame.
+    frame["CandidateGenerationStage"] = candidate_generation_stage(stage)
     frame["BacktestStatus"] = np.select(
         [~requested_mask, numeric_observed.gt(0.0)],
         ["SKIPPED", "SAMPLES"],
