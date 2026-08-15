@@ -10,6 +10,7 @@ import gui
 import report
 import signal_lifecycle
 from classification import etf_theme_key, etf_tracking_key, theme_cluster
+from result_contract import decision_policy_signature
 from scanner import ScanResult
 
 
@@ -22,6 +23,16 @@ def _current_contract_row(**overrides: object) -> dict[str, object]:
         "OutputContractVersion": config.OUTPUT_CONTRACT_VERSION,
         "DecisionIntegrityVersion": config.DECISION_INTEGRITY_VERSION,
         "FundamentalGateVersion": config.FUNDAMENTAL_GATE_VERSION,
+        "DecisionPolicySignature": decision_policy_signature(),
+        "RunId": "run-1",
+        "RankingRunId": "run-1",
+        "RankingScope": "FULL_UNIVERSE",
+        "RankingUniverseSize": 1,
+        "DataAsOf": "2026-08-14",
+        "PriceAdjustmentMode": config.TICKFLOW_ADJUST,
+        "AdjustmentBaseDate": "2026-08-14",
+        "ATRAsOf": "2026-08-14",
+        "CorporateActionRebaseDetected": False,
     }
     row.update(overrides)
     return row
@@ -195,7 +206,7 @@ class V49ResultContractTests(unittest.TestCase):
 
         stale = [["run-1", "2026-08-13-v47-score", "2026-08-13-v47-pipeline"]]
         warning = gui._result_contract_warning(headers, stale)
-        self.assertIn("结果 v47 / 程序 v49", warning)
+        self.assertIn("结果 v47 / 程序 v50", warning)
 
         mixed = [*current, ["run-2", config.SCORING_VERSION, config.PIPELINE_VERSION]]
         self.assertIn("多个 RunId", gui._result_contract_warning(headers, mixed))

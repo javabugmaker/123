@@ -24,6 +24,7 @@ from config import (
     PIPELINE_VERSION,
     SCORING_VERSION,
 )
+from result_contract import RESULT_FIELD_LABELS, decision_policy_signature
 
 # Compatibility alias: external callers historically patched gui.OUTPUT_DIR.
 OUTPUT_DIR = _core.OUTPUT_DIR
@@ -125,6 +126,7 @@ _core.COLUMN_NAMES.update(
         "FundamentalGateVersion": "基本面门槛版本",
     }
 )
+_core.COLUMN_NAMES.update(RESULT_FIELD_LABELS)
 
 _core.COLUMN_WIDTHS.update(
     {
@@ -272,7 +274,41 @@ def _result_contract_warning(
                 f"⚠ 结果 {result_tag} / 程序 {runtime_tag}，"
                 "请运行“今日一键更新”"
             )
+    if "DecisionPolicySignature" in indexes:
+        signatures = distinct("DecisionPolicySignature")
+        if signatures != {decision_policy_signature()}:
+            return "⚠ 结果策略签名与当前程序不一致，请运行“今日一键更新”"
     return ""
+
+
+def _published_output_dir(output_dir: Path = OUTPUT_DIR) -> Path:
+    """Keep GUI readers on the last immutable run during a staged publication."""
+    status_path = output_dir / "PublicationStatus.json"
+    latest_path = output_dir / "LatestRun.json"
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        status = {}
+    if not isinstance(status, dict) or status.get("status") not in {
+        "running",
+        "publishing",
+    }:
+        return output_dir
+    try:
+        latest = json.loads(latest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return output_dir
+    if not isinstance(latest, dict):
+        return output_dir
+    relative = str(latest.get("run_dir", "") or "").strip()
+    if not relative:
+        return output_dir
+    candidate = output_dir / relative
+    try:
+        candidate.resolve().relative_to(output_dir.resolve())
+    except (OSError, ValueError):
+        return output_dir
+    return candidate if candidate.is_dir() else output_dir
 
 
 def _configure_filter_box(widget, variable, default: str, values: list[str], enabled: bool) -> None:
@@ -339,9 +375,11 @@ class DecisionScannerGUI(_core.ScannerGUI):
             self.root.bind(f"<Control-Key-{shortcut}>", lambda _event, nav_key=key: self._load_navigation(nav_key))
         self.root.after(80, self._update_run_quality_summary)
 
-    def _call_core_with_legacy_output_dir(self, method, *args, **kwargs):
+    def _call_core_with_legacy_output_dir(
+        self, method, *args, read_only: bool = True, **kwargs
+    ):
         previous = _core.OUTPUT_DIR
-        _core.OUTPUT_DIR = OUTPUT_DIR
+        _core.OUTPUT_DIR = _published_output_dir(OUTPUT_DIR) if read_only else OUTPUT_DIR
         try:
             return method(self, *args, **kwargs)
         finally:
@@ -1560,7 +1598,11 @@ class DecisionScannerGUI(_core.ScannerGUI):
         return self._call_core_with_legacy_output_dir(_core.ScannerGUI._csv_has_results, filename)
 
     def _write_top50_csv(self, tickers: list[str]) -> Path:
-        return self._call_core_with_legacy_output_dir(_core.ScannerGUI._write_top50_csv, tickers)
+        return self._call_core_with_legacy_output_dir(
+            _core.ScannerGUI._write_top50_csv,
+            tickers,
+            read_only=False,
+        )
 
     def _update_run_quality_summary(self) -> None:
         path = OUTPUT_DIR / "DailyRunSummary.json"
@@ -1588,9 +1630,18 @@ class DecisionScannerGUI(_core.ScannerGUI):
         cache = float(backtest.get("cache_hit_rate", 0.0) or 0.0)
         cache_health = str(backtest.get("cache_health", "") or "").strip()
         cache_label = f"Cache {cache:.0%}" + (f"·{cache_health}" if cache_health else "")
+        health = payload.get("decision_health", {}) if isinstance(payload.get("decision_health", {}), dict) else {}
+        eligibility = health.get("eligibility", {}) if isinstance(health.get("eligibility", {}), dict) else {}
+        changes = payload.get("run_diff", {}) if isinstance(payload.get("run_diff", {}), dict) else {}
+        recommendation_label = (
+            f"推荐{int(eligibility.get('推荐', 0) or 0)}"
+            f"·升{int(changes.get('eligibility_upgraded', 0) or 0)}"
+            f"降{int(changes.get('eligibility_downgraded', 0) or 0)}"
+        )
         self.run_quality.set(
             f"✓ {expected} · 总{_duration_label(elapsed)} · 扫描{_duration_label(scan_seconds)} · "
-            f"引擎{_duration_label(engine_seconds)} · 后处理{_duration_label(postprocess_seconds)} · {cache_label}"
+            f"引擎{_duration_label(engine_seconds)} · 后处理{_duration_label(postprocess_seconds)} · "
+            f"{recommendation_label} · {cache_label}"
         )
 
     def _show_run_performance(self) -> None:
@@ -1606,6 +1657,9 @@ class DecisionScannerGUI(_core.ScannerGUI):
         quality_gate = payload.get("quality_gate", {}) if isinstance(payload.get("quality_gate", {}), dict) else {}
         scan = payload.get("scan_breakdown", {}) if isinstance(payload.get("scan_breakdown", {}), dict) else {}
         backtest = payload.get("backtest", {}) if isinstance(payload.get("backtest", {}), dict) else {}
+        health = payload.get("decision_health", {}) if isinstance(payload.get("decision_health", {}), dict) else {}
+        blockers = health.get("blockers", {}) if isinstance(health.get("blockers", {}), dict) else {}
+        changes = payload.get("run_diff", {}) if isinstance(payload.get("run_diff", {}), dict) else {}
         lines = [
             f"状态：{payload.get('publish_status', '-')}",
             f"交易日：{payload.get('expected_trading_date', '-')}",
@@ -1634,6 +1688,19 @@ class DecisionScannerGUI(_core.ScannerGUI):
             f"  Cache：{float(backtest.get('cache_hit_rate', 0.0) or 0.0):.2%}",
             f"  Cache健康：{backtest.get('cache_health', '-')}",
             f"  较上轮：{float(backtest.get('cache_hit_rate_delta', 0.0) or 0.0):+.2%}",
+            "",
+            "决策健康",
+            f"  硬准入未通过：{int(blockers.get('hard_gate_failed', 0) or 0)}",
+            f"  基本面硬数据不完整：{int(blockers.get('fundamental_hard_data_incomplete', 0) or 0)}",
+            f"  硬风险：{int(blockers.get('hard_risk', 0) or 0)}",
+            f"  本票回测不参与排名：{int(blockers.get('local_backtest_not_rankable', 0) or 0)}",
+            f"  行情过期：{int(blockers.get('stale_market_data', 0) or 0)}",
+            f"  行情获取失败：{int(blockers.get('provider_error', 0) or 0)}",
+            "",
+            "较上轮变化",
+            f"  新增/移除：{int(changes.get('added', 0) or 0)} / {int(changes.get('removed', 0) or 0)}",
+            f"  资格升级/降级：{int(changes.get('eligibility_upgraded', 0) or 0)} / {int(changes.get('eligibility_downgraded', 0) or 0)}",
+            f"  排序分±5：+{int(changes.get('score_up_5_plus', 0) or 0)} / -{int(changes.get('score_down_5_plus', 0) or 0)}",
         ]
         _core.messagebox.showinfo("本轮运行性能", "\n".join(lines))
 
@@ -1799,7 +1866,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
 
     # Backtest workflow -------------------------------------------------------
     def _tickers_from_output_file(self, filename: str) -> list[str]:
-        path = OUTPUT_DIR / filename
+        path = _published_output_dir(OUTPUT_DIR) / filename
         if not path.exists():
             return []
         try:

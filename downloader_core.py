@@ -298,7 +298,15 @@ def _validate_ohlcv(df: pd.DataFrame | None) -> pd.DataFrame | None:
     if cleaned.empty:
         return None
     keep = required + (["Amount"] if "Amount" in cleaned.columns else [])
-    return cast(pd.DataFrame, cleaned.loc[:, keep])
+    result = cast(pd.DataFrame, cleaned.loc[:, keep])
+    result.attrs.update(getattr(df, "attrs", {}))
+    result.attrs.setdefault("price_adjustment_mode", TICKFLOW_ADJUST)
+    result.attrs.setdefault(
+        "adjustment_base_date",
+        pd.Timestamp(result.index.max()).strftime("%Y-%m-%d"),
+    )
+    result.attrs.setdefault("corporate_action_rebase_detected", False)
+    return result
 
 
 def _normalize_tickflow_frame(frame: Any) -> pd.DataFrame | None:
@@ -336,7 +344,13 @@ def _load_cache(ticker: str, source: str | None = None) -> pd.DataFrame | None:
         if not path.exists():
             continue
         try:
-            return _validate_ohlcv(reader(path))
+            validated = _validate_ohlcv(reader(path))
+            if validated is not None:
+                # This marker describes the current refresh, not a permanent
+                # property of the security.  Parquet may preserve DataFrame
+                # attrs, so explicitly clear an earlier run's marker on load.
+                validated.attrs["corporate_action_rebase_detected"] = False
+            return validated
         except (
             OSError,
             UnicodeDecodeError,
@@ -694,6 +708,7 @@ def download_ticker(
         if recent is not None and not recent.empty:
             if _requires_full_rebase(cached, recent):
                 logger.info("TickFlow 检测到 %s 复权基准变化，重建完整历史。", ticker)
+                cached.attrs["corporate_action_rebase_detected"] = True
             else:
                 merged = _merge_cached(cached, recent)
                 _save_cache(ticker, merged)
@@ -703,6 +718,10 @@ def download_ticker(
 
     full = _fetch_one(ticker)
     if full is not None and not full.empty:
+        full.attrs["corporate_action_rebase_detected"] = bool(
+            cached is not None
+            and cached.attrs.get("corporate_action_rebase_detected", False)
+        )
         _save_cache(ticker, full)
         return full
     return cached
@@ -795,6 +814,7 @@ def download_batch(
         for symbol in batch:
             frame = full_frames.get(symbol)
             if frame is not None and not frame.empty:
+                frame.attrs["corporate_action_rebase_detected"] = symbol in rebase
                 _save_cache(symbol, frame)
                 results[symbol] = frame
             else:

@@ -211,6 +211,10 @@ class ScanResult:
     data_age_days: int = -1
     data_trading_age_days: int = -1
     data_coverage: float = 0.0
+    price_adjustment_mode: str = ""
+    adjustment_base_date: str = ""
+    atr_asof: str = ""
+    corporate_action_rebase_detected: bool = False
     backtest_score: float = np.nan
     backtest_reliability: float = np.nan
     backtest_samples: int = 0
@@ -1357,6 +1361,16 @@ def run_scan(
                         ),
                         data_coverage=_parse_float(
                             row.get("DataCoverage", 0.0), 0.0
+                        ),
+                        price_adjustment_mode=str(
+                            row.get("PriceAdjustmentMode", "") or ""
+                        ),
+                        adjustment_base_date=str(
+                            row.get("AdjustmentBaseDate", "") or ""
+                        ),
+                        atr_asof=str(row.get("ATRAsOf", "") or ""),
+                        corporate_action_rebase_detected=_parse_bool(
+                            row.get("CorporateActionRebaseDetected", False)
                         ),
                         chase_risk_score=_parse_float(
                             row.get("ChaseRiskScore", 0.0), 0.0

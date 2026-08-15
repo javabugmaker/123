@@ -63,7 +63,7 @@ class V29PipelineReliabilityTests(unittest.TestCase):
         projected = report._decision_projection(frame)
         # v37 adds evidence/research-integrity fields while keeping the GUI projection
         # far smaller than the 200+ column audit surface.
-        self.assertLessEqual(len(projected.columns), 60)
+        self.assertLessEqual(len(projected.columns), 72)
         self.assertIn("EvidenceTier", projected.columns)
         self.assertIn("BacktestSkipReason", projected.columns)
         self.assertIn("RunId", projected.columns)

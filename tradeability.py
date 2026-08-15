@@ -58,3 +58,63 @@ def is_entry_tradeable(
     if open_price >= threshold and low >= threshold:
         return False, "locked_limit_up"
     return True, "tradeable"
+
+
+def is_exit_tradeable(
+    ticker: str,
+    frame: pd.DataFrame,
+    exit_index: int,
+    *,
+    is_etf: bool = False,
+) -> tuple[bool, str]:
+    """Return whether a close exit can reasonably fill on the requested day."""
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if frame is None or exit_index <= 0 or exit_index >= len(frame):
+        return False, "invalid_exit_index"
+    if not required.issubset(frame.columns):
+        return False, "missing_ohlcv"
+
+    row = frame.iloc[int(exit_index)]
+    previous = frame.iloc[int(exit_index) - 1]
+    open_price = _number(row["Open"])
+    high = _number(row["High"])
+    low = _number(row["Low"])
+    close = _number(row["Close"])
+    volume = _number(row["Volume"])
+    previous_close = _number(previous["Close"])
+    if not all(
+        np.isfinite(value) and value > 0
+        for value in (open_price, high, low, close, previous_close)
+    ):
+        return False, "invalid_price"
+    if not np.isfinite(volume) or volume <= 0:
+        return False, "suspended_or_zero_volume"
+
+    limit_pct = daily_limit_pct(ticker, is_etf=is_etf)
+    theoretical_limit_down = previous_close * (1.0 - limit_pct)
+    threshold = theoretical_limit_down * (1.0 + _LIMIT_TOLERANCE)
+    if open_price <= threshold and high <= threshold:
+        return False, "locked_limit_down"
+    return True, "tradeable"
+
+
+def resolve_exit_index(
+    ticker: str,
+    frame: pd.DataFrame,
+    intended_index: int,
+    *,
+    is_etf: bool = False,
+    max_delay_days: int = 10,
+) -> tuple[int | None, int, str]:
+    """Delay an exit through suspension/locked limit-down sessions."""
+    start = max(1, int(intended_index))
+    stop = min(len(frame), start + max(0, int(max_delay_days)) + 1)
+    last_reason = "out_of_range"
+    for index in range(start, stop):
+        tradeable, reason = is_exit_tradeable(
+            ticker, frame, index, is_etf=is_etf
+        )
+        if tradeable:
+            return index, index - start, "tradeable" if index == start else last_reason
+        last_reason = reason
+    return None, max(0, stop - start), last_reason

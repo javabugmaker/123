@@ -49,6 +49,7 @@ from config import (
     SCORING_VERSION,
     STOCK_INDUSTRY_MAX_PER_TOP_LIST,
     THEME_CLUSTER_SOFT_PENALTY,
+    TICKFLOW_ADJUST,
     TOP_N_PARQUET,
     TOP_N_REPORT,
     TRADE_READY_MAX_STOP_DISTANCE_PCT,
@@ -57,6 +58,11 @@ from config import (
 )
 from evidence import enrich_evidence_fields
 from performance_cache import BACKTEST_CACHE_VERSION, INDICATOR_CACHE_VERSION
+from result_contract import (
+    FULL_UNIVERSE_SCOPE,
+    decision_policy_signature,
+    validate_ranking_input,
+)
 from scanner import ScanReport, ScanResult
 from score import model_weight_signature, tradable_price_decimals
 from signal_lifecycle import (
@@ -430,6 +436,10 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "DataAgeDays": r.data_age_days,
                 "DataTradingAgeDays": r.data_trading_age_days,
                 "DataCoverage": round(r.data_coverage, 4),
+                "PriceAdjustmentMode": r.price_adjustment_mode or TICKFLOW_ADJUST,
+                "AdjustmentBaseDate": r.adjustment_base_date or r.data_asof,
+                "ATRAsOf": r.atr_asof or r.data_asof,
+                "CorporateActionRebaseDetected": r.corporate_action_rebase_detected,
                 "VolAccumDays": r.volume_accum_days,
                 "SignalCount": r.filter_details.get("signal_count", 0),
                 "FilterCount": r.filter_details.get("filter_count", 0),
@@ -481,6 +491,7 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "OutputContractVersion": OUTPUT_CONTRACT_VERSION,
                 "DecisionIntegrityVersion": DECISION_INTEGRITY_VERSION,
                 "FundamentalGateVersion": FUNDAMENTAL_GATE_VERSION,
+                "DecisionPolicySignature": decision_policy_signature(),
                 "IndicatorCacheVersion": INDICATOR_CACHE_VERSION,
                 "BacktestCacheVersion": BACKTEST_CACHE_VERSION,
                 "RunId": run_id,
@@ -589,6 +600,11 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
     if frame.empty:
         return
 
+    # This check deliberately runs before failed provider rows are removed:
+    # RankingUniverseSize describes the complete scan universe, not merely the
+    # successful decision subset.
+    validate_ranking_input(frame)
+
     # Failed-download placeholders do not contain a meaningful decision record
     # and are never publishable candidates.  Validate every successful row,
     # including research-ineligible rows, while leaving provider errors visible
@@ -612,7 +628,7 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
         .astype(str)
         .str.strip()
     )
-    current_contract = pipeline_version.str.contains("-v49-", regex=False)
+    current_contract = pipeline_version.eq(PIPELINE_VERSION)
 
     def record(message: str, bad: pd.Series) -> None:
         if bad.any():
@@ -634,15 +650,70 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
             "OutputContractVersion": OUTPUT_CONTRACT_VERSION,
             "DecisionIntegrityVersion": DECISION_INTEGRITY_VERSION,
             "FundamentalGateVersion": FUNDAMENTAL_GATE_VERSION,
+            "DecisionPolicySignature": decision_policy_signature(),
         }
         for column, expected in expected_versions.items():
             if column not in frame.columns:
-                record(f"v49 output missing {column}", current_contract)
+                record(f"current output missing {column}", current_contract)
                 continue
             actual = frame[column].fillna("").astype(str).str.strip()
             record(
-                f"v49 output has mismatched {column}",
+                f"current output has mismatched {column}",
                 current_contract & actual.ne(expected),
+            )
+
+        ranking_contract = {
+            "RankingScope": FULL_UNIVERSE_SCOPE,
+        }
+        for column, expected in ranking_contract.items():
+            if column not in frame.columns:
+                record(f"current output missing {column}", current_contract)
+                continue
+            actual = frame[column].fillna("").astype(str).str.strip()
+            record(
+                f"current output has mismatched {column}",
+                current_contract & actual.ne(expected),
+            )
+        for column in ("RankingUniverseSize", "RankingRunId"):
+            if column not in frame.columns:
+                record(f"current output missing {column}", current_contract)
+
+        market_provenance = (
+            "PriceAdjustmentMode",
+            "AdjustmentBaseDate",
+            "ATRAsOf",
+            "CorporateActionRebaseDetected",
+        )
+        for column in market_provenance:
+            if column not in frame.columns:
+                record(f"current output missing {column}", current_contract)
+        if {
+            "DataAsOf",
+            "AdjustmentBaseDate",
+            "ATRAsOf",
+            "PriceAdjustmentMode",
+        }.issubset(frame.columns):
+            data_asof = frame["DataAsOf"].fillna("").astype(str).str.strip()
+            adjustment_asof = (
+                frame["AdjustmentBaseDate"].fillna("").astype(str).str.strip()
+            )
+            atr_asof = frame["ATRAsOf"].fillna("").astype(str).str.strip()
+            adjustment_mode = (
+                frame["PriceAdjustmentMode"].fillna("").astype(str).str.strip()
+            )
+            record(
+                "current output has missing price-adjustment mode",
+                current_contract & adjustment_mode.eq(""),
+            )
+            record(
+                "ATR as-of date disagrees with market data",
+                current_contract & data_asof.ne("") & atr_asof.ne(data_asof),
+            )
+            record(
+                "adjustment base date disagrees with market data",
+                current_contract
+                & data_asof.ne("")
+                & adjustment_asof.ne(data_asof),
             )
 
     score_columns = {
@@ -1689,7 +1760,11 @@ DECISION_RESULT_COLUMNS: tuple[str, ...] = (
     "GlobalCalibrationSamples", "GlobalCalibrationEffectiveSamples",
     "GlobalCalibrationConfidence", "GlobalCalibrationLevel", "TickerEvidence",
     "PeerCalibrationEvidence", "EvidenceStrengthScore", "EvidenceTier", "EvidenceReason",
-    "DataAsOf", "DataTradingAgeDays", "RunId", "ModelVersion", "PipelineVersion",
+    "DataAsOf", "DataTradingAgeDays", "PriceAdjustmentMode", "AdjustmentBaseDate",
+    "ATRAsOf", "CorporateActionRebaseDetected", "RunId", "RankingRunId",
+    "RankingScope", "RankingUniverseSize", "DecisionPolicySignature",
+    "ModelVersion", "PipelineVersion", "OutputContractVersion",
+    "DecisionIntegrityVersion", "FundamentalGateVersion",
 )
 
 
@@ -1790,6 +1865,10 @@ def refresh_candidate_exports(
         "FundamentalGateVersion",
         pd.Series(FUNDAMENTAL_GATE_VERSION, index=ranked.index),
     ).replace("", FUNDAMENTAL_GATE_VERSION).fillna(FUNDAMENTAL_GATE_VERSION)
+    ranked["DecisionPolicySignature"] = ranked.get(
+        "DecisionPolicySignature",
+        pd.Series(decision_policy_signature(), index=ranked.index),
+    ).replace("", decision_policy_signature()).fillna(decision_policy_signature())
     if "BacktestStage" in ranked:
         ranked["CandidateGenerationStage"] = _candidate_generation_stage(
             ranked["BacktestStage"]

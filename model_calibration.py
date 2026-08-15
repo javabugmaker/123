@@ -550,3 +550,52 @@ def walk_forward_stats(
             }
         )
     return rows
+
+
+def calibration_stability_stats(
+    rows: list[dict[str, Any]] | None,
+    *,
+    minimum_folds: int = 3,
+) -> dict[str, Any]:
+    """Summarize whether peer calibration is directionally stable over time."""
+    valid: list[tuple[float, float]] = []
+    for row in rows or []:
+        try:
+            rank_ic = float(row.get("rank_ic", np.nan))
+            spread = float(row.get("top_bottom_spread20", np.nan))
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(rank_ic) and np.isfinite(spread):
+            valid.append((rank_ic, spread))
+    fold_count = len(valid)
+    if not valid:
+        return {
+            "status": "INSUFFICIENT_FOLDS",
+            "fold_count": 0,
+            "minimum_folds": int(minimum_folds),
+            "stable_fold_ratio": 0.0,
+            "confidence_multiplier": 1.0,
+            "mean_rank_ic": 0.0,
+            "recent_rank_ic": 0.0,
+            "recent_vs_mean_ic_drift": 0.0,
+        }
+    rank_ics = np.asarray([item[0] for item in valid], dtype=float)
+    spreads = np.asarray([item[1] for item in valid], dtype=float)
+    stable = (rank_ics > 0.0) & (spreads > 0.0)
+    stable_ratio = float(stable.mean())
+    enough = fold_count >= max(1, int(minimum_folds))
+    mean_ic = float(rank_ics.mean())
+    recent_ic = float(rank_ics[-1])
+    return {
+        "status": "STABLE" if enough and stable_ratio >= (2.0 / 3.0) else "UNSTABLE" if enough else "INSUFFICIENT_FOLDS",
+        "fold_count": int(fold_count),
+        "minimum_folds": int(minimum_folds),
+        "stable_fold_ratio": round(stable_ratio, 4),
+        # Do not penalize a model merely because the history cannot form three
+        # independent folds.  Once it can, only the observed stable-fold share
+        # is allowed to support peer calibration confidence.
+        "confidence_multiplier": round(stable_ratio if enough else 1.0, 4),
+        "mean_rank_ic": round(mean_ic, 6),
+        "recent_rank_ic": round(recent_ic, 6),
+        "recent_vs_mean_ic_drift": round(recent_ic - mean_ic, 6),
+    }

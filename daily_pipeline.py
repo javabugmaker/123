@@ -12,15 +12,19 @@ import csv
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import main as scanner_cli
 from config import (
+    BACKTEST_STOCK_COMMISSION_RATE,
+    DATA_FRESHNESS_STALE_TRADING_DAYS,
     BACKTEST_MAX_PROCESSES,
     DAILY_MIN_ETF_COUNT,
     DAILY_MIN_FRESH_RATIO,
@@ -44,6 +48,7 @@ FINAL_OUTPUTS = (
     "Top50ETF.csv",
 )
 _ARCHIVE_FILES = (
+    "AllResults.csv",
     "AllResults.parquet",
     "DecisionResults.csv",
     "Top50.csv",
@@ -51,9 +56,16 @@ _ARCHIVE_FILES = (
     "Top50Stocks.csv",
     "Top50ETF.csv",
     "Top50TradeReady.csv",
+    "Top50SustainedSignals.csv",
+    "Top50ValueTrapRisk.csv",
+    "SignalHistory.csv",
+    "SignalTracking.csv",
     "BacktestSummary.json",
     "ScanPerformance.json",
     "DailyRunSummary.json",
+    "ScoreCalibration.json",
+    "TierPerformanceReport.csv",
+    "FactorICReport.csv",
 )
 _PUBLISH_PATTERNS = (
     "Top*.csv",
@@ -63,9 +75,18 @@ _PUBLISH_PATTERNS = (
     "DecisionResults.csv",
     "BacktestSummary.json",
     "DailyRunSummary.json",
+    "ScanPerformance.json",
     "ScoreCalibration.json",
     "TierPerformanceReport.csv",
     "FactorICReport.csv",
+    "SignalHistory.csv",
+    "SignalTracking.csv",
+)
+
+_STAGING_SEED_FILES = (
+    "AllResults.parquet",
+    "SignalHistory.csv",
+    "SignalTracking.csv",
 )
 
 
@@ -328,22 +349,81 @@ def _final_output_errors(
     return errors
 
 
-def _published_files() -> dict[str, Path]:
+def _published_files(directory: Path | None = None) -> dict[str, Path]:
+    root = directory or OUTPUT_DIR
     files: dict[str, Path] = {}
     for pattern in _PUBLISH_PATTERNS:
-        for path in OUTPUT_DIR.glob(pattern):
+        for path in root.glob(pattern):
             if path.is_file():
                 files[path.name] = path
     return files
 
 
+def _prepare_staging(pipeline_run_id: str) -> Path:
+    stage_dir = OUTPUT_DIR / ".staging" / pipeline_run_id
+    stage_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        for name in _STAGING_SEED_FILES:
+            source = OUTPUT_DIR / name
+            if source.exists() and source.is_file():
+                shutil.copy2(source, stage_dir / name)
+    except Exception:
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        raise
+    return stage_dir
+
+
+@contextmanager
+def _runtime_output_directory(directory: Path):
+    """Redirect all scan/backtest writers while keeping canonical files stable."""
+    import analytics
+    import report
+    import scanner
+    import signal_lifecycle_core
+
+    modules = (scanner_cli, analytics, report, scanner, signal_lifecycle_core)
+    previous: list[tuple[object, str, object]] = []
+    for module in modules:
+        if hasattr(module, "OUTPUT_DIR"):
+            previous.append((module, "OUTPUT_DIR", getattr(module, "OUTPUT_DIR")))
+            setattr(module, "OUTPUT_DIR", directory)
+    for module, attribute, value in (
+        (scanner, "_CHECKPOINT_PATH", directory / "_checkpoint.json"),
+        (signal_lifecycle_core, "HISTORY_FILE", directory / "SignalHistory.csv"),
+        (signal_lifecycle_core, "TRACKING_FILE", directory / "SignalTracking.csv"),
+    ):
+        previous.append((module, attribute, getattr(module, attribute)))
+        setattr(module, attribute, value)
+    try:
+        yield
+    finally:
+        for module, attribute, value in reversed(previous):
+            setattr(module, attribute, value)
+
+
+def _publish_staging(stage_dir: Path) -> None:
+    staged = _published_files(stage_dir)
+    if not staged:
+        raise ValueError("staging directory contains no publishable outputs")
+    for name, source in staged.items():
+        target = OUTPUT_DIR / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.publish.tmp")
+        shutil.copy2(source, temporary)
+        os.replace(temporary, target)
+
+
 def _begin_transaction(pipeline_run_id: str) -> tuple[Path, set[str]]:
     tx_dir = OUTPUT_DIR / ".daily_transactions" / pipeline_run_id
     tx_dir.mkdir(parents=True, exist_ok=True)
-    existing = _published_files()
-    for name, path in existing.items():
-        shutil.copy2(path, tx_dir / name)
-    _atomic_write_json(tx_dir / "state.json", {"existing": sorted(existing)})
+    try:
+        existing = _published_files()
+        for name, path in existing.items():
+            shutil.copy2(path, tx_dir / name)
+        _atomic_write_json(tx_dir / "state.json", {"existing": sorted(existing)})
+    except Exception:
+        shutil.rmtree(tx_dir, ignore_errors=True)
+        raise
     return tx_dir, set(existing)
 
 
@@ -377,7 +457,30 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _archive_run(pipeline_run_id: str, payload: dict[str, object]) -> Path:
+def _activate_run(
+    pipeline_run_id: str,
+    run_dir: Path,
+    payload: dict[str, object],
+) -> None:
+    _atomic_write_json(
+        OUTPUT_DIR / "LatestRun.json",
+        {
+            "run_id": pipeline_run_id,
+            "data_run_id": payload.get("data_run_id", ""),
+            "expected_trading_date": payload.get("expected_trading_date", ""),
+            "run_dir": str(run_dir.relative_to(OUTPUT_DIR)),
+            "pipeline_version": PIPELINE_VERSION,
+        },
+    )
+
+
+def _archive_run(
+    pipeline_run_id: str,
+    payload: dict[str, object],
+    *,
+    source_dir: Path | None = None,
+    activate: bool = True,
+) -> Path:
     """Create an immutable per-run snapshot; never overwrite an existing run id."""
     run_dir = OUTPUT_DIR / "runs" / pipeline_run_id
     if run_dir.exists():
@@ -385,8 +488,10 @@ def _archive_run(pipeline_run_id: str, payload: dict[str, object]) -> Path:
     run_dir.mkdir(parents=True, exist_ok=False)
     try:
         archive_hashes: dict[str, str] = {}
-        for name in _ARCHIVE_FILES:
-            source = OUTPUT_DIR / name
+        source_root = source_dir or OUTPUT_DIR
+        archive_names = set(_ARCHIVE_FILES) | set(_published_files(source_root))
+        for name in sorted(archive_names):
+            source = source_root / name
             if source.exists() and source.is_file():
                 destination = run_dir / name
                 shutil.copy2(source, destination)
@@ -395,16 +500,8 @@ def _archive_run(pipeline_run_id: str, payload: dict[str, object]) -> Path:
         manifest_payload["archive_hashes_sha256"] = archive_hashes
         manifest_payload["archive_immutable"] = True
         _atomic_write_json(run_dir / "RunManifest.json", manifest_payload)
-        _atomic_write_json(
-            OUTPUT_DIR / "LatestRun.json",
-            {
-                "run_id": pipeline_run_id,
-                "data_run_id": payload.get("data_run_id", ""),
-                "expected_trading_date": payload.get("expected_trading_date", ""),
-                "run_dir": str(run_dir.relative_to(OUTPUT_DIR)),
-                "pipeline_version": PIPELINE_VERSION,
-            },
-        )
+        if activate:
+            _activate_run(pipeline_run_id, run_dir, payload)
     except Exception:
         shutil.rmtree(run_dir, ignore_errors=True)
         raise
@@ -443,6 +540,141 @@ def _cache_health(
     }
 
 
+def _decision_snapshot(path: Path) -> dict[str, dict[str, object]]:
+    if not path.exists():
+        return {}
+    result: dict[str, dict[str, object]] = {}
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as file:
+            for row in csv.DictReader(file):
+                ticker = str(row.get("Ticker", "")).strip().upper()
+                if not ticker:
+                    continue
+                try:
+                    score = float(row.get("RankingScore", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    score = 0.0
+                if not math.isfinite(score):
+                    score = 0.0
+                result[ticker] = {
+                    "eligibility": str(row.get("RankingEligibility", "") or "观察"),
+                    "score": score,
+                    "hard_gate": _truthy(row.get("HardGatePassed", False)),
+                    "quality_applicable": _truthy(row.get("QualityApplicable", False)),
+                    "quality_complete": _truthy(
+                        row.get("QualityHardDataComplete", False)
+                    ),
+                    "backtest_requested": _truthy(
+                        row.get("BacktestRequested", False)
+                    ),
+                    "backtest_eligible": _truthy(
+                        row.get("BacktestEligibleForRanking", False)
+                    ),
+                    "hard_risk": _truthy(row.get("HardRiskFlag", False)),
+                    "data_age": row.get("DataTradingAgeDays", ""),
+                    "provider_error": bool(str(row.get("Error", "") or "").strip()),
+                }
+    except (OSError, UnicodeError, csv.Error):
+        return {}
+    return result
+
+
+def _decision_health(path: Path) -> dict[str, object]:
+    snapshot = _decision_snapshot(path)
+    eligibility: dict[str, int] = {}
+    blockers = {
+        "hard_gate_failed": 0,
+        "fundamental_hard_data_incomplete": 0,
+        "hard_risk": 0,
+        "local_backtest_not_rankable": 0,
+        "stale_market_data": 0,
+        "provider_error": 0,
+    }
+    decision_rows = 0
+    for row in snapshot.values():
+        provider_error = bool(row.get("provider_error", False))
+        blockers["provider_error"] += int(provider_error)
+        if provider_error:
+            continue
+        decision_rows += 1
+        label = str(row.get("eligibility", "观察"))
+        eligibility[label] = eligibility.get(label, 0) + 1
+        blockers["hard_gate_failed"] += int(not bool(row.get("hard_gate", False)))
+        blockers["fundamental_hard_data_incomplete"] += int(
+            bool(row.get("quality_applicable", False))
+            and not bool(row.get("quality_complete", False))
+        )
+        blockers["hard_risk"] += int(bool(row.get("hard_risk", False)))
+        blockers["local_backtest_not_rankable"] += int(
+            bool(row.get("backtest_requested", False))
+            and not bool(row.get("backtest_eligible", False))
+        )
+        try:
+            age = float(row.get("data_age", 0) or 0)
+        except (TypeError, ValueError):
+            age = 0.0
+        blockers["stale_market_data"] += int(
+            age > int(DATA_FRESHNESS_STALE_TRADING_DAYS)
+        )
+    top_blockers = sorted(blockers.items(), key=lambda item: (-item[1], item[0]))
+    return {
+        "rows": len(snapshot),
+        "decision_rows": decision_rows,
+        "eligibility": eligibility,
+        "blockers": blockers,
+        "top_blockers": [
+            {"name": name, "count": count}
+            for name, count in top_blockers
+            if count > 0
+        ][:5],
+    }
+
+
+def _run_diff(previous_path: Path, current_path: Path) -> dict[str, object]:
+    previous = {
+        ticker: row
+        for ticker, row in _decision_snapshot(previous_path).items()
+        if not bool(row.get("provider_error", False))
+    }
+    current = {
+        ticker: row
+        for ticker, row in _decision_snapshot(current_path).items()
+        if not bool(row.get("provider_error", False))
+    }
+    priority = {"风险过滤": 0, "观察": 1, "谨慎候选": 2, "推荐": 3}
+    shared = previous.keys() & current.keys()
+    upgraded: list[str] = []
+    downgraded: list[str] = []
+    score_up: list[str] = []
+    score_down: list[str] = []
+    for ticker in shared:
+        old = previous[ticker]
+        new = current[ticker]
+        old_rank = priority.get(str(old.get("eligibility", "观察")), 1)
+        new_rank = priority.get(str(new.get("eligibility", "观察")), 1)
+        if new_rank > old_rank:
+            upgraded.append(ticker)
+        elif new_rank < old_rank:
+            downgraded.append(ticker)
+        delta = float(new.get("score", 0.0)) - float(old.get("score", 0.0))
+        if delta >= 5.0:
+            score_up.append(ticker)
+        elif delta <= -5.0:
+            score_down.append(ticker)
+    return {
+        "previous_rows": len(previous),
+        "current_rows": len(current),
+        "added": len(current.keys() - previous.keys()),
+        "removed": len(previous.keys() - current.keys()),
+        "eligibility_upgraded": len(upgraded),
+        "eligibility_downgraded": len(downgraded),
+        "score_up_5_plus": len(score_up),
+        "score_down_5_plus": len(score_down),
+        "upgraded_examples": sorted(upgraded)[:10],
+        "downgraded_examples": sorted(downgraded)[:10],
+    }
+
+
 def _write_manifest(
     *,
     pipeline_run_id: str,
@@ -457,9 +689,12 @@ def _write_manifest(
     final_profiles: dict[str, dict[str, object]],
     stage_seconds: dict[str, float],
     previous_summary: dict[str, object],
+    result_dir: Path | None = None,
+    previous_results_path: Path | None = None,
 ) -> dict[str, object]:
-    backtest = _read_json(OUTPUT_DIR / "BacktestSummary.json")
-    scan_performance = _read_json(OUTPUT_DIR / "ScanPerformance.json")
+    root = result_dir or OUTPUT_DIR
+    backtest = _read_json(root / "BacktestSummary.json")
+    scan_performance = _read_json(root / "ScanPerformance.json")
     evaluations = int(backtest.get("total_ticker_evaluations", 0) or 0)
     cache_hits = int(backtest.get("cache_hits", 0) or 0)
     cache_hit_rate = float(backtest.get("cache_hit_rate", 0.0) or 0.0)
@@ -551,17 +786,26 @@ def _write_manifest(
                 ),
                 3,
             ),
+            "execution_model": backtest.get("execution_model", ""),
+            "cost_parameters": backtest.get("cost_parameters", {}),
+            "calibration_stability": backtest.get("calibration_stability", {}),
+            "point_in_time_universe": backtest.get("point_in_time_universe", {}),
         },
         # v27 top-level compatibility keys.
         "backtest_engine": backtest.get("engine", ""),
         "backtest_workers": int(backtest.get("worker_count", 0) or 0),
         "backtest_cache_hits": cache_hits,
         "outputs": {
-            name: _csv_row_count(OUTPUT_DIR / name)
+            name: _csv_row_count(root / name)
             for name in FINAL_OUTPUTS
         },
+        "decision_health": _decision_health(root / "AllResults.csv"),
+        "run_diff": _run_diff(
+            previous_results_path or (OUTPUT_DIR / "AllResults.csv"),
+            root / "AllResults.csv",
+        ),
     }
-    _atomic_write_json(OUTPUT_DIR / "DailyRunSummary.json", payload)
+    _atomic_write_json(root / "DailyRunSummary.json", payload)
     return payload
 
 
@@ -579,121 +823,146 @@ def run_daily_pipeline(
     expected_date = latest_completed_trading_day().isoformat()
     worker_count = max(1, int(workers) if workers is not None else _default_workers())
     previous_summary = _read_json(OUTPUT_DIR / "DailyRunSummary.json")
-    tx_dir, previous_files = _begin_transaction(pipeline_run_id)
+    tx_dir: Path | None = None
+    stage_dir: Path | None = None
+    previous_results_path: Path | None = None
+    previous_files: set[str] = set()
     stage_seconds: dict[str, float] = {}
+    run_dir: Path | None = None
 
     try:
-        logger.info("DAILY stage 1/4: 获取最新完整日K并重新扫描全市场（股票 + ETF）。")
-        stage_started = time.perf_counter()
-        scan_args = argparse.Namespace(
-            stocks_only=False,
-            etfs_only=False,
-            tickers="",
-            force_download=False,
-            no_resume=True,
-            cache_first=False,
-            refresh_fundamentals=bool(refresh_fundamentals),
-            data_source=data_source,
-            top=TOP_N_REPORT,
-            top_parquet=TOP_N_PARQUET,
+        tx_dir, previous_files = _begin_transaction(pipeline_run_id)
+        stage_dir = _prepare_staging(pipeline_run_id)
+        previous_results_path = tx_dir / "AllResults.csv"
+        _atomic_write_json(
+            OUTPUT_DIR / "PublicationStatus.json",
+            {
+                "status": "running",
+                "run_id": pipeline_run_id,
+                "started_at": started_at,
+                "staging": str(stage_dir.relative_to(OUTPUT_DIR)),
+                "latest_run_unchanged": True,
+            },
         )
-        scan_code = scanner_cli.cmd_scan(scan_args)
-        stage_seconds["scan"] = time.perf_counter() - stage_started
-        if scan_code != 0:
-            logger.error("DAILY failed: 全市场扫描失败；恢复上一套已发布结果。")
-            _rollback_transaction(tx_dir, previous_files)
-            return int(scan_code)
+        with _runtime_output_directory(stage_dir):
+            logger.info("DAILY stage 1/4: 获取最新完整日K并重新扫描全市场（股票 + ETF）。")
+            stage_started = time.perf_counter()
+            scan_args = argparse.Namespace(
+                stocks_only=False,
+                etfs_only=False,
+                tickers="",
+                force_download=False,
+                no_resume=True,
+                cache_first=False,
+                refresh_fundamentals=bool(refresh_fundamentals),
+                data_source=data_source,
+                top=TOP_N_REPORT,
+                top_parquet=TOP_N_PARQUET,
+            )
+            scan_code = scanner_cli.cmd_scan(scan_args)
+            stage_seconds["scan"] = time.perf_counter() - stage_started
+            if scan_code != 0:
+                raise RuntimeError(f"scan stage failed with exit code {scan_code}")
 
-        tickers = _current_result_tickers()
-        if not tickers:
-            logger.error("DAILY failed: AllResults.csv 没有可回测标的；恢复上一套结果。")
-            _rollback_transaction(tx_dir, previous_files)
-            return 2
+            tickers = _current_result_tickers(stage_dir / "AllResults.csv")
+            if not tickers:
+                raise RuntimeError("AllResults.csv 没有可回测标的")
 
-        logger.info("DAILY stage 2/4: 数据完整性 / 新鲜度 / Universe 安全闸门。")
-        gate_started = time.perf_counter()
-        scan_profile = _csv_profile(OUTPUT_DIR / "AllResults.csv", expected_date)
-        gate_errors = _quality_gate_errors(
-            scan_profile, previous_summary, quality_gates=quality_gates
-        )
-        stage_seconds["quality_gate"] = time.perf_counter() - gate_started
-        if gate_errors:
-            logger.error("DAILY quality gate failed: %s", "；".join(gate_errors))
-            _rollback_transaction(tx_dir, previous_files)
-            return 2
-        logger.info(
-            "DAILY quality gate passed: universe=%d (stock=%d, ETF=%d), latest=%s %.1f%%.",
-            int(scan_profile.get("rows", 0)),
-            int(scan_profile.get("stocks", 0)),
-            int(scan_profile.get("etfs", 0)),
-            expected_date,
-            float(scan_profile.get("fresh_ratio", 0.0)) * 100,
-        )
+            logger.info("DAILY stage 2/4: 数据完整性 / 新鲜度 / Universe 安全闸门。")
+            gate_started = time.perf_counter()
+            scan_profile = _csv_profile(stage_dir / "AllResults.csv", expected_date)
+            gate_errors = _quality_gate_errors(
+                scan_profile, previous_summary, quality_gates=quality_gates
+            )
+            stage_seconds["quality_gate"] = time.perf_counter() - gate_started
+            if gate_errors:
+                raise ValueError("DAILY quality gate failed: " + "；".join(gate_errors))
+            logger.info(
+                "DAILY quality gate passed: universe=%d (stock=%d, ETF=%d), latest=%s %.1f%%.",
+                int(scan_profile.get("rows", 0)),
+                int(scan_profile.get("stocks", 0)),
+                int(scan_profile.get("etfs", 0)),
+                expected_date,
+                float(scan_profile.get("fresh_ratio", 0.0)) * 100,
+            )
 
-        ticker_file = OUTPUT_DIR / "BacktestDaily.txt"
-        ticker_file.write_text("\n".join(tickers) + "\n", encoding="utf-8")
-        logger.info(
-            "DAILY stage 3/4: 回测 %d 个有效标的（FAST筛选 + EXACT证据精炼, workers=%d）。",
-            len(tickers), worker_count,
-        )
-        backtest_started = time.perf_counter()
-        backtest_args = argparse.Namespace(
-            all_results=False,
-            tickers_file=ticker_file,
-            tickers=None,
-            data_source=data_source,
-            mode=backtest_mode,
-            workers=worker_count,
-            objective="net_excess_return_20d",
-            benchmark="沪深300",
-            commission=0.0003,
-            stamp_duty=0.0005,
-            slippage=0.001,
-            test_ratio=0.2,
-            validation_ratio=0.2,
-        )
-        backtest_code = scanner_cli.cmd_backtest(backtest_args)
-        stage_seconds["backtest"] = time.perf_counter() - backtest_started
-        if backtest_code != 0:
-            logger.error("DAILY failed: 历史回测失败；恢复上一套已发布结果。")
-            _rollback_transaction(tx_dir, previous_files)
-            return int(backtest_code)
+            ticker_file = stage_dir / "BacktestDaily.txt"
+            ticker_file.write_text("\n".join(tickers) + "\n", encoding="utf-8")
+            logger.info(
+                "DAILY stage 3/4: 回测 %d 个有效标的（FAST筛选 + EXACT证据精炼, workers=%d）。",
+                len(tickers), worker_count,
+            )
+            backtest_started = time.perf_counter()
+            backtest_args = argparse.Namespace(
+                all_results=False,
+                tickers_file=ticker_file,
+                tickers=None,
+                data_source=data_source,
+                mode=backtest_mode,
+                workers=worker_count,
+                objective="net_excess_return_20d",
+                benchmark="沪深300",
+                commission=BACKTEST_STOCK_COMMISSION_RATE,
+                stamp_duty=0.0005,
+                slippage=0.001,
+                test_ratio=0.2,
+                validation_ratio=0.2,
+            )
+            backtest_code = scanner_cli.cmd_backtest(backtest_args)
+            stage_seconds["backtest"] = time.perf_counter() - backtest_started
+            if backtest_code != 0:
+                raise RuntimeError(
+                    f"backtest stage failed with exit code {backtest_code}"
+                )
 
-        logger.info("DAILY stage 4/4: 校验同一 RunId 并原子发布最终榜单。")
-        publish_started = time.perf_counter()
-        # Re-read AllResults because backtest ranking rewrites it with provenance.
-        scan_profile = _csv_profile(OUTPUT_DIR / "AllResults.csv", expected_date)
-        final_profiles = {
-            name: _csv_profile(OUTPUT_DIR / name, expected_date)
-            for name in FINAL_OUTPUTS
-        }
-        final_errors = _final_output_errors(
-            scan_profile, final_profiles, quality_gates=quality_gates
-        )
-        if final_errors:
-            logger.error("DAILY publish gate failed: %s", "；".join(final_errors))
-            _rollback_transaction(tx_dir, previous_files)
-            return 2
+            logger.info("DAILY stage 4/4: 校验同一 RunId 并原子发布最终榜单。")
+            publish_started = time.perf_counter()
+            scan_profile = _csv_profile(stage_dir / "AllResults.csv", expected_date)
+            final_profiles = {
+                name: _csv_profile(stage_dir / name, expected_date)
+                for name in FINAL_OUTPUTS
+            }
+            final_errors = _final_output_errors(
+                scan_profile, final_profiles, quality_gates=quality_gates
+            )
+            if final_errors:
+                raise ValueError(
+                    "DAILY publish gate failed: " + "；".join(final_errors)
+                )
 
-        scan_ids = list(scan_profile.get("run_ids", []) or [])
-        data_run_id = scan_ids[0] if len(scan_ids) == 1 else ""
-        stage_seconds["publish_validation"] = time.perf_counter() - publish_started
-        elapsed = time.perf_counter() - started
-        payload = _write_manifest(
-            pipeline_run_id=pipeline_run_id,
-            data_run_id=data_run_id,
-            started_at=started_at,
-            elapsed_seconds=elapsed,
-            ticker_count=len(tickers),
-            workers=worker_count,
-            mode=backtest_mode,
-            expected_date=expected_date,
-            scan_profile=scan_profile,
-            final_profiles=final_profiles,
-            stage_seconds=stage_seconds,
-            previous_summary=previous_summary,
+            scan_ids = list(scan_profile.get("run_ids", []) or [])
+            data_run_id = scan_ids[0] if len(scan_ids) == 1 else ""
+            stage_seconds["publish_validation"] = time.perf_counter() - publish_started
+            elapsed = time.perf_counter() - started
+            payload = _write_manifest(
+                pipeline_run_id=pipeline_run_id,
+                data_run_id=data_run_id,
+                started_at=started_at,
+                elapsed_seconds=elapsed,
+                ticker_count=len(tickers),
+                workers=worker_count,
+                mode=backtest_mode,
+                expected_date=expected_date,
+                scan_profile=scan_profile,
+                final_profiles=final_profiles,
+                stage_seconds=stage_seconds,
+                previous_summary=previous_summary,
+                result_dir=stage_dir,
+                previous_results_path=previous_results_path,
+            )
+
+        run_dir = _archive_run(
+            pipeline_run_id,
+            payload,
+            source_dir=stage_dir,
+            activate=False,
         )
-        run_dir = _archive_run(pipeline_run_id, payload)
+        _atomic_write_json(
+            OUTPUT_DIR / "PublicationStatus.json",
+            {"status": "publishing", "run_id": pipeline_run_id},
+        )
+        _publish_staging(stage_dir)
+        _activate_run(pipeline_run_id, run_dir, payload)
         _commit_transaction(tx_dir)
         counts = ", ".join(
             f"{name}={_csv_row_count(OUTPUT_DIR / name)}" for name in FINAL_OUTPUTS
@@ -708,11 +977,35 @@ def run_daily_pipeline(
             elapsed,
             run_dir,
         )
+        _atomic_write_json(
+            OUTPUT_DIR / "PublicationStatus.json",
+            {
+                "status": "published",
+                "run_id": pipeline_run_id,
+                "finished_at": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(
+                    timespec="seconds"
+                ),
+            },
+        )
         return 0
     except Exception:
         logger.exception("DAILY unexpected failure; restoring previous published result set.")
-        _rollback_transaction(tx_dir, previous_files)
+        if tx_dir is not None:
+            _rollback_transaction(tx_dir, previous_files)
+        if run_dir is not None:
+            shutil.rmtree(run_dir, ignore_errors=True)
+        _atomic_write_json(
+            OUTPUT_DIR / "PublicationStatus.json",
+            {
+                "status": "failed",
+                "run_id": pipeline_run_id,
+                "latest_run_unchanged": True,
+            },
+        )
         return 2
+    finally:
+        if stage_dir is not None:
+            shutil.rmtree(stage_dir, ignore_errors=True)
 
 
 def build_parser() -> argparse.ArgumentParser:

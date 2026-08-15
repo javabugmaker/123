@@ -16,6 +16,7 @@ import pandas as pd
 import config as _config
 import signal_lifecycle_core as _core
 from signal_lifecycle_core import *  # noqa: F403
+from result_contract import stamp_ranking_contract, validate_ranking_input
 
 _legacy_finalize_signal_ranking = _core.finalize_signal_ranking
 
@@ -556,7 +557,8 @@ def _recompute_tiers_and_decisions(
 
 
 def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
-    """Apply the stable v34 pass, then enforce v35 score/decision integrity."""
+    """Rank one complete universe and preserve its cross-sectional boundary."""
+    validate_ranking_input(frame)
     result = _legacy_finalize_signal_ranking(frame)
     if result is None or result.empty:
         return result
@@ -582,11 +584,13 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     result["RankingScore"] = _core._number(
         result["RankingScore"], 0.0
     ).clip(lower=0.0).round(4)
-    return result
+    return stamp_ranking_contract(result)
 
 
 _core.finalize_signal_ranking = finalize_signal_ranking
 _core._sync_final_explanations = _sync_final_explanations
 _core._sync_local_backtest_advice = _sync_local_backtest_advice
 _core._sync_final_action_text = _sync_final_action_text
+_core.validate_ranking_input = validate_ranking_input
+_core.stamp_ranking_contract = stamp_ranking_contract
 sys.modules[__name__] = _core

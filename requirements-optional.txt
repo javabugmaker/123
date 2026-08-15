@@ -1,0 +1,2 @@
+# Optional plotting stack.  The current scanner and GUI do not require it.
+matplotlib>=3.7.0,<4.0

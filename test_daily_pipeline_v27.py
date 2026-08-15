@@ -30,7 +30,8 @@ class DailyPipelineV27Tests(unittest.TestCase):
                 self.assertFalse(args.cache_first)
                 self.assertFalse(args.stocks_only)
                 self.assertFalse(args.etfs_only)
-                _write_csv(output / "AllResults.csv", ["000001.SZ", "159915.SZ"])
+                runtime_output = Path(daily_pipeline.scanner_cli.OUTPUT_DIR)
+                _write_csv(runtime_output / "AllResults.csv", ["000001.SZ", "159915.SZ"])
                 return 0
 
             def backtest_side_effect(args):
@@ -40,10 +41,11 @@ class DailyPipelineV27Tests(unittest.TestCase):
                     args.tickers_file.read_text(encoding="utf-8").splitlines(),
                     ["000001.SZ", "159915.SZ"],
                 )
-                _write_csv(output / "Top50Mixed.csv", ["159915.SZ", "000001.SZ"])
-                _write_csv(output / "Top50Stocks.csv", ["000001.SZ"])
-                _write_csv(output / "Top50ETF.csv", ["159915.SZ"])
-                (output / "BacktestSummary.json").write_text(
+                runtime_output = Path(daily_pipeline.scanner_cli.OUTPUT_DIR)
+                _write_csv(runtime_output / "Top50Mixed.csv", ["159915.SZ", "000001.SZ"])
+                _write_csv(runtime_output / "Top50Stocks.csv", ["000001.SZ"])
+                _write_csv(runtime_output / "Top50ETF.csv", ["159915.SZ"])
+                (runtime_output / "BacktestSummary.json").write_text(
                     json.dumps({"engine": "process", "worker_count": 4, "cache_hits": 1}),
                     encoding="utf-8",
                 )
@@ -80,12 +82,14 @@ class DailyPipelineV27Tests(unittest.TestCase):
             output = Path(directory)
 
             def scan_side_effect(_args):
-                _write_csv(output / "AllResults.csv", ["000001.SZ"])
+                runtime_output = Path(daily_pipeline.scanner_cli.OUTPUT_DIR)
+                _write_csv(runtime_output / "AllResults.csv", ["000001.SZ"])
                 return 0
 
             def backtest_side_effect(_args):
-                _write_csv(output / "Top50Mixed.csv", ["000001.SZ"])
-                _write_csv(output / "Top50Stocks.csv", ["000001.SZ"])
+                runtime_output = Path(daily_pipeline.scanner_cli.OUTPUT_DIR)
+                _write_csv(runtime_output / "Top50Mixed.csv", ["000001.SZ"])
+                _write_csv(runtime_output / "Top50Stocks.csv", ["000001.SZ"])
                 return 0
 
             with patch.object(daily_pipeline, "OUTPUT_DIR", output), patch.object(

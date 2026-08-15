@@ -20,6 +20,7 @@ from classification import etf_tracking_key, model_classification, theme_cluster
 from config import (
     BACKTEST_AUTO_EXACT_MAX_TICKERS,
     BACKTEST_AUTO_EXACT_REFINEMENT,
+    BACKTEST_ASSUMED_TRADE_NOTIONAL,
     BACKTEST_CACHE_ENABLED,
     BACKTEST_CHUNK_SIZE,
     BACKTEST_EXACT_REFINEMENT_CANDIDATES,
@@ -30,9 +31,11 @@ from config import (
     BACKTEST_FRESHNESS_DELAYED_TRADING_DAYS,
     BACKTEST_FRESHNESS_STALE_TRADING_DAYS,
     BACKTEST_FULL_WEIGHT_SAMPLES,
+    BACKTEST_ETF_COMMISSION_RATE,
     BACKTEST_INCREMENTAL_TAIL_BARS,
     BACKTEST_LOW_CONFIDENCE_MAX_SAMPLES,
     BACKTEST_MAX_PROCESSES,
+    BACKTEST_MAX_EXIT_DELAY_DAYS,
     BACKTEST_MIN_SAMPLES_FOR_RANKING,
     BACKTEST_NEUTRAL_SCORE,
     BACKTEST_NORMAL_WEIGHT,
@@ -41,6 +44,7 @@ from config import (
     BACKTEST_PROGRESS_INTERVAL,
     BACKTEST_SCORE_WINDOW_BARS,
     BACKTEST_SIGNAL_COOLDOWN_DAYS,
+    BACKTEST_STOCK_COMMISSION_RATE,
     ENABLE_VOLUME_PROFILE,
     GLOBAL_CALIBRATION_MAX_WEIGHT,
     GLOBAL_CALIBRATION_MIN_SAMPLES,
@@ -56,6 +60,7 @@ from config import (
     SECTOR_CONFIRMATION_INDUSTRY_WEIGHT,
     SECTOR_CONFIRMATION_MIN_FACTOR,
     SECTOR_CONFIRMATION_RELATIVE_WEIGHT,
+    TICKFLOW_ADJUST,
 )
 from downloader import (
     _cache_path,
@@ -63,9 +68,12 @@ from downloader import (
     download_ticker,
     is_etf_ticker,
 )
+from execution_costs import BrokerFeeSchedule, round_trip_cost_percent
 from indicators import compute_all_indicators, compute_volume_profile
+from historical_universe import historical_universe_status, point_in_time_eligibility
 from model_calibration import (
     build_global_calibration,
+    calibration_stability_stats,
     calibrate_component_weights,
     calibration_details_for_frame,
     walk_forward_stats,
@@ -87,7 +95,7 @@ from score import (
     value_trap_risk,
 )
 from signal_lifecycle import finalize_signal_ranking
-from tradeability import is_entry_tradeable
+from tradeability import is_entry_tradeable, resolve_exit_index
 from trading_calendar import is_trading_day, trading_age_days
 
 logger = logging.getLogger("institution_scanner.analytics")
@@ -128,12 +136,16 @@ class BacktestSummary:
     universe_type: str = "current_survivor_pool"
     survivorship_bias_warning: bool = True
     current_pool_selection_warning: str = "回测使用当前股票池，存在幸存者偏差"
+    point_in_time_universe: dict[str, Any] = field(default_factory=dict)
     split_dates: dict[str, str | None] = field(default_factory=dict)
     all_samples: int = 0
-    commission: float = 0.0003
+    commission: float = BACKTEST_STOCK_COMMISSION_RATE
     stamp_duty: float = 0.0005
     slippage: float = 0.001
     cost_parameters: dict[str, float] = field(default_factory=dict)
+    execution_model: str = "asset_fees_liquidity_t1_limit_exit_v1"
+    etf_commission: float = BACKTEST_ETF_COMMISSION_RATE
+    assumed_trade_notional: float = BACKTEST_ASSUMED_TRADE_NOTIONAL
     test_ratio: float = 0.2
     validation_ratio: float = 0.2
     test_fallback: bool = False
@@ -166,6 +178,7 @@ class BacktestSummary:
     by_ticker: list[dict[str, Any]] = field(default_factory=list)
     global_calibration: list[dict[str, Any]] = field(default_factory=list)
     walk_forward: list[dict[str, Any]] = field(default_factory=list)
+    calibration_stability: dict[str, Any] = field(default_factory=dict)
     component_calibration: dict[str, Any] = field(default_factory=dict)
     fast_exact_bridge: dict[str, Any] = field(default_factory=dict)
     # v29 run-level provenance / observability.  requested_tickers is populated
@@ -484,6 +497,16 @@ def _enrich_one_result(
     result.market_regime_confidence = regime_confidence
     result.data_source = source
     result.data_asof = reported_date.strftime("%Y-%m-%d") if reported_date else ""
+    result.price_adjustment_mode = str(
+        enriched.attrs.get("price_adjustment_mode", TICKFLOW_ADJUST)
+    )
+    result.adjustment_base_date = str(
+        enriched.attrs.get("adjustment_base_date", result.data_asof)
+    )
+    result.atr_asof = result.data_asof
+    result.corporate_action_rebase_detected = bool(
+        enriched.attrs.get("corporate_action_rebase_detected", False)
+    )
     result.data_age_days = data_age
     result.data_trading_age_days = trading_age
     result.data_coverage = round(float(enriched["Close"].notna().mean()), 4)
@@ -1148,7 +1171,7 @@ def _backtest_one_ticker(
     ticker: str,
     source: str,
     benchmark_frame: pd.DataFrame | None = None,
-    commission: float = 0.0003,
+    commission: float = BACKTEST_STOCK_COMMISSION_RATE,
     stamp_duty: float = 0.0005,
     slippage: float = 0.001,
     split_dates: tuple[pd.Timestamp | None, pd.Timestamp | None] = (None, None),
@@ -1225,6 +1248,7 @@ def _backtest_one_ticker(
     lows = enriched["Low"].to_numpy(dtype=float) if "Low" in enriched else np.full(len(enriched), np.nan)
     closes = enriched["Close"].to_numpy(dtype=float)
     highs = enriched["High"].to_numpy(dtype=float) if "High" in enriched else closes.copy()
+    volumes = enriched["Volume"].to_numpy(dtype=float) if "Volume" in enriched else np.full(len(enriched), np.nan)
     outcome_horizon = max(60, int(BACKTEST_OUTCOME_HORIZON_DAYS))
     minimum_sample_index = int(sample_min_signal_index) if sample_min_signal_index is not None else 0
     valid_points: list[int] = []
@@ -1283,16 +1307,40 @@ def _backtest_one_ticker(
     previous_sample_index: int | None = None
     for index in valid_points:
         signal_date = pd.Timestamp(enriched.index[index])
+        historical_eligible, historical_reason = point_in_time_eligibility(
+            ticker, signal_date
+        )
+        if historical_eligible is False:
+            continue
         entry_index = index + 1
         entry_date = pd.Timestamp(enriched.index[entry_index])
         entry_price = opens[entry_index]
-        future20 = closes[entry_index + 20]
-        future60 = closes[entry_index + outcome_horizon]
+        exit20_index, exit20_delay, exit20_reason = resolve_exit_index(
+            ticker,
+            enriched,
+            entry_index + 20,
+            is_etf=is_etf,
+            max_delay_days=BACKTEST_MAX_EXIT_DELAY_DAYS,
+        )
+        exit60_index, exit60_delay, exit60_reason = resolve_exit_index(
+            ticker,
+            enriched,
+            entry_index + outcome_horizon,
+            is_etf=is_etf,
+            max_delay_days=BACKTEST_MAX_EXIT_DELAY_DAYS,
+        )
+        if exit20_index is None or exit60_index is None:
+            continue
+        future20 = closes[exit20_index]
+        future60 = closes[exit60_index]
         benchmark_returns: dict[int, float] = {20: np.nan, 60: np.nan}
         if benchmark_close is not None:
             start_date = benchmark_close.index.asof(entry_date)
-            for period in (20, 60):
-                future_date = pd.Timestamp(enriched.index[entry_index + period])
+            for period, resolved_exit in (
+                (20, exit20_index),
+                (60, exit60_index),
+            ):
+                future_date = pd.Timestamp(enriched.index[resolved_exit])
                 end_date = benchmark_close.index.asof(future_date)
                 if (
                     pd.notna(start_date)
@@ -1303,11 +1351,31 @@ def _backtest_one_ticker(
                     benchmark_returns[period] = (
                         benchmark_close.loc[end_date] / benchmark_close.loc[start_date] - 1
                     ) * 100
-        cost_percent = (commission * 2 + slippage * 2 + (0.0 if is_etf else stamp_duty)) * 100
-        prices20 = np.concatenate(([entry_price], closes[entry_index : entry_index + 21]))
-        prices60 = np.concatenate(([entry_price], closes[entry_index : entry_index + outcome_horizon + 1]))
-        lows20 = np.concatenate(([entry_price], lows[entry_index : entry_index + 21]))
-        lows60 = np.concatenate(([entry_price], lows[entry_index : entry_index + outcome_horizon + 1]))
+        fee_schedule = BrokerFeeSchedule(stock_commission_rate=float(commission))
+        cost20_percent = round_trip_cost_percent(
+            is_etf=is_etf,
+            entry_price=float(entry_price),
+            entry_volume=float(volumes[entry_index]),
+            exit_price=float(future20),
+            exit_volume=float(volumes[exit20_index]),
+            base_slippage=float(slippage),
+            stamp_duty=float(stamp_duty),
+            schedule=fee_schedule,
+        )
+        cost60_percent = round_trip_cost_percent(
+            is_etf=is_etf,
+            entry_price=float(entry_price),
+            entry_volume=float(volumes[entry_index]),
+            exit_price=float(future60),
+            exit_volume=float(volumes[exit60_index]),
+            base_slippage=float(slippage),
+            stamp_duty=float(stamp_duty),
+            schedule=fee_schedule,
+        )
+        prices20 = np.concatenate(([entry_price], closes[entry_index : exit20_index + 1]))
+        prices60 = np.concatenate(([entry_price], closes[entry_index : exit60_index + 1]))
+        lows20 = np.concatenate(([entry_price], lows[entry_index : exit20_index + 1]))
+        lows60 = np.concatenate(([entry_price], lows[entry_index : exit60_index + 1]))
         drawdown20 = float(((lows20 / np.maximum.accumulate(prices20) - 1).min()) * 100)
         drawdown60 = float(((lows60 / np.maximum.accumulate(prices60) - 1).min()) * 100)
         if test_start is not None and entry_date >= test_start:
@@ -1328,15 +1396,27 @@ def _backtest_one_ticker(
                 "asset_type": "etf" if is_etf else "stock",
                 "entry_signal": historical_signal,
                 "market_regime": historical_regime(signal_date),
+                "universe_snapshot_status": (
+                    "ELIGIBLE" if historical_eligible is True else "UNAVAILABLE"
+                ),
+                "universe_snapshot_reason": str(historical_reason),
                 "signal_date": signal_date.strftime("%Y-%m-%d"),
                 "entry_date": entry_date.strftime("%Y-%m-%d"),
                 "entry_price": float(entry_price),
+                "exit20_date": pd.Timestamp(enriched.index[exit20_index]).strftime("%Y-%m-%d"),
+                "exit60_date": pd.Timestamp(enriched.index[exit60_index]).strftime("%Y-%m-%d"),
+                "exit20_delay_days": int(exit20_delay),
+                "exit60_delay_days": int(exit60_delay),
+                "exit20_delay_reason": str(exit20_reason),
+                "exit60_delay_reason": str(exit60_reason),
+                "round_trip_cost20_pct": round(float(cost20_percent), 6),
+                "round_trip_cost60_pct": round(float(cost60_percent), 6),
                 "return20": (future20 / entry_price - 1) * 100,
                 "return60": (future60 / entry_price - 1) * 100,
                 "benchmark_return20": benchmark_returns[20],
                 "benchmark_return60": benchmark_returns[60],
-                "net_return20": (future20 / entry_price - 1) * 100 - cost_percent,
-                "net_return60": (future60 / entry_price - 1) * 100 - cost_percent,
+                "net_return20": (future20 / entry_price - 1) * 100 - cost20_percent,
+                "net_return60": (future60 / entry_price - 1) * 100 - cost60_percent,
                 "drawdown20": drawdown20,
                 "drawdown60": drawdown60,
                 "score": historical_score,
@@ -1441,8 +1521,12 @@ def _backtest_one_ticker_cached(
             "source": str(source),
             "benchmark": str(benchmark_name),
             "commission": float(commission),
+            "etf_commission": float(BACKTEST_ETF_COMMISSION_RATE),
             "stamp_duty": float(stamp_duty),
             "slippage": float(slippage),
+            "assumed_trade_notional": float(BACKTEST_ASSUMED_TRADE_NOTIONAL),
+            "execution_model": "asset_fees_liquidity_t1_limit_exit_v1",
+            "max_exit_delay_days": int(BACKTEST_MAX_EXIT_DELAY_DAYS),
             "cooldown": int(active_profile.cooldown),
             "horizon": int(BACKTEST_OUTCOME_HORIZON_DAYS),
             "score_window": int(active_profile.score_window),
@@ -2471,6 +2555,11 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     )
     peer_score = calibration_details["score"]
     peer_confidence = calibration_details["confidence"]
+    stability = dict(getattr(summary, "calibration_stability", {}) or {})
+    stability_multiplier = float(
+        np.clip(stability.get("confidence_multiplier", 1.0), 0.0, 1.0)
+    )
+    peer_confidence = peer_confidence * stability_multiplier
     frame["GlobalCalibrationScore"] = peer_score.round(4)
     frame["GlobalCalibrationConfidence"] = peer_confidence.round(4)
     frame["GlobalCalibrationLevel"] = calibration_details["level"].astype(str)
@@ -2480,6 +2569,16 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
     frame["GlobalCalibrationWinRate20D"] = calibration_details["win_rate_net_excess20"].round(4)
     frame["GlobalCalibrationStartDate"] = calibration_details["start_date"].astype(str)
     frame["GlobalCalibrationEndDate"] = calibration_details["end_date"].astype(str)
+    frame["GlobalCalibrationStability"] = str(
+        stability.get("status", "INSUFFICIENT_FOLDS")
+    )
+    frame["GlobalCalibrationFoldCount"] = int(stability.get("fold_count", 0) or 0)
+    frame["GlobalCalibrationStableFoldRatio"] = float(
+        stability.get("stable_fold_ratio", 0.0) or 0.0
+    )
+    frame["GlobalCalibrationICDrift"] = float(
+        stability.get("recent_vs_mean_ic_drift", 0.0) or 0.0
+    )
     peer_available = peer_confidence.gt(0.0)
     peer_anchor = peer_score.where(peer_available, BACKTEST_NEUTRAL_SCORE)
     frame["BacktestAdjustedScore"] = (
@@ -2859,7 +2958,7 @@ def run_historical_backtest(
     source: str = "eastmoney",
     objective: str = "net_excess_return_20d",
     benchmark: str = "沪深300",
-    commission: float = 0.0003,
+    commission: float = BACKTEST_STOCK_COMMISSION_RATE,
     stamp_duty: float = 0.0005,
     slippage: float = 0.001,
     test_ratio: float = 0.2,
@@ -2919,9 +3018,11 @@ def run_historical_backtest(
                 stamp_duty=stamp_duty,
                 slippage=slippage,
                 cost_parameters={
-                    "commission": commission,
+                    "stock_commission": commission,
+                    "etf_commission": BACKTEST_ETF_COMMISSION_RATE,
                     "stamp_duty": stamp_duty,
                     "slippage": slippage,
+                    "assumed_trade_notional": BACKTEST_ASSUMED_TRADE_NOTIONAL,
                 },
                 test_ratio=test_ratio,
                 validation_ratio=validation_ratio,
@@ -3125,14 +3226,24 @@ def run_historical_backtest(
         stamp_duty=stamp_duty,
         slippage=slippage,
         cost_parameters={
-            "commission": commission,
+            "stock_commission": commission,
+            "etf_commission": BACKTEST_ETF_COMMISSION_RATE,
             "stamp_duty": stamp_duty,
             "slippage": slippage,
+            "assumed_trade_notional": BACKTEST_ASSUMED_TRADE_NOTIONAL,
         },
+        etf_commission=BACKTEST_ETF_COMMISSION_RATE,
+        assumed_trade_notional=BACKTEST_ASSUMED_TRADE_NOTIONAL,
         test_ratio=test_ratio,
         validation_ratio=validation_ratio,
         split_dates=split_dates,
     )
+    summary.point_in_time_universe = historical_universe_status()
+    if bool(summary.point_in_time_universe.get("available", False)):
+        summary.universe_type = "point_in_time_snapshots_plus_cache"
+        summary.current_pool_selection_warning = (
+            "已按可用历史快照过滤ST/非成分状态；快照覆盖区间外仍保留幸存者偏差提示"
+        )
     summary.cache_hits = int(cache_hits)
     summary.cache_hit_tickers = sorted(cache_hit_tickers)
     summary.elapsed_seconds = float(time.perf_counter() - backtest_started)
@@ -3149,6 +3260,9 @@ def run_historical_backtest(
             calibration_frame, min_samples=GLOBAL_CALIBRATION_MIN_SAMPLES
         )
         summary.walk_forward = walk_forward_stats(all_frame)
+        summary.calibration_stability = calibration_stability_stats(
+            summary.walk_forward
+        )
         component_calibration = calibrate_component_weights(all_frame)
         summary.component_calibration = component_calibration.to_dict()
         calibration_path = OUTPUT_DIR / "ScoreCalibration.json"

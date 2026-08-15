@@ -42,6 +42,7 @@ import main
 import scanner
 import signal_lifecycle
 from analytics import BacktestSummary, _ticker_backtest_rows, apply_backtest_ranking
+from config import BACKTEST_STOCK_COMMISSION_RATE
 from downloader import TickerInfo, _log_download_progress
 from filters import (
     filter_bear_market,
@@ -2097,7 +2098,7 @@ class RegressionTests(TestCase):
             workers=None,
             objective="net_excess_return_20d",
             benchmark="沪深300",
-            commission=0.0003,
+            commission=BACKTEST_STOCK_COMMISSION_RATE,
             stamp_duty=0.0005,
             slippage=0.001,
             test_ratio=0.2,

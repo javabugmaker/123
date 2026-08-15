@@ -33,6 +33,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from analytics import BacktestSummary, apply_backtest_ranking, enrich_results, run_historical_backtest
 from config import (
+    BACKTEST_STOCK_COMMISSION_RATE,
     CACHE_DIR,
     FUNDAMENTAL_REFRESH_FORCE,
     LOG_DIR,
@@ -49,7 +50,7 @@ from downloader import (
     normalize_ticker,
 )
 from fundamental_data import fundamental_data_path, refresh_fundamental_data
-from historical_universe import merge_with_cached_universe
+from historical_universe import historical_universe_status, merge_with_historical_universe
 from report import export_all, print_scan_summary, print_terminal_report
 from scan_service import ScanRequest, execute_scan
 from scanner import clear_checkpoint, run_parallel_indicator_scan, run_scan
@@ -254,12 +255,16 @@ def cmd_backtest(args: argparse.Namespace) -> int:
         current_tickers = [
             normalize_ticker(ticker) for ticker in raw_tickers if ticker.strip()
         ]
-        tickers = merge_with_cached_universe(current_tickers)
+        tickers = merge_with_historical_universe(current_tickers)
+        universe_status = historical_universe_status()
         logger.info(
-            "回测股票池：当前结果 %d 只 + 历史行情缓存，合计 %d 只；"
-            "该方法降低但不能完全消除幸存者偏差。",
+            "回测股票池：当前结果 %d 只 + 历史行情缓存/时点快照，合计 %d 只；"
+            "时点快照=%s（%d只，%d条）。",
             len(current_tickers),
             len(tickers),
+            "可用" if universe_status.get("available") else "未配置",
+            int(universe_status.get("ticker_count", 0) or 0),
+            int(universe_status.get("observations", 0) or 0),
         )
     elif args.tickers_file:
         try:
@@ -291,7 +296,9 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     options = {
         "objective": getattr(args, "objective", "net_excess_return_20d"),
         "benchmark": getattr(args, "benchmark", "沪深300"),
-        "commission": getattr(args, "commission", 0.0003),
+        "commission": getattr(
+            args, "commission", BACKTEST_STOCK_COMMISSION_RATE
+        ),
         "stamp_duty": getattr(args, "stamp_duty", 0.0005),
         "slippage": getattr(args, "slippage", 0.001),
         "test_ratio": getattr(args, "test_ratio", 0.2),
@@ -321,11 +328,19 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     summary = run_historical_backtest(unique_tickers, **backtest_kwargs)
     summary.requested_tickers = list(unique_tickers)
     if all_results:
-        summary.universe_type = "cache_plus_current_pool"
-        summary.survivorship_bias_warning = True
-        summary.current_pool_selection_warning = (
-            "当前结果与历史缓存联合股票池，已降低但仍不能完全消除幸存者偏差"
+        snapshot_available = bool(
+            getattr(summary, "point_in_time_universe", {}).get("available", False)
         )
+        summary.universe_type = (
+            "point_in_time_snapshots_plus_cache"
+            if snapshot_available
+            else "cache_plus_current_pool"
+        )
+        summary.survivorship_bias_warning = True
+        if not snapshot_available:
+            summary.current_pool_selection_warning = (
+                "当前结果与历史缓存联合股票池，已降低但仍不能完全消除幸存者偏差"
+            )
     if getattr(summary, "insufficient_test_data", False) is True:
         logger.error(
             "回测测试集有效样本不足：%s", getattr(summary, "error", "未知错误")
@@ -498,7 +513,12 @@ def build_parser() -> argparse.ArgumentParser:
     backtest_p.add_argument(
         "--benchmark", choices=("沪深300", "中证500", "创业板指"), default="沪深300"
     )
-    backtest_p.add_argument("--commission", type=float, default=0.0003)
+    backtest_p.add_argument(
+        "--commission",
+        type=float,
+        default=BACKTEST_STOCK_COMMISSION_RATE,
+        help="股票单边佣金率（ETF使用券商ETF专属费率）",
+    )
     backtest_p.add_argument("--stamp-duty", dest="stamp_duty", type=float, default=0.0005)
     backtest_p.add_argument("--slippage", type=float, default=0.001)
     backtest_p.add_argument("--test-ratio", dest="test_ratio", type=float, default=0.2)

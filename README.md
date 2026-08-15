@@ -56,6 +56,12 @@ Python 3.10+：
 pip install -r requirements.txt
 ```
 
+绘图组件不在扫描器与 GUI 的运行热路径中；需要绘图时再安装：
+
+```bash
+pip install -r requirements-optional.txt
+```
+
 ## 运行 GUI
 
 ```bash
@@ -119,6 +125,34 @@ python main.py scan --refresh-fundamentals
 `技术信号` 只描述价格/量价结构，是否满足规则以 `交易资格` 和 `执行说明` 为准。
 
 行情缓存位于 `cache/v3-tickflow-forward/`。旧行情源缓存不会被 TickFlow 行情层读取。
+
+## 结果契约与安全发布
+
+- 每次全量排名都写入 `RankingScope`、`RankingUniverseSize`、`RankingRunId`；候选子集只能展示和筛选，不能重新计算横截面百分位。
+- `DecisionPolicySignature` 绑定评分、ATR、基本面门槛、交易资格和回测成本配置；程序参数改变后，GUI 会提示重新生成结果。
+- 日更先在 `output/.staging/<RunId>/` 完成扫描、回测和完整性校验，再切换正式结果。运行中 GUI 固定读取 `LatestRun.json` 指向的上一份不可变快照。
+- `DailyRunSummary.json` 记录阻断项统计、与上一运行的资格升降、分数大幅变化、成本模型、校准稳定性和历史股票池覆盖情况。
+- 行情结果记录复权方式、复权基准日、ATR 截止日和复权重建标记，避免不同价格口径混用。
+
+## 回测交易成本
+
+默认券商费率按产品分别计算，最低佣金均为 0 元：
+
+- A 股：单边 `0.00008499999`（万 0.8499999）
+- ETF / LOF：单边 `0.00005000001`（万 0.5000001）
+
+股票卖出印花税单独计入，ETF 不计股票印花税。固定滑点之外，回测还按成交额参与率加入有上限的流动性冲击；停牌或一字跌停无法卖出时，退出日最多顺延 10 个交易日并记录实际退出日与延迟原因。
+
+## 历史股票池快照（可选）
+
+为了降低仅使用当前存活标的造成的幸存者偏差，可把 CSV 或 Parquet 快照放入
+`cache/historical_universe/`。至少包含：
+
+- `Ticker`
+- `AsOf`、`Date` 或 `TradeDate` 之一
+- `Eligible`；或者同时提供 `Listed`、`IsST`
+
+可选 `ExclusionReason`。回测会选择信号日之前最近的一份状态；没有快照时继续运行，但在回测摘要中明确标记为不可用。
 
 ## 风险声明
 
