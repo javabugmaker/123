@@ -8,7 +8,8 @@ import pandas as pd
 _LIMIT_TOLERANCE = 0.0025
 
 
-def daily_limit_pct(ticker: str, *, is_etf: bool = False) -> float:
+def fallback_daily_limit_pct(ticker: str, *, is_etf: bool = False) -> float:
+    """Offline fallback when security-specific exchange metadata is unavailable."""
     symbol = str(ticker or "").strip().upper()
     code = symbol.split(".", 1)[0]
     suffix = symbol.rsplit(".", 1)[-1] if "." in symbol else ""
@@ -16,7 +17,27 @@ def daily_limit_pct(ticker: str, *, is_etf: bool = False) -> float:
         return 0.30
     if not is_etf and code.startswith(("300", "301", "688", "689")):
         return 0.20
+    if is_etf and code.startswith(("588", "589")):
+        return 0.20
     return 0.10
+
+
+def daily_limit_pct(ticker: str, *, is_etf: bool = False) -> float:
+    """Return the security-specific daily price-limit ratio without hidden I/O."""
+    try:
+        from downloader import get_price_limit_pct
+
+        metadata_limit = get_price_limit_pct(ticker, is_etf=is_etf)
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        metadata_limit = None
+    if metadata_limit is not None:
+        try:
+            value = float(metadata_limit)
+        except (TypeError, ValueError):
+            value = np.nan
+        if np.isfinite(value) and 0.02 <= value <= 0.40:
+            return value
+    return fallback_daily_limit_pct(ticker, is_etf=is_etf)
 
 
 def _number(value: Any) -> float:

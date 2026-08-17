@@ -15,6 +15,8 @@ jobs:
         python-version: ['3.11', '3.12']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
+    env:
+      PYTHONHASHSEED: '0'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,7 +32,11 @@ jobs:
       - name: Import smoke test
         env:
           MPLBACKEND: Agg
-        run: python -c "import analytics, downloader, report, score, signal_lifecycle"
+        run: python -c "import analytics, backtest_alignment, downloader, filters, main, pipeline_contracts, report, score, signal_lifecycle, volatility_state"
+      - name: Execution integrity invariants
+        env:
+          MPLBACKEND: Agg
+        run: python -m unittest -v test_v51_execution_integrity
       - name: Unit tests
         env:
           MPLBACKEND: Agg

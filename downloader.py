@@ -1,98 +1,103 @@
-"""v36 TickFlow market-data normalization facade.
+"""v51 downloader entrypoint with transparent v4 cache migration.
 
-The stable v35 downloader implementation lives in ``downloader_core``.  This
-module normalizes TickFlow CN daily ``Volume`` into individual shares before
-market data enters the cache/indicator pipeline.  TickFlow payloads historically
-behave like board-lot volume for CN securities, while the scanner's absolute
-liquidity thresholds are expressed in shares.
+``downloader_v51`` adds turnover/metadata provenance and writes the new v5
+schema. Existing v4 canonical-share Parquet caches are read and copied forward
+locally on first access, so this release does not force a full-market network
+redownload just because the provenance schema changed.
 """
 
 from __future__ import annotations
 
 import sys
-from typing import Any
+from functools import lru_cache
+from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
-import downloader_core as _core
-from downloader_core import *  # noqa: F403
+import downloader_v51 as _core
+from downloader_v51 import *  # noqa: F403
 
-_TICKFLOW_CN_LOT_SIZE = 100.0
-_VOLUME_INFERENCE_ROWS = 60
-_PRICE_CACHE_SCHEMA_VERSION = "v4-tickflow-forward-volume-shares"
-_PRICE_CACHE_DIR = _core.CACHE_DIR / _PRICE_CACHE_SCHEMA_VERSION
-_MARKET_MANIFEST_PATH = _PRICE_CACHE_DIR / "_manifest.json"
-
-_legacy_normalize_tickflow_frame = _core._normalize_tickflow_frame
-_legacy_record_market_manifest = _core._record_market_manifest
+_v51_load_cache = _core._load_cache
+_v51_save_cache = _core._save_cache
+_v51_price_limit = _core.get_price_limit_pct
+_LEGACY_V4_DIR = _core.CACHE_DIR / "v4-tickflow-forward-volume-shares"
 
 
-def _infer_tickflow_volume_scale(frame: pd.DataFrame) -> float:
-    """Infer whether TickFlow volume is already shares or still board lots.
+def _legacy_v4_paths(ticker: str) -> tuple[Path, Path]:
+    stem = _core._safe_cache_stem(ticker)
+    return _LEGACY_V4_DIR / f"{stem}.parquet", _LEGACY_V4_DIR / f"{stem}.csv"
 
-    ``Amount / (Close * Volume)`` is approximately 1 when volume is shares and
-    approximately 100 when volume is CN board lots.  Use recent observations so
-    forward-adjusted historical prices do not dominate the inference.  If
-    turnover is unavailable, prefer the documented/provider-compatible CN lot
-    convention and convert by 100.
-    """
-    required = {"Close", "Volume", "Amount"}
-    if not required.issubset(frame.columns):
-        return _TICKFLOW_CN_LOT_SIZE
 
-    close = pd.to_numeric(frame["Close"], errors="coerce")
-    volume = pd.to_numeric(frame["Volume"], errors="coerce")
-    amount = pd.to_numeric(frame["Amount"], errors="coerce")
-    denominator = close * volume
-    ratio = (amount / denominator.replace(0.0, np.nan)).replace(
-        [np.inf, -np.inf], np.nan
+def _load_cache(ticker: str, source: str | None = None) -> pd.DataFrame | None:
+    current = _v51_load_cache(ticker, source)
+    if current is not None:
+        return current
+
+    _core.normalize_data_source(source)
+    parquet_path, csv_path = _legacy_v4_paths(ticker)
+    readers = (
+        (parquet_path, pd.read_parquet),
+        (
+            csv_path,
+            lambda path: pd.read_csv(path, index_col=0, parse_dates=True),
+        ),
     )
-    ratio = ratio.loc[(ratio > 0.0) & ratio.notna()].tail(_VOLUME_INFERENCE_ROWS)
-    if ratio.empty:
-        return _TICKFLOW_CN_LOT_SIZE
-
-    median_ratio = float(ratio.median())
-    # The geometric midpoint between 1 and 100 is 10.  This is intentionally
-    # tolerant of corporate-action adjustment factors and daily VWAP/close gaps.
-    scale = _TICKFLOW_CN_LOT_SIZE if median_ratio >= 10.0 else 1.0
-    if not (0.25 <= median_ratio <= 4.0 or 20.0 <= median_ratio <= 400.0):
-        _core.logger.debug(
-            "TickFlow volume-unit inference is ambiguous: median turnover ratio %.4f; scale=%s",
-            median_ratio,
-            scale,
-        )
-    return scale
-
-
-def _normalize_tickflow_frame(frame: Any) -> pd.DataFrame | None:
-    """Return canonical TickFlow OHLCV with ``Volume`` in individual shares."""
-    normalized = _legacy_normalize_tickflow_frame(frame)
-    if normalized is None or normalized.empty:
-        return normalized
-
-    scale = _infer_tickflow_volume_scale(normalized)
-    canonical = normalized.copy()
-    canonical["Volume"] = pd.to_numeric(canonical["Volume"], errors="coerce") * scale
-    return _core._validate_ohlcv(canonical)
-
-
-def _record_market_manifest(ticker: str, df: pd.DataFrame) -> None:
-    _legacy_record_market_manifest(ticker, df)
-    key = _core.normalize_ticker(ticker)
-    metadata = _core._MARKET_MANIFEST_DIRTY.get(key)
-    if isinstance(metadata, dict):
-        metadata["volume_unit"] = "shares"
-        metadata["volume_schema"] = _PRICE_CACHE_SCHEMA_VERSION
+    for path, reader in readers:
+        if not path.exists():
+            continue
+        try:
+            validated = _core._validate_ohlcv(reader(path))
+        except (
+            OSError,
+            UnicodeDecodeError,
+            ImportError,
+            ValueError,
+            pd.errors.EmptyDataError,
+            pd.errors.ParserError,
+        ):
+            _core.logger.warning("旧版行情缓存损坏，忽略: %s", path)
+            continue
+        if validated is None:
+            continue
+        validated.attrs["volume_unit"] = "shares"
+        validated.attrs["amount_unit"] = "CNY"
+        validated.attrs["cache_migrated_from_schema"] = "v4-tickflow-forward-volume-shares"
+        validated.attrs["corporate_action_rebase_detected"] = False
+        try:
+            _v51_save_cache(ticker, validated, source)
+        except OSError:
+            _core.logger.debug("Unable to migrate v4 cache for %s", ticker, exc_info=True)
+        return validated
+    return None
 
 
-_core._PRICE_CACHE_SCHEMA_VERSION = _PRICE_CACHE_SCHEMA_VERSION
-_core._PRICE_CACHE_DIR = _PRICE_CACHE_DIR
-_core._MARKET_MANIFEST_PATH = _MARKET_MANIFEST_PATH
-_core._TICKFLOW_CN_LOT_SIZE = _TICKFLOW_CN_LOT_SIZE
-_core._infer_tickflow_volume_scale = _infer_tickflow_volume_scale
-_core._normalize_tickflow_frame = _normalize_tickflow_frame
-_core._record_market_manifest = _record_market_manifest
-_core.TICKFLOW_CANONICAL_VOLUME_UNIT = "shares"
+def _cached_metadata_available(ticker: str) -> bool:
+    symbol = _core.normalize_ticker(ticker)
+    metadata = _core._INSTRUMENT_META.get(symbol)
+    if isinstance(metadata, dict) and metadata:
+        return True
+    cached = _core._load_universe_cache()
+    if not isinstance(cached, dict):
+        return False
+    metadata_map = cached.get("metadata", {})
+    if not isinstance(metadata_map, dict):
+        return False
+    raw = metadata_map.get(symbol)
+    if not isinstance(raw, dict) or not raw:
+        return False
+    _core._INSTRUMENT_META[symbol] = raw
+    return True
 
+
+@lru_cache(maxsize=8192)
+def get_price_limit_pct(ticker: str, is_etf: bool = False) -> float | None:
+    """Resolve price limits from already-cached metadata without hidden I/O."""
+    if not _cached_metadata_available(ticker):
+        return None
+    return _v51_price_limit(ticker, is_etf=is_etf)
+
+
+_core._load_cache = _load_cache
+_core.get_price_limit_pct = get_price_limit_pct
+_core.PRICE_CACHE_MIGRATION_SOURCE = "v4-tickflow-forward-volume-shares"
 sys.modules[__name__] = _core

@@ -1,9 +1,9 @@
-"""v35 scoring policy facade.
+"""v51 scoring policy facade.
 
-``score_core`` contains the stable v34 feature/entry implementation.  This
-module changes only model semantics that need clean out-of-sample validation:
-style labels stop self-reinforcing the same features, and TriggerScore becomes
-an incremental launch-event score instead of reusing setup trend evidence.
+``score_core`` contains the stable feature/entry implementation.  This facade
+keeps style labels descriptive, keeps TriggerScore orthogonal to setup trend,
+and makes the volatility score consume the same contraction state as the hard
+screening filter.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import pandas as pd
 
 import score_core as _core
 from score_core import *  # noqa: F403
+from volatility_state import volatility_contraction_score
 
 _legacy_score_ticker = _core.score_ticker
 
@@ -24,6 +25,11 @@ def _style_adjustment(
     """Keep style descriptive instead of rewarding its source features twice."""
     _ = (df, style)
     return (1.0, 1.0, 1.0, 1.0, 1.0)
+
+
+def score_volatility(df: pd.DataFrame) -> float:
+    """Score exactly the same robust volatility state used by the filter gate."""
+    return volatility_contraction_score(df, max_score=15.0)
 
 
 def trigger_event_score(df: pd.DataFrame) -> float:
@@ -106,6 +112,7 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False):
 
 
 _core._style_adjustment = _style_adjustment
+_core.score_volatility = score_volatility
 _core.trigger_event_score = trigger_event_score
 _core.score_ticker = score_ticker
 
