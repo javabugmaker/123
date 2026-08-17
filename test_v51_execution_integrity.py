@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 
+import analytics
 import config
 import downloader
 import report
 from backtest_alignment import align_benchmark_returns
 from filters import filter_min_volume, filter_volatility_contraction
-from pipeline_contracts import PipelineStage, enforce_enrichment_contract
+from pipeline_contracts import (
+    EnrichedResultView,
+    PipelineStage,
+    enforce_enrichment_contract,
+)
 from scanner import ScanResult
 from score import score_volatility
 from tradeability import daily_limit_pct, is_entry_tradeable
@@ -29,6 +35,14 @@ class V51ExecutionIntegrityTests(unittest.TestCase):
         self.assertIn("v51", config.DECISION_INTEGRITY_VERSION)
         self.assertIn("v51", config.OUTPUT_CONTRACT_VERSION)
         self.assertIn("v51", config.BACKTEST_PROVENANCE_VERSION)
+
+    def test_public_analytics_import_installs_benchmark_open_alignment(self) -> None:
+        self.assertTrue(
+            getattr(analytics, "_V51_BENCHMARK_ALIGNMENT_INSTALLED", False)
+        )
+        self.assertEqual(
+            getattr(analytics, "BACKTEST_BENCHMARK_ENTRY_BASIS", ""), "OPEN"
+        )
 
     def test_benchmark_return_uses_same_session_open_as_stock_entry(self) -> None:
         benchmark = pd.DataFrame(
@@ -186,6 +200,13 @@ class V51ExecutionIntegrityTests(unittest.TestCase):
             data_asof="2026-08-17",
         )
 
+    def test_enriched_stage_view_is_complete_and_immutable(self) -> None:
+        view = EnrichedResultView.from_result(self._enriched("000001.SZ"))
+        self.assertTrue(view.complete)
+        self.assertEqual(view.ticker, "000001.SZ")
+        with self.assertRaises(FrozenInstanceError):
+            view.ticker = "000002.SZ"  # type: ignore[misc]
+
     def test_enrichment_contract_quarantines_small_isolated_miss(self) -> None:
         rows = [self._enriched(f"{index:06d}.SZ") for index in range(100)]
         incomplete = SimpleNamespace(
@@ -250,6 +271,7 @@ class V51ExecutionIntegrityTests(unittest.TestCase):
     def test_pipeline_stage_contract_is_explicit(self) -> None:
         self.assertEqual(PipelineStage.RAW_SCAN.value, "RAW_SCAN")
         self.assertEqual(PipelineStage.ENRICHED.value, "ENRICHED")
+        self.assertEqual(PipelineStage.DECISION.value, "DECISION")
         self.assertEqual(PipelineStage.PUBLISHED.value, "PUBLISHED")
 
 
