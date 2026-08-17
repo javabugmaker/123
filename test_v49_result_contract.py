@@ -206,7 +206,8 @@ class V49ResultContractTests(unittest.TestCase):
 
         stale = [["run-1", "2026-08-13-v47-score", "2026-08-13-v47-pipeline"]]
         warning = gui._result_contract_warning(headers, stale)
-        self.assertIn("结果 v47 / 程序 v50", warning)
+        runtime_tag = gui._primary_version_tag(config.PIPELINE_VERSION)
+        self.assertIn(f"结果 v47 / 程序 {runtime_tag}", warning)
 
         mixed = [*current, ["run-2", config.SCORING_VERSION, config.PIPELINE_VERSION]]
         self.assertIn("多个 RunId", gui._result_contract_warning(headers, mixed))

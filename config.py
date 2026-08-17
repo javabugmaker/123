@@ -42,8 +42,9 @@ BACKTEST_MAX_EXIT_DELAY_DAYS: int = 10
 
 # Liquidity is primarily a traded-value concept.  Canonical Amount is CNY
 # turnover when TickFlow provides it; share-volume remains a compatibility
-# fallback for historical caches without Amount.
-VOLUME_MIN_MEDIAN_TURNOVER_60D: float = 5_000_000.0
+# fallback for historical caches without Amount.  2.5m CNY keeps a 50k assumed
+# order near a 2% ADV ceiling while avoiding an abrupt universe break at v51.
+VOLUME_MIN_MEDIAN_TURNOVER_60D: float = 2_500_000.0
 VOLUME_TURNOVER_MIN_OBSERVATIONS: int = 30
 
 # One volatility state is shared by the filter and score paths.  Bollinger

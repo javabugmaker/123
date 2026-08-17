@@ -51,7 +51,7 @@ def filter_min_volume(df: pd.DataFrame):
                 details={
                     "liquidity_basis": "turnover_cny",
                     "median_turnover_60": median_turnover,
-                    "turnover_observations": int(len(recent)),
+                    "turnover_observations": len(recent),
                     "fallback_min_volume_shares": int(MIN_VOLUME),
                 },
             )

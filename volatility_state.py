@@ -46,8 +46,11 @@ class VolatilityContractionState:
             "bb_ratio": self.bb_ratio,
             "bb_percentile": self.bb_percentile,
             "hv_ratio": self.hv_ratio,
-            "atr_contracting": self.atr_contracting,
+            # Keep the old exported names as aliases while v51 standardizes on
+            # the more precise ``*_contracting`` terminology internally.
+            "atr_compressing": self.atr_contracting,
             "bb_contracting": self.bb_contracting,
+            "atr_contracting": self.atr_contracting,
             "hv_contracting": self.hv_contracting,
             "available_components": self.available_components,
         }

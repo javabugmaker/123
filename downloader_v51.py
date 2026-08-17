@@ -9,8 +9,9 @@ TickFlow ``limit_up``/``limit_down`` metadata when available.
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from functools import lru_cache
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -20,7 +21,10 @@ from downloader_core import *  # noqa: F403
 
 _TICKFLOW_CN_LOT_SIZE = 100.0
 _VOLUME_INFERENCE_ROWS = 60
-_PRICE_CACHE_SCHEMA_VERSION = "v5-tickflow-turnover-provenance"
+# v36 already isolated canonical share-volume caches.  v51 adds manifest-level
+# provenance only, so keep that compatible cache directory instead of forcing a
+# second full-market cache migration for unchanged OHLCV bytes.
+_PRICE_CACHE_SCHEMA_VERSION = "v4-tickflow-forward-volume-shares"
 _PRICE_CACHE_DIR = _core.CACHE_DIR / _PRICE_CACHE_SCHEMA_VERSION
 _MARKET_MANIFEST_PATH = _PRICE_CACHE_DIR / "_manifest.json"
 _SHARE_INFERENCE_THRESHOLD = 10_000_000.0
@@ -249,6 +253,23 @@ def _record_market_manifest(ticker: str, df: pd.DataFrame) -> None:
     metadata["volume_unit"] = "shares"
     metadata["amount_unit"] = "CNY"
     metadata["volume_schema"] = _PRICE_CACHE_SCHEMA_VERSION
+
+    amount = (
+        pd.to_numeric(df["Amount"], errors="coerce").replace(
+            [np.inf, -np.inf], np.nan
+        ).tail(60).dropna()
+        if "Amount" in df.columns
+        else pd.Series(dtype=float)
+    )
+    if len(amount) >= 30:
+        metadata["liquidity_basis"] = "turnover_cny"
+        metadata["median_turnover_60"] = float(amount.median())
+        metadata["turnover_observations"] = len(amount)
+    else:
+        metadata["liquidity_basis"] = "shares_fallback"
+        metadata["median_turnover_60"] = None
+        metadata["turnover_observations"] = len(amount)
+
     cap = get_market_cap_evidence(key, frame=df, fetch=False)
     metadata["market_cap_source"] = cap.get("source", "")
     metadata["total_shares_raw"] = cap.get("raw_total_shares")
