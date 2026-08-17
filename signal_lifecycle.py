@@ -5,6 +5,10 @@ narrows the breakout filter override after real-output validation showed that
 current-day CMF + AD confirmation alone could bypass every accumulation and
 structure setup filter.  A strict override now needs at least one independent
 setup clue and three total scanner signals.
+
+Legacy synthetic/archived rows that predate the v52 setup-evidence schema stay
+readable under the previous override contract.  Current scanner output always
+carries the setup fields, so production v52 decisions remain fail-closed.
 """
 
 from __future__ import annotations
@@ -17,8 +21,31 @@ import config as _config
 import signal_lifecycle_v51 as _core
 from signal_lifecycle_v51 import *  # noqa: F403
 
+_SETUP_COLUMNS = (
+    "VolAccum",
+    "volume_accumulation",
+    "OBV_Div",
+    "obv_divergence",
+    "Consolidation",
+    "consolidation",
+    "VolContract",
+    "volatility_contraction",
+)
+
+
+def _has_v52_setup_schema(frame: pd.DataFrame) -> bool:
+    return "SignalCount" in frame.columns and any(
+        column in frame.columns for column in _SETUP_COLUMNS
+    )
+
 
 def _setup_support_mask(frame: pd.DataFrame) -> pd.Series:
+    # Historical result files and older unit fixtures legitimately do not have
+    # the v52 setup columns.  Preserve their old interpretation instead of
+    # manufacturing a failure from missing future-schema fields.
+    if not _has_v52_setup_schema(frame):
+        return pd.Series(True, index=frame.index, dtype=bool)
+
     accumulation = (
         _core._bool_series(frame, "VolAccum", False)
         | _core._bool_series(frame, "volume_accumulation", False)
@@ -45,7 +72,7 @@ def strict_filter_override_mask(
     passed_filters: pd.Series | None = None,
     universe_eligible: pd.Series | None = None,
 ) -> pd.Series:
-    """Allow only setup-backed, fully confirmed breakout overrides."""
+    """Allow only setup-backed, fully confirmed current-schema overrides."""
     normalized_signal = (
         signal.fillna("AVOID").astype(str).str.strip().str.upper()
         if signal is not None

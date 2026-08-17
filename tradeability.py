@@ -151,9 +151,18 @@ def _number(value: Any) -> float:
 
 def _row_trade_date(frame: pd.DataFrame, index: int) -> pd.Timestamp | None:
     try:
-        return _trade_timestamp(frame.index[int(index)])
+        value = frame.index[int(index)]
     except (IndexError, TypeError, ValueError):
         return None
+    # A RangeIndex/Int64Index is a row locator, not a Unix-nanosecond trading
+    # timestamp.  Treating integer 1 as 1970-01-01 silently selects historical
+    # exchange rules for undated frames.  With no date provenance, use the
+    # current board rule instead.
+    if isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(
+        value, (bool, np.bool_)
+    ):
+        return None
+    return _trade_timestamp(value)
 
 
 def is_entry_tradeable(
