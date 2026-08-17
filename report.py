@@ -1,209 +1,72 @@
-"""v51 report facade exposing market-data provenance columns.
+"""v52 report provenance facade.
 
-The stable report implementation remains in ``report_core``. This wrapper
-extends the flat public table with liquidity basis, market-cap normalization
-provenance and the resolved per-security price-limit ratio without changing
-candidate ranking semantics.
+The v51 report contract remains in ``report_v51``.  v52 corrects two fields
+that real output showed could be misleading: ETF share counts are no longer
+presented as stock market-cap provenance, and every exported price-limit ratio
+is recomputed from the current audited rule engine rather than trusting stale
+manifest values.
 """
 
 from __future__ import annotations
 
-import json
 import sys
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
-import report_core as _core
-from downloader import _MARKET_MANIFEST_PATH, normalize_ticker
-from report_core import *  # noqa: F403
-from tradeability import fallback_daily_limit_pct
+import report_v51 as _core
+from report_v51 import *  # noqa: F403
+from tradeability import daily_limit_pct, price_limit_source
 
 _legacy_results_to_dataframe = _core._results_to_dataframe
 
 
-def _detail(result: Any, key: str, default: Any = None) -> Any:
-    details = getattr(result, "filter_details", {})
-    return details.get(key, default) if isinstance(details, dict) else default
-
-
-def _market_manifest() -> dict[str, dict[str, Any]]:
-    try:
-        raw = json.loads(_MARKET_MANIFEST_PATH.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    return {
-        str(key): value
-        for key, value in raw.items()
-        if isinstance(value, dict)
-    }
-
-
-def _manifest_value(
-    manifest: dict[str, dict[str, Any]],
-    ticker: str,
-    key: str,
-    default: Any = None,
-) -> Any:
-    row = manifest.get(normalize_ticker(ticker), {})
-    return row.get(key, default) if isinstance(row, dict) else default
-
-
 def _results_to_dataframe(results: list[Any]) -> pd.DataFrame:
     frame = _legacy_results_to_dataframe(results)
-    provenance_columns = (
-        "MarketCap",
-        "MarketCapAvailable",
-        "MarketCapUnitInferred",
-        "MarketCapUnitAssumption",
-        "MarketCapRawTotalShares",
-        "MarketCapNormalizedTotalShares",
-        "MarketCapSanityPassed",
-        "LiquidityBasis",
-        "MedianTurnover60",
-        "TurnoverObservations",
-        "PriceLimitPct",
-    )
     if frame.empty:
-        for column in provenance_columns:
-            if column not in frame.columns:
-                frame[column] = pd.Series(dtype=object)
+        if "MarketCapApplicable" not in frame.columns:
+            frame["MarketCapApplicable"] = pd.Series(dtype=bool)
+        if "PriceLimitSource" not in frame.columns:
+            frame["PriceLimitSource"] = pd.Series(dtype=object)
         return frame
 
-    manifest = _market_manifest()
-    by_ticker = {
-        str(getattr(result, "ticker", "") or ""): result
-        for result in results
-        if str(getattr(result, "ticker", "") or "")
-    }
-    mapped = [by_ticker.get(str(ticker)) for ticker in frame["Ticker"].astype(str)]
-    tickers = frame["Ticker"].astype(str).tolist()
+    is_etf = (
+        frame.get("IsETF", pd.Series(False, index=frame.index))
+        .fillna(False)
+        .astype(bool)
+    )
+    if "AssetType" in frame.columns:
+        is_etf |= frame["AssetType"].fillna("").astype(str).str.lower().eq("etf")
 
-    frame["MarketCap"] = [
-        _detail(result, "market_cap") if result is not None else None
-        for result in mapped
-    ]
-    frame["MarketCapAvailable"] = [
-        bool(_detail(result, "market_cap_available", False)) if result is not None else False
-        for result in mapped
-    ]
-    frame["MarketCapUnitInferred"] = [
-        bool(
-            _detail(
-                result,
-                "market_cap_unit_inferred",
-                _manifest_value(manifest, ticker, "share_unit_inference_used", False),
-            )
-        )
-        if result is not None
-        else bool(_manifest_value(manifest, ticker, "share_unit_inference_used", False))
-        for ticker, result in zip(tickers, mapped)
-    ]
-    frame["MarketCapUnitAssumption"] = [
-        str(
-            _detail(
-                result,
-                "market_cap_unit_assumption",
-                _manifest_value(manifest, ticker, "share_unit_assumption", "unavailable"),
-            )
-        )
-        if result is not None
-        else str(_manifest_value(manifest, ticker, "share_unit_assumption", "unavailable"))
-        for ticker, result in zip(tickers, mapped)
-    ]
-    frame["MarketCapRawTotalShares"] = [
-        _detail(
-            result,
-            "market_cap_raw_total_shares",
-            _manifest_value(manifest, ticker, "total_shares_raw"),
-        )
-        if result is not None
-        else _manifest_value(manifest, ticker, "total_shares_raw")
-        for ticker, result in zip(tickers, mapped)
-    ]
-    frame["MarketCapNormalizedTotalShares"] = [
-        _detail(
-            result,
-            "market_cap_normalized_total_shares",
-            _manifest_value(manifest, ticker, "total_shares_normalized"),
-        )
-        if result is not None
-        else _manifest_value(manifest, ticker, "total_shares_normalized")
-        for ticker, result in zip(tickers, mapped)
-    ]
-    frame["MarketCapSanityPassed"] = [
-        bool(
-            _detail(
-                result,
-                "market_cap_sanity_passed",
-                _manifest_value(manifest, ticker, "market_cap_sanity_passed", False),
-            )
-        )
-        if result is not None
-        else bool(_manifest_value(manifest, ticker, "market_cap_sanity_passed", False))
-        for ticker, result in zip(tickers, mapped)
-    ]
-    frame["LiquidityBasis"] = [
-        str(
-            _detail(
-                result,
-                "liquidity_basis",
-                _manifest_value(manifest, ticker, "liquidity_basis", "shares_fallback"),
-            )
-        )
-        if result is not None
-        else str(_manifest_value(manifest, ticker, "liquidity_basis", "shares_fallback"))
-        for ticker, result in zip(tickers, mapped)
-    ]
-    frame["MedianTurnover60"] = [
-        _detail(
-            result,
-            "median_turnover_60",
-            _manifest_value(manifest, ticker, "median_turnover_60"),
-        )
-        if result is not None
-        else _manifest_value(manifest, ticker, "median_turnover_60")
-        for ticker, result in zip(tickers, mapped)
-    ]
-    frame["TurnoverObservations"] = [
-        _detail(
-            result,
-            "turnover_observations",
-            _manifest_value(manifest, ticker, "turnover_observations", 0),
-        )
-        if result is not None
-        else _manifest_value(manifest, ticker, "turnover_observations", 0)
-        for ticker, result in zip(tickers, mapped)
-    ]
+    frame["MarketCapApplicable"] = ~is_etf
+    etf_index = frame.index[is_etf]
+    if len(etf_index):
+        # Fund units are useful instrument metadata, but they are not the stock
+        # share-capital evidence represented by MarketCap* fields.
+        frame.loc[etf_index, "MarketCap"] = None
+        if "MarketCapDataAvailable" in frame.columns:
+            frame.loc[etf_index, "MarketCapDataAvailable"] = False
+        if "MarketCapAvailable" in frame.columns:
+            frame.loc[etf_index, "MarketCapAvailable"] = False
+        if "MarketCapUnitInferred" in frame.columns:
+            frame.loc[etf_index, "MarketCapUnitInferred"] = False
+        if "MarketCapUnitAssumption" in frame.columns:
+            frame.loc[etf_index, "MarketCapUnitAssumption"] = "not_applicable"
+        if "MarketCapRawTotalShares" in frame.columns:
+            frame.loc[etf_index, "MarketCapRawTotalShares"] = None
+        if "MarketCapNormalizedTotalShares" in frame.columns:
+            frame.loc[etf_index, "MarketCapNormalizedTotalShares"] = None
+        if "MarketCapSanityPassed" in frame.columns:
+            frame.loc[etf_index, "MarketCapSanityPassed"] = False
 
     limit_values: list[float] = []
-    for ticker, result in zip(tickers, mapped):
-        explicit = (
-            _detail(
-                result,
-                "price_limit_pct",
-                _manifest_value(manifest, ticker, "price_limit_pct"),
-            )
-            if result is not None
-            else _manifest_value(manifest, ticker, "price_limit_pct")
-        )
-        try:
-            explicit_value = float(explicit)
-        except (TypeError, ValueError):
-            explicit_value = np.nan
-        if np.isfinite(explicit_value) and 0.02 <= explicit_value <= 0.40:
-            limit_values.append(explicit_value)
-            continue
-        limit_values.append(
-            fallback_daily_limit_pct(
-                ticker,
-                is_etf=bool(getattr(result, "is_etf", False)) if result is not None else False,
-            )
-        )
+    limit_sources: list[str] = []
+    for index, ticker in frame["Ticker"].astype(str).items():
+        etf = bool(is_etf.loc[index])
+        limit_values.append(daily_limit_pct(ticker, is_etf=etf))
+        limit_sources.append(price_limit_source(ticker, is_etf=etf))
     frame["PriceLimitPct"] = limit_values
+    frame["PriceLimitSource"] = limit_sources
     return frame
 
 
