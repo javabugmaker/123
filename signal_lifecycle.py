@@ -2,9 +2,13 @@
 
 v54 keeps the v52 setup-backed breakout override and adds an execution-only
 liquidity gate. The broad universe may still contain thinner research names,
-but READY/CAUTIOUS decisions now require enough 60-day median turnover for the
+but READY/CAUTIOUS decisions require enough 60-day median turnover for the
 configured assumed order to stay within a conservative participation rate.
-Board diagnostics are exported for observability only and never alter scores.
+
+The v51 facade replaces its module entry with ``signal_lifecycle_core`` after
+initialization. Therefore v54 wraps the exported v51 ``finalize_signal_ranking``
+instead of depending on private v51 helper attributes. This keeps imports
+stable and makes the v54 post-processing boundary explicit.
 """
 
 from __future__ import annotations
@@ -18,8 +22,7 @@ import config as _config
 import signal_lifecycle_v51 as _core
 from signal_lifecycle_v51 import *  # noqa: F403
 
-_LEGACY_RECOMPUTE_CROSS_ASSET = _core._recompute_cross_asset_score
-_LEGACY_RECOMPUTE_TIERS_AND_DECISIONS = _core._recompute_tiers_and_decisions
+_LEGACY_FINALIZE_SIGNAL_RANKING = _core.finalize_signal_ranking
 
 _SETUP_COLUMNS = (
     "VolAccum",
@@ -171,18 +174,36 @@ def _add_board_diagnostics(
     result["BoardDiagnosticOnly"] = True
 
 
-def _recompute_cross_asset_score(
-    result: pd.DataFrame,
-) -> tuple[pd.Series, pd.Series]:
-    corrected, is_etf = _LEGACY_RECOMPUTE_CROSS_ASSET(result)
-    _add_board_diagnostics(result, corrected, is_etf)
+def _board_diagnostic_inputs(result: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    is_etf = _core._bool_series(result, "IsETF") | _core._text_series(
+        result, "AssetType", ""
+    ).str.lower().eq("etf")
+    corrected = _core._number(
+        result.get(
+            "CrossAssetScore",
+            result.get(
+                "InstitutionalScore",
+                result.get(
+                    "FinalScore",
+                    result.get("Score", pd.Series(0.0, index=result.index)),
+                ),
+            ),
+        ),
+        0.0,
+    ).clip(0.0, 100.0)
     return corrected, is_etf
 
 
 def _trade_liquidity_threshold() -> float:
     absolute_floor = max(
         0.0,
-        float(getattr(_config, "TRADE_READY_MIN_MEDIAN_TURNOVER_60D", 5_000_000.0)),
+        float(
+            getattr(
+                _config,
+                "TRADE_READY_MIN_MEDIAN_TURNOVER_60D",
+                5_000_000.0,
+            )
+        ),
     )
     max_participation = float(
         getattr(_config, "TRADE_READY_MAX_ASSUMED_PARTICIPATION_RATE", 0.01)
@@ -192,7 +213,9 @@ def _trade_liquidity_threshold() -> float:
         float(getattr(_config, "BACKTEST_ASSUMED_TRADE_NOTIONAL", 50_000.0)),
     )
     participation_floor = (
-        assumed_notional / max_participation if max_participation > 0.0 else np.inf
+        assumed_notional / max_participation
+        if max_participation > 0.0
+        else np.inf
     )
     return float(max(absolute_floor, participation_floor))
 
@@ -206,7 +229,13 @@ def _trade_liquidity_diagnostics(result: pd.DataFrame) -> pd.Series:
     )
     max_participation = max(
         0.0,
-        float(getattr(_config, "TRADE_READY_MAX_ASSUMED_PARTICIPATION_RATE", 0.01)),
+        float(
+            getattr(
+                _config,
+                "TRADE_READY_MAX_ASSUMED_PARTICIPATION_RATE",
+                0.01,
+            )
+        ),
     )
 
     if "MedianTurnover60" not in result.columns:
@@ -270,9 +299,17 @@ def _append_dynamic_reason(
     if not active.any():
         return output
     current = output.loc[active].str.strip().str.rstrip("；")
-    addition = extra.loc[active].fillna("").astype(str).str.strip().str.lstrip("；")
+    addition = (
+        extra.loc[active]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lstrip("；")
+    )
     output.loc[active] = np.where(
-        current.ne(""), current + "；" + addition, addition
+        current.ne(""),
+        current + "；" + addition,
+        addition,
     )
     return output
 
@@ -292,9 +329,15 @@ def _apply_trade_liquidity_gate(result: pd.DataFrame) -> pd.Series:
     result.loc[demote, "RankingEligibility"] = "观察"
     result.loc[demote, "TradeReadiness"] = "观察"
 
-    liquidity_reason = _core._text_series(result, "TradeLiquidityReason", "执行流动性不足")
+    liquidity_reason = _core._text_series(
+        result,
+        "TradeLiquidityReason",
+        "执行流动性不足",
+    )
     readiness = _core._text_series(
-        result, "TradeReadinessReason", "等待趋势、量能或风险条件改善"
+        result,
+        "TradeReadinessReason",
+        "等待趋势、量能或风险条件改善",
     )
     readiness = _append_dynamic_reason(readiness, demote, liquidity_reason)
     result["TradeReadinessReason"] = readiness
@@ -307,7 +350,9 @@ def _apply_trade_liquidity_gate(result: pd.DataFrame) -> pd.Series:
         dtype=object,
     )
     result["RankingReason"] = _append_dynamic_reason(
-        ranking_reason, demote, research_reason
+        ranking_reason,
+        demote,
+        research_reason,
     )
 
     action = _core._text_series(result, "ActionSuggestion", "等待条件改善")
@@ -326,26 +371,33 @@ def _apply_trade_liquidity_gate(result: pd.DataFrame) -> pd.Series:
     return demote
 
 
-def _recompute_tiers_and_decisions(
-    result: pd.DataFrame,
-    corrected: pd.Series,
-    is_etf: pd.Series,
-    terminal: pd.Series,
-    weakening: pd.Series,
-) -> None:
-    _LEGACY_RECOMPUTE_TIERS_AND_DECISIONS(
-        result, corrected, is_etf, terminal, weakening
-    )
+def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
+    """Run the stable v51/v52 engine, then apply v54 observability/readiness."""
+    result = _LEGACY_FINALIZE_SIGNAL_RANKING(frame)
+    if result is None or result.empty:
+        return result
+
+    corrected, is_etf = _board_diagnostic_inputs(result)
+    _add_board_diagnostics(result, corrected, is_etf)
     _apply_trade_liquidity_gate(result)
+
+    # v54 is execution-only: never alter the already-computed research rank.
+    result["RankingScore"] = _core._number(
+        result.get("RankingScore", pd.Series(0.0, index=result.index)),
+        0.0,
+    ).clip(lower=0.0).round(4)
+
+    stamp = getattr(_core, "stamp_ranking_contract", None)
+    return stamp(result) if callable(stamp) else result
 
 
 _core.strict_filter_override_mask = strict_filter_override_mask
 _core._is_active = _is_active
-_core._recompute_cross_asset_score = _recompute_cross_asset_score
-_core._recompute_tiers_and_decisions = _recompute_tiers_and_decisions
 _core._trading_board_series = _trading_board_series
 _core._add_board_diagnostics = _add_board_diagnostics
+_core._board_diagnostic_inputs = _board_diagnostic_inputs
 _core._trade_liquidity_threshold = _trade_liquidity_threshold
 _core._trade_liquidity_diagnostics = _trade_liquidity_diagnostics
 _core._apply_trade_liquidity_gate = _apply_trade_liquidity_gate
+_core.finalize_signal_ranking = finalize_signal_ranking
 sys.modules[__name__] = _core
