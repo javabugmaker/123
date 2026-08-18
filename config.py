@@ -1,9 +1,9 @@
-"""InstitutionScanner v53 configuration facade.
+"""InstitutionScanner v54 configuration facade.
 
-v53 keeps the v52 scoring and execution rules intact while hardening the DAILY
-market-data settlement contract. A coherent one-trading-day provider EOD lag
-can be published with explicit provenance; mixed-date and materially stale
-universes remain fail-closed. The v52 runtime rules remain layered over v51.
+v54 keeps v52 scoring and the v53 settlement-date contract intact while
+separating broad universe liquidity from execution liquidity. Research ranking
+is unchanged; READY/CAUTIOUS decisions require enough 60-day median turnover
+for the configured assumed order to remain within the participation cap.
 """
 
 from __future__ import annotations
@@ -15,15 +15,18 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-18-v54-execution-liquidity-readiness-"
     "2026-08-18-v53-provider-settlement-date-gate-"
     "2026-08-17-v52-price-limit-marketcap-contract-"
     + _v51.PIPELINE_VERSION
 )
 DECISION_INTEGRITY_VERSION: str = (
+    "2026-08-18-v54-trade-ready-liquidity-gate-"
     "2026-08-17-v52-setup-backed-filter-override-"
     + _v51.DECISION_INTEGRITY_VERSION
 )
 OUTPUT_CONTRACT_VERSION: str = (
+    "2026-08-18-v54-trade-liquidity-board-diagnostics-"
     "2026-08-18-v53-effective-market-date-provenance-"
     "2026-08-17-v52-price-limit-source-marketcap-applicability-"
     + _v51.OUTPUT_CONTRACT_VERSION
@@ -44,6 +47,14 @@ FILTER_OVERRIDE_MIN_SIGNAL_COUNT: int = 3
 # behind the exchange calendar, but partial/mixed settlement is never accepted.
 DAILY_MAX_PROVIDER_LAG_TRADING_DAYS: int = 1
 DAILY_MIN_COHERENT_DATA_DATE_RATIO: float = 0.90
+
+# v54 execution-only liquidity contract. The broad research universe keeps its
+# existing 2.5m CNY turnover floor from v51; a READY/CAUTIOUS signal needs at
+# least 5m CNY median 60-day turnover and must keep the assumed 50k order at or
+# below 1% participation. Neither condition changes RankingScore.
+TRADE_READY_MIN_MEDIAN_TURNOVER_60D: float = 5_000_000.0
+TRADE_READY_MAX_ASSUMED_PARTICIPATION_RATE: float = 0.01
+TRADE_LIQUIDITY_RULE_VERSION: str = "2026-08-18-v54-order-participation"
 
 # Explicit provenance for output/backtest audit trails.
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
