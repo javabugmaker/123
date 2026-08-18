@@ -13,6 +13,7 @@ import json
 import sys
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 import config as _config
 import daily_pipeline_core as _core
@@ -191,7 +192,8 @@ def _csv_profile(path: Path, expected_date: str) -> dict[str, object]:
     profile["dominant_data_asof_ratio"] = float(
         resolution.get("dominant_ratio", 0.0) or 0.0
     )
-    profile["data_asof_counts"] = dict(resolution.get("data_asof_counts", {}) or {})
+    raw_counts = resolution.get("data_asof_counts", {})
+    profile["data_asof_counts"] = raw_counts if isinstance(raw_counts, dict) else {}
     profile["market_data_date_reason"] = str(resolution.get("reason", "") or "")
     profile["market_data_date_accepted"] = bool(resolution.get("accepted", False))
     return profile
@@ -218,7 +220,7 @@ def _quality_gate_errors(
     return errors
 
 
-def _write_manifest(*args: object, **kwargs: object) -> dict[str, object]:
+def _write_manifest(*args: Any, **kwargs: Any) -> dict[str, object]:
     payload = _LEGACY_WRITE_MANIFEST(*args, **kwargs)
     scan_profile = kwargs.get("scan_profile", {})
     if not isinstance(scan_profile, dict):
@@ -237,8 +239,10 @@ def _write_manifest(*args: object, **kwargs: object) -> dict[str, object]:
             "calendar_expected_fresh_ratio": float(
                 scan_profile.get("calendar_expected_fresh_ratio", 0.0) or 0.0
             ),
-            "data_asof_distribution": dict(
-                scan_profile.get("data_asof_counts", {}) or {}
+            "data_asof_distribution": (
+                scan_profile.get("data_asof_counts", {})
+                if isinstance(scan_profile.get("data_asof_counts", {}), dict)
+                else {}
             ),
             "market_data_date_reason": str(
                 scan_profile.get("market_data_date_reason", "") or ""
