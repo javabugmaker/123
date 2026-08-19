@@ -1,10 +1,11 @@
-"""InstitutionScanner v71 data/recovery/publication integrity facade.
+"""InstitutionScanner v72 data/recovery/publication integrity facade.
 
 TickFlow Free remains the sole market-data client. v55-v70 harden settlement,
 execution freshness, resume state, fundamental freshness and derived-cache
 validity; v64-v66 harden GUI cancellation and ordinary result publication; v71
-extends the same all-or-rollback publication contract to backtest ranking
-postprocessing.
+extends all-or-rollback publication to backtest ranking postprocessing; v72
+prevents the standalone cache-only report command from replacing newer results
+with materially stale or mixed-date cache state.
 
 Technical scoring, backtest split policy and research ranking weights are
 unchanged.
@@ -21,6 +22,7 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-19-v72-standalone-cache-report-gate-"
     "2026-08-19-v71-transactional-backtest-publication-"
     "2026-08-19-v70-hard-financial-refresh-coverage-"
     "2026-08-19-v69-same-length-history-content-check-"
@@ -51,6 +53,7 @@ DECISION_INTEGRITY_VERSION: str = (
     + _v51.DECISION_INTEGRITY_VERSION
 )
 OUTPUT_CONTRACT_VERSION: str = (
+    "2026-08-19-v72-cache-report-market-date-gate-"
     "2026-08-19-v71-atomic-backtest-result-set-"
     "2026-08-19-v68-publication-coupled-checkpoint-"
     "2026-08-19-v66-atomic-result-set-rollback-"
@@ -119,6 +122,7 @@ GUI_PROCESS_INTEGRITY_VERSION: str = "2026-08-19-v64-process-tree-cancel-v1"
 CACHE_FIRST_PUBLICATION_VERSION: str = "2026-08-19-v65-coherent-market-date-v1"
 REPORT_PUBLICATION_INTEGRITY_VERSION: str = "2026-08-19-v66-stateful-staging-rollback-v1"
 BACKTEST_PUBLICATION_INTEGRITY_VERSION: str = "2026-08-19-v71-transactional-ranking-output-v1"
+CACHE_REPORT_PUBLICATION_VERSION: str = "2026-08-19-v72-coherent-market-date-v1"
 
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
 CALIBRATION_GOVERNANCE_VERSION: str = "2026-08-19-v57-unstable-stable-ratio-shrink-v1"
