@@ -103,7 +103,7 @@ class V55TickFlowEodCloseTests(unittest.TestCase):
         self.assertAlmostEqual(float(bar["Close"].iloc[-1]), 10.10)
         self.assertAlmostEqual(float(bar["Volume"].iloc[-1]), 100_000.0)
         self.assertTrue(bar.attrs["eod_quote_fallback"])
-        self.assertEqual(bar.attrs["eod_quote_source"], "tickflow_quotes")
+        self.assertEqual(bar.attrs["eod_quote_source"], "tickflow_api_quotes")
 
     def test_quote_fallback_repairs_one_day_stale_history(self) -> None:
         timestamp_ms = int(
