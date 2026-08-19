@@ -206,8 +206,8 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
 
         def staged_refresh(
             frame: pd.DataFrame,
-            top_n_csv: int = _core.TOP_N_REPORT,
-            top_n_parquet: int = _core.TOP_N_PARQUET,
+            top_n_csv: int = report_module.TOP_N_REPORT,
+            top_n_parquet: int = report_module.TOP_N_PARQUET,
             output_dir: Path | None = None,
             **kwargs: object,
         ):
