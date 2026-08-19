@@ -1,13 +1,10 @@
-"""InstitutionScanner v70 data/recovery integrity configuration facade.
+"""InstitutionScanner v71 data/recovery/publication integrity facade.
 
-TickFlow Free remains the sole market-data client. v55-v61 harden settlement,
-execution freshness, resume state and fundamental freshness; v62 fingerprints
-the full OHLCV history; v63 prevents benchmark-relative backtest cache reuse
-when the benchmark is unavailable; v64 terminates full GUI subprocess trees;
-v65 blocks stale cache-first publication; v66 stages the complete stateful report
-set with rollback; v67-v70 tighten fundamental refresh coverage, publication-
-coupled checkpoint cleanup, same-length historical cache verification and
-profile-specific hard-financial freshness.
+TickFlow Free remains the sole market-data client. v55-v70 harden settlement,
+execution freshness, resume state, fundamental freshness and derived-cache
+validity; v64-v66 harden GUI cancellation and ordinary result publication; v71
+extends the same all-or-rollback publication contract to backtest ranking
+postprocessing.
 
 Technical scoring, backtest split policy and research ranking weights are
 unchanged.
@@ -24,6 +21,7 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-19-v71-transactional-backtest-publication-"
     "2026-08-19-v70-hard-financial-refresh-coverage-"
     "2026-08-19-v69-same-length-history-content-check-"
     "2026-08-19-v68-pinned-resume-publication-cleanup-"
@@ -53,6 +51,7 @@ DECISION_INTEGRITY_VERSION: str = (
     + _v51.DECISION_INTEGRITY_VERSION
 )
 OUTPUT_CONTRACT_VERSION: str = (
+    "2026-08-19-v71-atomic-backtest-result-set-"
     "2026-08-19-v68-publication-coupled-checkpoint-"
     "2026-08-19-v66-atomic-result-set-rollback-"
     "2026-08-19-v65-cache-first-market-date-contract-"
@@ -72,6 +71,7 @@ MARKET_DATA_VERSION: str = (
     + _v51.MARKET_DATA_VERSION
 )
 BACKTEST_PROVENANCE_VERSION: str = (
+    "2026-08-19-v71-transactional-ranking-publication-"
     "2026-08-19-v69-full-history-cache-verification-"
     "2026-08-19-v63-benchmark-unavailable-no-cache-reuse-"
     "2026-08-19-v62-history-revision-cache-v10-"
@@ -118,6 +118,7 @@ BENCHMARK_CACHE_INTEGRITY_VERSION: str = "2026-08-19-v63-current-benchmark-requi
 GUI_PROCESS_INTEGRITY_VERSION: str = "2026-08-19-v64-process-tree-cancel-v1"
 CACHE_FIRST_PUBLICATION_VERSION: str = "2026-08-19-v65-coherent-market-date-v1"
 REPORT_PUBLICATION_INTEGRITY_VERSION: str = "2026-08-19-v66-stateful-staging-rollback-v1"
+BACKTEST_PUBLICATION_INTEGRITY_VERSION: str = "2026-08-19-v71-transactional-ranking-output-v1"
 
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
 CALIBRATION_GOVERNANCE_VERSION: str = "2026-08-19-v57-unstable-stable-ratio-shrink-v1"
