@@ -132,8 +132,6 @@ class CacheHistoryIntegrityTests(unittest.TestCase):
                 self.assertFalse(first_hit)
                 original_stat = source_path.stat()
 
-                # Do not touch source_path at all: size, mtime and path identity
-                # remain the same while the in-memory OHLCV history is revised.
                 second, second_hit = performance_cache.load_or_compute_indicators(
                     "000001.SZ", revised, compute, source_path=source_path
                 )
@@ -146,6 +144,42 @@ class CacheHistoryIntegrityTests(unittest.TestCase):
         self.assertNotEqual(
             float(first["SyntheticIndicator"].iloc[-1]),
             float(second["SyntheticIndicator"].iloc[-1]),
+        )
+
+    def test_metadata_only_source_change_keeps_content_cache_hit(self) -> None:
+        source = _market_frame()
+        calls = 0
+
+        def compute(frame: pd.DataFrame) -> pd.DataFrame:
+            nonlocal calls
+            calls += 1
+            result = frame.copy()
+            result["SyntheticIndicator"] = result["Close"].expanding().mean()
+            return result
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "000001.SZ.parquet"
+            source_path.write_text("state-a", encoding="utf-8")
+            indicator_dir = root / "indicators"
+
+            with patch.object(performance_cache, "INDICATOR_CACHE_DIR", indicator_dir):
+                first, first_hit = performance_cache.load_or_compute_indicators(
+                    "000001.SZ", source, compute, source_path=source_path
+                )
+                self.assertFalse(first_hit)
+                self.assertEqual(calls, 1)
+
+                source_path.write_text("state-b-longer", encoding="utf-8")
+                os.utime(source_path, None)
+                second, second_hit = performance_cache.load_or_compute_indicators(
+                    "000001.SZ", source.copy(), compute, source_path=source_path
+                )
+
+        self.assertTrue(second_hit)
+        self.assertEqual(calls, 1)
+        pd.testing.assert_series_equal(
+            first["SyntheticIndicator"], second["SyntheticIndicator"]
         )
 
     def test_cache_namespaces_advance_under_stronger_revision_contract(self) -> None:
