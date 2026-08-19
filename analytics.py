@@ -1,21 +1,11 @@
-"""v57 analytics facade with fresh benchmarks and calibration governance.
+"""v63 analytics facade with fresh benchmarks and cache-safe calibration.
 
-The historical analytics implementation lives in ``analytics_core``.  This
-public boundary keeps the v51 T+1-open alignment contract and the v56 benchmark
-refresh/evidence provenance fixes, while adding one fail-soft governance rule
-for peer calibration discovered from real post-close output:
-
-* benchmark frames are refreshed through the normal TickFlow Free downloader
-  before falling back to an existing cache;
-* ticker-specific backtest insufficiency is described separately from peer/global
-  calibration;
-* when walk-forward peer calibration is explicitly classified ``UNSTABLE``, its
-  confidence multiplier is shrunk a second time by the observed stable-fold
-  ratio.  Stable calibrations retain the legacy weight and insufficient-fold
-  histories retain the legacy neutral treatment.
-
-The technical score formula, train/validation/test split, execution model and
-candidate eligibility rules are unchanged.
+The historical analytics implementation lives in ``analytics_core``. This
+public boundary keeps the v51 T+1-open alignment contract, v56 benchmark
+refresh/evidence provenance and v57 unstable-calibration governance. v63 adds a
+fail-closed cache rule: if a ticker backtest cache was built with benchmark
+state but the current benchmark frame is completely unavailable, old excess
+return samples are not silently reused.
 """
 
 from __future__ import annotations
@@ -32,17 +22,11 @@ install_analytics_alignment(_core)
 
 _LEGACY_APPLY_BACKTEST_PROVENANCE = _core._apply_backtest_provenance
 _LEGACY_CALIBRATION_STABILITY_STATS = _core.calibration_stability_stats
+_LEGACY_BACKTEST_ONE_TICKER_CACHED = _core._backtest_one_ticker_cached
 
 
 def _load_benchmark_frames(source: str) -> dict[str, pd.DataFrame]:
-    """Refresh each benchmark first; use cache only as a resilient fallback.
-
-    The old implementation loaded a benchmark cache first and contacted the
-    provider only when that cache was missing.  Once created, a benchmark could
-    therefore remain several sessions behind even though the stock universe had
-    already advanced.  ``download_ticker`` already performs the canonical
-    incremental TickFlow Free update, so use that path before accepting cache.
-    """
+    """Refresh each benchmark first; use cache only as a resilient fallback."""
     frames: dict[str, pd.DataFrame] = {}
     for name, ticker in _core.BENCHMARKS.items():
         frame: pd.DataFrame | None = None
@@ -72,6 +56,56 @@ def _load_benchmark_frames(source: str) -> dict[str, pd.DataFrame]:
     return frames
 
 
+def _backtest_one_ticker_cached(
+    ticker: str,
+    source: str,
+    benchmark_frame: pd.DataFrame | None,
+    commission: float,
+    stamp_duty: float,
+    slippage: float,
+    split_dates: tuple[pd.Timestamp | None, pd.Timestamp | None],
+    benchmark_signature: str = "",
+    *,
+    profile: BacktestExecutionProfile | None = None,
+    benchmark_name: str = "沪深300",
+) -> tuple[list[dict[str, object]], bool]:
+    """Never reuse excess-return cache when the benchmark is absent now."""
+    if benchmark_frame is not None and not benchmark_frame.empty:
+        return _LEGACY_BACKTEST_ONE_TICKER_CACHED(
+            ticker,
+            source,
+            benchmark_frame,
+            commission,
+            stamp_duty,
+            slippage,
+            split_dates,
+            benchmark_signature,
+            profile=profile,
+            benchmark_name=benchmark_name,
+        )
+
+    frame = _core._load_cache(ticker, source)
+    active_profile = profile or _core._resolve_backtest_profile("exact", 1)
+    _core.logger.warning(
+        "回测基准 %s 当前不可用：%s 不复用历史 benchmark cache，"
+        "本轮样本的基准收益将保持缺失并由测试集完整性门槛处理。",
+        benchmark_name,
+        ticker,
+    )
+    samples = _core._backtest_one_ticker(
+        ticker,
+        source,
+        None,
+        commission,
+        stamp_duty,
+        slippage,
+        split_dates,
+        profile=active_profile,
+        frame=frame,
+    )
+    return samples, False
+
+
 def _apply_backtest_provenance(
     frame: pd.DataFrame,
     summary: BacktestSummary,
@@ -96,19 +130,7 @@ def calibration_stability_stats(
     *,
     minimum_folds: int = 3,
 ) -> dict[str, object]:
-    """Govern peer-calibration confidence using observed walk-forward stability.
-
-    The core calibration already scales confidence by ``stable_fold_ratio`` once.
-    A real v56 run produced 11 valid folds but only 54.55% directionally stable
-    folds, which correctly classified the calibration as ``UNSTABLE`` while
-    still allowing roughly eight percent peer weight.  For an explicitly
-    unstable model, applying the same empirical support ratio once more is a
-    conservative shrinkage rule: no evidence is discarded, but unstable peer
-    evidence cannot retain near-normal influence.
-
-    ``STABLE`` and ``INSUFFICIENT_FOLDS`` keep the legacy behavior so this is not
-    a blanket penalty for short histories.
-    """
+    """Govern peer-calibration confidence using observed walk-forward stability."""
     governed = dict(
         _LEGACY_CALIBRATION_STABILITY_STATS(
             rows,
@@ -141,6 +163,7 @@ def calibration_stability_stats(
 
 
 _core._load_benchmark_frames = _load_benchmark_frames
+_core._backtest_one_ticker_cached = _backtest_one_ticker_cached
 _core._apply_backtest_provenance = _apply_backtest_provenance
 _core.calibration_stability_stats = calibration_stability_stats
 
