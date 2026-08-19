@@ -1,8 +1,9 @@
-"""v51 TickFlow public facade with cache-only execution metadata lookup.
+"""v55 TickFlow public facade with authenticated EOD close fallback.
 
-``downloader_v51`` owns market-data normalization and provenance.  Price-limit
-lookups used by tradeability/backtests are deliberately cache-only here so a
-historical calculation never triggers hidden network I/O for instrument metadata.
+``downloader_v55`` adds optional ``TICKFLOW_API_KEY`` authentication and a
+post-close quote fallback when the historical daily endpoint has not settled
+today's bar yet.  The existing cache-only execution metadata lookup remains in
+place so historical calculations never trigger hidden metadata network I/O.
 """
 
 from __future__ import annotations
@@ -10,8 +11,8 @@ from __future__ import annotations
 import sys
 from functools import lru_cache
 
-import downloader_v51 as _core
-from downloader_v51 import *  # noqa: F403
+import downloader_v55 as _core
+from downloader_v55 import *  # noqa: F403
 
 _v51_price_limit = _core.get_price_limit_pct
 
