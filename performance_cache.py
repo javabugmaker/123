@@ -57,8 +57,6 @@ def market_history_fingerprint(
     if frame.empty or not columns:
         return ""
     numeric = frame.loc[:, columns].apply(pd.to_numeric, errors="coerce")
-    # pandas' row hash includes the DatetimeIndex and all selected values. Hash
-    # the compact uint64 vector again so metadata remains small and portable.
     row_hashes = pd.util.hash_pandas_object(numeric, index=True).to_numpy(
         dtype=np.uint64,
         copy=False,
@@ -108,7 +106,7 @@ def _write_indicator_cache(
         _core._atomic_json(
             meta_path,
             {
-                "version": INDICATOR_CACHE_VERSION,
+                "version": _core.INDICATOR_CACHE_VERSION,
                 "scoring_version": _core.SCORING_VERSION,
                 "signature": signature,
                 **market_cache_state(source),
@@ -137,8 +135,8 @@ def load_or_compute_indicators(
     source = source.loc[~source.index.isna()].sort_index()
     signature = _core.data_signature(source, source_path)
     stem = _core._safe_stem(ticker)
-    data_path = INDICATOR_CACHE_DIR / f"{stem}.parquet"
-    meta_path = INDICATOR_CACHE_DIR / f"{stem}.json"
+    data_path = _core.INDICATOR_CACHE_DIR / f"{stem}.parquet"
+    meta_path = _core.INDICATOR_CACHE_DIR / f"{stem}.json"
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -146,7 +144,7 @@ def load_or_compute_indicators(
 
     if (
         data_path.exists()
-        and meta.get("version") == INDICATOR_CACHE_VERSION
+        and meta.get("version") == _core.INDICATOR_CACHE_VERSION
         and meta.get("scoring_version") == _core.SCORING_VERSION
     ):
         cached = _core._read_indicator_cache(data_path)
