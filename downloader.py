@@ -9,31 +9,37 @@ whose cached history is still behind the latest completed trading day.
 No API key, authenticated client, realtime quote endpoint, minute data or
 synthetic OHLCV construction is used here.  If TickFlow Free still has not
 settled a mixed-date universe after the bounded retries, the download phase
-fails before the expensive analysis stage.  A coherent provider-wide one-day
-lag remains allowed for the existing v53 DAILY provenance contract.
+fails before the expensive analysis stage.  A coherent provider-wide lag is
+allowed only within the bounded v53 DAILY provenance contract.
 """
 
 from __future__ import annotations
 
 import sys
 import time
+from datetime import timedelta
 from functools import lru_cache
 
 import pandas as pd
 
 import downloader_v51 as _core
+from config import (
+    DAILY_MAX_PROVIDER_LAG_TRADING_DAYS,
+    DAILY_MIN_COHERENT_DATA_DATE_RATIO,
+)
 from downloader_v51 import *  # noqa: F403
+from trading_calendar import is_trading_day
 
 _v51_price_limit = _core.get_price_limit_pct
 _FREE_EOD_LEGACY_DOWNLOAD_BATCH = _core.download_batch
 _FREE_EOD_LEGACY_DOWNLOAD_TICKER = _core.download_ticker
 
-# The base downloader has already made one normal refresh request.  Give the
+# The base downloader has already made one normal refresh request. Give the
 # Free service up to ~48 additional seconds to finish its post-close daily-bar
 # settlement before deciding whether the date distribution is still unsafe.
 _FREE_EOD_RETRY_ATTEMPTS = 5
 _FREE_EOD_RETRY_PAUSE_SECONDS = 12.0
-_FREE_EOD_MIN_COHERENT_RATIO = 0.90
+_FREE_EOD_MIN_COHERENT_RATIO = float(DAILY_MIN_COHERENT_DATA_DATE_RATIO)
 
 
 def _cached_metadata_available(ticker: str) -> bool:
@@ -91,13 +97,36 @@ def _free_date_distribution(frames: dict[str, pd.DataFrame]) -> dict[str, int]:
     return counts
 
 
-def _assert_free_eod_coherence(frames: dict[str, pd.DataFrame]) -> None:
-    """Abort early only for unsafe mixed-date settlement after market close.
+def _trading_day_lag(older: str, newer: str) -> int | None:
+    """Count completed China trading sessions after ``older`` through ``newer``.
 
-    v53 intentionally allows a coherent provider-wide one-trading-day lag.  We
-    preserve that behavior.  The unsafe case is a split universe such as 73%
-    today / 27% yesterday, where ranking different securities on different
-    market dates would be invalid.
+    A negative result means the provider returned a dominant date in the future,
+    which is invalid for an end-of-day coherence decision. ``None`` means either
+    date could not be parsed.
+    """
+    try:
+        start = pd.Timestamp(older).date()
+        end = pd.Timestamp(newer).date()
+    except (TypeError, ValueError):
+        return None
+    if start > end:
+        return -1
+    count = 0
+    cursor = start + timedelta(days=1)
+    while cursor <= end:
+        if is_trading_day(cursor):
+            count += 1
+        cursor += timedelta(days=1)
+    return count
+
+
+def _assert_free_eod_coherence(frames: dict[str, pd.DataFrame]) -> None:
+    """Fail early on mixed dates or a provider-wide lag beyond the v53 bound.
+
+    A coherent one-trading-day provider lag is intentionally allowed by the
+    DAILY contract. A coherent universe that is several sessions stale is not:
+    letting it through wastes a full analysis and can expose obsolete research
+    outside the transactional DAILY publication path.
     """
     if not frames or not _core._is_a_share_market_closed():
         return
@@ -105,28 +134,47 @@ def _assert_free_eod_coherence(frames: dict[str, pd.DataFrame]) -> None:
     counts = _free_date_distribution(frames)
     if not counts:
         return
+
     total = len(frames)
     fresh = counts.get(target, 0)
     fresh_ratio = fresh / max(1, total)
     dominant_date, dominant_count = max(counts.items(), key=lambda item: item[1])
     dominant_ratio = dominant_count / max(1, total)
-
-    if fresh_ratio >= _FREE_EOD_MIN_COHERENT_RATIO:
-        return
-    if dominant_date != target and dominant_ratio >= _FREE_EOD_MIN_COHERENT_RATIO:
-        _core.logger.warning(
-            "TickFlow Free 当前仍为一致性供应商延迟: 主日期 %s 覆盖 %.1f%%，"
-            "目标交易日 %s 覆盖 %.1f%%；保留 v53 PROVIDER_LAG 语义。",
-            dominant_date,
-            dominant_ratio * 100.0,
-            target,
-            fresh_ratio * 100.0,
-        )
-        return
-
     distribution = ", ".join(
         f"{day}={count}" for day, count in sorted(counts.items(), reverse=True)[:5]
     )
+
+    if fresh_ratio >= _FREE_EOD_MIN_COHERENT_RATIO:
+        return
+
+    if dominant_date != target and dominant_ratio >= _FREE_EOD_MIN_COHERENT_RATIO:
+        lag = _trading_day_lag(dominant_date, target)
+        max_lag = max(0, int(DAILY_MAX_PROVIDER_LAG_TRADING_DAYS))
+        if lag is not None and 0 <= lag <= max_lag:
+            _core.logger.warning(
+                "TickFlow Free 当前仍为一致性供应商延迟: 主日期 %s 覆盖 %.1f%%，"
+                "目标交易日 %s 覆盖 %.1f%%，落后 %d 个交易日；"
+                "保留 v53 PROVIDER_LAG 语义。",
+                dominant_date,
+                dominant_ratio * 100.0,
+                target,
+                fresh_ratio * 100.0,
+                lag,
+            )
+            return
+        if lag is None:
+            reason = "无法解析主日期或目标日期"
+        elif lag < 0:
+            reason = "主日期晚于目标交易日"
+        else:
+            reason = f"统一落后 {lag} 个交易日，超过允许的 {max_lag} 个交易日"
+        raise _core.DownloadError(
+            "TickFlow Free 盘后日K一致但已过度陈旧："
+            f"主日期 {dominant_date} 覆盖 {dominant_ratio:.1%}，"
+            f"目标交易日 {target} 覆盖 {fresh_ratio:.1%}（{distribution}）；"
+            f"{reason}。已停止后续分析，请刷新行情后重试。"
+        )
+
     raise _core.DownloadError(
         "TickFlow Free 盘后日K仍处于混合结算状态："
         f"目标交易日 {target} 覆盖 {fresh_ratio:.1%}，"
@@ -312,6 +360,7 @@ _core.get_price_limit_pct = get_price_limit_pct
 _core._frame_latest_date = _frame_latest_date
 _core._stale_free_symbols = _stale_free_symbols
 _core._free_date_distribution = _free_date_distribution
+_core._trading_day_lag = _trading_day_lag
 _core._assert_free_eod_coherence = _assert_free_eod_coherence
 _core._refresh_free_eod_frames = _refresh_free_eod_frames
 _core._FREE_EOD_LEGACY_DOWNLOAD_BATCH = _FREE_EOD_LEGACY_DOWNLOAD_BATCH
