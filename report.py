@@ -1,11 +1,11 @@
-"""v73 report provenance and crash-recoverable transactional publication facade.
+"""v75 report provenance and idempotent crash-recovery publication facade.
 
 The v51 report contract remains in ``report_v51``. v52 corrected ETF market-cap
 and price-limit provenance; v58 exposed execution diagnostics; v66 staged the
-stateful ordinary report set with in-process rollback. v73 adds a durable
-transaction journal: all previous files are copied to backup before any target
-is replaced, COMMITTING/COMMITTED state is atomically recorded, and the next
-publication automatically rolls back any interrupted transaction.
+stateful ordinary report set; v73 added durable PREPARED/COMMITTING/COMMITTED
+journals. v75 makes rollback itself retry-safe: backups are never consumed while
+restoring targets, so another filesystem interruption during recovery can be
+retried on the next run with the same complete backup set.
 
 Existing SignalHistory is seeded into staging so transactional publication never
 resets lifecycle continuity. DAILY may wrap this with its outer staging
@@ -131,6 +131,30 @@ def _read_transaction_state(root: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _restore_backup_atomic(
+    backup: Path,
+    target: Path,
+    *,
+    replace_fn: Callable[
+        [
+            str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        ],
+        None,
+    ] = os.replace,
+) -> None:
+    """Restore from a durable backup without consuming the backup itself."""
+    if not backup.is_file():
+        raise FileNotFoundError(f"missing backup {backup}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.recovery.{uuid.uuid4().hex}.tmp")
+    try:
+        shutil.copy2(backup, temporary)
+        replace_fn(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _recover_publication_transaction(
     root: Path,
     destination: Path,
@@ -143,7 +167,7 @@ def _recover_publication_transaction(
         None,
     ] = os.replace,
 ) -> bool:
-    """Rollback a journaled PREPARED/COMMITTING transaction after interruption."""
+    """Rollback PREPARED/COMMITTING transaction; safe to retry after failure."""
     state = _read_transaction_state(root)
     if state is None:
         return False
@@ -173,11 +197,11 @@ def _recover_publication_transaction(
         existed = bool(raw.get("existed", False))
         try:
             if existed:
-                backup = backup_root / relative
-                if not backup.is_file():
-                    raise FileNotFoundError(f"missing backup {backup}")
-                target.parent.mkdir(parents=True, exist_ok=True)
-                replace_fn(backup, target)
+                _restore_backup_atomic(
+                    backup_root / relative,
+                    target,
+                    replace_fn=replace_fn,
+                )
             else:
                 target.unlink(missing_ok=True)
         except (OSError, ValueError) as exc:
@@ -202,7 +226,7 @@ def recover_publication_transactions(destination: Path) -> int:
             state = _read_transaction_state(root)
             if state is None:
                 # Pre-v73 orphan or a crash before the journal became visible.
-                # No v73 target replacement can occur before state.json exists,
+                # No v73+ target replacement can occur before state.json exists,
                 # so leave an unknown legacy orphan untouched rather than guess.
                 continue
             if _recover_publication_transaction(root, destination):
@@ -240,7 +264,6 @@ def _publish_stage(
     root = backup.parent
     entries: list[dict[str, Any]] = []
     try:
-        # Prepare every backup before replacing even the first canonical file.
         for staged in files:
             relative = staged.relative_to(stage)
             target = destination / relative
@@ -251,7 +274,7 @@ def _publish_stage(
                 shutil.copy2(target, old)
             entries.append({"path": relative.as_posix(), "existed": existed})
 
-        journal = {"version": 1, "status": "PREPARED", "entries": entries}
+        journal = {"version": 2, "status": "PREPARED", "entries": entries}
         _write_transaction_state(root, journal)
         journal["status"] = "COMMITTING"
         _write_transaction_state(root, journal)
@@ -357,11 +380,10 @@ def export_all(
 
         try:
             _publish_stage(stage, destination, backup)
-            mapped = tuple(
+            return tuple(
                 _remap_staged_path(Path(path), stage, destination)
                 for path in staged_paths
             )
-            return mapped
         finally:
             shutil.rmtree(transaction_root, ignore_errors=True)
 
@@ -375,12 +397,13 @@ if hasattr(_core, "DECISION_RESULT_COLUMNS"):
 _core._results_to_dataframe = _results_to_dataframe
 _core._write_transaction_state = _write_transaction_state
 _core._read_transaction_state = _read_transaction_state
+_core._restore_backup_atomic = _restore_backup_atomic
 _core._recover_publication_transaction = _recover_publication_transaction
 _core.recover_publication_transactions = recover_publication_transactions
 _core._publish_stage = _publish_stage
 _core._seed_lifecycle_state = _seed_lifecycle_state
 _core.export_all = export_all
 _core.REPORT_PUBLICATION_INTEGRITY_VERSION = (
-    "2026-08-19-v73-journaled-crash-recovery-v2"
+    "2026-08-19-v75-idempotent-journal-recovery-v3"
 )
 sys.modules[__name__] = _core
