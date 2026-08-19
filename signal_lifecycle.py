@@ -1,14 +1,14 @@
-"""v54 lifecycle policy facade.
+"""v58 lifecycle policy facade.
 
-v54 keeps the v52 setup-backed breakout override and adds an execution-only
-liquidity gate. The broad universe may still contain thinner research names,
-but READY/CAUTIOUS decisions require enough 60-day median turnover for the
-configured assumed order to stay within a conservative participation rate.
+v58 keeps the v52 setup-backed breakout override and v54 execution-only
+liquidity gate, and adds a second execution-only freshness gate. Research rows
+may remain visible when provider data is delayed, but READY/CAUTIOUS decisions
+must be based on the latest completed trading session.
 
 The v51 facade replaces its module entry with ``signal_lifecycle_core`` after
-initialization. Therefore v54 wraps the exported v51 ``finalize_signal_ranking``
-instead of depending on private v51 helper attributes. This keeps imports
-stable and makes the v54 post-processing boundary explicit.
+initialization. Therefore this facade wraps the exported v51
+``finalize_signal_ranking`` instead of depending on private module replacement
+order. Research RankingScore is never changed by the v58 execution gates.
 """
 
 from __future__ import annotations
@@ -371,8 +371,108 @@ def _apply_trade_liquidity_gate(result: pd.DataFrame) -> pd.Series:
     return demote
 
 
+def _trade_freshness_diagnostics(result: pd.DataFrame) -> pd.Series:
+    """Stamp current-session execution freshness without changing research score."""
+    max_age = max(
+        0,
+        int(getattr(_config, "TRADE_READY_MAX_DATA_AGE_TRADING_DAYS", 0)),
+    )
+    if "DataTradingAgeDays" not in result.columns:
+        result["TradeFreshnessApplicable"] = False
+        result["TradeFreshnessPassed"] = True
+        result["TradeFreshnessStatus"] = "LEGACY_UNKNOWN"
+        result["TradeFreshnessTradingDays"] = np.nan
+        result["TradeFreshnessMaxTradingDays"] = max_age
+        result["TradeFreshnessReason"] = (
+            "历史结果缺少行情交易日年龄，沿用旧执行语义"
+        )
+        return pd.Series(True, index=result.index, dtype=bool)
+
+    age = pd.to_numeric(result["DataTradingAgeDays"], errors="coerce")
+    valid = age.notna() & np.isfinite(age) & age.ge(0.0)
+    passed = valid & age.le(float(max_age))
+
+    result["TradeFreshnessApplicable"] = True
+    result["TradeFreshnessPassed"] = passed
+    result["TradeFreshnessTradingDays"] = age
+    result["TradeFreshnessMaxTradingDays"] = max_age
+    result["TradeFreshnessStatus"] = np.select(
+        [~valid, passed],
+        ["UNKNOWN", "CURRENT"],
+        default="LAGGED",
+    )
+
+    reason = pd.Series("", index=result.index, dtype=object)
+    reason.loc[~valid] = "缺少有效行情交易日年龄，执行时效门槛未通过"
+    reason.loc[passed] = "行情已覆盖最新完成交易日，可用于即时执行判断"
+    lagged = valid & ~passed
+    reason.loc[lagged] = [
+        f"行情落后 {int(value)} 个交易日，超过即时执行允许的 {max_age} 个交易日"
+        for value in age.loc[lagged]
+    ]
+    result["TradeFreshnessReason"] = reason
+    return passed
+
+
+def _apply_trade_freshness_gate(result: pd.DataFrame) -> pd.Series:
+    """Demote stale actionable rows while preserving their research ranking."""
+    passed = _trade_freshness_diagnostics(result)
+    applicable = _core._bool_series(result, "TradeFreshnessApplicable", False)
+    decision = _core._text_series(result, "DecisionState", "OBSERVE").str.upper()
+    actionable = decision.isin({"READY", "CAUTIOUS"})
+    demote = actionable & applicable & ~passed
+    result["TradeFreshnessGateApplied"] = demote
+    if not demote.any():
+        return demote
+
+    result.loc[demote, "DecisionState"] = "OBSERVE"
+    result.loc[demote, "RankingEligibility"] = "观察"
+    result.loc[demote, "TradeReadiness"] = "观察"
+
+    freshness_reason = _core._text_series(
+        result,
+        "TradeFreshnessReason",
+        "行情时效不足",
+    )
+    readiness = _core._text_series(
+        result,
+        "TradeReadinessReason",
+        "等待趋势、量能或风险条件改善",
+    )
+    readiness = _append_dynamic_reason(readiness, demote, freshness_reason)
+    result["TradeReadinessReason"] = readiness
+    result["DecisionReason"] = readiness
+
+    ranking_reason = _core._text_series(result, "RankingReason", "")
+    research_reason = pd.Series(
+        "研究排序保留，但行情不是最新完成交易日，不进入推荐",
+        index=result.index,
+        dtype=object,
+    )
+    result["RankingReason"] = _append_dynamic_reason(
+        ranking_reason,
+        demote,
+        research_reason,
+    )
+
+    action = _core._text_series(result, "ActionSuggestion", "等待条件改善")
+    action.loc[demote] = "仅观察，刷新至最新交易日后再判断"
+    result["ActionSuggestion"] = action
+
+    risk_note = _core._text_series(result, "RiskNote", "结构仍需确认")
+    risk_note.loc[demote] = "行情时效不足"
+    result["RiskNote"] = risk_note
+
+    advice = _core._text_series(result, "OperationAdvice", "")
+    advice.loc[demote] = (
+        "研究排序保留，但行情未覆盖最新完成交易日；刷新行情后再执行。"
+    )
+    result["OperationAdvice"] = advice
+    return demote
+
+
 def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
-    """Run the stable v51/v52 engine, then apply v54 observability/readiness."""
+    """Run stable ranking, then apply execution-only liquidity/freshness gates."""
     result = _LEGACY_FINALIZE_SIGNAL_RANKING(frame)
     if result is None or result.empty:
         return result
@@ -380,8 +480,9 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     corrected, is_etf = _board_diagnostic_inputs(result)
     _add_board_diagnostics(result, corrected, is_etf)
     _apply_trade_liquidity_gate(result)
+    _apply_trade_freshness_gate(result)
 
-    # v54 is execution-only: never alter the already-computed research rank.
+    # v54/v58 gates are execution-only: never alter the research RankingScore.
     result["RankingScore"] = _core._number(
         result.get("RankingScore", pd.Series(0.0, index=result.index)),
         0.0,
@@ -399,5 +500,7 @@ _core._board_diagnostic_inputs = _board_diagnostic_inputs
 _core._trade_liquidity_threshold = _trade_liquidity_threshold
 _core._trade_liquidity_diagnostics = _trade_liquidity_diagnostics
 _core._apply_trade_liquidity_gate = _apply_trade_liquidity_gate
+_core._trade_freshness_diagnostics = _trade_freshness_diagnostics
+_core._apply_trade_freshness_gate = _apply_trade_freshness_gate
 _core.finalize_signal_ranking = finalize_signal_ranking
 sys.modules[__name__] = _core
