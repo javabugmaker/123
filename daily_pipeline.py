@@ -1,9 +1,9 @@
-"""InstitutionScanner v53 daily-pipeline settlement-date facade.
+"""InstitutionScanner v74 daily-pipeline settlement and recovery facade.
 
-The transactional implementation remains in ``daily_pipeline_core``.  This
-facade only hardens freshness semantics: a provider-wide, coherent one-trading-
-day EOD settlement lag is accepted with explicit provenance; mixed-date or
-materially stale universes remain fail-closed.
+The transactional implementation remains in ``daily_pipeline_core``. v53
+hardens provider settlement-date semantics; v74 additionally installs PID-aware
+recovery of unfinished outer DAILY transactions before a new run can start.
+Mixed-date/materially stale universes remain fail-closed.
 """
 
 from __future__ import annotations
@@ -17,7 +17,10 @@ from typing import Any
 
 import config as _config
 import daily_pipeline_core as _core
+import daily_recovery_v74 as _daily_recovery
 from trading_calendar import is_trading_day
+
+_daily_recovery.install()
 
 _LEGACY_CSV_PROFILE = _core._csv_profile
 _LEGACY_QUALITY_GATE_ERRORS = _core._quality_gate_errors
@@ -283,6 +286,9 @@ _core._csv_profile = _csv_profile
 _core._quality_gate_errors = _quality_gate_errors
 _core._write_manifest = _write_manifest
 _core._activate_run = _activate_run
+_core.DAILY_RECOVERY_INTEGRITY_VERSION = (
+    "2026-08-19-v74-pid-aware-outer-transaction-recovery-v1"
+)
 
 if __name__ == "__main__":
     raise SystemExit(_core.main())
