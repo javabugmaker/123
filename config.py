@@ -1,16 +1,18 @@
-"""InstitutionScanner v63 cache/input integrity configuration facade.
+"""InstitutionScanner v64 runtime-integrity configuration facade.
 
 TickFlow Free remains the sole market-data client. v55-v61 harden settlement,
 execution freshness, resume state and fundamental freshness; v62 fingerprints
-the full OHLCV history so non-tail revisions invalidate derived caches; v63
-prevents ticker backtest caches containing benchmark-relative returns from being
-reused when the current benchmark frame is completely unavailable.
+the full OHLCV history; v63 prevents benchmark-relative backtest cache reuse
+when the benchmark is unavailable; v64 makes GUI subprocess cancellation kill
+the complete backtest worker tree instead of only the direct CLI parent.
 
 Technical scoring, backtest split policy and research ranking weights are
 unchanged.
 """
 
 from __future__ import annotations
+
+import sys
 
 import config_v51 as _v51
 from config_v51 import *  # noqa: F403
@@ -19,6 +21,7 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-19-v64-gui-process-tree-cancel-"
     "2026-08-19-v63-benchmark-cache-fail-closed-"
     "2026-08-19-v62-full-history-cache-integrity-"
     "2026-08-19-v61-fundamental-freshness-integrity-"
@@ -71,6 +74,25 @@ def setup_logging(*args, **kwargs):
     return logger
 
 
+def _install_gui_runtime_contract_if_ready() -> None:
+    """Patch GUI cancellation only when gui_core has already finished loading.
+
+    ``gui.py`` imports ``gui_core`` before this config facade, so this hook
+    installs v64 there without making CLI/DAILY import tkinter/customtkinter.
+    """
+    gui_core = sys.modules.get("gui_core")
+    if gui_core is None or not hasattr(gui_core, "ScannerGUI"):
+        return
+    try:
+        import gui_process_v64
+
+        gui_process_v64.install()
+    except (ImportError, AttributeError, RuntimeError):
+        # GUI remains usable with the legacy direct-child cancellation path if a
+        # packaging environment intentionally omits the optional GUI runtime.
+        return
+
+
 FILTER_OVERRIDE_MIN_SIGNAL_COUNT: int = 3
 DAILY_MAX_PROVIDER_LAG_TRADING_DAYS: int = 1
 DAILY_MIN_COHERENT_DATA_DATE_RATIO: float = 0.90
@@ -86,6 +108,9 @@ CHECKPOINT_RESUME_VERSION: str = "2026-08-19-v59-snapshot-input-fingerprint-v2"
 FUNDAMENTAL_REFRESH_INTEGRITY_VERSION: str = "2026-08-19-v61-zero-row-stays-stale-v1"
 CACHE_HISTORY_INTEGRITY_VERSION: str = "2026-08-19-v62-full-ohlcv-fingerprint-v1"
 BENCHMARK_CACHE_INTEGRITY_VERSION: str = "2026-08-19-v63-current-benchmark-required-v1"
+GUI_PROCESS_INTEGRITY_VERSION: str = "2026-08-19-v64-process-tree-cancel-v1"
 
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
 CALIBRATION_GOVERNANCE_VERSION: str = "2026-08-19-v57-unstable-stable-ratio-shrink-v1"
+
+_install_gui_runtime_contract_if_ready()
