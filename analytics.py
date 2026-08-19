@@ -28,6 +28,7 @@ _LEGACY_APPLY_BACKTEST_PROVENANCE = _core._apply_backtest_provenance
 _LEGACY_CALIBRATION_STABILITY_STATS = _core.calibration_stability_stats
 _LEGACY_BACKTEST_ONE_TICKER_CACHED = _core._backtest_one_ticker_cached
 _LEGACY_APPLY_BACKTEST_RANKING = _core.apply_backtest_ranking
+_core._legacy_apply_backtest_ranking = _LEGACY_APPLY_BACKTEST_RANKING
 _BACKTEST_PUBLICATION_LOCK = threading.Lock()
 
 
@@ -224,7 +225,7 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
         report_module._atomic_write_parquet = staged_parquet
         report_module.refresh_candidate_exports = staged_refresh
         try:
-            _LEGACY_APPLY_BACKTEST_RANKING(summary, top_n=top_n)
+            _core._legacy_apply_backtest_ranking(summary, top_n=top_n)
         except BaseException:
             shutil.rmtree(transaction_root, ignore_errors=True)
             raise
