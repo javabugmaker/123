@@ -1,10 +1,11 @@
-"""InstitutionScanner v64 runtime-integrity configuration facade.
+"""InstitutionScanner v65 publication/runtime integrity configuration facade.
 
 TickFlow Free remains the sole market-data client. v55-v61 harden settlement,
 execution freshness, resume state and fundamental freshness; v62 fingerprints
 the full OHLCV history; v63 prevents benchmark-relative backtest cache reuse
-when the benchmark is unavailable; v64 makes GUI subprocess cancellation kill
-the complete backtest worker tree instead of only the direct CLI parent.
+when the benchmark is unavailable; v64 terminates full GUI subprocess trees;
+v65 prevents an arbitrarily stale cache-first scan from overwriting fresher
+canonical research outputs.
 
 Technical scoring, backtest split policy and research ranking weights are
 unchanged.
@@ -21,6 +22,7 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-19-v65-cache-first-publication-gate-"
     "2026-08-19-v64-gui-process-tree-cancel-"
     "2026-08-19-v63-benchmark-cache-fail-closed-"
     "2026-08-19-v62-full-history-cache-integrity-"
@@ -44,6 +46,7 @@ DECISION_INTEGRITY_VERSION: str = (
     + _v51.DECISION_INTEGRITY_VERSION
 )
 OUTPUT_CONTRACT_VERSION: str = (
+    "2026-08-19-v65-cache-first-market-date-contract-"
     "2026-08-19-v58-trade-freshness-diagnostics-"
     "2026-08-19-v57-calibration-stability-evidence-"
     "2026-08-18-v54-trade-liquidity-board-diagnostics-"
@@ -75,11 +78,7 @@ def setup_logging(*args, **kwargs):
 
 
 def _install_gui_runtime_contract_if_ready() -> None:
-    """Patch GUI cancellation only when gui_core has already finished loading.
-
-    ``gui.py`` imports ``gui_core`` before this config facade, so this hook
-    installs v64 there without making CLI/DAILY import tkinter/customtkinter.
-    """
+    """Patch GUI cancellation only when gui_core has already finished loading."""
     gui_core = sys.modules.get("gui_core")
     if gui_core is None or not hasattr(gui_core, "ScannerGUI"):
         return
@@ -88,8 +87,6 @@ def _install_gui_runtime_contract_if_ready() -> None:
 
         gui_process_v64.install()
     except (ImportError, AttributeError, RuntimeError):
-        # GUI remains usable with the legacy direct-child cancellation path if a
-        # packaging environment intentionally omits the optional GUI runtime.
         return
 
 
@@ -109,6 +106,7 @@ FUNDAMENTAL_REFRESH_INTEGRITY_VERSION: str = "2026-08-19-v61-zero-row-stays-stal
 CACHE_HISTORY_INTEGRITY_VERSION: str = "2026-08-19-v62-full-ohlcv-fingerprint-v1"
 BENCHMARK_CACHE_INTEGRITY_VERSION: str = "2026-08-19-v63-current-benchmark-required-v1"
 GUI_PROCESS_INTEGRITY_VERSION: str = "2026-08-19-v64-process-tree-cancel-v1"
+CACHE_FIRST_PUBLICATION_VERSION: str = "2026-08-19-v65-coherent-market-date-v1"
 
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
 CALIBRATION_GOVERNANCE_VERSION: str = "2026-08-19-v57-unstable-stable-ratio-shrink-v1"
