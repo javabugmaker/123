@@ -45,8 +45,17 @@ def latest_completed_trading_day(now: datetime | None = None) -> date:
 
 
 def trading_age_days(asof: date, now: datetime | None = None) -> int:
+    """Return completed-session lag, or -1 for an impossible future data date.
+
+    Execution freshness is defined relative to the latest *completed* A-share
+    session. Treating a date after that boundary as age zero would allow an
+    intraday/future-dated bar to masquerade as completed EOD data. Callers use a
+    negative age as invalid/unknown evidence and therefore fail closed.
+    """
     target = latest_completed_trading_day(now)
-    if asof >= target:
+    if asof > target:
+        return -1
+    if asof == target:
         return 0
     count = 0
     cursor = asof + timedelta(days=1)
