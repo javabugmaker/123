@@ -15,8 +15,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import config as _config
-import scanner_resume_v59 as _resume
 from performance_cache import file_signature
+import scanner_resume_v59 as _resume
 
 _BASE_CONTRACT_PAYLOAD = _resume._contract_payload
 _INSTALLED = False
