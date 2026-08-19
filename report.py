@@ -17,8 +17,9 @@ import shutil
 import sys
 import threading
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pandas as pd
 
@@ -109,7 +110,13 @@ def _publish_stage(
     destination: Path,
     backup: Path,
     *,
-    replace_fn: Callable[[str | bytes | os.PathLike[str] | os.PathLike[bytes], str | bytes | os.PathLike[str] | os.PathLike[bytes]], None] = os.replace,
+    replace_fn: Callable[
+        [
+            str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        ],
+        None,
+    ] = os.replace,
 ) -> list[Path]:
     """Commit every staged file, restoring the previous set on any failure."""
     files = _staged_files(stage)
@@ -170,6 +177,7 @@ def _seed_lifecycle_state(
     lifecycle_module: Any,
 ) -> tuple[Path, Path]:
     """Copy prior state needed to calculate SignalDays into the transaction."""
+    del destination
     prior_history = Path(lifecycle_module.HISTORY_FILE)
     prior_tracking = Path(lifecycle_module.TRACKING_FILE)
     staged_history = stage / prior_history.name
