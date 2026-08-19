@@ -1,12 +1,12 @@
-"""InstitutionScanner v60 execution-date integrity configuration facade.
+"""InstitutionScanner v61 input-freshness configuration facade.
 
 TickFlow Free remains the sole market-data client. v55 added bounded post-close
 daily-bar settlement retry; v56 refreshes benchmark market data before backtest
 freshness is evaluated; v57 governs unstable peer calibration; v58 closes stale
 market-data execution gaps and duplicate logger propagation; v59 makes scan
-resume crash-safe and binds it to the market/fundamental/universe input state;
-v60 rejects any data date later than the latest completed A-share session from
-execution freshness.
+resume crash-safe and binds it to market/fundamental/universe input state; v60
+rejects dates later than the latest completed A-share session; v61 prevents a
+zero-row AkShare outage from advancing the fundamental cache freshness stamp.
 
 Technical scoring, backtest split policy and research ranking weights are
 unchanged.
@@ -21,6 +21,7 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-19-v61-fundamental-freshness-integrity-"
     "2026-08-19-v60-future-eod-fail-closed-"
     "2026-08-19-v59-snapshot-safe-resume-"
     "2026-08-19-v58-stale-data-fail-closed-"
@@ -71,36 +72,28 @@ def setup_logging(*args, **kwargs):
     return logger
 
 
-# A breakout may bypass the normal setup gate only when it still carries at
-# least one independent accumulation/structure clue and at least three total
-# diagnostics. Current-day CMF + AD alone are event confirmation, not a setup.
 FILTER_OVERRIDE_MIN_SIGNAL_COUNT: int = 3
 
-# DAILY EOD settlement contract. TickFlow Free may be uniformly one trading day
-# behind during its post-close settlement window, but partial/mixed settlement
-# or a coherent lag beyond this bound is never accepted for canonical analysis.
+# DAILY EOD settlement contract.
 DAILY_MAX_PROVIDER_LAG_TRADING_DAYS: int = 1
 DAILY_MIN_COHERENT_DATA_DATE_RATIO: float = 0.90
 
-# v54 execution-only liquidity contract. The broad research universe keeps its
-# existing 2.5m CNY turnover floor from v51; a READY/CAUTIOUS signal needs at
-# least 5m CNY median 60-day turnover and must keep the assumed 50k order at or
-# below 1% participation. Neither condition changes RankingScore.
+# Execution-only liquidity contract.
 TRADE_READY_MIN_MEDIAN_TURNOVER_60D: float = 5_000_000.0
 TRADE_READY_MAX_ASSUMED_PARTICIPATION_RATE: float = 0.01
 TRADE_LIQUIDITY_RULE_VERSION: str = "2026-08-18-v54-order-participation"
 
-# v58/v60 execution freshness contract. Research rows may remain visible when
-# provider data is delayed, but an immediate trading recommendation must be
-# based exactly on the latest completed session. Future-dated/intraday evidence
-# is invalid rather than equivalent to age zero.
+# Execution freshness contract. Future-dated/intraday evidence is invalid rather
+# than equivalent to age zero.
 TRADE_READY_MAX_DATA_AGE_TRADING_DAYS: int = 0
 TRADE_FRESHNESS_RULE_VERSION: str = "2026-08-19-v60-completed-session-only"
 
-# v59 resume contract. Checkpoint files are reusable only when runtime versions,
-# completed session, per-ticker OHLCV, AkShare fundamental cache and TickFlow
-# universe metadata are unchanged. Legacy ticker-only checkpoints fail closed.
+# Resume input contract.
 CHECKPOINT_RESUME_VERSION: str = "2026-08-19-v59-snapshot-input-fingerprint-v2"
+
+# Fundamental cache freshness guard. A provider call that returns zero new rows
+# preserves the previous metadata timestamp so the next scan retries.
+FUNDAMENTAL_REFRESH_INTEGRITY_VERSION: str = "2026-08-19-v61-zero-row-stays-stale-v1"
 
 # Explicit provenance for output/backtest audit trails.
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
