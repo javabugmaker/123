@@ -22,6 +22,7 @@ from publication_guard_v65 import enforce_cache_first_market_contract
 install_analytics_alignment(_analytics)
 _core = importlib.import_module("main_core")
 _legacy_report_enrich = _core.enrich_results
+_core._legacy_report_enrich = _legacy_report_enrich
 
 
 def _guarded_report_enrich(
@@ -31,7 +32,7 @@ def _guarded_report_enrich(
     **kwargs: Any,
 ) -> None:
     """Make standalone cache-report publication obey canonical safety gates."""
-    _legacy_report_enrich(results, source, *args, **kwargs)
+    _core._legacy_report_enrich(results, source, *args, **kwargs)
     enforce_enrichment_contract(results)
     health = enforce_cache_first_market_contract(results)
     _core.logging.getLogger("institution_scanner").info(
