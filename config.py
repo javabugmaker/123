@@ -1,9 +1,8 @@
-"""InstitutionScanner v54 configuration facade.
+"""InstitutionScanner v55 configuration facade.
 
-v54 keeps v52 scoring and the v53 settlement-date contract intact while
-separating broad universe liquidity from execution liquidity. Research ranking
-is unchanged; READY/CAUTIOUS decisions require enough 60-day median turnover
-for the configured assumed order to remain within the participation cap.
+v55 keeps v52 scoring and the v54 execution-liquidity contract intact while
+adding an authenticated TickFlow end-of-day quote fallback for cases where the
+historical daily endpoint has not settled the completed trading day yet.
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-19-v55-authenticated-eod-close-fallback-"
     "2026-08-18-v54-execution-liquidity-readiness-"
     "2026-08-18-v53-provider-settlement-date-gate-"
     "2026-08-17-v52-price-limit-marketcap-contract-"
@@ -32,7 +32,9 @@ OUTPUT_CONTRACT_VERSION: str = (
     + _v51.OUTPUT_CONTRACT_VERSION
 )
 MARKET_DATA_VERSION: str = (
-    "2026-08-17-v52-explicit-limit-rules-" + _v51.MARKET_DATA_VERSION
+    "2026-08-19-v55-authenticated-eod-quotes-"
+    "2026-08-17-v52-explicit-limit-rules-"
+    + _v51.MARKET_DATA_VERSION
 )
 BACKTEST_PROVENANCE_VERSION: str = (
     "2026-08-17-v52-date-aware-limit-rules-" + _v51.BACKTEST_PROVENANCE_VERSION
@@ -43,8 +45,10 @@ BACKTEST_PROVENANCE_VERSION: str = (
 # diagnostics. Current-day CMF + AD alone are event confirmation, not a setup.
 FILTER_OVERRIDE_MIN_SIGNAL_COUNT: int = 3
 
-# DAILY EOD settlement contract. The provider may be uniformly one trading day
-# behind the exchange calendar, but partial/mixed settlement is never accepted.
+# DAILY EOD settlement contract. The historical provider may be uniformly one
+# trading day behind the exchange calendar. v55 first tries an authenticated
+# post-close quote repair; if that is unavailable, the existing coherent-lag
+# policy remains the fail-safe publication contract.
 DAILY_MAX_PROVIDER_LAG_TRADING_DAYS: int = 1
 DAILY_MIN_COHERENT_DATA_DATE_RATIO: float = 0.90
 
