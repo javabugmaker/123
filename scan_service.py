@@ -1,9 +1,10 @@
-"""v51 scan-service facade with fail-closed enrichment publication.
+"""v59 scan-service facade with fail-closed publication and safe resume.
 
-The stable application service remains in ``scan_service_core``. Canonical
-CLI/GUI execution wraps only the export boundary: material enrichment loss
-raises before any result artifact is written, while dependency-injected test
-executors preserve their existing semantics.
+The stable application service remains in ``scan_service_core``.  Before that
+core is imported, v59 installs the crash-safe scanner resume contract so CLI,
+GUI subprocess scans and the DAILY workflow all restore only current-run
+snapshots whose market data is still identical.  The existing enrichment gate
+continues to fail closed before canonical result artifacts are written.
 """
 
 from __future__ import annotations
@@ -13,9 +14,13 @@ import sys
 import threading
 from pathlib import Path
 
-import scan_service_core as _core
-from pipeline_contracts import enforce_enrichment_contract
-from scan_service_core import *  # noqa: F403
+import scanner_resume_v59 as _resume_contract
+
+_resume_contract.install()
+
+import scan_service_core as _core  # noqa: E402
+from pipeline_contracts import enforce_enrichment_contract  # noqa: E402
+from scan_service_core import *  # noqa: E402,F403
 
 _legacy_execute_scan = _core.execute_scan
 
