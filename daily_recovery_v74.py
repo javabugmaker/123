@@ -1,22 +1,17 @@
 """v74 crash recovery for the DAILY outer publication transaction.
 
 The DAILY core already snapshots the previously published files before staging a
-new run and rolls them back on caught exceptions.  A hard process termination,
-however, skips that exception handler.  This module adds two narrow contracts:
-
-* each new ``.daily_transactions/<run_id>`` journal records the producing PID
-  and host after the existing backup is complete;
-* before a new DAILY run starts, unfinished journals are inspected. A live
-  producer fails closed; a dead producer is either committed (when LatestRun
-  already points at that run) or rolled back to its saved previous file set.
-
-This preserves the existing DAILY staging/quality logic and adds no market-data
-or scoring behavior.
+new run and rolls them back on caught exceptions. A hard process termination,
+however, skips that exception handler. This module records producer identity in
+each backup journal and resolves dead-producer transactions before a new DAILY
+run. Live/uncertain producers and malformed journals fail closed rather than
+risking deletion of canonical files.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import subprocess
 from datetime import datetime
@@ -51,7 +46,7 @@ def _pid_alive(pid: int) -> bool | None:
         if completed.returncode != 0:
             return None
         output = completed.stdout.strip()
-        return bool(output and f'"{pid}"' in output and "No tasks" not in output)
+        return bool(output and f'"{pid}"' in output)
 
     try:
         os.kill(pid, 0)
@@ -67,7 +62,12 @@ def _pid_alive(pid: int) -> bool | None:
 def _begin_transaction(pipeline_run_id: str) -> tuple[Path, set[str]]:
     """Extend the existing durable backup journal with producer identity."""
     tx_dir, existing = _LEGACY_BEGIN_TRANSACTION(pipeline_run_id)
-    payload = _core._read_json(tx_dir / "state.json")
+    state_path = tx_dir / "state.json"
+    payload = _core._read_json(state_path)
+    if not isinstance(payload.get("existing"), list):
+        raise RuntimeError(
+            f"DAILY_TRANSACTION_FAILED: missing backup manifest {state_path}"
+        )
     payload.update(
         {
             "run_id": pipeline_run_id,
@@ -78,19 +78,15 @@ def _begin_transaction(pipeline_run_id: str) -> tuple[Path, set[str]]:
             ),
         }
     )
-    _core._atomic_write_json(tx_dir / "state.json", payload)
+    _core._atomic_write_json(state_path, payload)
     return tx_dir, existing
 
 
 def _cleanup_orphan_run(run_id: str, *, keep_archive: bool) -> None:
-    shutil_targets = [
-        _core.OUTPUT_DIR / ".staging" / run_id,
-    ]
+    targets = [_core.OUTPUT_DIR / ".staging" / run_id]
     if not keep_archive:
-        shutil_targets.append(_core.OUTPUT_DIR / "runs" / run_id)
-    import shutil
-
-    for target in shutil_targets:
+        targets.append(_core.OUTPUT_DIR / "runs" / run_id)
+    for target in targets:
         shutil.rmtree(target, ignore_errors=True)
 
 
@@ -110,16 +106,19 @@ def recover_daily_transactions() -> dict[str, int]:
     for tx_dir in sorted(path for path in group.iterdir() if path.is_dir()):
         run_id = tx_dir.name
         state_path = tx_dir / "state.json"
-        state = _core._read_json(state_path)
         if not state_path.is_file():
-            # _begin_transaction writes state before any staging publication;
-            # an orphan without state never reached a target replacement.
-            import shutil
-
+            # Core creates state.json before staging/publication. A missing-state
+            # directory therefore never reached canonical file replacement.
             shutil.rmtree(tx_dir, ignore_errors=True)
             _cleanup_orphan_run(run_id, keep_archive=False)
             orphaned += 1
             continue
+
+        state = _core._read_json(state_path)
+        if "existing" not in state or not isinstance(state.get("existing"), list):
+            raise RuntimeError(
+                f"DAILY_RECOVERY_FAILED: invalid/corrupt transaction journal {state_path}"
+            )
 
         pid = int(state.get("producer_pid", 0) or 0)
         host = str(state.get("producer_host", "") or "")
@@ -141,15 +140,11 @@ def recover_daily_transactions() -> dict[str, int]:
                 f"transaction {run_id} belongs to host {host}"
             )
 
-        raw_existing = state.get("existing", [])
-        if not isinstance(raw_existing, list):
-            raise RuntimeError(
-                f"DAILY_RECOVERY_FAILED: invalid transaction state {state_path}"
-            )
+        raw_existing = state["existing"]
         existing = {str(value) for value in raw_existing if str(value).strip()}
 
         if latest_run_id == run_id:
-            # Publication + LatestRun activation completed; only transaction
+            # Publication and LatestRun activation completed; only transaction
             # cleanup was interrupted. Keep the new result set and archive.
             _core._commit_transaction(tx_dir)
             _cleanup_orphan_run(run_id, keep_archive=True)
