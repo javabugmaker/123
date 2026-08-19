@@ -1,10 +1,10 @@
-"""v62 compute-cache integrity facade.
+"""v69 compute-cache integrity facade.
 
-v52 isolated the canonical share-volume namespace. v62 strengthens append safety:
-all-market OHLCV history receives a deterministic fingerprint, so a provider
-revision outside the old 12-row tail can no longer be mistaken for a pure
-append. Indicator and backtest cache namespaces advance once to discard states
-created under the weaker historical-revision contract.
+v52 isolated the canonical share-volume namespace. v62 added deterministic full
+OHLCV fingerprints so older provider revisions invalidate derived caches. v69
+closes the final same-length edge: content fingerprints are checked even when
+the source file size/mtime signature did not change. Pure appended histories
+still use the existing prefix-verified incremental path.
 """
 
 from __future__ import annotations
@@ -124,7 +124,7 @@ def load_or_compute_indicators(
     source_path: Path | None = None,
     enabled: bool = True,
 ) -> tuple[pd.DataFrame, bool]:
-    """Reuse exact data cheaply, but rebuild on any same-length history revision."""
+    """Reuse exact data only when its full OHLCV content still matches."""
     if frame is None or frame.empty:
         return frame, False
     if not enabled or source_path is None or not source_path.exists():
@@ -149,28 +149,29 @@ def load_or_compute_indicators(
     ):
         cached = _core._read_indicator_cache(data_path)
         if cached is not None and len(cached) == len(source):
-            source_last = pd.Timestamp(source.index.max())
-            cache_last = pd.Timestamp(cached.index.max())
-            same_tail = (
-                source_last == cache_last
-                and _core.market_tail_fingerprint(source)
-                == _core.market_tail_fingerprint(cached)
+            expected_history = str(meta.get("history_fingerprint", "") or "")
+            current_history = market_history_fingerprint(source)
+            cached_history = market_history_fingerprint(cached)
+            content_mismatch = (
+                not expected_history
+                or not current_history
+                or current_history != expected_history
+                or cached_history != current_history
             )
-            if same_tail and meta.get("signature") != signature:
-                expected_history = str(meta.get("history_fingerprint", "") or "")
-                current_history = market_history_fingerprint(source)
-                cached_history = market_history_fingerprint(cached)
-                if (
-                    not expected_history
-                    or current_history != expected_history
-                    or cached_history != current_history
-                ):
-                    enriched = compute_fn(source.copy())
-                    _write_indicator_cache(
-                        data_path, meta_path, enriched, source, signature
-                    )
-                    return enriched, False
+            if content_mismatch:
+                enriched = compute_fn(source.copy())
+                _write_indicator_cache(
+                    data_path,
+                    meta_path,
+                    enriched,
+                    source,
+                    signature,
+                )
+                return enriched, False
 
+    # The core path handles exact signature hits and appended histories. Its
+    # market_prefix_matches hook now performs a full-prefix content check before
+    # any incremental indicator/backtest reuse.
     return _LEGACY_LOAD_OR_COMPUTE_INDICATORS(
         ticker,
         frame,
