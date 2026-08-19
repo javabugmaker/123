@@ -81,15 +81,13 @@ class ReportTransactionIntegrityTests(unittest.TestCase):
             backup.mkdir(parents=True)
             destination.mkdir(exist_ok=True)
 
-            # Simulate a hard crash after one existing file was replaced and a
-            # brand-new file was installed. The journal/backup were durable.
             (destination / "AllResults.csv").write_text("new-all", encoding="utf-8")
             (destination / "NewCandidate.csv").write_text("new-only", encoding="utf-8")
             (backup / "AllResults.csv").write_text("old-all", encoding="utf-8")
             report._write_transaction_state(
                 transaction,
                 {
-                    "version": 1,
+                    "version": 2,
                     "status": "COMMITTING",
                     "entries": [
                         {"path": "AllResults.csv", "existed": True},
@@ -108,6 +106,68 @@ class ReportTransactionIntegrityTests(unittest.TestCase):
             self.assertFalse((destination / "NewCandidate.csv").exists())
             self.assertFalse(transaction.exists())
 
+    def test_recovery_failure_keeps_backups_for_a_second_retry(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "output"
+            transaction = destination / ".publication_txn" / "retry-run"
+            backup = transaction / "backup"
+            backup.mkdir(parents=True)
+            destination.mkdir(exist_ok=True)
+
+            all_target = destination / "AllResults.csv"
+            top_target = destination / "Top50.csv"
+            all_target.write_text("new-all", encoding="utf-8")
+            top_target.write_text("new-top", encoding="utf-8")
+            (backup / "AllResults.csv").write_text("old-all", encoding="utf-8")
+            (backup / "Top50.csv").write_text("old-top", encoding="utf-8")
+            report._write_transaction_state(
+                transaction,
+                {
+                    "version": 2,
+                    "status": "COMMITTING",
+                    "entries": [
+                        {"path": "AllResults.csv", "existed": True},
+                        {"path": "Top50.csv", "existed": True},
+                    ],
+                },
+            )
+            failed = False
+
+            def flaky_replace(source, target):
+                nonlocal failed
+                target_path = Path(target)
+                if not failed and target_path == all_target:
+                    failed = True
+                    raise OSError("recovery disk failure")
+                os.replace(source, target)
+
+            with self.assertRaisesRegex(RuntimeError, "REPORT_PUBLICATION_RECOVERY_FAILED"):
+                report._recover_publication_transaction(
+                    transaction,
+                    destination,
+                    replace_fn=flaky_replace,
+                )
+
+            # Recovery may have restored another target already, but the durable
+            # source backups must still exist so the journal is retryable.
+            self.assertEqual(
+                (backup / "AllResults.csv").read_text(encoding="utf-8"),
+                "old-all",
+            )
+            self.assertEqual(
+                (backup / "Top50.csv").read_text(encoding="utf-8"),
+                "old-top",
+            )
+            self.assertTrue(transaction.exists())
+
+            recovered = report.recover_publication_transactions(destination)
+
+            self.assertEqual(recovered, 1)
+            self.assertEqual(all_target.read_text(encoding="utf-8"), "old-all")
+            self.assertEqual(top_target.read_text(encoding="utf-8"), "old-top")
+            self.assertFalse(transaction.exists())
+
     def test_committed_journal_is_cleaned_without_rolling_back_new_files(self) -> None:
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -120,7 +180,7 @@ class ReportTransactionIntegrityTests(unittest.TestCase):
             report._write_transaction_state(
                 transaction,
                 {
-                    "version": 1,
+                    "version": 2,
                     "status": "COMMITTED",
                     "entries": [{"path": "AllResults.csv", "existed": True}],
                 },
