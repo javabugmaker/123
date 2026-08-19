@@ -3,9 +3,11 @@
 The v51 report contract remains in ``report_v51``. v52 corrected ETF market-cap
 and price-limit provenance; v58 exposed execution-only liquidity/freshness
 fields in DecisionResults. v66 writes the complete ordinary scan result set to
-an internal staging directory first, then commits the staged files with rollback
-of prior files if any replacement fails. DAILY may wrap this with its outer
-staging transaction; nested staging is deliberate and safe.
+an internal staging directory first, including lifecycle/research artifacts,
+then commits the staged files with rollback of prior files if any replacement
+fails. Existing SignalHistory is seeded into staging so transactional publication
+never resets lifecycle continuity. DAILY may wrap this with its outer staging
+transaction; nested staging is deliberate and safe.
 """
 
 from __future__ import annotations
@@ -162,23 +164,57 @@ def _remap_staged_path(path: Path, stage: Path, destination: Path) -> Path:
         return path
 
 
+def _seed_lifecycle_state(
+    destination: Path,
+    stage: Path,
+    lifecycle_module: Any,
+) -> tuple[Path, Path]:
+    """Copy prior state needed to calculate SignalDays into the transaction."""
+    prior_history = Path(lifecycle_module.HISTORY_FILE)
+    prior_tracking = Path(lifecycle_module.TRACKING_FILE)
+    staged_history = stage / prior_history.name
+    staged_tracking = stage / prior_tracking.name
+    for source, target in (
+        (prior_history, staged_history),
+        (prior_tracking, staged_tracking),
+    ):
+        if source.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+    return staged_history, staged_tracking
+
+
 def export_all(
     results: list[Any],
     top_n_csv: int = _core.TOP_N_REPORT,
     top_n_parquet: int = _core.TOP_N_PARQUET,
     data_source: str = "tickflow",
 ):
-    """Build the entire report set off to the side, then publish with rollback."""
+    """Build the complete stateful report set off to the side, then publish."""
     with _PUBLICATION_LOCK:
+        # Lazy imports avoid introducing a report<->analytics import cycle at
+        # module import time. At export time both modules are already loaded.
+        import analytics as analytics_module
+        import signal_lifecycle as lifecycle_module
+
         destination = Path(_core.OUTPUT_DIR)
         transaction_root = destination / ".publication_txn" / uuid.uuid4().hex
         stage = transaction_root / "stage"
         backup = transaction_root / "backup"
         stage.mkdir(parents=True, exist_ok=True)
 
-        original_output = _core.OUTPUT_DIR
+        staged_history, staged_tracking = _seed_lifecycle_state(
+            destination, stage, lifecycle_module
+        )
+        original_report_output = _core.OUTPUT_DIR
+        original_analytics_output = analytics_module.OUTPUT_DIR
+        original_history = lifecycle_module.HISTORY_FILE
+        original_tracking = lifecycle_module.TRACKING_FILE
         try:
             _core.OUTPUT_DIR = stage
+            analytics_module.OUTPUT_DIR = stage
+            lifecycle_module.HISTORY_FILE = staged_history
+            lifecycle_module.TRACKING_FILE = staged_tracking
             staged_paths = _legacy_export_all(
                 results,
                 top_n_csv=top_n_csv,
@@ -189,7 +225,10 @@ def export_all(
             shutil.rmtree(transaction_root, ignore_errors=True)
             raise
         finally:
-            _core.OUTPUT_DIR = original_output
+            _core.OUTPUT_DIR = original_report_output
+            analytics_module.OUTPUT_DIR = original_analytics_output
+            lifecycle_module.HISTORY_FILE = original_history
+            lifecycle_module.TRACKING_FILE = original_tracking
 
         try:
             _publish_stage(stage, destination, backup)
@@ -210,5 +249,6 @@ if hasattr(_core, "DECISION_RESULT_COLUMNS"):
 
 _core._results_to_dataframe = _results_to_dataframe
 _core._publish_stage = _publish_stage
+_core._seed_lifecycle_state = _seed_lifecycle_state
 _core.export_all = export_all
 sys.modules[__name__] = _core
