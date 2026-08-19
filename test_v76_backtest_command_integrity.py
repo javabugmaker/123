@@ -56,6 +56,9 @@ class BacktestCommandIntegrityTests(unittest.TestCase):
                 command_guard, "_LEGACY_CMD_BACKTEST", side_effect=fake_legacy
             ):
                 code = command_guard.cmd_backtest(SimpleNamespace())
+                self.assertEqual(main_core.OUTPUT_DIR, output)
+                self.assertEqual(analytics.OUTPUT_DIR, original_analytics)
+                self.assertEqual(report.OUTPUT_DIR, original_report)
 
             self.assertEqual(code, 0)
             self.assertEqual(
@@ -70,10 +73,7 @@ class BacktestCommandIntegrityTests(unittest.TestCase):
             )
             self.assertTrue((output / "ScoreCalibration.json").is_file())
             self.assertTrue((output / "BacktestSummary.json").is_file())
-            self.assertEqual(main_core.OUTPUT_DIR, output)
-            self.assertEqual(analytics.OUTPUT_DIR, original_analytics)
-            self.assertEqual(report.OUTPUT_DIR, original_report)
-            self.assertNotEqual(original_main, output)
+            self.assertEqual(main_core.OUTPUT_DIR, original_main)
 
     def test_nonzero_backtest_keeps_previous_publication_unchanged(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -106,6 +106,7 @@ class BacktestCommandIntegrityTests(unittest.TestCase):
             output.mkdir()
             all_path = output / "AllResults.csv"
             all_path.write_text("old-all", encoding="utf-8")
+            original_main = main_core.OUTPUT_DIR
             original_analytics = analytics.OUTPUT_DIR
             original_report = report.OUTPUT_DIR
 
@@ -120,11 +121,12 @@ class BacktestCommandIntegrityTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(OSError, "simulated backtest failure"):
                     command_guard.cmd_backtest(SimpleNamespace())
+                self.assertEqual(main_core.OUTPUT_DIR, output)
+                self.assertEqual(analytics.OUTPUT_DIR, original_analytics)
+                self.assertEqual(report.OUTPUT_DIR, original_report)
 
             self.assertEqual(all_path.read_text(encoding="utf-8"), "old-all")
-            self.assertEqual(main_core.OUTPUT_DIR, output)
-            self.assertEqual(analytics.OUTPUT_DIR, original_analytics)
-            self.assertEqual(report.OUTPUT_DIR, original_report)
+            self.assertEqual(main_core.OUTPUT_DIR, original_main)
 
 
 if __name__ == "__main__":
