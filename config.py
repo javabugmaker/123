@@ -1,10 +1,10 @@
-"""InstitutionScanner v73 data/recovery/publication integrity facade.
+"""InstitutionScanner v75 data/recovery/publication integrity facade.
 
-TickFlow Free remains the sole market-data client. v55-v72 harden settlement,
+TickFlow Free remains the sole market-data client. v55-v73 harden settlement,
 execution freshness, resume state, fundamentals, derived caches and publication
-semantics; v73 makes ordinary and backtest result-set transactions recoverable
-after a hard process interruption by journaling PREPARED/COMMITTING/COMMITTED
-state and restoring the previous complete file set on the next publication.
+semantics; v74 recovers interrupted DAILY outer transactions with producer-PID
+checks; v75 makes ordinary/backtest journal rollback itself idempotent so a
+second interruption during recovery can be retried from intact backups.
 
 Technical scoring, backtest split policy and research ranking weights are
 unchanged.
@@ -21,6 +21,8 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-19-v75-idempotent-publication-recovery-"
+    "2026-08-19-v74-daily-hard-crash-recovery-"
     "2026-08-19-v73-journaled-publication-recovery-"
     "2026-08-19-v72-standalone-cache-report-gate-"
     "2026-08-19-v71-transactional-backtest-publication-"
@@ -53,6 +55,8 @@ DECISION_INTEGRITY_VERSION: str = (
     + _v51.DECISION_INTEGRITY_VERSION
 )
 OUTPUT_CONTRACT_VERSION: str = (
+    "2026-08-19-v75-idempotent-crash-recovery-"
+    "2026-08-19-v74-daily-outer-transaction-recovery-"
     "2026-08-19-v73-journaled-crash-recovery-"
     "2026-08-19-v72-cache-report-market-date-gate-"
     "2026-08-19-v71-atomic-backtest-result-set-"
@@ -75,6 +79,7 @@ MARKET_DATA_VERSION: str = (
     + _v51.MARKET_DATA_VERSION
 )
 BACKTEST_PROVENANCE_VERSION: str = (
+    "2026-08-19-v75-idempotent-ranking-recovery-"
     "2026-08-19-v73-journaled-backtest-publication-"
     "2026-08-19-v71-transactional-ranking-publication-"
     "2026-08-19-v69-full-history-cache-verification-"
@@ -122,9 +127,12 @@ CACHE_HISTORY_INTEGRITY_VERSION: str = "2026-08-19-v69-full-ohlcv-content-check-
 BENCHMARK_CACHE_INTEGRITY_VERSION: str = "2026-08-19-v63-current-benchmark-required-v1"
 GUI_PROCESS_INTEGRITY_VERSION: str = "2026-08-19-v64-process-tree-cancel-v1"
 CACHE_FIRST_PUBLICATION_VERSION: str = "2026-08-19-v65-coherent-market-date-v1"
-REPORT_PUBLICATION_INTEGRITY_VERSION: str = "2026-08-19-v73-journaled-crash-recovery-v2"
-BACKTEST_PUBLICATION_INTEGRITY_VERSION: str = "2026-08-19-v73-journaled-backtest-publication-v2"
+REPORT_PUBLICATION_INTEGRITY_VERSION: str = "2026-08-19-v75-idempotent-journal-recovery-v3"
+BACKTEST_PUBLICATION_INTEGRITY_VERSION: str = "2026-08-19-v75-idempotent-journal-recovery-v3"
 CACHE_REPORT_PUBLICATION_VERSION: str = "2026-08-19-v72-coherent-market-date-v1"
+DAILY_RECOVERY_INTEGRITY_VERSION: str = (
+    "2026-08-19-v74-pid-aware-outer-transaction-recovery-v1"
+)
 
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
 CALIBRATION_GOVERNANCE_VERSION: str = "2026-08-19-v57-unstable-stable-ratio-shrink-v1"
