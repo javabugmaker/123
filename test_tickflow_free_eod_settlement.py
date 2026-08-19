@@ -145,6 +145,45 @@ class TickFlowFreeEODSettlementTests(unittest.TestCase):
         self.assertEqual(len(result["000001.SZ"]), 1)
         save_cache.assert_not_called()
 
+    def test_mixed_73_percent_today_distribution_fails_fast(self) -> None:
+        frames: dict[str, pd.DataFrame] = {}
+        for index in range(73):
+            frames[f"{index:06d}.SZ"] = _frame("2026-08-19")
+        for index in range(73, 100):
+            frames[f"{index:06d}.SZ"] = _frame("2026-08-18")
+
+        with (
+            patch.object(downloader, "_is_a_share_market_closed", return_value=True),
+            patch.object(
+                downloader,
+                "_latest_completed_trading_day",
+                return_value=date(2026, 8, 19),
+            ),
+        ):
+            with self.assertRaises(downloader.DownloadError) as caught:
+                downloader._assert_free_eod_coherence(frames)
+
+        message = str(caught.exception)
+        self.assertIn("73.0%", message)
+        self.assertIn("混合结算", message)
+
+    def test_coherent_previous_day_provider_lag_remains_allowed(self) -> None:
+        frames: dict[str, pd.DataFrame] = {}
+        for index in range(95):
+            frames[f"{index:06d}.SZ"] = _frame("2026-08-18")
+        for index in range(95, 100):
+            frames[f"{index:06d}.SZ"] = _frame("2026-08-19")
+
+        with (
+            patch.object(downloader, "_is_a_share_market_closed", return_value=True),
+            patch.object(
+                downloader,
+                "_latest_completed_trading_day",
+                return_value=date(2026, 8, 19),
+            ),
+        ):
+            downloader._assert_free_eod_coherence(frames)
+
     def test_cache_first_never_triggers_post_close_retry(self) -> None:
         stale = _frame("2026-08-18", 10.0)
         with (
@@ -154,11 +193,13 @@ class TickFlowFreeEODSettlementTests(unittest.TestCase):
                 return_value={"000001.SZ": stale},
             ),
             patch.object(downloader, "_refresh_free_eod_frames") as retry,
+            patch.object(downloader, "_assert_free_eod_coherence") as coherence,
         ):
             result = downloader.download_batch([], cache_first=True)
 
         self.assertIn("000001.SZ", result)
         retry.assert_not_called()
+        coherence.assert_not_called()
 
 
 if __name__ == "__main__":
