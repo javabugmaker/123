@@ -1,8 +1,8 @@
-"""InstitutionScanner v51 CLI facade.
+"""InstitutionScanner v56 entry facade.
 
-The stable command implementation lives in ``main_core``. This facade installs
-execution-time contracts before importing that implementation so CLI, GUI
-subprocesses and the daily pipeline all share the corrected backtest semantics.
+With no CLI arguments the canonical entry point now opens the v56 decision GUI,
+including local TickFlow API credential controls.  Existing scan/report/
+download/backtest/clean subcommands continue to use ``main_core`` unchanged.
 """
 
 from __future__ import annotations
@@ -34,6 +34,11 @@ def _guarded_report_enrich(
 _core.enrich_results = _guarded_report_enrich
 
 if __name__ == "__main__":
+    if len(sys.argv) == 1:
+        from gui_v56 import main as gui_main
+
+        gui_main()
+        raise SystemExit(0)
     raise SystemExit(_core.main())
 
 # When imported (not executed as a script), expose the real implementation
