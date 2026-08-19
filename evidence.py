@@ -4,8 +4,10 @@ The scanner has two different historical evidence sources:
 1. per-ticker backtest samples;
 2. peer/global calibration cohorts.
 
-This module summarizes *confidence/coverage*, not expected return, and must not
-feed back into RankingScore or trade eligibility.
+This module summarizes *confidence/coverage*, not expected return.  The evidence
+strength fields themselves never change RankingScore or trade eligibility;
+peer/global calibration is a separate bounded model input and may already have
+contributed to CompositeScore before these explanatory fields are generated.
 """
 
 from __future__ import annotations
@@ -80,7 +82,11 @@ def enrich_evidence_fields(frame: pd.DataFrame) -> pd.DataFrame:
     result["EvidenceStrengthScore"] = evidence.round(2)
     result["EvidenceTier"] = tier
     result["EvidenceReason"] = [
-        f"本票有效样本 {ticker_eff:.1f}；同类有效样本 {peer_eff:.1f}，同类置信度 {peer_conf:.0%}。证据等级仅描述历史覆盖，不参与排序。"
+        (
+            f"本票有效样本 {ticker_eff:.1f}；同类有效样本 {peer_eff:.1f}，"
+            f"同类置信度 {peer_conf:.0%}。证据等级字段本身不参与排序；"
+            "同类全局校准若有有效置信度，可通过综合分的受限校准权重参与模型。"
+        )
         for ticker_eff, peer_eff, peer_conf in zip(effective, peer_count, peer_confidence)
     ]
     return result
