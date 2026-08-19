@@ -1,16 +1,22 @@
-"""v58 report provenance facade.
+"""v66 report provenance and transactional publication facade.
 
 The v51 report contract remains in ``report_v51``. v52 corrected ETF market-cap
-and price-limit provenance. v58 additionally exposes execution-only liquidity
-and market-data freshness diagnostics in ``DecisionResults.csv`` so the GUI's
-lightweight all-results surface can explain why a research candidate was
-removed from READY/CAUTIOUS without loading the full 200+ column artifact.
+and price-limit provenance; v58 exposed execution-only liquidity/freshness
+fields in DecisionResults. v66 writes the complete ordinary scan result set to
+an internal staging directory first, then commits the staged files with rollback
+of prior files if any replacement fails. DAILY may wrap this with its outer
+staging transaction; nested staging is deliberate and safe.
 """
 
 from __future__ import annotations
 
+import os
+import shutil
 import sys
-from typing import Any
+import threading
+import uuid
+from pathlib import Path
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -19,6 +25,8 @@ from report_v51 import *  # noqa: F403
 from tradeability import daily_limit_pct, price_limit_source
 
 _legacy_results_to_dataframe = _core._results_to_dataframe
+_legacy_export_all = _core.export_all
+_PUBLICATION_LOCK = threading.Lock()
 
 _DECISION_EXECUTION_DIAGNOSTICS = (
     "TradeLiquidityApplicable",
@@ -60,8 +68,6 @@ def _results_to_dataframe(results: list[Any]) -> pd.DataFrame:
     frame["MarketCapApplicable"] = ~is_etf
     etf_index = frame.index[is_etf]
     if len(etf_index):
-        # Fund units are useful instrument metadata, but they are not the stock
-        # share-capital evidence represented by MarketCap* fields.
         frame.loc[etf_index, "MarketCap"] = None
         if "MarketCapDataAvailable" in frame.columns:
             frame.loc[etf_index, "MarketCapDataAvailable"] = False
@@ -89,6 +95,113 @@ def _results_to_dataframe(results: list[Any]) -> pd.DataFrame:
     return frame
 
 
+def _staged_files(stage: Path) -> list[Path]:
+    return sorted(
+        (path for path in stage.rglob("*") if path.is_file()),
+        key=lambda path: str(path.relative_to(stage)).casefold(),
+    )
+
+
+def _publish_stage(
+    stage: Path,
+    destination: Path,
+    backup: Path,
+    *,
+    replace_fn: Callable[[str | bytes | os.PathLike[str] | os.PathLike[bytes], str | bytes | os.PathLike[str] | os.PathLike[bytes]], None] = os.replace,
+) -> list[Path]:
+    """Commit every staged file, restoring the previous set on any failure."""
+    files = _staged_files(stage)
+    if not files:
+        raise ValueError("REPORT_PUBLICATION_FAILED: staging directory is empty")
+
+    moved_old: list[Path] = []
+    installed: list[Path] = []
+    try:
+        for staged in files:
+            relative = staged.relative_to(stage)
+            target = destination / relative
+            old = backup / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                old.parent.mkdir(parents=True, exist_ok=True)
+                replace_fn(target, old)
+                moved_old.append(relative)
+            replace_fn(staged, target)
+            installed.append(relative)
+    except Exception as publish_error:
+        rollback_errors: list[str] = []
+        for relative in reversed(installed):
+            target = destination / relative
+            try:
+                target.unlink(missing_ok=True)
+            except OSError as exc:
+                rollback_errors.append(f"remove {relative}: {exc}")
+        for relative in reversed(moved_old):
+            old = backup / relative
+            target = destination / relative
+            if not old.exists():
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                replace_fn(old, target)
+            except Exception as exc:
+                rollback_errors.append(f"restore {relative}: {exc}")
+        detail = "; ".join(rollback_errors)
+        if detail:
+            raise RuntimeError(
+                "REPORT_PUBLICATION_ROLLBACK_FAILED: " + detail
+            ) from publish_error
+        raise
+    return [destination / path.relative_to(stage) for path in files]
+
+
+def _remap_staged_path(path: Path, stage: Path, destination: Path) -> Path:
+    try:
+        return destination / path.relative_to(stage)
+    except ValueError:
+        return path
+
+
+def export_all(
+    results: list[Any],
+    top_n_csv: int = _core.TOP_N_REPORT,
+    top_n_parquet: int = _core.TOP_N_PARQUET,
+    data_source: str = "tickflow",
+):
+    """Build the entire report set off to the side, then publish with rollback."""
+    with _PUBLICATION_LOCK:
+        destination = Path(_core.OUTPUT_DIR)
+        transaction_root = destination / ".publication_txn" / uuid.uuid4().hex
+        stage = transaction_root / "stage"
+        backup = transaction_root / "backup"
+        stage.mkdir(parents=True, exist_ok=True)
+
+        original_output = _core.OUTPUT_DIR
+        try:
+            _core.OUTPUT_DIR = stage
+            staged_paths = _legacy_export_all(
+                results,
+                top_n_csv=top_n_csv,
+                top_n_parquet=top_n_parquet,
+                data_source=data_source,
+            )
+        except Exception:
+            shutil.rmtree(transaction_root, ignore_errors=True)
+            raise
+        finally:
+            _core.OUTPUT_DIR = original_output
+
+        try:
+            _publish_stage(stage, destination, backup)
+            mapped = tuple(
+                _remap_staged_path(Path(path), stage, destination)
+                for path in staged_paths
+            )
+            return mapped
+        finally:
+            shutil.rmtree(transaction_root, ignore_errors=True)
+
+
 if hasattr(_core, "DECISION_RESULT_COLUMNS"):
     existing = tuple(_core.DECISION_RESULT_COLUMNS)
     _core.DECISION_RESULT_COLUMNS = existing + tuple(
@@ -96,4 +209,6 @@ if hasattr(_core, "DECISION_RESULT_COLUMNS"):
     )
 
 _core._results_to_dataframe = _results_to_dataframe
+_core._publish_stage = _publish_stage
+_core.export_all = export_all
 sys.modules[__name__] = _core
