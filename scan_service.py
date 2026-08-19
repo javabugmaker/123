@@ -1,12 +1,10 @@
-"""v61 scan-service facade with fail-closed publication and safe inputs.
+"""v65 scan-service facade with fail-closed publication and safe inputs.
 
 Before the stable application service is imported, the canonical path installs
-three narrow reliability contracts: snapshot-safe scan resume, checkpoint
-fingerprints for non-OHLCV inputs, and a fundamental-refresh guard that never
-marks an unchanged old cache fresh when AkShare returns zero new ticker rows.
-CLI, GUI subprocess scans and DAILY therefore share the same behavior.  The
-existing enrichment gate still fails closed before canonical result artifacts
-are written.
+snapshot-safe resume, non-OHLCV checkpoint fingerprints and the AkShare
+freshness guard.  Canonical export then enforces both enrichment integrity and,
+for cache-first scans, a bounded coherent market-date contract so an offline
+stale cache cannot overwrite fresher published rankings.
 """
 
 from __future__ import annotations
@@ -26,6 +24,7 @@ _fundamental_refresh.install()
 
 import scan_service_core as _core  # noqa: E402
 from pipeline_contracts import enforce_enrichment_contract  # noqa: E402
+from publication_guard_v65 import enforce_cache_first_market_contract  # noqa: E402
 from scan_service_core import *  # noqa: E402,F403
 
 _legacy_execute_scan = _core.execute_scan
@@ -44,7 +43,7 @@ def execute_scan(
     refresh_fundamentals_fn: _core.RefreshFundamentalsFn = _core.refresh_fundamental_data,
     refresh_policy_fn: _core.RefreshPolicyFn | None = None,
 ) -> _core.ScanExecutionResult:
-    """Execute a scan and fail closed before canonical export if enrichment broke."""
+    """Execute a scan and fail closed before canonical export if inputs are unsafe."""
     log = logger or logging.getLogger("institution_scanner")
     canonical_execution = run_scan_fn is _core.run_scan
     selected_export = export_all_fn
@@ -66,6 +65,15 @@ def execute_scan(
                 health.successful_rows,
                 health.complete_ratio * 100.0,
             )
+            if request.cache_first:
+                market_health = enforce_cache_first_market_contract(results)
+                log.info(
+                    "Cache-first market contract: %s, date=%s, lag=%d trading days, coherence=%.1f%%.",
+                    market_health["status"],
+                    market_health["dominant_date"],
+                    market_health["lag_trading_days"],
+                    float(market_health["dominant_ratio"]) * 100.0,
+                )
             return export_all_fn(
                 results,
                 top_n_csv=top_n_csv,
