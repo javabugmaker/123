@@ -1,16 +1,20 @@
-"""v63 analytics facade with fresh benchmarks and cache-safe calibration.
+"""v71 analytics facade with cache-safe calibration and transactional ranking output.
 
 The historical analytics implementation lives in ``analytics_core``. This
 public boundary keeps the v51 T+1-open alignment contract, v56 benchmark
-refresh/evidence provenance and v57 unstable-calibration governance. v63 adds a
-fail-closed cache rule: if a ticker backtest cache was built with benchmark
-state but the current benchmark frame is completely unavailable, old excess
-return samples are not silently reused.
+refresh/evidence provenance, v57 unstable-calibration governance and v63
+benchmark-cache fail-closed behavior. v71 additionally stages the complete
+backtest ranking result-set before replacing canonical AllResults/candidate
+files, so a postprocess or filesystem failure cannot leave mixed-run outputs.
 """
 
 from __future__ import annotations
 
+import shutil
 import sys
+import threading
+import uuid
+from pathlib import Path
 
 import pandas as pd
 
@@ -23,6 +27,8 @@ install_analytics_alignment(_core)
 _LEGACY_APPLY_BACKTEST_PROVENANCE = _core._apply_backtest_provenance
 _LEGACY_CALIBRATION_STABILITY_STATS = _core.calibration_stability_stats
 _LEGACY_BACKTEST_ONE_TICKER_CACHED = _core._backtest_one_ticker_cached
+_LEGACY_APPLY_BACKTEST_RANKING = _core.apply_backtest_ranking
+_BACKTEST_PUBLICATION_LOCK = threading.Lock()
 
 
 def _load_benchmark_frames(source: str) -> dict[str, pd.DataFrame]:
@@ -162,9 +168,90 @@ def calibration_stability_stats(
     return governed
 
 
+def _transaction_stage_path(path: Path, destination: Path, stage: Path) -> Path:
+    """Map a canonical analytics/report path into the current transaction."""
+    candidate = Path(path)
+    try:
+        relative = candidate.relative_to(destination)
+    except ValueError:
+        relative = Path(candidate.name)
+    target = stage / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
+    """Run stable backtest postprocess while publishing its result set atomically."""
+    import report as report_module
+
+    with _BACKTEST_PUBLICATION_LOCK:
+        destination = Path(_core.OUTPUT_DIR)
+        transaction_root = destination / ".backtest_publication_txn" / uuid.uuid4().hex
+        stage = transaction_root / "stage"
+        backup = transaction_root / "backup"
+        stage.mkdir(parents=True, exist_ok=True)
+
+        original_csv = report_module._atomic_write_csv
+        original_parquet = report_module._atomic_write_parquet
+        original_refresh = report_module.refresh_candidate_exports
+
+        def staged_csv(frame: pd.DataFrame, path: Path) -> None:
+            original_csv(frame, _transaction_stage_path(Path(path), destination, stage))
+
+        def staged_parquet(frame: pd.DataFrame, path: Path) -> None:
+            original_parquet(
+                frame,
+                _transaction_stage_path(Path(path), destination, stage),
+            )
+
+        def staged_refresh(
+            frame: pd.DataFrame,
+            top_n_csv: int = _core.TOP_N_REPORT,
+            top_n_parquet: int = _core.TOP_N_PARQUET,
+            output_dir: Path | None = None,
+            **kwargs: object,
+        ):
+            del output_dir
+            return original_refresh(
+                frame,
+                top_n_csv=top_n_csv,
+                top_n_parquet=top_n_parquet,
+                output_dir=stage,
+                **kwargs,
+            )
+
+        report_module._atomic_write_csv = staged_csv
+        report_module._atomic_write_parquet = staged_parquet
+        report_module.refresh_candidate_exports = staged_refresh
+        try:
+            _LEGACY_APPLY_BACKTEST_RANKING(summary, top_n=top_n)
+        except BaseException:
+            shutil.rmtree(transaction_root, ignore_errors=True)
+            raise
+        finally:
+            report_module._atomic_write_csv = original_csv
+            report_module._atomic_write_parquet = original_parquet
+            report_module.refresh_candidate_exports = original_refresh
+
+        try:
+            staged_files = [path for path in stage.rglob("*") if path.is_file()]
+            if staged_files:
+                report_module._publish_stage(stage, destination, backup)
+                _core.logger.info(
+                    "Backtest ranking publication committed transactionally: %d files.",
+                    len(staged_files),
+                )
+        finally:
+            shutil.rmtree(transaction_root, ignore_errors=True)
+
+
 _core._load_benchmark_frames = _load_benchmark_frames
 _core._backtest_one_ticker_cached = _backtest_one_ticker_cached
 _core._apply_backtest_provenance = _apply_backtest_provenance
 _core.calibration_stability_stats = calibration_stability_stats
+_core.apply_backtest_ranking = apply_backtest_ranking
+_core.BACKTEST_PUBLICATION_INTEGRITY_VERSION = (
+    "2026-08-19-v71-transactional-ranking-output-v1"
+)
 
 sys.modules[__name__] = _core
