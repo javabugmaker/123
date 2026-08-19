@@ -15,16 +15,16 @@ import sys
 import threading
 from pathlib import Path
 
+import checkpoint_inputs_v59 as _checkpoint_inputs
+import fundamental_refresh_v61 as _fundamental_refresh
 import scanner as _scanner
 import scanner_resume_v59 as _resume_contract_v59
 import scanner_resume_v68 as _resume_contract
-import checkpoint_inputs_v59 as _checkpoint_inputs
-import fundamental_refresh_v61 as _fundamental_refresh
 
-_resume_contract_v59.install()
-_resume_contract.install()
 _checkpoint_inputs.install()
 _fundamental_refresh.install()
+_resume_contract_v59.install()
+_resume_contract.install()
 
 import scan_service_core as _core  # noqa: E402
 from pipeline_contracts import enforce_enrichment_contract  # noqa: E402
