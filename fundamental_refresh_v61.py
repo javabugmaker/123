@@ -1,15 +1,15 @@
-"""v61 fundamental refresh freshness guard.
+"""v67 fundamental refresh freshness guard.
 
-The stable AkShare implementation intentionally preserves old factor rows when a
-provider request fails.  That is correct for scan continuity, but the legacy
-refresh path also rewrites ``fundamental_data_meta.json`` after combining those
-old rows.  If *zero* new ticker rows were obtained, that advances the cache's
-``updated`` date even though no provider evidence was refreshed.
+The stable AkShare implementation preserves old factor rows when a provider
+request fails or is incomplete. That is useful for scan continuity, but the
+legacy refresh path rewrites ``fundamental_data_meta.json`` after combining old
+and new rows. Without a refresh-coverage guard, a tiny partial provider response
+can therefore make a mostly old cache look fresh for another 14 days.
 
-This facade counts real rows returned by the existing batch fetch path and
-restores the prior metadata file when the count is zero.  Existing cached data
-remains usable, but it stays stale and the next eligible scan retries AkShare
-instead of treating an outage as a successful 14-day refresh.
+This facade counts real ticker rows returned by the current batch request. The
+combined data file is still kept, but its freshness metadata advances only when
+at least the same 80% coverage used by the fundamental completeness contract is
+obtained. Zero-row and materially partial outages remain stale and retry later.
 """
 
 from __future__ import annotations
@@ -52,11 +52,36 @@ def _restore_bytes(path: Path, payload: bytes | None) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _requested_stock_count(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int:
+    values = kwargs.get("tickers")
+    if values is None and args:
+        values = args[0]
+    if values is None:
+        return 0
+    try:
+        normalized = {
+            _data.normalize_ticker(value)
+            for value in values
+            if str(value).strip()
+        }
+    except TypeError:
+        return 0
+    return sum(
+        1
+        for ticker in normalized
+        if ticker
+        and not ticker.split(".", 1)[0].startswith(
+            ("15", "16", "50", "51", "56", "58")
+        )
+    )
+
+
 def refresh_fundamental_data(*args: Any, **kwargs: Any) -> Path:
-    """Run the stable refresh without turning a zero-row outage into fresh data."""
+    """Keep metadata stale unless the current provider refresh is broadly usable."""
     with _REFRESH_GUARD_LOCK:
         metadata_path = Path(_data._META_PATH)
         metadata_before = _read_bytes(metadata_path)
+        expected_rows = _requested_stock_count(args, kwargs)
         observed_rows = 0
 
         def counting_fetch(*fetch_args: Any, **fetch_kwargs: Any):
@@ -72,13 +97,26 @@ def refresh_fundamental_data(*args: Any, **kwargs: Any) -> Path:
         finally:
             _data._fetch_fundamental_row = _LEGACY_FETCH_ROW
 
-        if observed_rows == 0:
+        minimum_coverage = float(
+            getattr(_data, "_CACHE_COMPLETENESS_THRESHOLD", 0.80)
+        )
+        refresh_coverage = (
+            observed_rows / expected_rows if expected_rows > 0 else 1.0
+        )
+        insufficient_refresh = (
+            expected_rows > 0 and refresh_coverage + 1e-12 < minimum_coverage
+        )
+        if insufficient_refresh:
             metadata_after = _read_bytes(metadata_path)
             if metadata_after != metadata_before:
                 _restore_bytes(metadata_path, metadata_before)
                 _data.logger.warning(
-                    "AKShare 本轮未取得任何新基本面行；保留旧缓存但不刷新时效戳，"
-                    "后续扫描仍会重试。"
+                    "AKShare 本轮新基本面覆盖率仅 %.1f%%（%d/%d，要求至少 %.0f%%）；"
+                    "保留已合并数据但不刷新时效戳，后续扫描仍会重试。",
+                    refresh_coverage * 100.0,
+                    observed_rows,
+                    expected_rows,
+                    minimum_coverage * 100.0,
                 )
         return result
 
