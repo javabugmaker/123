@@ -9,15 +9,20 @@ from types import SimpleNamespace
 import report
 
 
+def _transaction_paths(root: Path) -> tuple[Path, Path, Path, Path]:
+    destination = root / "output"
+    transaction = destination / ".publication_txn" / "test-run"
+    stage = transaction / "stage"
+    backup = transaction / "backup"
+    destination.mkdir()
+    stage.mkdir(parents=True)
+    return destination, transaction, stage, backup
+
+
 class ReportTransactionIntegrityTests(unittest.TestCase):
     def test_successful_stage_commit_replaces_complete_file_set(self) -> None:
         with TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            destination = root / "output"
-            stage = root / "stage"
-            backup = root / "backup"
-            destination.mkdir()
-            stage.mkdir()
+            destination, _transaction, stage, backup = _transaction_paths(Path(temp_dir))
             (destination / "AllResults.csv").write_text("old-all", encoding="utf-8")
             (destination / "Top50.csv").write_text("old-top", encoding="utf-8")
             (stage / "AllResults.csv").write_text("new-all", encoding="utf-8")
@@ -34,12 +39,7 @@ class ReportTransactionIntegrityTests(unittest.TestCase):
 
     def test_mid_commit_failure_restores_every_previous_file(self) -> None:
         with TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            destination = root / "output"
-            stage = root / "stage"
-            backup = root / "backup"
-            destination.mkdir()
-            stage.mkdir()
+            destination, _transaction, stage, backup = _transaction_paths(Path(temp_dir))
             (destination / "AllResults.csv").write_text("old-all", encoding="utf-8")
             (destination / "Top50.csv").write_text("old-top", encoding="utf-8")
             staged_all = stage / "AllResults.csv"
@@ -72,6 +72,66 @@ class ReportTransactionIntegrityTests(unittest.TestCase):
             self.assertEqual((destination / "AllResults.csv").read_text(), "old-all")
             self.assertEqual((destination / "Top50.csv").read_text(), "old-top")
 
+    def test_next_run_recovers_hard_crash_during_commit(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "output"
+            transaction = destination / ".publication_txn" / "dead-run"
+            backup = transaction / "backup"
+            backup.mkdir(parents=True)
+            destination.mkdir(exist_ok=True)
+
+            # Simulate a hard crash after one existing file was replaced and a
+            # brand-new file was installed. The journal/backup were durable.
+            (destination / "AllResults.csv").write_text("new-all", encoding="utf-8")
+            (destination / "NewCandidate.csv").write_text("new-only", encoding="utf-8")
+            (backup / "AllResults.csv").write_text("old-all", encoding="utf-8")
+            report._write_transaction_state(
+                transaction,
+                {
+                    "version": 1,
+                    "status": "COMMITTING",
+                    "entries": [
+                        {"path": "AllResults.csv", "existed": True},
+                        {"path": "NewCandidate.csv", "existed": False},
+                    ],
+                },
+            )
+
+            recovered = report.recover_publication_transactions(destination)
+
+            self.assertEqual(recovered, 1)
+            self.assertEqual(
+                (destination / "AllResults.csv").read_text(encoding="utf-8"),
+                "old-all",
+            )
+            self.assertFalse((destination / "NewCandidate.csv").exists())
+            self.assertFalse(transaction.exists())
+
+    def test_committed_journal_is_cleaned_without_rolling_back_new_files(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            destination = root / "output"
+            transaction = destination / ".backtest_publication_txn" / "done-run"
+            transaction.mkdir(parents=True)
+            destination.mkdir(exist_ok=True)
+            target = destination / "AllResults.csv"
+            target.write_text("new-all", encoding="utf-8")
+            report._write_transaction_state(
+                transaction,
+                {
+                    "version": 1,
+                    "status": "COMMITTED",
+                    "entries": [{"path": "AllResults.csv", "existed": True}],
+                },
+            )
+
+            recovered = report.recover_publication_transactions(destination)
+
+            self.assertEqual(recovered, 1)
+            self.assertEqual(target.read_text(encoding="utf-8"), "new-all")
+            self.assertFalse(transaction.exists())
+
     def test_lifecycle_state_is_seeded_into_staging(self) -> None:
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -97,12 +157,7 @@ class ReportTransactionIntegrityTests(unittest.TestCase):
 
     def test_empty_stage_never_touches_published_files(self) -> None:
         with TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            destination = root / "output"
-            stage = root / "stage"
-            backup = root / "backup"
-            destination.mkdir()
-            stage.mkdir()
+            destination, _transaction, stage, backup = _transaction_paths(Path(temp_dir))
             target = destination / "AllResults.csv"
             target.write_text("published", encoding="utf-8")
 
