@@ -1,10 +1,12 @@
 """v59 scan-service facade with fail-closed publication and safe resume.
 
 The stable application service remains in ``scan_service_core``.  Before that
-core is imported, v59 installs the crash-safe scanner resume contract so CLI,
-GUI subprocess scans and the DAILY workflow all restore only current-run
-snapshots whose market data is still identical.  The existing enrichment gate
-continues to fail closed before canonical result artifacts are written.
+core is imported, v59 installs the crash-safe scanner resume contract plus the
+non-OHLCV input fingerprints, so CLI, GUI subprocess scans and the DAILY
+workflow restore only current-run snapshots whose market data, fundamental
+cache, universe metadata and runtime contracts are still identical.  The
+existing enrichment gate continues to fail closed before canonical result
+artifacts are written.
 """
 
 from __future__ import annotations
@@ -15,8 +17,10 @@ import threading
 from pathlib import Path
 
 import scanner_resume_v59 as _resume_contract
+import checkpoint_inputs_v59 as _checkpoint_inputs
 
 _resume_contract.install()
+_checkpoint_inputs.install()
 
 import scan_service_core as _core  # noqa: E402
 from pipeline_contracts import enforce_enrichment_contract  # noqa: E402
