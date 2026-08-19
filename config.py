@@ -1,8 +1,9 @@
-"""InstitutionScanner v56 configuration facade.
+"""InstitutionScanner v55 Free-EOD configuration facade.
 
-v56 keeps the v52 scoring and v54 execution-liquidity contracts intact while
-making TickFlow authenticated credentials a first-class local GUI setting.  The
-v55 post-close quote repair remains the settlement fallback.
+This restores the pre-authentication v54 architecture: TickFlow Free is the
+sole market-data client.  The only v55 change is a bounded post-close retry for
+Free daily-bar settlement; scoring, ranking, execution-liquidity and DAILY
+publication contracts are unchanged.
 """
 
 from __future__ import annotations
@@ -14,8 +15,7 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
-    "2026-08-19-v56-gui-tickflow-auth-"
-    "2026-08-19-v55-authenticated-eod-close-fallback-"
+    "2026-08-19-v55-free-eod-settlement-retry-"
     "2026-08-18-v54-execution-liquidity-readiness-"
     "2026-08-18-v53-provider-settlement-date-gate-"
     "2026-08-17-v52-price-limit-marketcap-contract-"
@@ -33,8 +33,7 @@ OUTPUT_CONTRACT_VERSION: str = (
     + _v51.OUTPUT_CONTRACT_VERSION
 )
 MARKET_DATA_VERSION: str = (
-    "2026-08-19-v56-local-api-credentials-"
-    "2026-08-19-v55-authenticated-eod-quotes-"
+    "2026-08-19-v55-free-eod-settlement-retry-"
     "2026-08-17-v52-explicit-limit-rules-"
     + _v51.MARKET_DATA_VERSION
 )
@@ -42,21 +41,14 @@ BACKTEST_PROVENANCE_VERSION: str = (
     "2026-08-17-v52-date-aware-limit-rules-" + _v51.BACKTEST_PROVENANCE_VERSION
 )
 
-# TickFlow credential contract.  The actual API key is never defined here;
-# GUI-local credentials live in the gitignored .env.local file.
-TICKFLOW_AUTH_ENV_VAR: str = "TICKFLOW_API_KEY"
-TICKFLOW_LOCAL_SETTINGS_FILE: str = ".env.local"
-TICKFLOW_AUTH_MODE_VERSION: str = "2026-08-19-v56-gui-local-precedence"
-
 # A breakout may bypass the normal setup gate only when it still carries at
 # least one independent accumulation/structure clue and at least three total
 # diagnostics. Current-day CMF + AD alone are event confirmation, not a setup.
 FILTER_OVERRIDE_MIN_SIGNAL_COUNT: int = 3
 
-# DAILY EOD settlement contract. The historical provider may be uniformly one
-# trading day behind the exchange calendar. v55/v56 first try an authenticated
-# post-close quote repair; if that is unavailable, the existing coherent-lag
-# policy remains the fail-safe publication contract.
+# DAILY EOD settlement contract. TickFlow Free may be uniformly one trading day
+# behind during its post-close settlement window, but partial/mixed settlement
+# is never accepted for canonical publication.
 DAILY_MAX_PROVIDER_LAG_TRADING_DAYS: int = 1
 DAILY_MIN_COHERENT_DATA_DATE_RATIO: float = 0.90
 
