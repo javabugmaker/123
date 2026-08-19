@@ -1,17 +1,21 @@
-"""v56 analytics facade with fresh benchmark and explicit evidence provenance.
+"""v57 analytics facade with fresh benchmarks and calibration governance.
 
 The historical analytics implementation lives in ``analytics_core``.  This
-public boundary keeps the v51 T+1-open alignment contract, but also fixes two
-runtime audit problems found in a real post-close scan:
+public boundary keeps the v51 T+1-open alignment contract and the v56 benchmark
+refresh/evidence provenance fixes, while adding one fail-soft governance rule
+for peer calibration discovered from real post-close output:
 
 * benchmark frames are refreshed through the normal TickFlow Free downloader
-  before falling back to an existing cache, so an old but non-empty benchmark
-  cache cannot make every current result look stale;
+  before falling back to an existing cache;
 * ticker-specific backtest insufficiency is described separately from peer/global
-  calibration, which may still contribute a bounded model-calibration weight.
+  calibration;
+* when walk-forward peer calibration is explicitly classified ``UNSTABLE``, its
+  confidence multiplier is shrunk a second time by the observed stable-fold
+  ratio.  Stable calibrations retain the legacy weight and insufficient-fold
+  histories retain the legacy neutral treatment.
 
-No score formula, split policy, execution model, or candidate eligibility rule is
-changed here.
+The technical score formula, train/validation/test split, execution model and
+candidate eligibility rules are unchanged.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from backtest_alignment import install_analytics_alignment
 install_analytics_alignment(_core)
 
 _LEGACY_APPLY_BACKTEST_PROVENANCE = _core._apply_backtest_provenance
+_LEGACY_CALIBRATION_STABILITY_STATS = _core.calibration_stability_stats
 
 
 def _load_benchmark_frames(source: str) -> dict[str, pd.DataFrame]:
@@ -86,7 +91,57 @@ def _apply_backtest_provenance(
     return result
 
 
+def calibration_stability_stats(
+    rows: list[dict[str, object]] | None,
+    *,
+    minimum_folds: int = 3,
+) -> dict[str, object]:
+    """Govern peer-calibration confidence using observed walk-forward stability.
+
+    The core calibration already scales confidence by ``stable_fold_ratio`` once.
+    A real v56 run produced 11 valid folds but only 54.55% directionally stable
+    folds, which correctly classified the calibration as ``UNSTABLE`` while
+    still allowing roughly eight percent peer weight.  For an explicitly
+    unstable model, applying the same empirical support ratio once more is a
+    conservative shrinkage rule: no evidence is discarded, but unstable peer
+    evidence cannot retain near-normal influence.
+
+    ``STABLE`` and ``INSUFFICIENT_FOLDS`` keep the legacy behavior so this is not
+    a blanket penalty for short histories.
+    """
+    governed = dict(
+        _LEGACY_CALIBRATION_STABILITY_STATS(
+            rows,
+            minimum_folds=minimum_folds,
+        )
+    )
+    status = str(governed.get("status", "") or "").strip().upper()
+    try:
+        raw_multiplier = float(governed.get("confidence_multiplier", 1.0) or 0.0)
+    except (TypeError, ValueError):
+        raw_multiplier = 0.0
+    try:
+        stable_ratio = float(governed.get("stable_fold_ratio", raw_multiplier) or 0.0)
+    except (TypeError, ValueError):
+        stable_ratio = raw_multiplier
+    raw_multiplier = max(0.0, min(1.0, raw_multiplier))
+    stable_ratio = max(0.0, min(1.0, stable_ratio))
+
+    governed["raw_confidence_multiplier"] = round(raw_multiplier, 4)
+    if status == "UNSTABLE":
+        governed["confidence_multiplier"] = round(
+            raw_multiplier * stable_ratio,
+            4,
+        )
+        governed["confidence_governance"] = "unstable-stable-ratio-shrink-v1"
+    else:
+        governed["confidence_multiplier"] = round(raw_multiplier, 4)
+        governed["confidence_governance"] = "legacy-v1"
+    return governed
+
+
 _core._load_benchmark_frames = _load_benchmark_frames
 _core._apply_backtest_provenance = _apply_backtest_provenance
+_core.calibration_stability_stats = calibration_stability_stats
 
 sys.modules[__name__] = _core
