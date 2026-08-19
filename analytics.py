@@ -1,11 +1,11 @@
-"""v71 analytics facade with cache-safe calibration and transactional ranking output.
+"""v73 analytics facade with cache-safe calibration and crash-safe publication.
 
 The historical analytics implementation lives in ``analytics_core``. This
 public boundary keeps the v51 T+1-open alignment contract, v56 benchmark
-refresh/evidence provenance, v57 unstable-calibration governance and v63
-benchmark-cache fail-closed behavior. v71 additionally stages the complete
-backtest ranking result-set before replacing canonical AllResults/candidate
-files, so a postprocess or filesystem failure cannot leave mixed-run outputs.
+refresh/evidence provenance, v57 calibration governance and v63 benchmark-cache
+fail-closed behavior. Backtest ranking publication is staged as one result set;
+v73 first recovers any previously interrupted journaled report/backtest
+transaction before beginning a new commit.
 """
 
 from __future__ import annotations
@@ -118,11 +118,9 @@ def _apply_backtest_provenance(
     summary: BacktestSummary,
     observed: pd.Series,
 ) -> pd.DataFrame:
-    """Clarify that ticker evidence and peer calibration are separate channels."""
     result = _LEGACY_APPLY_BACKTEST_PROVENANCE(frame, summary, observed)
     if "BacktestSkipReason" not in result.columns:
         return result
-
     reason = result["BacktestSkipReason"].fillna("").astype(str)
     ambiguous = reason.eq("历史样本不足，不参与排名")
     if ambiguous.any():
@@ -137,7 +135,6 @@ def calibration_stability_stats(
     *,
     minimum_folds: int = 3,
 ) -> dict[str, object]:
-    """Govern peer-calibration confidence using observed walk-forward stability."""
     governed = dict(
         _LEGACY_CALIBRATION_STABILITY_STATS(
             rows,
@@ -170,7 +167,6 @@ def calibration_stability_stats(
 
 
 def _transaction_stage_path(path: Path, destination: Path, stage: Path) -> Path:
-    """Map a canonical analytics/report path into the current transaction."""
     candidate = Path(path)
     try:
         relative = candidate.relative_to(destination)
@@ -187,6 +183,7 @@ def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
 
     with _BACKTEST_PUBLICATION_LOCK:
         destination = Path(_core.OUTPUT_DIR)
+        report_module.recover_publication_transactions(destination)
         transaction_root = destination / ".backtest_publication_txn" / uuid.uuid4().hex
         stage = transaction_root / "stage"
         backup = transaction_root / "backup"
@@ -252,7 +249,7 @@ _core._apply_backtest_provenance = _apply_backtest_provenance
 _core.calibration_stability_stats = calibration_stability_stats
 _core.apply_backtest_ranking = apply_backtest_ranking
 _core.BACKTEST_PUBLICATION_INTEGRITY_VERSION = (
-    "2026-08-19-v71-transactional-ranking-output-v1"
+    "2026-08-19-v73-journaled-backtest-publication-v2"
 )
 
 sys.modules[__name__] = _core
