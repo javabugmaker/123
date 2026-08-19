@@ -1,10 +1,11 @@
-"""InstitutionScanner v56 benchmark-freshness configuration facade.
+"""InstitutionScanner v57 calibration-governance configuration facade.
 
 TickFlow Free remains the sole market-data client.  v55 added bounded post-close
-daily-bar settlement retry; v56 additionally refreshes benchmark market data
-before historical backtest freshness is evaluated and clarifies ticker-vs-peer
-evidence provenance.  Scoring, ranking, execution-liquidity and DAILY
-publication thresholds are unchanged.
+daily-bar settlement retry; v56 refreshes benchmark market data before backtest
+freshness is evaluated; v57 adds conservative confidence shrinkage only when
+walk-forward peer calibration is explicitly classified UNSTABLE and surfaces
+that stability/survivorship provenance in evidence text.  Technical scoring,
+execution-liquidity and DAILY publication thresholds are unchanged.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-19-v57-unstable-calibration-governance-"
     "2026-08-19-v56-fresh-benchmark-audit-"
     "2026-08-19-v55-free-eod-settlement-retry-"
     "2026-08-18-v54-execution-liquidity-readiness-"
@@ -29,6 +31,7 @@ DECISION_INTEGRITY_VERSION: str = (
     + _v51.DECISION_INTEGRITY_VERSION
 )
 OUTPUT_CONTRACT_VERSION: str = (
+    "2026-08-19-v57-calibration-stability-evidence-"
     "2026-08-18-v54-trade-liquidity-board-diagnostics-"
     "2026-08-18-v53-effective-market-date-provenance-"
     "2026-08-17-v52-price-limit-source-marketcap-applicability-"
@@ -40,6 +43,7 @@ MARKET_DATA_VERSION: str = (
     + _v51.MARKET_DATA_VERSION
 )
 BACKTEST_PROVENANCE_VERSION: str = (
+    "2026-08-19-v57-unstable-peer-confidence-shrink-"
     "2026-08-19-v56-benchmark-refresh-peer-evidence-audit-"
     "2026-08-17-v52-date-aware-limit-rules-"
     + _v51.BACKTEST_PROVENANCE_VERSION
@@ -66,3 +70,4 @@ TRADE_LIQUIDITY_RULE_VERSION: str = "2026-08-18-v54-order-participation"
 
 # Explicit provenance for output/backtest audit trails.
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
+CALIBRATION_GOVERNANCE_VERSION: str = "2026-08-19-v57-unstable-stable-ratio-shrink-v1"
