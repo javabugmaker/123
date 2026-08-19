@@ -29,6 +29,17 @@ def _text(frame: pd.DataFrame, column: str, default: str = "") -> pd.Series:
     return frame.get(column, pd.Series(default, index=frame.index)).fillna(default).astype(str).str.strip()
 
 
+def _truthy_series(frame: pd.DataFrame, column: str) -> pd.Series:
+    return (
+        frame.get(column, pd.Series(False, index=frame.index))
+        .fillna(False)
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .isin({"true", "1", "yes", "y", "是"})
+    )
+
+
 def enrich_evidence_fields(frame: pd.DataFrame) -> pd.DataFrame:
     """Add explainable evidence-strength fields without changing ranking."""
     result = frame.copy()
@@ -54,9 +65,13 @@ def enrich_evidence_fields(frame: pd.DataFrame) -> pd.DataFrame:
     peer_count = peer_effective.where(peer_effective.gt(0.0), peer_samples)
     peer_confidence = _number(result, "GlobalCalibrationConfidence", 0.0).clip(0.0, 1.0)
     peer_level = _text(result, "GlobalCalibrationLevel", "none").replace("", "none")
-    # Confidence already contains calibration sample-quality logic. The smooth
-    # sample term prevents a tiny cohort with a high numerical confidence from
-    # looking equivalent to a mature peer cohort.
+    stability = _text(result, "GlobalCalibrationStability", "UNKNOWN").str.upper().replace("", "UNKNOWN")
+    stable_ratio = _number(result, "GlobalCalibrationStableFoldRatio", 0.0).clip(0.0, 1.0)
+    survivorship_warning = _truthy_series(result, "SurvivorshipBiasWarning")
+
+    # Confidence already contains calibration sample-quality and stability
+    # governance. The smooth sample term prevents a tiny cohort with a high
+    # numerical confidence from looking equivalent to a mature peer cohort.
     peer_sample_strength = np.log1p(peer_count).div(np.log1p(100.0)).clip(0.0, 1.0)
     peer_strength = (peer_confidence * peer_sample_strength).clip(0.0, 1.0)
 
@@ -74,19 +89,38 @@ def enrich_evidence_fields(frame: pd.DataFrame) -> pd.DataFrame:
         for m, s, t in zip(mode, samples, ticker_tier)
     ]
     result["PeerCalibrationEvidence"] = [
-        f"{level} · {count:.0f}有效样本 · {confidence:.0%}"
+        (
+            f"{level} · {count:.0f}有效样本 · {confidence:.0%} · "
+            f"{state}({ratio:.0%})"
+            + (" · 幸存者偏差提示" if survivor else "")
+        )
         if count > 0
         else "无同类校准样本"
-        for level, count, confidence in zip(peer_level, peer_count, peer_confidence)
+        for level, count, confidence, state, ratio, survivor in zip(
+            peer_level,
+            peer_count,
+            peer_confidence,
+            stability,
+            stable_ratio,
+            survivorship_warning,
+        )
     ]
     result["EvidenceStrengthScore"] = evidence.round(2)
     result["EvidenceTier"] = tier
     result["EvidenceReason"] = [
         (
             f"本票有效样本 {ticker_eff:.1f}；同类有效样本 {peer_eff:.1f}，"
-            f"同类置信度 {peer_conf:.0%}。证据等级字段本身不参与排序；"
-            "同类全局校准若有有效置信度，可通过综合分的受限校准权重参与模型。"
+            f"同类置信度 {peer_conf:.0%}，稳定折占比 {ratio:.0%}（{state}）。"
+            "证据等级字段本身不参与排序；同类全局校准若有有效置信度，可通过综合分的受限校准权重参与模型。"
+            + (" 当前历史股票池存在幸存者偏差，解释回测时应额外保守。" if survivor else "")
         )
-        for ticker_eff, peer_eff, peer_conf in zip(effective, peer_count, peer_confidence)
+        for ticker_eff, peer_eff, peer_conf, ratio, state, survivor in zip(
+            effective,
+            peer_count,
+            peer_confidence,
+            stable_ratio,
+            stability,
+            survivorship_warning,
+        )
     ]
     return result
