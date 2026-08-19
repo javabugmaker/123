@@ -1,10 +1,11 @@
-"""v65 scan-service facade with fail-closed publication and safe inputs.
+"""v68 scan-service facade with publication-coupled recovery state.
 
 Before the stable application service is imported, the canonical path installs
-snapshot-safe resume, non-OHLCV checkpoint fingerprints and the AkShare
-freshness guard.  Canonical export then enforces both enrichment integrity and,
-for cache-first scans, a bounded coherent market-date contract so an offline
-stale cache cannot overwrite fresher published rankings.
+snapshot-safe resume, v68 in-memory frame pinning, non-OHLCV checkpoint
+fingerprints and the AkShare freshness guard. Canonical export enforces both
+enrichment integrity and the cache-first market-date contract. The scan
+checkpoint is deleted only after the report transaction returns successfully;
+publication failure/cancellation therefore keeps current-run work resumable.
 """
 
 from __future__ import annotations
@@ -14,10 +15,13 @@ import sys
 import threading
 from pathlib import Path
 
-import scanner_resume_v59 as _resume_contract
+import scanner as _scanner
+import scanner_resume_v59 as _resume_contract_v59
+import scanner_resume_v68 as _resume_contract
 import checkpoint_inputs_v59 as _checkpoint_inputs
 import fundamental_refresh_v61 as _fundamental_refresh
 
+_resume_contract_v59.install()
 _resume_contract.install()
 _checkpoint_inputs.install()
 _fundamental_refresh.install()
@@ -43,7 +47,7 @@ def execute_scan(
     refresh_fundamentals_fn: _core.RefreshFundamentalsFn = _core.refresh_fundamental_data,
     refresh_policy_fn: _core.RefreshPolicyFn | None = None,
 ) -> _core.ScanExecutionResult:
-    """Execute a scan and fail closed before canonical export if inputs are unsafe."""
+    """Execute a canonical scan and clear recovery state only after publication."""
     log = logger or logging.getLogger("institution_scanner")
     canonical_execution = run_scan_fn is _core.run_scan
     selected_export = export_all_fn
@@ -83,18 +87,37 @@ def execute_scan(
 
         selected_export = _guarded_export
 
-    return _legacy_execute_scan(
-        request,
-        progress_callback=progress_callback,
-        cancel_event=cancel_event,
-        logger=logger,
-        build_universe_fn=build_universe_fn,
-        run_scan_fn=run_scan_fn,
-        export_all_fn=selected_export,
-        fundamental_path_fn=fundamental_path_fn,
-        refresh_fundamentals_fn=refresh_fundamentals_fn,
-        refresh_policy_fn=refresh_policy_fn,
+    previous_defer = bool(
+        getattr(_scanner, "_defer_checkpoint_clear_until_publish", False)
     )
+    if canonical_execution:
+        _scanner._defer_checkpoint_clear_until_publish = True
+
+    try:
+        execution = _legacy_execute_scan(
+            request,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event,
+            logger=logger,
+            build_universe_fn=build_universe_fn,
+            run_scan_fn=run_scan_fn,
+            export_all_fn=selected_export,
+            fundamental_path_fn=fundamental_path_fn,
+            refresh_fundamentals_fn=refresh_fundamentals_fn,
+            refresh_policy_fn=refresh_policy_fn,
+        )
+    except BaseException:
+        # Do not discard a valid current-run checkpoint when enrichment,
+        # publication, cancellation or a filesystem operation fails.
+        raise
+    else:
+        if canonical_execution:
+            _scanner.clear_checkpoint()
+            log.info("Canonical publication committed; scan checkpoint cleared.")
+        return execution
+    finally:
+        if canonical_execution:
+            _scanner._defer_checkpoint_clear_until_publish = previous_defer
 
 
 _core.execute_scan = execute_scan
