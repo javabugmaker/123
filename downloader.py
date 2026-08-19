@@ -8,8 +8,9 @@ whose cached history is still behind the latest completed trading day.
 
 No API key, authenticated client, realtime quote endpoint, minute data or
 synthetic OHLCV construction is used here.  If TickFlow Free still has not
-settled a symbol after the bounded retries, the old frame is preserved and the
-existing DAILY freshness/coherence gate remains responsible for failing closed.
+settled a mixed-date universe after the bounded retries, the download phase
+fails before the expensive analysis stage.  A coherent provider-wide one-day
+lag remains allowed for the existing v53 DAILY provenance contract.
 """
 
 from __future__ import annotations
@@ -27,11 +28,12 @@ _v51_price_limit = _core.get_price_limit_pct
 _FREE_EOD_LEGACY_DOWNLOAD_BATCH = _core.download_batch
 _FREE_EOD_LEGACY_DOWNLOAD_TICKER = _core.download_ticker
 
-# Keep the retry bounded.  The first retry is immediate because the base
-# downloader has already made one normal refresh request.  Later attempts wait
-# briefly for TickFlow Free's post-close daily settlement to advance.
-_FREE_EOD_RETRY_ATTEMPTS = 3
-_FREE_EOD_RETRY_PAUSE_SECONDS = 6.0
+# The base downloader has already made one normal refresh request.  Give the
+# Free service up to ~48 additional seconds to finish its post-close daily-bar
+# settlement before deciding whether the date distribution is still unsafe.
+_FREE_EOD_RETRY_ATTEMPTS = 5
+_FREE_EOD_RETRY_PAUSE_SECONDS = 12.0
+_FREE_EOD_MIN_COHERENT_RATIO = 0.90
 
 
 def _cached_metadata_available(ticker: str) -> bool:
@@ -78,6 +80,59 @@ def _stale_free_symbols(frames: dict[str, pd.DataFrame]) -> list[str]:
         for symbol, frame in frames.items()
         if not _core._cache_has_completed_daily_bar(frame)
     ]
+
+
+def _free_date_distribution(frames: dict[str, pd.DataFrame]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for frame in frames.values():
+        value = _frame_latest_date(frame)
+        if value:
+            counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def _assert_free_eod_coherence(frames: dict[str, pd.DataFrame]) -> None:
+    """Abort early only for unsafe mixed-date settlement after market close.
+
+    v53 intentionally allows a coherent provider-wide one-trading-day lag.  We
+    preserve that behavior.  The unsafe case is a split universe such as 73%
+    today / 27% yesterday, where ranking different securities on different
+    market dates would be invalid.
+    """
+    if not frames or not _core._is_a_share_market_closed():
+        return
+    target = _core._latest_completed_trading_day().isoformat()
+    counts = _free_date_distribution(frames)
+    if not counts:
+        return
+    total = len(frames)
+    fresh = counts.get(target, 0)
+    fresh_ratio = fresh / max(1, total)
+    dominant_date, dominant_count = max(counts.items(), key=lambda item: item[1])
+    dominant_ratio = dominant_count / max(1, total)
+
+    if fresh_ratio >= _FREE_EOD_MIN_COHERENT_RATIO:
+        return
+    if dominant_date != target and dominant_ratio >= _FREE_EOD_MIN_COHERENT_RATIO:
+        _core.logger.warning(
+            "TickFlow Free 当前仍为一致性供应商延迟: 主日期 %s 覆盖 %.1f%%，"
+            "目标交易日 %s 覆盖 %.1f%%；保留 v53 PROVIDER_LAG 语义。",
+            dominant_date,
+            dominant_ratio * 100.0,
+            target,
+            fresh_ratio * 100.0,
+        )
+        return
+
+    distribution = ", ".join(
+        f"{day}={count}" for day, count in sorted(counts.items(), reverse=True)[:5]
+    )
+    raise _core.DownloadError(
+        "TickFlow Free 盘后日K仍处于混合结算状态："
+        f"目标交易日 {target} 覆盖 {fresh_ratio:.1%}，"
+        f"主日期 {dominant_date} 覆盖 {dominant_ratio:.1%}（{distribution}）。"
+        "已停止后续分析，请稍后重新扫描；不会混用不同交易日排名。"
+    )
 
 
 def _refresh_free_eod_frames(
@@ -194,7 +249,7 @@ def _refresh_free_eod_frames(
         )
         _core.logger.warning(
             "TickFlow Free 盘后日K仍未完全结算: %d/%d 标的未到 %s（%s）。"
-            "不会伪造当日K线；DAILY 数据一致性闸门将继续 fail-closed。",
+            "不会伪造当日K线。",
             len(stale),
             total,
             target.isoformat(),
@@ -216,7 +271,7 @@ def download_ticker(
     source: str | None = None,
     cache_first: bool = False,
 ) -> pd.DataFrame | None:
-    frame = _FREE_EOD_LEGACY_DOWNLOAD_TICKER(
+    frame = _core._FREE_EOD_LEGACY_DOWNLOAD_TICKER(
         ticker,
         force=force,
         source=source,
@@ -225,7 +280,7 @@ def download_ticker(
     if frame is None or frame.empty or cache_first:
         return frame
     symbol = _core.normalize_ticker(ticker)
-    return _refresh_free_eod_frames({symbol: frame}, source=source).get(symbol, frame)
+    return _core._refresh_free_eod_frames({symbol: frame}, source=source).get(symbol, frame)
 
 
 def download_batch(
@@ -237,7 +292,7 @@ def download_batch(
     skip_tickers: set[str] | None = None,
     progress_callback: DownloadProgressCallback | None = None,
 ) -> dict[str, pd.DataFrame]:
-    frames = _FREE_EOD_LEGACY_DOWNLOAD_BATCH(
+    frames = _core._FREE_EOD_LEGACY_DOWNLOAD_BATCH(
         tickers,
         desc=desc,
         force=force,
@@ -248,12 +303,16 @@ def download_batch(
     )
     if not frames or cache_first:
         return frames
-    return _refresh_free_eod_frames(frames, source=source)
+    refreshed = _core._refresh_free_eod_frames(frames, source=source)
+    _core._assert_free_eod_coherence(refreshed)
+    return refreshed
 
 
 _core.get_price_limit_pct = get_price_limit_pct
 _core._frame_latest_date = _frame_latest_date
 _core._stale_free_symbols = _stale_free_symbols
+_core._free_date_distribution = _free_date_distribution
+_core._assert_free_eod_coherence = _assert_free_eod_coherence
 _core._refresh_free_eod_frames = _refresh_free_eod_frames
 _core._FREE_EOD_LEGACY_DOWNLOAD_BATCH = _FREE_EOD_LEGACY_DOWNLOAD_BATCH
 _core._FREE_EOD_LEGACY_DOWNLOAD_TICKER = _FREE_EOD_LEGACY_DOWNLOAD_TICKER
