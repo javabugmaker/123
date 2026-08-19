@@ -1,9 +1,10 @@
-"""v55 TickFlow public facade with authenticated EOD close fallback.
+"""v56 TickFlow public facade with GUI-local authenticated API support.
 
-``downloader_v55`` adds optional ``TICKFLOW_API_KEY`` authentication and a
-post-close quote fallback when the historical daily endpoint has not settled
-today's bar yet.  The existing cache-only execution metadata lookup remains in
-place so historical calculations never trigger hidden metadata network I/O.
+``downloader_v56`` resolves credentials from the gitignored GUI-local settings
+first and then the process environment.  Authenticated mode uses TickFlow's
+full SDK client and post-close quote fallback; Free remains the no-key fallback.
+The cache-only execution metadata lookup is preserved so historical calculations
+never trigger hidden metadata network I/O.
 """
 
 from __future__ import annotations
@@ -11,8 +12,8 @@ from __future__ import annotations
 import sys
 from functools import lru_cache
 
-import downloader_v55 as _core
-from downloader_v55 import *  # noqa: F403
+import downloader_v56 as _core
+from downloader_v56 import *  # noqa: F403
 
 _v51_price_limit = _core.get_price_limit_pct
 
