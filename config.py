@@ -1,12 +1,11 @@
-"""InstitutionScanner v58 stale-data fail-closed configuration facade.
+"""InstitutionScanner v59 checkpoint-integrity configuration facade.
 
 TickFlow Free remains the sole market-data client. v55 added bounded post-close
 daily-bar settlement retry; v56 refreshes benchmark market data before backtest
-freshness is evaluated; v57 governs unstable peer calibration; v58 closes two
-execution-safety gaps found by whole-project audit: coherent provider lag is
-bounded before analysis, and only current-session market data may remain
-READY/CAUTIOUS. It also disables child-logger propagation so modules with their
-own handlers do not duplicate messages through the parent logger.
+freshness is evaluated; v57 governs unstable peer calibration; v58 closes stale
+market-data execution gaps and duplicate logger propagation; v59 makes scan
+resume crash-safe by restoring only current-run result snapshots whose market
+cache state and full runtime contract still match after refresh.
 
 Technical scoring, backtest split policy and research ranking weights are
 unchanged.
@@ -21,6 +20,7 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-19-v59-snapshot-safe-resume-"
     "2026-08-19-v58-stale-data-fail-closed-"
     "2026-08-19-v57-unstable-calibration-governance-"
     "2026-08-19-v56-fresh-benchmark-audit-"
@@ -93,6 +93,11 @@ TRADE_LIQUIDITY_RULE_VERSION: str = "2026-08-18-v54-order-participation"
 # therefore research-usable but not READY/CAUTIOUS.
 TRADE_READY_MAX_DATA_AGE_TRADING_DAYS: int = 0
 TRADE_FRESHNESS_RULE_VERSION: str = "2026-08-19-v58-current-session-only"
+
+# v59 resume contract. Checkpoint files are only reusable when the complete
+# runtime contract, completed market session and per-ticker market cache state
+# are unchanged. Legacy ticker-only checkpoints are deliberately ignored.
+CHECKPOINT_RESUME_VERSION: str = "2026-08-19-v59-snapshot-market-state-v1"
 
 # Explicit provenance for output/backtest audit trails.
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
