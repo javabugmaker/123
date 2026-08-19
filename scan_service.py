@@ -32,6 +32,7 @@ from publication_guard_v65 import enforce_cache_first_market_contract  # noqa: E
 from scan_service_core import *  # noqa: E402,F403
 
 _legacy_execute_scan = _core.execute_scan
+_core._legacy_execute_scan = _legacy_execute_scan
 
 
 def execute_scan(
@@ -94,7 +95,7 @@ def execute_scan(
         _scanner._defer_checkpoint_clear_until_publish = True
 
     try:
-        execution = _legacy_execute_scan(
+        execution = _core._legacy_execute_scan(
             request,
             progress_callback=progress_callback,
             cancel_event=cancel_event,
