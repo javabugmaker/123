@@ -1,9 +1,10 @@
-"""InstitutionScanner v55 Free-EOD configuration facade.
+"""InstitutionScanner v56 benchmark-freshness configuration facade.
 
-This restores the pre-authentication v54 architecture: TickFlow Free is the
-sole market-data client.  The only v55 change is a bounded post-close retry for
-Free daily-bar settlement; scoring, ranking, execution-liquidity and DAILY
-publication contracts are unchanged.
+TickFlow Free remains the sole market-data client.  v55 added bounded post-close
+daily-bar settlement retry; v56 additionally refreshes benchmark market data
+before historical backtest freshness is evaluated and clarifies ticker-vs-peer
+evidence provenance.  Scoring, ranking, execution-liquidity and DAILY
+publication thresholds are unchanged.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-19-v56-fresh-benchmark-audit-"
     "2026-08-19-v55-free-eod-settlement-retry-"
     "2026-08-18-v54-execution-liquidity-readiness-"
     "2026-08-18-v53-provider-settlement-date-gate-"
@@ -38,7 +40,9 @@ MARKET_DATA_VERSION: str = (
     + _v51.MARKET_DATA_VERSION
 )
 BACKTEST_PROVENANCE_VERSION: str = (
-    "2026-08-17-v52-date-aware-limit-rules-" + _v51.BACKTEST_PROVENANCE_VERSION
+    "2026-08-19-v56-benchmark-refresh-peer-evidence-audit-"
+    "2026-08-17-v52-date-aware-limit-rules-"
+    + _v51.BACKTEST_PROVENANCE_VERSION
 )
 
 # A breakout may bypass the normal setup gate only when it still carries at
