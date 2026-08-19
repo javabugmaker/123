@@ -1,10 +1,10 @@
-"""v52 report provenance facade.
+"""v58 report provenance facade.
 
-The v51 report contract remains in ``report_v51``.  v52 corrects two fields
-that real output showed could be misleading: ETF share counts are no longer
-presented as stock market-cap provenance, and every exported price-limit ratio
-is recomputed from the current audited rule engine rather than trusting stale
-manifest values.
+The v51 report contract remains in ``report_v51``. v52 corrected ETF market-cap
+and price-limit provenance. v58 additionally exposes execution-only liquidity
+and market-data freshness diagnostics in ``DecisionResults.csv`` so the GUI's
+lightweight all-results surface can explain why a research candidate was
+removed from READY/CAUTIOUS without loading the full 200+ column artifact.
 """
 
 from __future__ import annotations
@@ -19,6 +19,25 @@ from report_v51 import *  # noqa: F403
 from tradeability import daily_limit_pct, price_limit_source
 
 _legacy_results_to_dataframe = _core._results_to_dataframe
+
+_DECISION_EXECUTION_DIAGNOSTICS = (
+    "TradeLiquidityApplicable",
+    "TradeLiquidityPassed",
+    "TradeLiquidityStatus",
+    "TradeLiquidityThresholdCNY",
+    "TradeLiquidityAssumedNotionalCNY",
+    "TradeLiquidityParticipationPct",
+    "TradeLiquidityMaxParticipationPct",
+    "TradeLiquidityReason",
+    "TradeLiquidityGateApplied",
+    "TradeFreshnessApplicable",
+    "TradeFreshnessPassed",
+    "TradeFreshnessStatus",
+    "TradeFreshnessTradingDays",
+    "TradeFreshnessMaxTradingDays",
+    "TradeFreshnessReason",
+    "TradeFreshnessGateApplied",
+)
 
 
 def _results_to_dataframe(results: list[Any]) -> pd.DataFrame:
@@ -69,6 +88,12 @@ def _results_to_dataframe(results: list[Any]) -> pd.DataFrame:
     frame["PriceLimitSource"] = limit_sources
     return frame
 
+
+if hasattr(_core, "DECISION_RESULT_COLUMNS"):
+    existing = tuple(_core.DECISION_RESULT_COLUMNS)
+    _core.DECISION_RESULT_COLUMNS = existing + tuple(
+        column for column in _DECISION_EXECUTION_DIAGNOSTICS if column not in existing
+    )
 
 _core._results_to_dataframe = _results_to_dataframe
 sys.modules[__name__] = _core
