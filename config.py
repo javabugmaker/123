@@ -1,11 +1,12 @@
-"""InstitutionScanner v59 checkpoint-integrity configuration facade.
+"""InstitutionScanner v60 execution-date integrity configuration facade.
 
 TickFlow Free remains the sole market-data client. v55 added bounded post-close
 daily-bar settlement retry; v56 refreshes benchmark market data before backtest
 freshness is evaluated; v57 governs unstable peer calibration; v58 closes stale
 market-data execution gaps and duplicate logger propagation; v59 makes scan
-resume crash-safe by restoring only current-run result snapshots whose market
-cache state and full runtime contract still match after refresh.
+resume crash-safe and binds it to the market/fundamental/universe input state;
+v60 rejects any data date later than the latest completed A-share session from
+execution freshness.
 
 Technical scoring, backtest split policy and research ranking weights are
 unchanged.
@@ -20,6 +21,7 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-19-v60-future-eod-fail-closed-"
     "2026-08-19-v59-snapshot-safe-resume-"
     "2026-08-19-v58-stale-data-fail-closed-"
     "2026-08-19-v57-unstable-calibration-governance-"
@@ -31,6 +33,7 @@ PIPELINE_VERSION: str = (
     + _v51.PIPELINE_VERSION
 )
 DECISION_INTEGRITY_VERSION: str = (
+    "2026-08-19-v60-future-date-execution-gate-"
     "2026-08-19-v58-current-data-execution-gate-"
     "2026-08-18-v54-trade-ready-liquidity-gate-"
     "2026-08-17-v52-setup-backed-filter-override-"
@@ -87,17 +90,17 @@ TRADE_READY_MIN_MEDIAN_TURNOVER_60D: float = 5_000_000.0
 TRADE_READY_MAX_ASSUMED_PARTICIPATION_RATE: float = 0.01
 TRADE_LIQUIDITY_RULE_VERSION: str = "2026-08-18-v54-order-participation"
 
-# v58 execution freshness contract. Research rows may remain visible when
+# v58/v60 execution freshness contract. Research rows may remain visible when
 # provider data is delayed, but an immediate trading recommendation must be
-# based on the latest completed session. A coherent one-session provider lag is
-# therefore research-usable but not READY/CAUTIOUS.
+# based exactly on the latest completed session. Future-dated/intraday evidence
+# is invalid rather than equivalent to age zero.
 TRADE_READY_MAX_DATA_AGE_TRADING_DAYS: int = 0
-TRADE_FRESHNESS_RULE_VERSION: str = "2026-08-19-v58-current-session-only"
+TRADE_FRESHNESS_RULE_VERSION: str = "2026-08-19-v60-completed-session-only"
 
-# v59 resume contract. Checkpoint files are only reusable when the complete
-# runtime contract, completed market session and per-ticker market cache state
-# are unchanged. Legacy ticker-only checkpoints are deliberately ignored.
-CHECKPOINT_RESUME_VERSION: str = "2026-08-19-v59-snapshot-market-state-v1"
+# v59 resume contract. Checkpoint files are reusable only when runtime versions,
+# completed session, per-ticker OHLCV, AkShare fundamental cache and TickFlow
+# universe metadata are unchanged. Legacy ticker-only checkpoints fail closed.
+CHECKPOINT_RESUME_VERSION: str = "2026-08-19-v59-snapshot-input-fingerprint-v2"
 
 # Explicit provenance for output/backtest audit trails.
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
