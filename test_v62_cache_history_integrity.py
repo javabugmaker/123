@@ -93,14 +93,54 @@ class CacheHistoryIntegrityTests(unittest.TestCase):
                 self.assertFalse(first_hit)
                 self.assertEqual(calls, 1)
 
-                # Change source-file identity while preserving length, last date
-                # and the final 12 OHLCV rows. The old cache contract would hit.
                 source_path.write_text("state-b-longer", encoding="utf-8")
                 os.utime(source_path, None)
                 second, second_hit = performance_cache.load_or_compute_indicators(
                     "000001.SZ", revised, compute, source_path=source_path
                 )
 
+        self.assertFalse(second_hit)
+        self.assertEqual(calls, 2)
+        self.assertNotEqual(
+            float(first["SyntheticIndicator"].iloc[-1]),
+            float(second["SyntheticIndicator"].iloc[-1]),
+        )
+
+    def test_same_file_signature_still_rebuilds_on_content_revision(self) -> None:
+        source = _market_frame()
+        revised = source.copy()
+        revised.iloc[3, revised.columns.get_loc("Close")] += 2.0
+        calls = 0
+
+        def compute(frame: pd.DataFrame) -> pd.DataFrame:
+            nonlocal calls
+            calls += 1
+            result = frame.copy()
+            result["SyntheticIndicator"] = result["Close"].expanding().mean()
+            return result
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "000001.SZ.parquet"
+            source_path.write_text("unchanged-signature-file", encoding="utf-8")
+            indicator_dir = root / "indicators"
+
+            with patch.object(performance_cache, "INDICATOR_CACHE_DIR", indicator_dir):
+                first, first_hit = performance_cache.load_or_compute_indicators(
+                    "000001.SZ", source, compute, source_path=source_path
+                )
+                self.assertFalse(first_hit)
+                original_stat = source_path.stat()
+
+                # Do not touch source_path at all: size, mtime and path identity
+                # remain the same while the in-memory OHLCV history is revised.
+                second, second_hit = performance_cache.load_or_compute_indicators(
+                    "000001.SZ", revised, compute, source_path=source_path
+                )
+                after_stat = source_path.stat()
+
+        self.assertEqual(original_stat.st_size, after_stat.st_size)
+        self.assertEqual(original_stat.st_mtime_ns, after_stat.st_mtime_ns)
         self.assertFalse(second_hit)
         self.assertEqual(calls, 2)
         self.assertNotEqual(
