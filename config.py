@@ -1,11 +1,11 @@
-"""InstitutionScanner v65 publication/runtime integrity configuration facade.
+"""InstitutionScanner v66 publication/runtime integrity configuration facade.
 
 TickFlow Free remains the sole market-data client. v55-v61 harden settlement,
 execution freshness, resume state and fundamental freshness; v62 fingerprints
 the full OHLCV history; v63 prevents benchmark-relative backtest cache reuse
 when the benchmark is unavailable; v64 terminates full GUI subprocess trees;
-v65 prevents an arbitrarily stale cache-first scan from overwriting fresher
-canonical research outputs.
+v65 blocks stale cache-first publication; v66 stages the complete stateful report
+set and rolls back prior files if ordinary CLI/GUI publication fails midway.
 
 Technical scoring, backtest split policy and research ranking weights are
 unchanged.
@@ -22,6 +22,7 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-19-v66-transactional-report-publication-"
     "2026-08-19-v65-cache-first-publication-gate-"
     "2026-08-19-v64-gui-process-tree-cancel-"
     "2026-08-19-v63-benchmark-cache-fail-closed-"
@@ -46,6 +47,7 @@ DECISION_INTEGRITY_VERSION: str = (
     + _v51.DECISION_INTEGRITY_VERSION
 )
 OUTPUT_CONTRACT_VERSION: str = (
+    "2026-08-19-v66-atomic-result-set-rollback-"
     "2026-08-19-v65-cache-first-market-date-contract-"
     "2026-08-19-v58-trade-freshness-diagnostics-"
     "2026-08-19-v57-calibration-stability-evidence-"
@@ -78,7 +80,6 @@ def setup_logging(*args, **kwargs):
 
 
 def _install_gui_runtime_contract_if_ready() -> None:
-    """Patch GUI cancellation only when gui_core has already finished loading."""
     gui_core = sys.modules.get("gui_core")
     if gui_core is None or not hasattr(gui_core, "ScannerGUI"):
         return
@@ -107,6 +108,7 @@ CACHE_HISTORY_INTEGRITY_VERSION: str = "2026-08-19-v62-full-ohlcv-fingerprint-v1
 BENCHMARK_CACHE_INTEGRITY_VERSION: str = "2026-08-19-v63-current-benchmark-required-v1"
 GUI_PROCESS_INTEGRITY_VERSION: str = "2026-08-19-v64-process-tree-cancel-v1"
 CACHE_FIRST_PUBLICATION_VERSION: str = "2026-08-19-v65-coherent-market-date-v1"
+REPORT_PUBLICATION_INTEGRITY_VERSION: str = "2026-08-19-v66-stateful-staging-rollback-v1"
 
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
 CALIBRATION_GOVERNANCE_VERSION: str = "2026-08-19-v57-unstable-stable-ratio-shrink-v1"
