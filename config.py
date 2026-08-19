@@ -1,10 +1,9 @@
-"""InstitutionScanner v75 data/recovery/publication integrity facade.
+"""InstitutionScanner v76 data/recovery/publication integrity facade.
 
-TickFlow Free remains the sole market-data client. v55-v73 harden settlement,
-execution freshness, resume state, fundamentals, derived caches and publication
-semantics; v74 recovers interrupted DAILY outer transactions with producer-PID
-checks; v75 makes ordinary/backtest journal rollback itself idempotent so a
-second interruption during recovery can be retried from intact backups.
+TickFlow Free remains the sole market-data client. v55-v75 harden settlement,
+execution freshness, resume state, fundamentals, derived caches and crash-safe
+publication; v76 wraps the complete standalone backtest command so calibration,
+summary, AllResults and candidate outputs are published as one journaled unit.
 
 Technical scoring, backtest split policy and research ranking weights are
 unchanged.
@@ -21,6 +20,7 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-19-v76-whole-backtest-command-transaction-"
     "2026-08-19-v75-idempotent-publication-recovery-"
     "2026-08-19-v74-daily-hard-crash-recovery-"
     "2026-08-19-v73-journaled-publication-recovery-"
@@ -55,6 +55,7 @@ DECISION_INTEGRITY_VERSION: str = (
     + _v51.DECISION_INTEGRITY_VERSION
 )
 OUTPUT_CONTRACT_VERSION: str = (
+    "2026-08-19-v76-whole-backtest-result-set-"
     "2026-08-19-v75-idempotent-crash-recovery-"
     "2026-08-19-v74-daily-outer-transaction-recovery-"
     "2026-08-19-v73-journaled-crash-recovery-"
@@ -79,6 +80,7 @@ MARKET_DATA_VERSION: str = (
     + _v51.MARKET_DATA_VERSION
 )
 BACKTEST_PROVENANCE_VERSION: str = (
+    "2026-08-19-v76-whole-command-publication-"
     "2026-08-19-v75-idempotent-ranking-recovery-"
     "2026-08-19-v73-journaled-backtest-publication-"
     "2026-08-19-v71-transactional-ranking-publication-"
@@ -132,6 +134,9 @@ BACKTEST_PUBLICATION_INTEGRITY_VERSION: str = "2026-08-19-v75-idempotent-journal
 CACHE_REPORT_PUBLICATION_VERSION: str = "2026-08-19-v72-coherent-market-date-v1"
 DAILY_RECOVERY_INTEGRITY_VERSION: str = (
     "2026-08-19-v74-pid-aware-outer-transaction-recovery-v1"
+)
+BACKTEST_COMMAND_INTEGRITY_VERSION: str = (
+    "2026-08-19-v76-whole-command-transaction-v1"
 )
 
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
