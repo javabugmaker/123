@@ -137,7 +137,7 @@ def _restore_result(payload: Any) -> _core.ScanResult:
     return result
 
 
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+def _atomic_write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         "w",
@@ -283,7 +283,12 @@ def save_checkpoint(
         for result in results
         if result is not None and not result.error and str(result.ticker).strip()
     }
-    available = normalized_processed.intersection(by_ticker).intersection(market_frames)
+    normalized_frames = {
+        _core._normalize_ticker(ticker): frame
+        for ticker, frame in market_frames.items()
+        if str(ticker).strip()
+    }
+    available = normalized_processed.intersection(by_ticker).intersection(normalized_frames)
 
     with _CHECKPOINT_LOCK:
         new_tickers = sorted(available.difference(_CHECKPOINT_PERSISTED))
@@ -299,7 +304,7 @@ def save_checkpoint(
                 chunk = new_tickers[offset : offset + _CHECKPOINT_PART_SIZE]
                 rows: list[dict[str, Any]] = []
                 for ticker in chunk:
-                    frame = market_frames.get(ticker)
+                    frame = normalized_frames.get(ticker)
                     if frame is None or frame.empty:
                         continue
                     state = market_cache_state(frame)
@@ -316,11 +321,7 @@ def save_checkpoint(
                     continue
                 part_index = _CHECKPOINT_SEQUENCE + len(new_parts) + 1
                 part_name = f"part_{part_index:05d}.json"
-                _atomic_write_json(parts_dir / part_name, {"rows": rows})
-                # Keep the on-disk part format intentionally explicit; unwrap it
-                # after the atomic write so the loader has a stable list schema.
-                wrapper = json.loads((parts_dir / part_name).read_text(encoding="utf-8"))
-                _atomic_write_json(parts_dir / part_name, {"rows": wrapper["rows"]})
+                _atomic_write_json(parts_dir / part_name, rows)
                 new_parts.append(part_name)
                 staged_tickers.update(str(row["ticker"]) for row in rows)
 
@@ -347,7 +348,7 @@ def save_checkpoint(
             _CHECKPOINT_PERSISTED.update(staged_tickers)
             _CHECKPOINT_PARTS = manifest_parts
             _CHECKPOINT_SEQUENCE = len(manifest_parts)
-        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        except (OSError, UnicodeError, TypeError, ValueError) as exc:
             _core.logger.warning("Failed to save v59 checkpoint snapshot: %s", exc)
 
 
@@ -459,7 +460,7 @@ def run_scan(
         )
 
     # Never skip the market refresh on resume.  We must verify that the raw
-    # frame is still byte-semantically the same market state as the snapshot.
+    # frame is still the exact market state represented by the snapshot.
     download_started = time.perf_counter()
     downloaded = _core.download_batch(
         all_tickers,
@@ -533,7 +534,6 @@ def run_scan(
 
     results: list[_core.ScanResult] = [resumed[ticker] for ticker in sorted(resumed)]
     analysed_frames: dict[str, pd.DataFrame] = {}
-    analysed_this_run: set[str] = set()
     successful = len(results)
     failed = 0
     passed = sum(1 for result in results if result.passed_filters)
@@ -608,7 +608,6 @@ def run_scan(
                     if result.passed_filters:
                         passed += 1
 
-                analysed_this_run.add(_core._normalize_ticker(item.ticker))
                 progress.update(1)
 
                 if completed % 100 == 0 or completed == len(analyse_queue):
