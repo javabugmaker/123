@@ -123,11 +123,13 @@ _core.score_volatility = score_volatility
 _core.trigger_event_score = trigger_event_score
 _core.score_ticker = score_ticker
 
-# score_acceleration_v77 can be installed later by analytics.py; v79's install
-# function is intentionally re-entrant so analytics can re-assert the newest
-# exact-formula kernels after all older facades have initialized.
+# Older acceleration facades can initialize later through analytics.py. Both
+# v79 installers are re-entrant so the newest exact-formula kernels remain the
+# final runtime bindings.
 import score_acceleration_v79 as _score_acceleration_v79  # noqa: E402
+import score_endpoint_acceleration_v79 as _score_endpoint_acceleration_v79  # noqa: E402
 
 _score_acceleration_v79.install()
+_score_endpoint_acceleration_v79.install()
 
 sys.modules[__name__] = _core
