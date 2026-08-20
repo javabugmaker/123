@@ -23,6 +23,7 @@ from typing import Any, Callable, Iterator
 import numpy as np
 import pandas as pd
 
+from model_audit_integrity_v82 import install as install_model_audit_integrity
 from ranking_provenance_v82 import stamp_ranking_decision_provenance
 
 BACKTEST_RECENCY_NORMALIZATION_VERSION = "2026-08-21-v82-single-recency-ranking-v1"
@@ -32,6 +33,10 @@ _RECENCY_NORMALIZATION_ACTIVE: ContextVar[bool] = ContextVar(
 )
 _GUARD_INSTALLED_ATTR = "_v82_single_recency_guard_installed"
 _GUARD_ORIGINAL_ATTR = "_v82_single_recency_guard_original"
+
+# Install the audit-only Decision/Tier decomposition before analytics imports
+# ``run_audit`` from model_audit. This changes diagnostics only, never scoring.
+install_model_audit_integrity()
 
 
 def _number(
