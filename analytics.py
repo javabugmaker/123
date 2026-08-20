@@ -1,12 +1,11 @@
-"""v80 analytics facade with vectorised scoring and workstation backtests.
+"""v82 analytics facade with ranking-integrity normalization.
 
-All v73/v76 analytics semantics remain intact. v77 compiled indicator kernels,
-single-pass enrichment, fast cache hashing and worker benchmark memoization are
-installed on the real analytics runtime. v78 vectorizes the FAST historical
-quick gate and caches TickFlow metadata. v79 reuses normalized score columns and
-endpoint computations across filters/scoring/scanner calls. v80 moves FAST
-historical scoring, execution/tradeability and benchmark alignment to ticker-
-level arrays while preserving score, entry, ranking and cache-integrity rules.
+All v80 workstation/backtest acceleration semantics remain intact.  v82 fixes a
+post-backtest semantic drift: the legacy calibration path embeds signal recency
+inside ``InstitutionalScore`` and then the canonical lifecycle ranker applies
+recency again.  The backtest transaction now removes that embedded decay only
+for its one canonical final ranking pass, so scan and post-backtest rankings use
+recency exactly once.
 """
 
 from __future__ import annotations
@@ -30,6 +29,10 @@ import score_acceleration_v79 as _score_acceleration_v79
 import universe_cache_acceleration_v78 as _universe_cache_acceleration
 from analytics_core import *  # noqa: F403
 from backtest_alignment import install_analytics_alignment
+from backtest_rank_integrity_v82 import (
+    BACKTEST_RECENCY_NORMALIZATION_VERSION,
+    single_recency_ranking_patch,
+)
 
 _indicator_acceleration.install()
 _cache_acceleration.install()
@@ -267,7 +270,11 @@ def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> N
         report_module._atomic_write_parquet = staged_parquet
         report_module.refresh_candidate_exports = staged_refresh
         try:
-            _core._legacy_apply_backtest_ranking(summary, top_n=top_n)
+            # The legacy postprocess embeds recency in InstitutionalScore before
+            # it calls the canonical lifecycle ranker.  Scope the normalization
+            # to this transaction so the live scan path is untouched.
+            with single_recency_ranking_patch(_core):
+                _core._legacy_apply_backtest_ranking(summary, top_n=top_n)
         except BaseException:
             shutil.rmtree(transaction_root, ignore_errors=True)
             raise
@@ -296,6 +303,7 @@ _core.apply_backtest_ranking = apply_backtest_ranking
 _core.BACKTEST_PUBLICATION_INTEGRITY_VERSION = (
     "2026-08-19-v73-journaled-backtest-publication-v2"
 )
+_core.BACKTEST_RANKING_INTEGRITY_VERSION = BACKTEST_RECENCY_NORMALIZATION_VERSION
 _core.PERFORMANCE_ENGINE_VERSION = "2026-08-20-v80-vectorized-backtest-workstation-v1"
 
 sys.modules[__name__] = _core
