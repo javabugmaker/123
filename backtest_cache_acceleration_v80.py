@@ -6,6 +6,10 @@ fingerprint, then called market_prefix_matches which hashed the same full
 history again for an unchanged ticker. v80 compares the already-computed full
 fingerprints directly when row count/date bounds match, while append/revision
 paths retain the exact prefix verification and maturity rewind contract.
+
+FAST samples are namespaced once for the v80 whole-ticker scorer because v80
+also fixes the ETF value-trap quick-gate semantics. EXACT caches keep their
+existing identity.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import pandas as pd
 import analytics_core as _core
 
 _INSTALLED = False
+_FAST_SCORING_ENGINE = "v80-whole-ticker-exact-equivalent-v1"
 
 
 def _maturity_rewind_bars() -> int:
@@ -72,6 +77,40 @@ def _state_prefix_ok(
     return bool(_core.market_prefix_matches(frame, cached)), False
 
 
+def _cache_identity(
+    ticker: str,
+    source: str,
+    benchmark_name: str,
+    commission: float,
+    stamp_duty: float,
+    slippage: float,
+    active_profile: Any,
+) -> dict[str, Any]:
+    identity: dict[str, Any] = {
+        "ticker": str(ticker),
+        "source": str(source),
+        "benchmark": str(benchmark_name),
+        "commission": float(commission),
+        "etf_commission": float(_core.BACKTEST_ETF_COMMISSION_RATE),
+        "stamp_duty": float(stamp_duty),
+        "slippage": float(slippage),
+        "assumed_trade_notional": float(_core.BACKTEST_ASSUMED_TRADE_NOTIONAL),
+        "execution_model": "asset_fees_liquidity_t1_limit_exit_v1",
+        "max_exit_delay_days": int(_core.BACKTEST_MAX_EXIT_DELAY_DAYS),
+        "cooldown": int(active_profile.cooldown),
+        "horizon": int(_core.BACKTEST_OUTCOME_HORIZON_DAYS),
+        "score_window": int(active_profile.score_window),
+        "mode": active_profile.name,
+        "historical_volume_profile": bool(active_profile.historical_volume_profile),
+        "candidate_gap": int(active_profile.candidate_gap),
+        "fast_prefilter": bool(active_profile.fast_prefilter),
+        "model_weight_signature": _core.model_weight_signature(),
+    }
+    if bool(active_profile.fast_prefilter):
+        identity["fast_scoring_engine"] = _FAST_SCORING_ENGINE
+    return identity
+
+
 def _backtest_one_ticker_cached(
     ticker: str,
     source: str,
@@ -103,26 +142,15 @@ def _backtest_one_ticker_cached(
 
     active_profile = profile or _core._resolve_backtest_profile("exact", 1)
     cache_key = _core.backtest_cache_key(
-        {
-            "ticker": str(ticker),
-            "source": str(source),
-            "benchmark": str(benchmark_name),
-            "commission": float(commission),
-            "etf_commission": float(_core.BACKTEST_ETF_COMMISSION_RATE),
-            "stamp_duty": float(stamp_duty),
-            "slippage": float(slippage),
-            "assumed_trade_notional": float(_core.BACKTEST_ASSUMED_TRADE_NOTIONAL),
-            "execution_model": "asset_fees_liquidity_t1_limit_exit_v1",
-            "max_exit_delay_days": int(_core.BACKTEST_MAX_EXIT_DELAY_DAYS),
-            "cooldown": int(active_profile.cooldown),
-            "horizon": int(_core.BACKTEST_OUTCOME_HORIZON_DAYS),
-            "score_window": int(active_profile.score_window),
-            "mode": active_profile.name,
-            "historical_volume_profile": bool(active_profile.historical_volume_profile),
-            "candidate_gap": int(active_profile.candidate_gap),
-            "fast_prefilter": bool(active_profile.fast_prefilter),
-            "model_weight_signature": _core.model_weight_signature(),
-        }
+        _cache_identity(
+            ticker,
+            source,
+            benchmark_name,
+            commission,
+            stamp_duty,
+            slippage,
+            active_profile,
+        )
     )
     current_market = _core.market_cache_state(frame)
     current_benchmark = (
