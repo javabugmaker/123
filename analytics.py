@@ -23,6 +23,7 @@ import analytics_core as _core
 import backtest_acceleration_v77 as _backtest_acceleration
 import backtest_fastpath_v78 as _backtest_fastpath
 import cache_acceleration_v77 as _cache_acceleration
+import calibration_weight_cache_v79 as _calibration_weight_cache
 import indicator_acceleration_v77 as _indicator_acceleration
 import score_acceleration_v79 as _score_acceleration_v79
 import universe_cache_acceleration_v78 as _universe_cache_acceleration
@@ -37,6 +38,7 @@ _analytics_acceleration.install()
 # analytics_acceleration_v77 installs its older score kernels; re-assert v79
 # afterwards so every spawned worker runs the newest exact-formula fast path.
 _score_acceleration_v79.install()
+_calibration_weight_cache.install()
 _backtest_fastpath.install()
 install_analytics_alignment(_core)
 
