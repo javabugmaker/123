@@ -1,8 +1,10 @@
-"""InstitutionScanner v77 CLI performance/integrity facade.
+"""InstitutionScanner v78 CLI performance/integrity facade.
 
 Native math-thread limits are installed before NumPy/SciPy enter through the
 analytics stack, preventing each Python worker from creating another BLAS/OpenMP
-pool.  All v76 correctness/publication contracts remain installed unchanged.
+pool. v78's vectorized FAST backtest, worker metadata caches and cache-aware
+incremental maturity window are installed by the public analytics facade. All
+v76 correctness/publication contracts remain unchanged.
 """
 
 from __future__ import annotations
@@ -52,7 +54,9 @@ _core.CACHE_REPORT_PUBLICATION_VERSION = "2026-08-19-v72-coherent-market-date-v1
 _core.BACKTEST_COMMAND_INTEGRITY_VERSION = (
     "2026-08-19-v76-whole-command-transaction-v1"
 )
-_core.PERFORMANCE_ENGINE_VERSION = "2026-08-20-v77-vectorized-indicators-6c12t-v1"
+_core.PERFORMANCE_ENGINE_VERSION = (
+    "2026-08-20-v78-vectorized-fast-backtest-io-cache-maturity-v2"
+)
 
 if __name__ == "__main__":
     raise SystemExit(_core.main())
