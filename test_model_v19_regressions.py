@@ -25,8 +25,10 @@ class ModelV19RegressionTests(unittest.TestCase):
     def test_model_version_and_refinement_contract(self):
         version = int(SCORING_VERSION.split("-v", 1)[1].split("-", 1)[0])
         self.assertGreaterEqual(version, 35)
-        self.assertEqual(INDICATOR_CACHE_VERSION, "v6")
-        self.assertEqual(BACKTEST_CACHE_VERSION, "v9")
+        # v19 established v6/v9; v62/v69 intentionally advanced both cache
+        # namespaces for full-history revision detection and indicator changes.
+        self.assertEqual(INDICATOR_CACHE_VERSION, "v7")
+        self.assertEqual(BACKTEST_CACHE_VERSION, "v10")
         self.assertTrue(BACKTEST_AUTO_EXACT_REFINEMENT)
         self.assertGreaterEqual(BACKTEST_EXACT_REFINEMENT_CANDIDATES, 50)
 
