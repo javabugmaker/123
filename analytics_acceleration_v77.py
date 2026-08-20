@@ -1,10 +1,9 @@
-"""v77 analytics orchestration acceleration.
+"""v77 analytics/scoring orchestration acceleration.
 
 The stable enrichment path already calculates each ticker's 60-day relative
 return and classification in its threaded first pass, but then recalculates both
-for every ticker in a second pass.  Reuse those first-pass values instead.  This
-changes no formulas; it only removes repeated pandas cleaning/classification and
-avoids an unnecessary ticker->DataFrame reference dictionary.
+for every ticker in a second pass. Reuse those values. The module also installs
+v77's equivalent NumPy score-availability fast path; no score formulas change.
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 import analytics_core as _core
+import score_acceleration_v77 as _score_acceleration
 
 _INSTALLED = False
 
@@ -198,6 +198,7 @@ def install() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
+    _score_acceleration.install()
     _core.enrich_results = enrich_results
     _INSTALLED = True
 
