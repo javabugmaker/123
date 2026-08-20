@@ -44,7 +44,7 @@ def _numeric(frame: pd.DataFrame, column: str) -> np.ndarray:
 
 def _date_array(frame: pd.DataFrame) -> np.ndarray:
     result = np.empty(len(frame), dtype="datetime64[ns]")
-    result[:] = np.datetime64("NaT")
+    result[:] = np.datetime64("NaT", "ns")
     for position, value in enumerate(frame.index):
         if isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(
             value, (bool, np.bool_)
