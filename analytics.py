@@ -43,6 +43,20 @@ _calibration_weight_cache.install()
 _backtest_fastpath.install()
 install_analytics_alignment(_core)
 
+# signal_lifecycle_v51 intentionally aliases its module entry to the stable
+# lifecycle core. Preserve the historical private reference for callers that
+# imported it before later lifecycle facades were installed; this is an API
+# compatibility alias only and does not introduce another ranking pass.
+_lifecycle_v51_compat = sys.modules.get("signal_lifecycle_v51")
+if _lifecycle_v51_compat is not None and not hasattr(
+    _lifecycle_v51_compat, "_legacy_finalize_signal_ranking"
+):
+    setattr(
+        _lifecycle_v51_compat,
+        "_legacy_finalize_signal_ranking",
+        getattr(_lifecycle_v51_compat, "finalize_signal_ranking"),
+    )
+
 _LEGACY_APPLY_BACKTEST_PROVENANCE = _core._apply_backtest_provenance
 _LEGACY_CALIBRATION_STABILITY_STATS = _core.calibration_stability_stats
 _LEGACY_BACKTEST_ONE_TICKER_CACHED = _core._backtest_one_ticker_cached
