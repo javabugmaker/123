@@ -1,10 +1,9 @@
-"""InstitutionScanner v80 vectorised backtest workstation configuration facade.
+"""InstitutionScanner v82 ranking-integrity configuration facade.
 
-v80 preserves the v79 scoring, ranking and execution contracts while moving the
-FAST historical hot path from candidate-level pandas work to ticker-level NumPy
-matrices. Warm-cache validation, benchmark alignment, tradeability/exit lookup
-and workstation process scheduling are accelerated without relaxing integrity
-or historical execution rules.
+v82 preserves v80 scoring weights and workstation acceleration while fixing
+post-backtest recency semantics, adding full-universe perturbation auditing and
+prospective point-in-time universe snapshots.  No setup/trigger/execution
+weight or trade threshold is changed here.
 """
 
 from __future__ import annotations
@@ -26,9 +25,12 @@ BACKTEST_FAST_CHUNK_SIZE: int = _RUNTIME.backtest_fast_chunk_size
 BACKTEST_INCREMENTAL_TAIL_BARS: int = _RUNTIME.backtest_incremental_tail_bars
 
 SCORING_VERSION: str = (
-    "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
+    "2026-08-21-v82-single-recency-ranking-"
+    "2026-08-17-v52-setup-backed-breakout-"
+    + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-21-v82-ranking-integrity-audit-"
     "2026-08-20-v80-vectorized-backtest-workstation-engine-"
     "2026-08-20-v79-vectorized-score-endpoint-cache-"
     "2026-08-20-v78-vectorized-fast-backtest-io-cache-"
@@ -68,6 +70,7 @@ DECISION_INTEGRITY_VERSION: str = (
     + _v51.DECISION_INTEGRITY_VERSION
 )
 OUTPUT_CONTRACT_VERSION: str = (
+    "2026-08-21-v82-ranking-audit-provenance-"
     "2026-08-19-v76-whole-backtest-result-set-"
     "2026-08-19-v75-idempotent-crash-recovery-"
     "2026-08-19-v74-daily-outer-transaction-recovery-"
@@ -93,6 +96,7 @@ MARKET_DATA_VERSION: str = (
     + _v51.MARKET_DATA_VERSION
 )
 BACKTEST_PROVENANCE_VERSION: str = (
+    "2026-08-21-v82-single-recency-ranking-"
     "2026-08-20-v80-vectorized-fastscore-execution-cache-"
     "2026-08-20-v78-cache-aware-maturity-tail-equivalent-"
     "2026-08-20-v77-incremental-tail-360-runtime-only-"
@@ -166,6 +170,16 @@ BACKTEST_EXECUTION_ACCELERATION_VERSION: str = (
 )
 BACKTEST_WORKSTATION_TUNING_VERSION: str = (
     "2026-08-20-v80-physical-core-chunk-v1"
+)
+
+BACKTEST_RANKING_INTEGRITY_VERSION: str = (
+    "2026-08-21-v82-single-recency-ranking-v1"
+)
+FULL_UNIVERSE_AUDIT_VERSION: str = (
+    "2026-08-21-v82-full-universe-perturbation-v1"
+)
+UNIVERSE_SNAPSHOT_VERSION: str = (
+    "2026-08-21-v82-prospective-universe-snapshot-v1"
 )
 
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
