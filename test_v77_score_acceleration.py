@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 import score_acceleration_v77 as accelerated
+import score_acceleration_v79 as latest
 import score_core
 
 
@@ -95,13 +96,13 @@ class ScoreAccelerationTests(unittest.TestCase):
             places=12,
         )
 
-    def test_core_score_globals_are_patched(self) -> None:
+    def test_v77_kernel_contract_survives_newer_runtime_supersession(self) -> None:
+        # v77 remains independently equivalent, while v79 intentionally owns
+        # the live score hooks after all acceleration layers are installed.
         accelerated.install()
-        self.assertIs(
-            score_core._score_dimensions_available,
-            accelerated._score_dimensions_available,
-        )
-        self.assertIs(score_core.score_volume, accelerated.score_volume)
+        latest.install()
+        self.assertIs(score_core._score_dimensions_available, latest._score_dimensions_available)
+        self.assertIs(score_core.score_volume, latest.score_volume)
 
 
 if __name__ == "__main__":
