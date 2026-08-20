@@ -1,15 +1,16 @@
-"""v51 scoring policy facade.
+"""v79 scoring policy facade.
 
 ``score_core`` contains the stable feature/entry implementation.  This facade
 keeps style labels descriptive, keeps TriggerScore orthogonal to setup trend,
-and makes the volatility score consume the same contraction state as the hard
-screening filter.
+uses one volatility-contraction definition for filters/scoring, and installs the
+v79 exact-formula NumPy/endpoint-cache acceleration layer.
 """
 
 from __future__ import annotations
 
 import sys
 
+import numpy as np
 import pandas as pd
 
 import score_core as _core
@@ -32,21 +33,27 @@ def score_volatility(df: pd.DataFrame) -> float:
     return volatility_contraction_score(df, max_score=15.0)
 
 
+def _finite_values(series: pd.Series) -> np.ndarray:
+    values = pd.to_numeric(series, errors="coerce").to_numpy(dtype=np.float64)
+    return values[np.isfinite(values)]
+
+
 def trigger_event_score(df: pd.DataFrame) -> float:
     """Score new launch evidence without reusing MA trend/setup evidence."""
-    close = _core._series(df, "Close")
-    high = _core._series(df, "High")
-    volume = _core._series(df, "Volume")
-    valid = pd.concat(
-        {"close": close, "high": high, "volume": volume}, axis=1
-    ).dropna()
-    if len(valid) < 21:
+    close = _core._series(df, "Close").to_numpy(dtype=np.float64, copy=False)
+    high = _core._series(df, "High").to_numpy(dtype=np.float64, copy=False)
+    volume = _core._series(df, "Volume").to_numpy(dtype=np.float64, copy=False)
+    valid = np.isfinite(close) & np.isfinite(high) & np.isfinite(volume)
+    if np.count_nonzero(valid) < 21:
         return 0.0
 
-    price = float(valid["close"].iloc[-1])
-    resistance = float(valid["high"].iloc[-21:-1].max())
-    volume_now = float(valid["volume"].iloc[-1])
-    volume_baseline = float(valid["volume"].iloc[-21:-1].mean())
+    close_valid = close[valid]
+    high_valid = high[valid]
+    volume_valid = volume[valid]
+    price = float(close_valid[-1])
+    resistance = float(np.max(high_valid[-21:-1]))
+    volume_now = float(volume_valid[-1])
+    volume_baseline = float(np.mean(volume_valid[-21:-1]))
     points = 0.0
 
     if resistance > 0.0:
@@ -60,24 +67,24 @@ def trigger_event_score(df: pd.DataFrame) -> float:
         volume_ratio = volume_now / volume_baseline
         points += _core._clamp((volume_ratio - 1.0) / 1.25) * 25.0
 
-    cmf = _core._series(df, "CMF").dropna()
+    cmf = _finite_values(_core._series(df, "CMF"))
     if len(cmf) >= 6:
-        cmf_delta = float(cmf.iloc[-1] - cmf.iloc[-6])
+        cmf_delta = float(cmf[-1] - cmf[-6])
         points += _core._clamp(cmf_delta / 0.12) * 10.0
 
-    ad_slope = _core._series(df, "AD_Slope").dropna()
+    ad_slope = _finite_values(_core._series(df, "AD_Slope"))
     if len(ad_slope) >= 6:
-        current_ad = float(ad_slope.iloc[-1])
-        prior_ad = float(ad_slope.iloc[-6:-1].median())
+        current_ad = float(ad_slope[-1])
+        prior_ad = float(np.median(ad_slope[-6:-1]))
         if current_ad > 0.0 and prior_ad <= 0.0:
             points += 8.0
         elif current_ad > 0.0 and current_ad > prior_ad:
             points += 4.0
 
-    obv = _core._series(df, "OBV").dropna()
+    obv = _finite_values(_core._series(df, "OBV"))
     if len(obv) >= 11:
-        recent_change = float(obv.iloc[-1] - obv.iloc[-6])
-        prior_change = float(obv.iloc[-6] - obv.iloc[-11])
+        recent_change = float(obv[-1] - obv[-6])
+        prior_change = float(obv[-6] - obv[-11])
         if recent_change > 0.0 and recent_change > max(prior_change, 0.0):
             points += 7.0
 
@@ -115,5 +122,12 @@ _core._style_adjustment = _style_adjustment
 _core.score_volatility = score_volatility
 _core.trigger_event_score = trigger_event_score
 _core.score_ticker = score_ticker
+
+# score_acceleration_v77 can be installed later by analytics.py; v79's install
+# function is intentionally re-entrant so analytics can re-assert the newest
+# exact-formula kernels after all older facades have initialized.
+import score_acceleration_v79 as _score_acceleration_v79  # noqa: E402
+
+_score_acceleration_v79.install()
 
 sys.modules[__name__] = _core
