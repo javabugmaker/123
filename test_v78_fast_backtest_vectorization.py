@@ -9,6 +9,7 @@ import analytics
 import analytics_core
 import backtest_acceleration_v77
 import backtest_fastpath_v78 as fastpath
+import backtest_fastscore_v80 as fastscore
 import cache_acceleration_v77
 from indicators import compute_all_indicators
 
@@ -135,8 +136,8 @@ class FastBacktestVectorizationTests(unittest.TestCase):
         ):
             self.assertAlmostEqual(score_a, score_b, places=10)
 
-    def test_real_analytics_runtime_installs_all_backtest_accelerators(self) -> None:
-        self.assertIs(analytics_core._signal_evaluations, fastpath._signal_evaluations)
+    def test_real_analytics_runtime_keeps_v78_gate_but_v80_owns_fast_scoring(self) -> None:
+        self.assertIs(analytics_core._signal_evaluations, fastscore._signal_evaluations)
         self.assertIs(
             analytics_core.market_cache_state,
             backtest_acceleration_v77.market_cache_state,
@@ -147,7 +148,7 @@ class FastBacktestVectorizationTests(unittest.TestCase):
         )
         self.assertEqual(
             analytics.PERFORMANCE_ENGINE_VERSION,
-            "2026-08-20-v78-vectorized-fast-backtest-v2",
+            "2026-08-20-v80-vectorized-backtest-workstation-v1",
         )
 
 
