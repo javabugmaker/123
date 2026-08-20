@@ -1,11 +1,12 @@
 """v82 analytics facade with ranking-integrity normalization.
 
-All v80 workstation/backtest acceleration semantics remain intact.  v82 fixes a
+All v80 workstation/backtest acceleration semantics remain intact. v82 fixes a
 post-backtest semantic drift: the legacy calibration path embeds signal recency
 inside ``InstitutionalScore`` and then the canonical lifecycle ranker applies
-recency again.  The backtest transaction now removes that embedded decay only
+recency again. The backtest transaction now removes that embedded decay only
 for its one canonical final ranking pass, so scan and post-backtest rankings use
-recency exactly once.
+recency exactly once. A successful publication also refreshes the observational
+full-universe audit against the newly committed ``AllResults.csv``.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from backtest_rank_integrity_v82 import (
     BACKTEST_RECENCY_NORMALIZATION_VERSION,
     single_recency_ranking_patch,
 )
+from model_audit import run_audit
 
 _indicator_acceleration.install()
 _cache_acceleration.install()
@@ -205,7 +207,7 @@ def calibration_stability_stats(
 def _transaction_stage_path(path: Path, destination: Path, stage: Path) -> Path:
     candidate = Path(path)
     # refresh_candidate_exports may already be told to write directly into the
-    # transaction staging root.  Do not remap such a path a second time or the
+    # transaction staging root. Do not remap such a path a second time or the
     # final publication would land under .backtest_publication_txn/.../stage.
     try:
         candidate.relative_to(stage)
@@ -220,6 +222,24 @@ def _transaction_stage_path(path: Path, destination: Path, stage: Path) -> Path:
     target = stage / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     return target
+
+
+def _refresh_published_ranking_audit(destination: Path) -> None:
+    """Refresh diagnostics after publication without changing transaction state."""
+    try:
+        payload = run_audit(
+            destination / "AllResults.csv",
+            destination / "audit",
+        )
+    except (OSError, ValueError, TypeError, KeyError, ImportError) as exc:
+        _core.logger.warning("Post-backtest ranking audit failed: %s", exc)
+        return
+    _core.logger.info(
+        "Post-backtest ranking audit refreshed: rows=%s, stocks=%s, ETFs=%s.",
+        payload.get("rows", 0),
+        payload.get("stocks", 0),
+        payload.get("etfs", 0),
+    )
 
 
 def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> None:
@@ -271,7 +291,7 @@ def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> N
         report_module.refresh_candidate_exports = staged_refresh
         try:
             # The legacy postprocess embeds recency in InstitutionalScore before
-            # it calls the canonical lifecycle ranker.  Scope the normalization
+            # it calls the canonical lifecycle ranker. Scope the normalization
             # to this transaction so the live scan path is untouched.
             with single_recency_ranking_patch(_core):
                 _core._legacy_apply_backtest_ranking(summary, top_n=top_n)
@@ -283,10 +303,12 @@ def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> N
             report_module._atomic_write_parquet = original_parquet
             report_module.refresh_candidate_exports = original_refresh
 
+        published = False
         try:
             staged_files = [path for path in stage.rglob("*") if path.is_file()]
             if staged_files:
                 report_module._publish_stage(stage, destination, backup)
+                published = True
                 _core.logger.info(
                     "Backtest ranking publication committed transactionally: %d files.",
                     len(staged_files),
@@ -294,11 +316,15 @@ def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> N
         finally:
             shutil.rmtree(transaction_root, ignore_errors=True)
 
+        if published:
+            _refresh_published_ranking_audit(destination)
+
 
 _core._load_benchmark_frames = _load_benchmark_frames
 _core._backtest_one_ticker_cached = _backtest_one_ticker_cached
 _core._apply_backtest_provenance = _apply_backtest_provenance
 _core.calibration_stability_stats = calibration_stability_stats
+_core._refresh_published_ranking_audit = _refresh_published_ranking_audit
 _core.apply_backtest_ranking = apply_backtest_ranking
 _core.BACKTEST_PUBLICATION_INTEGRITY_VERSION = (
     "2026-08-19-v73-journaled-backtest-publication-v2"
