@@ -9,7 +9,8 @@ import pandas as pd
 import historical_universe
 from backtest_rank_integrity_v82 import (
     BACKTEST_RECENCY_NORMALIZATION_VERSION,
-    single_recency_ranking_patch,
+    install_single_recency_ranking_guard,
+    single_recency_ranking_context,
     strip_embedded_backtest_recency,
 )
 from model_audit import _validate_full_universe, build_scenarios
@@ -49,9 +50,10 @@ class RankingIntegrityV82Tests(unittest.TestCase):
             BACKTEST_RECENCY_NORMALIZATION_VERSION,
         )
 
-    def test_recency_patch_is_transaction_scoped_and_restored(self) -> None:
+    def test_recency_guard_is_context_scoped_without_global_replacement(self) -> None:
         module = _DummyLifecycleModule()
-        original = module.finalize_signal_ranking
+        install_single_recency_ranking_guard(module)
+        guarded = module.finalize_signal_ranking
         frame = pd.DataFrame(
             {
                 "SignalRecencyFactor": [0.8],
@@ -60,12 +62,22 @@ class RankingIntegrityV82Tests(unittest.TestCase):
             }
         )
 
-        with single_recency_ranking_patch(module):
+        module.finalize_signal_ranking(frame)
+        assert module.seen is not None
+        self.assertAlmostEqual(module.seen.loc[0, "InstitutionalScore"], 96.0)
+
+        with single_recency_ranking_context():
             module.finalize_signal_ranking(frame)
             assert module.seen is not None
             self.assertAlmostEqual(module.seen.loc[0, "InstitutionalScore"], 100.0)
 
-        self.assertIs(module.finalize_signal_ranking, original)
+        module.finalize_signal_ranking(frame)
+        assert module.seen is not None
+        self.assertAlmostEqual(module.seen.loc[0, "InstitutionalScore"], 96.0)
+        self.assertIs(module.finalize_signal_ranking, guarded)
+
+        install_single_recency_ranking_guard(module)
+        self.assertIs(module.finalize_signal_ranking, guarded)
 
     def test_full_universe_audit_rejects_ranked_subset(self) -> None:
         subset = pd.DataFrame(
