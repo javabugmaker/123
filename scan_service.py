@@ -1,8 +1,10 @@
-"""v77 scan-service facade with workstation runtime + v68 integrity contracts.
+"""v82 scan-service facade with prospective universe-history capture.
 
-``checkpoint_inputs_v59`` imports the public config facade first; v77 config
-installs native-thread limits before the scanner/NumPy stack is reached.  The
-remaining snapshot, freshness and publication contracts are unchanged.
+The existing snapshot, freshness and transactional publication contracts remain
+unchanged.  After a successful *complete stock-market* canonical publication,
+v82 persists the published universe by its dominant market date so future
+point-in-time backtests can reduce current-survivor bias.  Manual ticker subsets
+are never written as historical market snapshots.
 """
 
 from __future__ import annotations
@@ -27,10 +29,30 @@ import scan_service_core as _core  # noqa: E402
 from pipeline_contracts import enforce_enrichment_contract  # noqa: E402
 from publication_guard_v65 import enforce_cache_first_market_contract  # noqa: E402
 from scan_service_core import *  # noqa: E402,F403
+from universe_snapshot_v82 import record_universe_snapshot_file  # noqa: E402
 from web_report_v81 import maybe_publish_canonical_report  # noqa: E402
 
 _legacy_execute_scan = _core.execute_scan
 _core._legacy_execute_scan = _legacy_execute_scan
+
+
+def _record_full_market_snapshot(
+    execution: _core.ScanExecutionResult,
+    request: _core.ScanRequest,
+    log: logging.Logger,
+) -> None:
+    """Persist only a complete stock-market scan; never a manual subset."""
+    if request.tickers or not request.include_stocks:
+        return
+    try:
+        snapshot = record_universe_snapshot_file(execution.full_csv)
+    except (OSError, ValueError, TypeError, ImportError) as exc:
+        # The canonical result set is already committed.  Snapshot capture is
+        # prospective bias mitigation and must not roll back a valid scan.
+        log.warning("Historical universe snapshot capture failed: %s", exc)
+        return
+    if snapshot is not None:
+        log.info("Historical universe snapshot recorded: %s", snapshot)
 
 
 def execute_scan(
@@ -111,6 +133,7 @@ def execute_scan(
         if canonical_execution:
             _scanner.clear_checkpoint()
             log.info("Canonical publication committed; scan checkpoint cleared.")
+            _record_full_market_snapshot(execution, request, log)
             maybe_publish_canonical_report(
                 Path(_scanner.OUTPUT_DIR),
                 logger=log,
@@ -122,5 +145,6 @@ def execute_scan(
             _scanner._defer_checkpoint_clear_until_publish = previous_defer
 
 
+_core._record_full_market_snapshot = _record_full_market_snapshot
 _core.execute_scan = execute_scan
 sys.modules[__name__] = _core
