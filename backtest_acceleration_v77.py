@@ -25,7 +25,13 @@ import backtest_worker_tuning_v78 as _worker_tuning_v78
 import backtest_worker_tuning_v80 as _worker_tuning_v80
 import cache_acceleration_v77 as _cache_acceleration
 import historical_lookup_acceleration_v78 as _historical_lookup
+import score_core as _score
 import tradeability_acceleration_v80 as _tradeability_v80
+
+# FAST scoring lives under analytics_core but component weights are canonically
+# owned by score_core. Expose the stable guarded loader to spawned workers rather
+# than duplicating or hard-coding calibration weights in the v80 matrix engine.
+setattr(_core, "_model_component_weights", _score._model_component_weights)
 
 _cache_acceleration.install()
 _incremental.install()
@@ -94,8 +100,9 @@ def market_prefix_matches(
 
 def install() -> None:
     global _INSTALLED
-    if _INSTALLED:
-        return
+    # Re-assert worker-owned bridges even when another test/facade rebinds a
+    # runtime symbol after initial installation.
+    setattr(_core, "_model_component_weights", _score._model_component_weights)
     _cache_acceleration.install()
     _incremental.install()
     _historical_lookup.install()
