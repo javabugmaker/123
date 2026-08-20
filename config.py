@@ -1,10 +1,10 @@
-"""InstitutionScanner v79 vectorised score-pipeline configuration facade.
+"""InstitutionScanner v80 vectorised backtest workstation configuration facade.
 
-v79 preserves every trading/scoring/output contract from v78. The change is
-execution-only: normalized scoring columns and endpoint calculations are reused
-within each worker thread, score component reductions use equivalent NumPy
-kernels, and the shared volatility state is computed once per DataFrame instead
-of once in filters and again in scoring.
+v80 preserves the v79 scoring, ranking and execution contracts while moving the
+FAST historical hot path from candidate-level pandas work to ticker-level NumPy
+matrices. Warm-cache validation, benchmark alignment, tradeability/exit lookup
+and workstation process scheduling are accelerated without relaxing integrity
+or historical execution rules.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-20-v80-vectorized-backtest-workstation-engine-"
     "2026-08-20-v79-vectorized-score-endpoint-cache-"
     "2026-08-20-v78-vectorized-fast-backtest-io-cache-"
     "2026-08-20-v77-vectorized-workstation-runtime-"
@@ -92,6 +93,7 @@ MARKET_DATA_VERSION: str = (
     + _v51.MARKET_DATA_VERSION
 )
 BACKTEST_PROVENANCE_VERSION: str = (
+    "2026-08-20-v80-vectorized-fastscore-execution-cache-"
     "2026-08-20-v78-cache-aware-maturity-tail-equivalent-"
     "2026-08-20-v77-incremental-tail-360-runtime-only-"
     "2026-08-19-v76-whole-command-publication-"
@@ -152,15 +154,19 @@ DAILY_RECOVERY_INTEGRITY_VERSION: str = (
 BACKTEST_COMMAND_INTEGRITY_VERSION: str = (
     "2026-08-19-v76-whole-command-transaction-v1"
 )
-PERFORMANCE_ENGINE_VERSION: str = (
-    "2026-08-20-v79-vectorized-score-pipeline-v1"
-)
+PERFORMANCE_ENGINE_VERSION: str = "2026-08-20-v80-vectorized-backtest-workstation-v1"
 SCORE_PIPELINE_ACCELERATION_VERSION: str = (
     "2026-08-20-v79-threadlocal-series-endpoint-cache-v1"
 )
-BACKTEST_FASTPATH_VERSION: str = "2026-08-20-v78-vectorized-quick-gate-v1"
-BACKTEST_IO_CACHE_VERSION: str = "2026-08-20-v78-worker-metadata-snapshot-cache-v1"
+BACKTEST_FASTPATH_VERSION: str = "2026-08-20-v80-whole-ticker-fastscore-v1"
+BACKTEST_IO_CACHE_VERSION: str = "2026-08-20-v80-one-hash-benchmark-lookup-v1"
 BACKTEST_INCREMENTAL_ENGINE_VERSION: str = "2026-08-20-v78-cache-maturity-rewind-v1"
+BACKTEST_EXECUTION_ACCELERATION_VERSION: str = (
+    "2026-08-20-v80-tradeability-sample-array-v1"
+)
+BACKTEST_WORKSTATION_TUNING_VERSION: str = (
+    "2026-08-20-v80-physical-core-chunk-v1"
+)
 
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
 CALIBRATION_GOVERNANCE_VERSION: str = "2026-08-19-v57-unstable-stable-ratio-shrink-v1"
