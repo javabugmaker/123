@@ -293,7 +293,7 @@ class ScoreCacheBehaviorTests(unittest.TestCase):
         second = accelerated.evaluate_volatility_contraction(frame)
         self.assertIs(first, second)
 
-    def test_runtime_install_order_keeps_v79_newest(self) -> None:
+    def test_v79_kernels_remain_installed_under_v80_runtime(self) -> None:
         accelerated.install()
         self.assertIs(score_core._series, accelerated._series)
         self.assertIs(score_core.score_volume, accelerated.score_volume)
@@ -301,7 +301,7 @@ class ScoreCacheBehaviorTests(unittest.TestCase):
         self.assertIs(score_core.entry_point, accelerated.entry_point)
         self.assertEqual(
             analytics.PERFORMANCE_ENGINE_VERSION,
-            "2026-08-20-v79-vectorized-score-pipeline-v1",
+            "2026-08-20-v80-vectorized-backtest-workstation-v1",
         )
 
 
