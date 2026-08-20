@@ -32,7 +32,8 @@ from analytics_core import *  # noqa: F403
 from backtest_alignment import install_analytics_alignment
 from backtest_rank_integrity_v82 import (
     BACKTEST_RECENCY_NORMALIZATION_VERSION,
-    single_recency_ranking_patch,
+    install_single_recency_ranking_guard,
+    single_recency_ranking_context,
 )
 from model_audit import run_audit
 
@@ -47,6 +48,7 @@ _score_acceleration_v79.install()
 _calibration_weight_cache.install()
 _backtest_fastpath.install()
 install_analytics_alignment(_core)
+install_single_recency_ranking_guard(_core)
 
 # signal_lifecycle_v51 intentionally aliases its module entry to the stable
 # lifecycle core. Preserve the historical private reference for callers that
@@ -291,9 +293,9 @@ def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> N
         report_module.refresh_candidate_exports = staged_refresh
         try:
             # The legacy postprocess embeds recency in InstitutionalScore before
-            # it calls the canonical lifecycle ranker. Scope the normalization
-            # to this transaction so the live scan path is untouched.
-            with single_recency_ranking_patch(_core):
+            # it calls the canonical lifecycle ranker. ContextVar activation is
+            # local to this execution context; other callers keep normal rules.
+            with single_recency_ranking_context():
                 _core._legacy_apply_backtest_ranking(summary, top_n=top_n)
         except BaseException:
             shutil.rmtree(transaction_root, ignore_errors=True)
