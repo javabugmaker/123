@@ -1,10 +1,11 @@
-"""v78 analytics facade with vectorised FAST-backtest and metadata caching.
+"""v79 analytics facade with vectorised scoring and FAST backtests.
 
 All v73/v76 analytics semantics remain intact. v77 compiled indicator kernels,
 single-pass enrichment, fast cache hashing and worker benchmark memoization are
-installed on the real analytics runtime. v78 additionally vectorizes the FAST
-historical quick gate and caches TickFlow universe/price-limit metadata once per
-spawned worker instead of JSON-decoding the full universe for each ticker.
+installed on the real analytics runtime. v78 vectorizes the FAST historical
+quick gate and caches TickFlow metadata. v79 reuses normalized score columns and
+endpoint computations across filters/scoring/scanner calls while preserving all
+score, entry and ranking formulas.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import backtest_acceleration_v77 as _backtest_acceleration
 import backtest_fastpath_v78 as _backtest_fastpath
 import cache_acceleration_v77 as _cache_acceleration
 import indicator_acceleration_v77 as _indicator_acceleration
+import score_acceleration_v79 as _score_acceleration_v79
 import universe_cache_acceleration_v78 as _universe_cache_acceleration
 from analytics_core import *  # noqa: F403
 from backtest_alignment import install_analytics_alignment
@@ -32,6 +34,9 @@ _cache_acceleration.install()
 _universe_cache_acceleration.install()
 _backtest_acceleration.install()
 _analytics_acceleration.install()
+# analytics_acceleration_v77 installs its older score kernels; re-assert v79
+# afterwards so every spawned worker runs the newest exact-formula fast path.
+_score_acceleration_v79.install()
 _backtest_fastpath.install()
 install_analytics_alignment(_core)
 
@@ -262,6 +267,6 @@ _core.apply_backtest_ranking = apply_backtest_ranking
 _core.BACKTEST_PUBLICATION_INTEGRITY_VERSION = (
     "2026-08-19-v73-journaled-backtest-publication-v2"
 )
-_core.PERFORMANCE_ENGINE_VERSION = "2026-08-20-v78-vectorized-fast-backtest-v2"
+_core.PERFORMANCE_ENGINE_VERSION = "2026-08-20-v79-vectorized-score-pipeline-v1"
 
 sys.modules[__name__] = _core
