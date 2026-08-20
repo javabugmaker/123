@@ -1,11 +1,11 @@
-"""InstitutionScanner v77 vectorised-workstation configuration facade.
+"""InstitutionScanner v78 high-throughput backtest configuration facade.
 
-v77 keeps every trading/scoring contract from v76 and changes only execution
-strategy: compiled/vectorised indicator kernels, bounded native math threads,
-physical-core-oriented backtest multiprocessing and a tighter but still
-conservative incremental backtest tail.  The defaults target a 6-core/12-thread
-mobile workstation and remain overridable through INSTITUTION_SCANNER_* env
-variables.
+v78 preserves every trading/scoring/output contract from v77. The change is
+execution-only: FAST historical candidate gating is vectorized, spawned workers
+cache TickFlow universe/price-limit metadata and historical-universe lookup
+state, benchmark cache validation is actually memoized, and append-only backtest
+recomputation is anchored to the previous cache maturity boundary instead of a
+fixed multi-hundred-bar tail.
 """
 
 from __future__ import annotations
@@ -18,18 +18,19 @@ from workstation_runtime_v77 import runtime_profile
 
 _RUNTIME = runtime_profile()
 
-# Performance-only overrides.  Scoring constants and market-data semantics are
-# intentionally untouched.
 SCAN_THREADS: int = _RUNTIME.scan_threads
 BACKTEST_MAX_PROCESSES: int = _RUNTIME.backtest_processes
 BACKTEST_CHUNK_SIZE: int = _RUNTIME.backtest_chunk_size
 BACKTEST_FAST_CHUNK_SIZE: int = _RUNTIME.backtest_fast_chunk_size
+# Retained as the legacy/fallback bound. The v78 cache-aware path derives the
+# normal append-only recomputation window from the previous cached row count.
 BACKTEST_INCREMENTAL_TAIL_BARS: int = _RUNTIME.backtest_incremental_tail_bars
 
 SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-20-v78-vectorized-fast-backtest-io-cache-"
     "2026-08-20-v77-vectorized-workstation-runtime-"
     "2026-08-19-v76-whole-backtest-command-transaction-"
     "2026-08-19-v75-idempotent-publication-recovery-"
@@ -91,6 +92,7 @@ MARKET_DATA_VERSION: str = (
     + _v51.MARKET_DATA_VERSION
 )
 BACKTEST_PROVENANCE_VERSION: str = (
+    "2026-08-20-v78-cache-aware-maturity-tail-equivalent-"
     "2026-08-20-v77-incremental-tail-360-runtime-only-"
     "2026-08-19-v76-whole-command-publication-"
     "2026-08-19-v75-idempotent-ranking-recovery-"
@@ -150,7 +152,12 @@ DAILY_RECOVERY_INTEGRITY_VERSION: str = (
 BACKTEST_COMMAND_INTEGRITY_VERSION: str = (
     "2026-08-19-v76-whole-command-transaction-v1"
 )
-PERFORMANCE_ENGINE_VERSION: str = "2026-08-20-v77-vectorized-indicators-6c12t-v1"
+PERFORMANCE_ENGINE_VERSION: str = (
+    "2026-08-20-v78-vectorized-fast-backtest-io-cache-maturity-v2"
+)
+BACKTEST_FASTPATH_VERSION: str = "2026-08-20-v78-vectorized-quick-gate-v1"
+BACKTEST_IO_CACHE_VERSION: str = "2026-08-20-v78-worker-metadata-snapshot-cache-v1"
+BACKTEST_INCREMENTAL_ENGINE_VERSION: str = "2026-08-20-v78-cache-maturity-rewind-v1"
 
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
 CALIBRATION_GOVERNANCE_VERSION: str = "2026-08-19-v57-unstable-stable-ratio-shrink-v1"
