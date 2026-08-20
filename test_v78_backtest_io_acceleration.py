@@ -18,11 +18,9 @@ class UniverseMetadataAccelerationTests(unittest.TestCase):
         self._metadata_before = dict(universe_accel._downloader._INSTRUMENT_META)
         self._state_before = universe_accel._LAST_FILE_STATE
         universe_accel._load_for_state.cache_clear()
-        universe_accel._price_limit_evidence_tuple.cache_clear()
 
     def tearDown(self) -> None:
         universe_accel._load_for_state.cache_clear()
-        universe_accel._price_limit_evidence_tuple.cache_clear()
         universe_accel._downloader._INSTRUMENT_META.clear()
         universe_accel._downloader._INSTRUMENT_META.update(self._metadata_before)
         universe_accel._LAST_FILE_STATE = self._state_before
@@ -48,49 +46,45 @@ class UniverseMetadataAccelerationTests(unittest.TestCase):
         self.assertIs(second, third)
         self.assertEqual(legacy.call_count, 1)
 
-    def test_price_limit_evidence_is_memoized_per_ticker(self) -> None:
+    def test_price_limit_evidence_remains_live_when_metadata_changes(self) -> None:
         legacy = Mock(
-            return_value={
-                "ticker": "000001.SZ",
-                "pct": 0.10,
-                "source": "explicit_ratio_metadata",
-            }
+            side_effect=[
+                {
+                    "ticker": "510050.SH",
+                    "pct": 0.10,
+                    "source": "exchange_fallback",
+                },
+                {
+                    "ticker": "510050.SH",
+                    "pct": 0.20,
+                    "source": "explicit_ratio_metadata",
+                },
+            ]
         )
         with patch.object(
             universe_accel, "_LEGACY_GET_PRICE_LIMIT_EVIDENCE", legacy
         ):
-            first = universe_accel.get_price_limit_evidence("000001.SZ", False)
-            second = universe_accel.get_price_limit_evidence("000001.SZ", False)
-        self.assertEqual(first, second)
-        self.assertEqual(legacy.call_count, 1)
+            first = universe_accel.get_price_limit_evidence("510050.SH", True)
+            second = universe_accel.get_price_limit_evidence("510050.SH", True)
+        self.assertEqual(first["pct"], 0.10)
+        self.assertEqual(second["pct"], 0.20)
+        self.assertEqual(legacy.call_count, 2)
 
-    def test_file_change_invalidates_metadata_and_price_limit_cache(self) -> None:
+    def test_file_change_invalidates_metadata_and_universe_payload_cache(self) -> None:
         payload = {"stocks": [], "etfs": [], "metadata": {}}
         legacy_loader = Mock(return_value=payload)
-        legacy_limit = Mock(
-            return_value={
-                "ticker": "000001.SZ",
-                "pct": None,
-                "source": "exchange_fallback",
-            }
-        )
         universe_accel._downloader._INSTRUMENT_META["SENTINEL"] = {"name": "old"}
         with patch.object(
             universe_accel, "_LEGACY_LOAD_UNIVERSE_CACHE", legacy_loader
-        ), patch.object(
-            universe_accel, "_LEGACY_GET_PRICE_LIMIT_EVIDENCE", legacy_limit
         ):
             with patch.object(universe_accel, "_file_state", return_value=(1, 10)):
                 universe_accel._LAST_FILE_STATE = (1, 10)
                 universe_accel.load_universe_cache()
-                universe_accel.get_price_limit_evidence("000001.SZ", False)
             with patch.object(universe_accel, "_file_state", return_value=(2, 11)):
                 universe_accel.load_universe_cache()
-                universe_accel.get_price_limit_evidence("000001.SZ", False)
 
         self.assertNotIn("SENTINEL", universe_accel._downloader._INSTRUMENT_META)
         self.assertEqual(legacy_loader.call_count, 2)
-        self.assertEqual(legacy_limit.call_count, 2)
 
 
 class HistoricalLookupAccelerationTests(unittest.TestCase):
