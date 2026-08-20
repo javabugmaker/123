@@ -1,10 +1,10 @@
-"""v82 scan-service facade with prospective universe-history capture.
+"""v82 scan-service facade with ranking audit + universe-history capture.
 
 The existing snapshot, freshness and transactional publication contracts remain
-unchanged.  After a successful *complete stock-market* canonical publication,
-v82 persists the published universe by its dominant market date so future
-point-in-time backtests can reduce current-survivor bias.  Manual ticker subsets
-are never written as historical market snapshots.
+unchanged.  After a successful complete-market canonical publication, v82 runs
+the full-universe perturbation audit and persists the published stock universe
+by its dominant market date. Manual ticker subsets are never written as
+historical market snapshots and are not presented as full-market audits.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ _resume_contract_v59.install()
 _resume_contract.install()
 
 import scan_service_core as _core  # noqa: E402
+from model_audit import run_audit  # noqa: E402
 from pipeline_contracts import enforce_enrichment_contract  # noqa: E402
 from publication_guard_v65 import enforce_cache_first_market_contract  # noqa: E402
 from scan_service_core import *  # noqa: E402,F403
@@ -47,12 +48,38 @@ def _record_full_market_snapshot(
     try:
         snapshot = record_universe_snapshot_file(execution.full_csv)
     except (OSError, ValueError, TypeError, ImportError) as exc:
-        # The canonical result set is already committed.  Snapshot capture is
+        # The canonical result set is already committed. Snapshot capture is
         # prospective bias mitigation and must not roll back a valid scan.
         log.warning("Historical universe snapshot capture failed: %s", exc)
         return
     if snapshot is not None:
         log.info("Historical universe snapshot recorded: %s", snapshot)
+
+
+def _refresh_full_market_audit(
+    execution: _core.ScanExecutionResult,
+    request: _core.ScanRequest,
+    log: logging.Logger,
+) -> None:
+    """Audit only an automatic market-wide scan, never a hand-picked subset."""
+    if request.tickers:
+        return
+    try:
+        payload = run_audit(
+            Path(execution.full_csv),
+            Path(_scanner.OUTPUT_DIR) / "audit",
+        )
+    except (OSError, ValueError, TypeError, KeyError, ImportError) as exc:
+        # Audit is observational. A valid canonical scan stays published even
+        # if a diagnostic file cannot be produced.
+        log.warning("Full-universe ranking audit failed: %s", exc)
+        return
+    log.info(
+        "Full-universe ranking audit refreshed: rows=%s, stocks=%s, ETFs=%s.",
+        payload.get("rows", 0),
+        payload.get("stocks", 0),
+        payload.get("etfs", 0),
+    )
 
 
 def execute_scan(
@@ -134,6 +161,7 @@ def execute_scan(
             _scanner.clear_checkpoint()
             log.info("Canonical publication committed; scan checkpoint cleared.")
             _record_full_market_snapshot(execution, request, log)
+            _refresh_full_market_audit(execution, request, log)
             maybe_publish_canonical_report(
                 Path(_scanner.OUTPUT_DIR),
                 logger=log,
@@ -146,5 +174,6 @@ def execute_scan(
 
 
 _core._record_full_market_snapshot = _record_full_market_snapshot
+_core._refresh_full_market_audit = _refresh_full_market_audit
 _core.execute_scan = execute_scan
 sys.modules[__name__] = _core
