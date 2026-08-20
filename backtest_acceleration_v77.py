@@ -25,6 +25,7 @@ import backtest_worker_tuning_v78 as _worker_tuning_v78
 import backtest_worker_tuning_v80 as _worker_tuning_v80
 import cache_acceleration_v77 as _cache_acceleration
 import historical_lookup_acceleration_v78 as _historical_lookup
+import score_cache_guard_v80 as _score_cache_guard_v80
 import score_core as _score
 import tradeability_acceleration_v80 as _tradeability_v80
 
@@ -38,6 +39,7 @@ _incremental.install()
 _historical_lookup.install()
 _worker_tuning_v78.install()
 _worker_tuning_v80.install()
+_score_cache_guard_v80.install()
 _tradeability_v80.install()
 _sample_v80.install()
 _sample_guard_v80.install()
@@ -108,6 +110,7 @@ def install() -> None:
     _historical_lookup.install()
     _worker_tuning_v78.install()
     _worker_tuning_v80.install()
+    _score_cache_guard_v80.install()
     _tradeability_v80.install()
     _sample_v80.install()
     _sample_guard_v80.install()
