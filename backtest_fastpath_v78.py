@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 import analytics_core as _core
+from config import BREAKOUT_CONFIRM_MIN_VOLUME_RATIO
 
 _LEGACY_SIGNAL_EVALUATIONS = _core._signal_evaluations
 _INSTALLED = False
@@ -65,8 +66,6 @@ def _fast_quick_gate(
     mature_start = max(0, 251 - 120)
     for column in _REQUIRED_FAST_COLUMNS:
         values = series[column].iloc[mature_start:]
-        # MA200 may legitimately warm up before the first eligible endpoint,
-        # but every endpoint from 251 onward should have a complete fast state.
         if series[column].iloc[251:].isna().any():
             return None
         if column in {"Close", "High", "Low", "Volume"} and values.isna().any():
@@ -86,14 +85,13 @@ def _fast_quick_gate(
     obv = series["OBV"]
     n = len(enriched)
 
-    # ------------------------------------------------------------------
-    # breakout_score(), vectorised for all endpoints.
-    # ------------------------------------------------------------------
     points = np.zeros(n, dtype=np.float64)
     trend15 = close.gt(ma20) & ma20.gt(ma50)
     trend8 = close.gt(ma20) & ~trend15
-    points += np.where(trend15.to_numpy(), 15.0, np.where(trend8.to_numpy(), 8.0, 0.0))
-    points += np.where((close.gt(ma200)).to_numpy(), 10.0, 0.0)
+    points += np.where(
+        trend15.to_numpy(), 15.0, np.where(trend8.to_numpy(), 8.0, 0.0)
+    )
+    points += np.where(close.gt(ma200).to_numpy(), 10.0, 0.0)
 
     resistance = high.shift(1).rolling(20, min_periods=20).max()
     prior_volume20 = volume.shift(1).rolling(20, min_periods=20).mean()
@@ -127,10 +125,6 @@ def _fast_quick_gate(
     points += np.where(trend_acceleration.to_numpy(), 10.0, 0.0)
     breakout = np.clip(points, 0.0, 100.0)
 
-    # ------------------------------------------------------------------
-    # value_trap_risk(), using the same STOCK-scaled quick trap as the
-    # historical FAST gate. (The legacy quick gate did not pass is_etf.)
-    # ------------------------------------------------------------------
     def return_pct(period: int) -> pd.Series:
         prior = close.shift(period)
         return (close / prior - 1.0) * 100.0
@@ -148,20 +142,14 @@ def _fast_quick_gate(
     )
 
     old_ma50 = ma50.shift(24)
-    ma50_decline = (
-        old_ma50.gt(0) & ma50.lt(old_ma50)
-    )
+    ma50_decline = old_ma50.gt(0) & ma50.lt(old_ma50)
     decline_fraction = (old_ma50 - ma50) / old_ma50.replace(0, np.nan) / 0.12
     risk += np.where(
         ma50_decline.to_numpy(),
         np.clip(decline_fraction.to_numpy(dtype=np.float64), 0.0, 1.0) * 12.0,
         0.0,
     )
-    risk += np.where(
-        (close.lt(ma50) & ret20.lt(0)).to_numpy(),
-        8.0,
-        0.0,
-    )
+    risk += np.where((close.lt(ma50) & ret20.lt(0)).to_numpy(), 8.0, 0.0)
 
     recent_low40 = close.rolling(40, min_periods=40).min()
     prior_low40 = close.shift(40).rolling(40, min_periods=40).min()
@@ -186,9 +174,7 @@ def _fast_quick_gate(
     flow_positive = (
         (cmf.gt(0).to_numpy(dtype=bool) & cmf_available).astype(np.int8)
         + (ad_slope.gt(0).to_numpy(dtype=bool) & ad_available).astype(np.int8)
-        + (
-            obv.gt(obv_prior).to_numpy(dtype=bool) & obv_available
-        ).astype(np.int8)
+        + (obv.gt(obv_prior).to_numpy(dtype=bool) & obv_available).astype(np.int8)
     )
     risk += np.where(
         (flow_available > 0) & (flow_positive == 0),
@@ -217,11 +203,6 @@ def _fast_quick_gate(
     )
     quick_trap = np.clip(risk, 0.0, 100.0)
 
-    # ------------------------------------------------------------------
-    # entry_point() quick signal.  ``volume_score`` is intentionally ignored
-    # by the production entry function, so this is fully determined by these
-    # endpoint arrays.
-    # ------------------------------------------------------------------
     decimals = int(_core.tradable_price_decimals(is_etf))
     rounded_resistance = pd.Series(
         np.round(resistance.to_numpy(dtype=np.float64), decimals),
@@ -229,12 +210,8 @@ def _fast_quick_gate(
     )
     support = low.rolling(20, min_periods=20).min()
     volume_ratio = volume / prior_volume20.replace(0, np.nan)
-    flow_confirmed = (
-        cmf.gt(0)
-        | ad_slope.gt(0)
-        | obv.gt(obv.shift(5))
-    )
-    volume_confirmed = volume_ratio.ge(float(_core.BREAKOUT_CONFIRM_MIN_VOLUME_RATIO))
+    flow_confirmed = cmf.gt(0) | ad_slope.gt(0) | obv.gt(obv.shift(5))
+    volume_confirmed = volume_ratio.ge(float(BREAKOUT_CONFIRM_MIN_VOLUME_RATIO))
     price_breakout = (
         pd.Series(breakout >= 75.0, index=enriched.index)
         & close.gt(rounded_resistance)
@@ -243,8 +220,12 @@ def _fast_quick_gate(
     effective_atr = atr14.where(atr14.gt(0), close * 0.03)
     support_anchor = support + effective_atr * 0.55
     ma_support = ma20.where(ma20.le(close))
-    support_anchor = pd.concat([support_anchor, ma_support], axis=1).max(axis=1, skipna=True)
-    support_anchor = pd.concat([support_anchor, close], axis=1).min(axis=1, skipna=True)
+    support_anchor = pd.concat([support_anchor, ma_support], axis=1).max(
+        axis=1, skipna=True
+    )
+    support_anchor = pd.concat([support_anchor, close], axis=1).min(
+        axis=1, skipna=True
+    )
     low_zone = pd.Series(
         np.round(
             np.maximum(
@@ -286,13 +267,8 @@ def _fast_quick_gate(
     blocked = (quick_trap >= 70.0) | (
         rsi14.notna().to_numpy(dtype=bool) & rsi14.ge(78.0).to_numpy(dtype=bool)
     )
-    inside_zone = (
-        close.ge(low_zone) & close.le(high_zone)
-    ).to_numpy(dtype=bool)
-    wait_pullback = (
-        (entry_score >= 50.0)
-        & close.gt(high_zone).to_numpy(dtype=bool)
-    )
+    inside_zone = (close.ge(low_zone) & close.le(high_zone)).to_numpy(dtype=bool)
+    wait_pullback = (entry_score >= 50.0) & close.gt(high_zone).to_numpy(dtype=bool)
     buy_now = (entry_score >= 70.0) & inside_zone
     breakout_confirm = (
         price_breakout.to_numpy(dtype=bool)
@@ -304,8 +280,6 @@ def _fast_quick_gate(
         | ((~price_breakout.to_numpy(dtype=bool)) & (buy_now | wait_pullback))
     )
 
-    # The legacy quick gate also allowed an unconfirmed PRICE_BREAKOUT through
-    # to full scoring. Preserve that behavior (important for ETF trap scaling).
     quick_gate = actionable | price_breakout.to_numpy(dtype=bool)
     quick_gate[:251] = False
     return quick_gate, price_breakout.to_numpy(dtype=bool)
@@ -340,7 +314,7 @@ def _signal_evaluations(
             start_index=start_index,
             component_sink=component_sink,
         )
-    quick_gate, _price_breakout = vectorized
+    quick_gate, _ = vectorized
 
     cooldown = max(1, int(profile.cooldown))
     candidates, breakout_flags = _core._candidate_endpoint_matrix(
