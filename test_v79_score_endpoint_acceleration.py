@@ -106,7 +106,7 @@ class EndpointKernelEquivalenceTests(unittest.TestCase):
         )
         self.assertEqual(
             analytics.PERFORMANCE_ENGINE_VERSION,
-            "2026-08-20-v79-vectorized-score-pipeline-v1",
+            "2026-08-20-v80-vectorized-backtest-workstation-v1",
         )
 
 
