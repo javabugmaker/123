@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -19,6 +20,7 @@ import config as _config
 import daily_pipeline_core as _core
 import daily_recovery_v74 as _daily_recovery
 from trading_calendar import is_trading_day
+from web_report_v81 import maybe_publish_canonical_report
 
 _daily_recovery.install()
 
@@ -280,6 +282,11 @@ def _activate_run(
         }
     )
     _core._atomic_write_json(path, current)
+    maybe_publish_canonical_report(
+        Path(_core.OUTPUT_DIR),
+        logger=logging.getLogger("institution_scanner"),
+        reason="daily-complete",
+    )
 
 
 _core._csv_profile = _csv_profile
