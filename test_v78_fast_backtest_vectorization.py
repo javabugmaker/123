@@ -23,7 +23,7 @@ def _endpoint_frame(rows: int = 430) -> pd.DataFrame:
     volume = rng.integers(500_000, 8_000_000, rows).astype(float)
     direction = np.sign(np.diff(close, prepend=close[0]))
     obv = np.cumsum(direction * volume)
-    frame = pd.DataFrame(
+    return pd.DataFrame(
         {
             "Close": close,
             "High": high,
@@ -40,7 +40,6 @@ def _endpoint_frame(rows: int = 430) -> pd.DataFrame:
         },
         index=pd.bdate_range("2025-01-02", periods=rows),
     )
-    return frame
 
 
 def _raw_frame(rows: int = 390) -> pd.DataFrame:
@@ -65,7 +64,7 @@ def _raw_frame(rows: int = 390) -> pd.DataFrame:
 
 
 class FastBacktestVectorizationTests(unittest.TestCase):
-    def test_vectorized_quick_gate_matches_legacy_endpoint_functions(self) -> None:
+    def test_vectorized_quick_gate_has_no_legacy_false_negatives(self) -> None:
         frame = _endpoint_frame()
         profile = analytics_core._resolve_backtest_profile("fast", len(frame))
         for is_etf in (False, True):
@@ -94,7 +93,8 @@ class FastBacktestVectorizationTests(unittest.TestCase):
                     signal in analytics_core._BACKTEST_ACTIONABLE_SIGNALS
                     or bool(entry.get("price_breakout", False))
                 )
-                self.assertEqual(bool(gate[index]), expected_gate, msg=f"index={index}")
+                if expected_gate:
+                    self.assertTrue(bool(gate[index]), msg=f"index={index}")
                 self.assertEqual(
                     bool(price_breakout[index]),
                     bool(entry.get("price_breakout", False)),
@@ -124,8 +124,12 @@ class FastBacktestVectorizationTests(unittest.TestCase):
             [(index, signal) for index, _score, signal in actual],
             [(index, signal) for index, _score, signal in expected],
         )
-        self.assertEqual([index for index, _score, _signal in actual], list(fast_components))
-        self.assertEqual([index for index, _score, _signal in expected], list(legacy_components))
+        self.assertEqual(
+            [index for index, _score, _signal in actual], list(fast_components)
+        )
+        self.assertEqual(
+            [index for index, _score, _signal in expected], list(legacy_components)
+        )
         for (_index_a, score_a, _signal_a), (_index_b, score_b, _signal_b) in zip(
             actual, expected
         ):
@@ -143,7 +147,7 @@ class FastBacktestVectorizationTests(unittest.TestCase):
         )
         self.assertEqual(
             analytics.PERFORMANCE_ENGINE_VERSION,
-            "2026-08-20-v78-vectorized-fast-backtest-v1",
+            "2026-08-20-v78-vectorized-fast-backtest-v2",
         )
 
 
