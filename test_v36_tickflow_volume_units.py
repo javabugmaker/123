@@ -71,8 +71,16 @@ class V36TickFlowVolumeUnitTests(unittest.TestCase):
 
     def test_market_and_compute_caches_are_isolated_from_pre_v36_units(self):
         self.assertIn("v4-tickflow-forward-volume-shares", str(downloader._PRICE_CACHE_DIR))
-        self.assertIn("volume-shares-v1", str(performance_cache.INDICATOR_CACHE_DIR))
-        self.assertIn("volume-shares-v1", str(performance_cache.BACKTEST_CACHE_DIR))
+        # v36 established share-unit isolation; v62/v69 strengthened the same
+        # namespace with deterministic full-history revision fingerprints.
+        self.assertIn(
+            "volume-shares-history-fingerprint-v2",
+            str(performance_cache.INDICATOR_CACHE_DIR),
+        )
+        self.assertIn(
+            "volume-shares-history-fingerprint-v2",
+            str(performance_cache.BACKTEST_CACHE_DIR),
+        )
         self.assertEqual(downloader.TICKFLOW_CANONICAL_VOLUME_UNIT, "shares")
         self.assertTrue(
             any(f"v{version}" in config.PIPELINE_VERSION for version in range(36, 100))

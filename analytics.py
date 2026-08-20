@@ -1,10 +1,12 @@
-"""v78 analytics facade with vectorised FAST-backtest and metadata caching.
+"""v80 analytics facade with vectorised scoring and workstation backtests.
 
 All v73/v76 analytics semantics remain intact. v77 compiled indicator kernels,
 single-pass enrichment, fast cache hashing and worker benchmark memoization are
-installed on the real analytics runtime. v78 additionally vectorizes the FAST
-historical quick gate and caches TickFlow universe/price-limit metadata once per
-spawned worker instead of JSON-decoding the full universe for each ticker.
+installed on the real analytics runtime. v78 vectorizes the FAST historical
+quick gate and caches TickFlow metadata. v79 reuses normalized score columns and
+endpoint computations across filters/scoring/scanner calls. v80 moves FAST
+historical scoring, execution/tradeability and benchmark alignment to ticker-
+level arrays while preserving score, entry, ranking and cache-integrity rules.
 """
 
 from __future__ import annotations
@@ -22,7 +24,9 @@ import analytics_core as _core
 import backtest_acceleration_v77 as _backtest_acceleration
 import backtest_fastpath_v78 as _backtest_fastpath
 import cache_acceleration_v77 as _cache_acceleration
+import calibration_weight_cache_v79 as _calibration_weight_cache
 import indicator_acceleration_v77 as _indicator_acceleration
+import score_acceleration_v79 as _score_acceleration_v79
 import universe_cache_acceleration_v78 as _universe_cache_acceleration
 from analytics_core import *  # noqa: F403
 from backtest_alignment import install_analytics_alignment
@@ -32,8 +36,26 @@ _cache_acceleration.install()
 _universe_cache_acceleration.install()
 _backtest_acceleration.install()
 _analytics_acceleration.install()
+# analytics_acceleration_v77 installs its older score kernels; re-assert v79
+# afterwards so every spawned worker runs the newest exact-formula fast path.
+_score_acceleration_v79.install()
+_calibration_weight_cache.install()
 _backtest_fastpath.install()
 install_analytics_alignment(_core)
+
+# signal_lifecycle_v51 intentionally aliases its module entry to the stable
+# lifecycle core. Preserve the historical private reference for callers that
+# imported it before later lifecycle facades were installed; this is an API
+# compatibility alias only and does not introduce another ranking pass.
+_lifecycle_v51_compat = sys.modules.get("signal_lifecycle_v51")
+if _lifecycle_v51_compat is not None and not hasattr(
+    _lifecycle_v51_compat, "_legacy_finalize_signal_ranking"
+):
+    setattr(
+        _lifecycle_v51_compat,
+        "_legacy_finalize_signal_ranking",
+        getattr(_lifecycle_v51_compat, "finalize_signal_ranking"),
+    )
 
 _LEGACY_APPLY_BACKTEST_PROVENANCE = _core._apply_backtest_provenance
 _LEGACY_CALIBRATION_STABILITY_STATS = _core.calibration_stability_stats
@@ -84,7 +106,7 @@ def _backtest_one_ticker_cached(
     split_dates: tuple[pd.Timestamp | None, pd.Timestamp | None],
     benchmark_signature: str = "",
     *,
-    profile: BacktestExecutionProfile | None = None,
+    profile: _core.BacktestExecutionProfile | None = None,
     benchmark_name: str = "沪深300",
 ) -> tuple[list[dict[str, object]], bool]:
     """Never reuse excess-return cache when the benchmark is absent now."""
@@ -126,7 +148,7 @@ def _backtest_one_ticker_cached(
 
 def _apply_backtest_provenance(
     frame: pd.DataFrame,
-    summary: BacktestSummary,
+    summary: _core.BacktestSummary,
     observed: pd.Series,
 ) -> pd.DataFrame:
     result = _LEGACY_APPLY_BACKTEST_PROVENANCE(frame, summary, observed)
@@ -179,6 +201,15 @@ def calibration_stability_stats(
 
 def _transaction_stage_path(path: Path, destination: Path, stage: Path) -> Path:
     candidate = Path(path)
+    # refresh_candidate_exports may already be told to write directly into the
+    # transaction staging root.  Do not remap such a path a second time or the
+    # final publication would land under .backtest_publication_txn/.../stage.
+    try:
+        candidate.relative_to(stage)
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        return candidate
+    except ValueError:
+        pass
     try:
         relative = candidate.relative_to(destination)
     except ValueError:
@@ -188,12 +219,15 @@ def _transaction_stage_path(path: Path, destination: Path, stage: Path) -> Path:
     return target
 
 
-def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
+def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> None:
     """Run stable backtest postprocess while publishing its result set atomically."""
     import report as report_module
 
     with _BACKTEST_PUBLICATION_LOCK:
-        destination = Path(_core.OUTPUT_DIR)
+        # Resolve the transaction root through the same canonical path the
+        # stable implementation reads. This keeps normal pathlib roots and
+        # compatibility path-like wrappers on one concrete destination.
+        destination = Path(_core.OUTPUT_DIR / "AllResults.csv").parent
         report_module.recover_publication_transactions(destination)
         transaction_root = destination / ".backtest_publication_txn" / uuid.uuid4().hex
         stage = transaction_root / "stage"
@@ -262,6 +296,6 @@ _core.apply_backtest_ranking = apply_backtest_ranking
 _core.BACKTEST_PUBLICATION_INTEGRITY_VERSION = (
     "2026-08-19-v73-journaled-backtest-publication-v2"
 )
-_core.PERFORMANCE_ENGINE_VERSION = "2026-08-20-v78-vectorized-fast-backtest-v2"
+_core.PERFORMANCE_ENGINE_VERSION = "2026-08-20-v80-vectorized-backtest-workstation-v1"
 
 sys.modules[__name__] = _core

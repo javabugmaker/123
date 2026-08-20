@@ -1,8 +1,9 @@
-"""v51 screening facade: turnover liquidity + shared volatility state.
+"""v79 screening facade: turnover liquidity + shared volatility state.
 
-The prior implementation is retained in ``filters_core``.  This facade only
-changes the two screening semantics audited in v51, then patches the core
-module so existing imports and ``run_all_filters`` keep one implementation.
+The prior implementation is retained in ``filters_core``.  This facade keeps
+the v51 turnover semantics and resolves volatility contraction dynamically from
+the shared module so v79 can compute/cache one identical state for both the hard
+filter and scoring path.
 """
 
 from __future__ import annotations
@@ -13,13 +14,13 @@ import numpy as np
 import pandas as pd
 
 import filters_core as _core
+import volatility_state as _volatility_state
 from config import (
     MIN_VOLUME,
     VOLUME_MIN_MEDIAN_TURNOVER_60D,
     VOLUME_TURNOVER_MIN_OBSERVATIONS,
 )
 from filters_core import *  # noqa: F403
-from volatility_state import evaluate_volatility_contraction
 
 _legacy_filter_min_volume = _core.filter_min_volume
 
@@ -64,7 +65,7 @@ def filter_min_volume(df: pd.DataFrame):
 
 def filter_volatility_contraction(df: pd.DataFrame):
     """Use the same robust squeeze state consumed by the scoring model."""
-    state = evaluate_volatility_contraction(df)
+    state = _volatility_state.evaluate_volatility_contraction(df)
     details = state.details()
     if state.available_components <= 0:
         return _core.FilterResult(

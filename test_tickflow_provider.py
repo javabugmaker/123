@@ -93,6 +93,7 @@ class TickFlowProviderTests(TestCase):
                 return_value={"000001.SZ": fetched},
             ) as batch,
             patch.object(downloader, "_save_cache"),
+            patch.object(downloader, "_is_a_share_market_closed", return_value=False),
         ):
             result = downloader.download_batch(tickers)
 
@@ -129,6 +130,7 @@ class TickFlowProviderTests(TestCase):
                 return_value={"600000.SH": recent},
             ) as batch,
             patch.object(downloader, "_save_cache"),
+            patch.object(downloader, "_is_a_share_market_closed", return_value=False),
         ):
             result = downloader.download_batch([downloader.TickerInfo("600000.SH")])
 
@@ -167,6 +169,7 @@ class TickFlowProviderTests(TestCase):
                 side_effect=[{"600000.SH": rebased}, {"600000.SH": full}],
             ) as batch,
             patch.object(downloader, "_save_cache"),
+            patch.object(downloader, "_is_a_share_market_closed", return_value=False),
         ):
             result = downloader.download_batch([downloader.TickerInfo("600000.SH")])
 

@@ -164,7 +164,6 @@ class V51ExecutionIntegrityTests(unittest.TestCase):
             "symbol": symbol,
             "ext": {"limit_up": 0.20, "limit_down": 0.20},
         }
-        downloader.get_price_limit_pct.cache_clear()
         try:
             self.assertAlmostEqual(daily_limit_pct(symbol, is_etf=True), 0.20)
             frame = pd.DataFrame(
@@ -180,7 +179,6 @@ class V51ExecutionIntegrityTests(unittest.TestCase):
                 symbol, frame, 1, is_etf=True
             )
         finally:
-            downloader.get_price_limit_pct.cache_clear()
             if previous is None:
                 downloader._INSTRUMENT_META.pop(symbol, None)
             else:

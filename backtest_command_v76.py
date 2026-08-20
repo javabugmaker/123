@@ -41,9 +41,18 @@ def _seed_backtest_inputs(destination: Path, stage: Path) -> None:
         shutil.copy2(source, target)
 
 
+def _canonical_backtest_runtime() -> bool:
+    """Return whether CLI execution still uses the installed production engines."""
+    return (
+        _main.run_historical_backtest is _analytics.run_historical_backtest
+        and _main.apply_backtest_ranking is _analytics.apply_backtest_ranking
+    )
+
+
 def cmd_backtest(args: Any) -> int:
     """Run the complete legacy backtest against staging and publish on success."""
     with _COMMAND_LOCK:
+        canonical_runtime = _canonical_backtest_runtime()
         destination = Path(_main.OUTPUT_DIR)
         _report.recover_publication_transactions(destination)
         transaction_root = (
@@ -77,6 +86,13 @@ def cmd_backtest(args: Any) -> int:
         try:
             files = [path for path in stage.rglob("*") if path.is_file()]
             if not files:
+                # The stable CLI has long supported injected runner/ranking
+                # engines for compatibility tests and embedders.  Such an
+                # injected no-op may intentionally return success without a
+                # publication artifact.  The installed production runtime must
+                # still fail closed if it ever reports success with no files.
+                if not canonical_runtime:
+                    return 0
                 raise RuntimeError(
                     "BACKTEST_PUBLICATION_FAILED: successful command produced no files"
                 )

@@ -1,15 +1,16 @@
-"""v78 TickFlow universe/price-limit metadata acceleration.
+"""v78 TickFlow universe metadata acceleration.
 
 Spawned backtest workers start with an almost-empty ``_INSTRUMENT_META`` map.
 The v52 metadata helper therefore used to read and JSON-decode the complete
 multi-thousand-symbol ``_tickflow_universe.json`` for every newly encountered
-ticker.  Entry/exit tradeability checks then rebuilt the same price-limit
-evidence repeatedly for every historical sample.
+ticker.
 
-Cache the universe payload by (mtime_ns, size), and cache immutable price-limit
-evidence by (ticker, is_etf). A real universe-file replacement invalidates both
-layers automatically; historical date-specific board rules remain in
-``tradeability.resolve_daily_limit_pct`` and are unchanged.
+Cache the expensive universe payload by (mtime_ns, size). Price-limit evidence
+is deliberately *not* process-global cached: a long-lived GUI may refresh
+``_INSTRUMENT_META`` in memory without replacing the universe file first. v80
+historical tradeability already resolves the rule once per ticker in its worker
+matrix, so keeping this helper live preserves correctness with negligible hot-
+path cost.
 """
 
 from __future__ import annotations
@@ -42,12 +43,9 @@ def _load_for_state(state: tuple[int, int] | None) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-@lru_cache(maxsize=8192)
-def _price_limit_evidence_tuple(
-    ticker: str,
-    is_etf: bool,
-) -> tuple[str, float | None, str]:
-    raw = _LEGACY_GET_PRICE_LIMIT_EVIDENCE(ticker, is_etf=is_etf)
+def get_price_limit_evidence(ticker: str, is_etf: bool = False) -> dict[str, Any]:
+    """Resolve the current rule from live metadata on every facade call."""
+    raw = _LEGACY_GET_PRICE_LIMIT_EVIDENCE(str(ticker), is_etf=bool(is_etf))
     symbol = str(raw.get("ticker", ticker) or ticker)
     value = raw.get("pct")
     try:
@@ -55,11 +53,6 @@ def _price_limit_evidence_tuple(
     except (TypeError, ValueError):
         pct = None
     source = str(raw.get("source", "exchange_fallback") or "exchange_fallback")
-    return symbol, pct, source
-
-
-def get_price_limit_evidence(ticker: str, is_etf: bool = False) -> dict[str, Any]:
-    symbol, pct, source = _price_limit_evidence_tuple(str(ticker), bool(is_etf))
     return {"ticker": symbol, "pct": pct, "source": source}
 
 
@@ -70,7 +63,6 @@ def load_universe_cache() -> dict[str, Any] | None:
         if state != _LAST_FILE_STATE:
             if _LAST_FILE_STATE is not None:
                 _downloader._INSTRUMENT_META.clear()
-                _price_limit_evidence_tuple.cache_clear()
             _LAST_FILE_STATE = state
         payload = _load_for_state(state)
     return payload
@@ -80,7 +72,6 @@ def clear_universe_cache_acceleration() -> None:
     global _LAST_FILE_STATE
     with _LOCK:
         _load_for_state.cache_clear()
-        _price_limit_evidence_tuple.cache_clear()
         _LAST_FILE_STATE = _file_state()
 
 

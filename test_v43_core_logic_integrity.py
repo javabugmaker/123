@@ -6,6 +6,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
+import signal_lifecycle_v51
 from analytics import _decision_quality_multiplier
 from config import (
     QUALITY_MULTIPLIER_FAIL,
@@ -280,7 +281,10 @@ class V43CoreLogicIntegrityTests(unittest.TestCase):
                 )
             )
         frame = pd.DataFrame(rows)
-        core_finalize = finalize_signal_ranking.__globals__["_legacy_finalize_signal_ranking"]
+        # v43 originally reached this function through the facade function's
+        # private globals. Later lifecycle facades replace sys.modules entries,
+        # so use the explicit v51 stable-core reference instead.
+        core_finalize = signal_lifecycle_v51._legacy_finalize_signal_ranking
         core = core_finalize(frame)
         facade = finalize_signal_ranking(frame)
         for column in (

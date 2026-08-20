@@ -15,24 +15,28 @@ from tradeability import daily_limit_pct, price_limit_source
 
 
 class V52RuntimeOutputIntegrityTests(unittest.TestCase):
+    @staticmethod
+    def _clear_optional_price_limit_caches() -> None:
+        for name in ("get_price_limit_pct", "get_price_limit_evidence"):
+            function = getattr(downloader, name, None)
+            clear = getattr(function, "cache_clear", None)
+            if callable(clear):
+                clear()
+
     def setUp(self) -> None:
-        downloader.get_price_limit_pct.cache_clear()
-        if hasattr(downloader, "get_price_limit_evidence") and hasattr(
-            downloader.get_price_limit_evidence, "cache_clear"
-        ):
-            downloader.get_price_limit_evidence.cache_clear()
+        self._clear_optional_price_limit_caches()
 
     def tearDown(self) -> None:
-        downloader.get_price_limit_pct.cache_clear()
+        self._clear_optional_price_limit_caches()
 
     def _with_metadata(self, symbol: str, metadata: dict) -> object:
         previous = downloader._INSTRUMENT_META.get(symbol)
         downloader._INSTRUMENT_META[symbol] = metadata
-        downloader.get_price_limit_pct.cache_clear()
+        self._clear_optional_price_limit_caches()
         return previous
 
     def _restore_metadata(self, symbol: str, previous: object) -> None:
-        downloader.get_price_limit_pct.cache_clear()
+        self._clear_optional_price_limit_caches()
         if previous is None:
             downloader._INSTRUMENT_META.pop(symbol, None)
         else:
@@ -46,7 +50,9 @@ class V52RuntimeOutputIntegrityTests(unittest.TestCase):
         self.assertIn("v52", config.OUTPUT_CONTRACT_VERSION)
         self.assertIn("v52", config.MARKET_DATA_VERSION)
         self.assertIn("v52", config.BACKTEST_PROVENANCE_VERSION)
-        self.assertEqual(performance_cache.BACKTEST_CACHE_VERSION, "v9")
+        # v52 established the v9 boundary; v62 intentionally advanced it to
+        # v10 for deterministic full-history OHLCV revision fingerprints.
+        self.assertEqual(performance_cache.BACKTEST_CACHE_VERSION, "v10")
 
     def test_tickflow_limit_price_levels_are_not_misread_as_ratios(self) -> None:
         symbol = "600769.SH"
