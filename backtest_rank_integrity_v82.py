@@ -1,4 +1,4 @@
-"""v82 backtest ranking semantic-integrity helpers.
+"""v82 ranking semantic-integrity helpers.
 
 The live scan builds ``InstitutionalScore`` without signal-recency decay and the
 canonical lifecycle ranker applies recency exactly once. The historical
@@ -7,10 +7,11 @@ legacy code, embeds the same recency multiplier before calling the lifecycle
 ranker. That makes a post-backtest result decay recency twice.
 
 A permanently installed guard keeps the analytics lifecycle entry point stable.
-A ``ContextVar`` activates normalization only inside the current backtest
-publication context, so unrelated threads/tasks retain the ordinary live-scan
-semantics. No model weight, threshold, decision rule, or public scanner formula
-is changed.
+A ``ContextVar`` activates recency normalization only inside the current
+backtest publication context, so unrelated threads/tasks retain ordinary live-
+scan semantics. The same stable guard stamps observational ranking-time decision
+provenance after the one canonical ranking pass. No model weight, threshold,
+decision rule, or public scanner formula is changed.
 """
 
 from __future__ import annotations
@@ -21,6 +22,8 @@ from typing import Any, Callable, Iterator
 
 import numpy as np
 import pandas as pd
+
+from ranking_provenance_v82 import stamp_ranking_decision_provenance
 
 BACKTEST_RECENCY_NORMALIZATION_VERSION = "2026-08-21-v82-single-recency-ranking-v1"
 _RECENCY_NORMALIZATION_ACTIVE: ContextVar[bool] = ContextVar(
@@ -83,11 +86,11 @@ def strip_embedded_backtest_recency(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def install_single_recency_ranking_guard(module: Any) -> None:
-    """Install one stable, context-aware guard on an analytics module.
+    """Install one stable context-aware integrity guard on an analytics module.
 
-    Installation is idempotent. The guarded function behaves exactly like the
-    original unless ``single_recency_ranking_context`` is active in the current
-    context. This avoids transaction-time global monkey-patching.
+    Installation is idempotent. Recency normalization is active only inside
+    ``single_recency_ranking_context``. Ranking-time decision provenance is
+    always stamped on the returned canonical result and is observational only.
     """
     if bool(getattr(module, _GUARD_INSTALLED_ATTR, False)):
         return
@@ -99,7 +102,8 @@ def install_single_recency_ranking_guard(module: Any) -> None:
             if _RECENCY_NORMALIZATION_ACTIVE.get()
             else frame
         )
-        return original(candidate)
+        result = original(candidate)
+        return stamp_ranking_decision_provenance(result)
 
     setattr(module, _GUARD_ORIGINAL_ATTR, original)
     module.finalize_signal_ranking = guarded_finalize
