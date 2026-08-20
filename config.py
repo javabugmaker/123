@@ -108,7 +108,7 @@ BACKTEST_PROVENANCE_VERSION: str = (
     "2026-08-19-v63-benchmark-unavailable-no-cache-reuse-"
     "2026-08-19-v62-history-revision-cache-v10-"
     "2026-08-19-v57-unstable-peer-confidence-shrink-"
-    "2026-08-19-v56-fresh-benchmark-audit-"
+    "2026-08-19-v56-benchmark-refresh-peer-evidence-audit-"
     "2026-08-17-v52-date-aware-limit-rules-"
     + _v51.BACKTEST_PROVENANCE_VERSION
 )
