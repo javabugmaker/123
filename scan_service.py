@@ -1,9 +1,8 @@
 """v77 scan-service facade with workstation runtime + v68 integrity contracts.
 
-Importing the v77 runtime first caps nested native math threads before scanner /
-NumPy enter through the in-process GUI path. Snapshot-safe resume, pinned frames,
-input fingerprints, freshness gates and publication-coupled checkpoint cleanup
-remain unchanged.
+``checkpoint_inputs_v59`` imports the public config facade first; v77 config
+installs native-thread limits before the scanner/NumPy stack is reached.  The
+remaining snapshot, freshness and publication contracts are unchanged.
 """
 
 from __future__ import annotations
@@ -13,7 +12,6 @@ import sys
 import threading
 from pathlib import Path
 
-import workstation_runtime_v77 as _runtime  # noqa: F401
 import checkpoint_inputs_v59 as _checkpoint_inputs
 import fundamental_refresh_v61 as _fundamental_refresh
 import scanner as _scanner
