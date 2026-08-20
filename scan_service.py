@@ -37,6 +37,18 @@ _legacy_execute_scan = _core.execute_scan
 _core._legacy_execute_scan = _legacy_execute_scan
 
 
+def _canonical_full_csv(execution: object) -> Path | None:
+    """Return the published full-result path when this execution exposes one."""
+    value = getattr(execution, "full_csv", None)
+    if value is None:
+        return None
+    try:
+        path = Path(value)
+    except TypeError:
+        return None
+    return path if str(path) else None
+
+
 def _record_full_market_snapshot(
     execution: _core.ScanExecutionResult,
     request: _core.ScanRequest,
@@ -45,8 +57,14 @@ def _record_full_market_snapshot(
     """Persist only a complete stock-market scan; never a manual subset."""
     if request.tickers or not request.include_stocks:
         return
+    full_csv = _canonical_full_csv(execution)
+    if full_csv is None:
+        # Observability must never change the legacy publication contract. Some
+        # integration tests and custom callers intentionally return sentinel
+        # success objects without canonical file metadata.
+        return
     try:
-        snapshot = record_universe_snapshot_file(execution.full_csv)
+        snapshot = record_universe_snapshot_file(full_csv)
     except (OSError, ValueError, TypeError, ImportError) as exc:
         # The canonical result set is already committed. Snapshot capture is
         # prospective bias mitigation and must not roll back a valid scan.
@@ -64,9 +82,12 @@ def _refresh_full_market_audit(
     """Audit only an automatic market-wide scan, never a hand-picked subset."""
     if request.tickers:
         return
+    full_csv = _canonical_full_csv(execution)
+    if full_csv is None:
+        return
     try:
         payload = run_audit(
-            Path(execution.full_csv),
+            full_csv,
             Path(_scanner.OUTPUT_DIR) / "audit",
         )
     except (OSError, ValueError, TypeError, KeyError, ImportError) as exc:
