@@ -1,12 +1,11 @@
-"""InstitutionScanner v76 data/recovery/publication integrity facade.
+"""InstitutionScanner v77 vectorised-workstation configuration facade.
 
-TickFlow Free remains the sole market-data client. v55-v75 harden settlement,
-execution freshness, resume state, fundamentals, derived caches and crash-safe
-publication; v76 wraps the complete standalone backtest command so calibration,
-summary, AllResults and candidate outputs are published as one journaled unit.
-
-Technical scoring, backtest split policy and research ranking weights are
-unchanged.
+v77 keeps every trading/scoring contract from v76 and changes only execution
+strategy: compiled/vectorised indicator kernels, bounded native math threads,
+physical-core-oriented backtest multiprocessing and a tighter but still
+conservative incremental backtest tail.  The defaults target a 6-core/12-thread
+mobile workstation and remain overridable through INSTITUTION_SCANNER_* env
+variables.
 """
 
 from __future__ import annotations
@@ -15,11 +14,23 @@ import sys
 
 import config_v51 as _v51
 from config_v51 import *  # noqa: F403
+from workstation_runtime_v77 import runtime_profile
+
+_RUNTIME = runtime_profile()
+
+# Performance-only overrides.  Scoring constants and market-data semantics are
+# intentionally untouched.
+SCAN_THREADS: int = _RUNTIME.scan_threads
+BACKTEST_MAX_PROCESSES: int = _RUNTIME.backtest_processes
+BACKTEST_CHUNK_SIZE: int = _RUNTIME.backtest_chunk_size
+BACKTEST_FAST_CHUNK_SIZE: int = _RUNTIME.backtest_fast_chunk_size
+BACKTEST_INCREMENTAL_TAIL_BARS: int = _RUNTIME.backtest_incremental_tail_bars
 
 SCORING_VERSION: str = (
     "2026-08-17-v52-setup-backed-breakout-" + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-20-v77-vectorized-workstation-runtime-"
     "2026-08-19-v76-whole-backtest-command-transaction-"
     "2026-08-19-v75-idempotent-publication-recovery-"
     "2026-08-19-v74-daily-hard-crash-recovery-"
@@ -80,6 +91,7 @@ MARKET_DATA_VERSION: str = (
     + _v51.MARKET_DATA_VERSION
 )
 BACKTEST_PROVENANCE_VERSION: str = (
+    "2026-08-20-v77-incremental-tail-360-runtime-only-"
     "2026-08-19-v76-whole-command-publication-"
     "2026-08-19-v75-idempotent-ranking-recovery-"
     "2026-08-19-v73-journaled-backtest-publication-"
@@ -138,6 +150,7 @@ DAILY_RECOVERY_INTEGRITY_VERSION: str = (
 BACKTEST_COMMAND_INTEGRITY_VERSION: str = (
     "2026-08-19-v76-whole-command-transaction-v1"
 )
+PERFORMANCE_ENGINE_VERSION: str = "2026-08-20-v77-vectorized-indicators-6c12t-v1"
 
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
 CALIBRATION_GOVERNANCE_VERSION: str = "2026-08-19-v57-unstable-stable-ratio-shrink-v1"
