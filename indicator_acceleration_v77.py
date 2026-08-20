@@ -56,7 +56,7 @@ def wilder_average(series: pd.Series, period: int) -> pd.Series:
         output[seed_position] = seed
         tail = values[seed_position + 1 : end]
         if tail.size:
-            filtered, _state = lfilter(
+            filtered, _ = lfilter(
                 [alpha],
                 [1.0, -beta],
                 tail,
@@ -130,12 +130,12 @@ def _rolling_regression(series: pd.Series, window: int) -> tuple[pd.Series, pd.S
 
 
 def _rolling_slope(series: pd.Series, window: int) -> pd.Series:
-    slope, _r2 = _rolling_regression(series, window)
+    slope, _ = _rolling_regression(series, window)
     return slope
 
 
 def _rolling_r2(series: pd.Series, window: int) -> pd.Series:
-    _slope, r2 = _rolling_regression(series, window)
+    _, r2 = _rolling_regression(series, window)
     return r2
 
 
