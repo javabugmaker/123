@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 import analytics_core as _core
@@ -120,9 +119,6 @@ def _backtest_one_ticker_cached(
             if same_market:
                 return _core._relabel_sample_splits(cached_samples, split_dates), True
 
-            # Recompute from the oldest signal whose outcome could have changed
-            # after the previous cache ended. If many bars were appended, using
-            # old_rows automatically covers the complete appended interval.
             bounded_old_rows = min(max(old_rows, 252), len(frame))
             cutoff_index = max(251, bounded_old_rows - _maturity_rewind_bars())
             warmup = max(
