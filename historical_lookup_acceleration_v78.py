@@ -5,14 +5,16 @@ The stable implementation correctly caches the parsed snapshot index, but it
 still glob/stat-scans the snapshot directory on every sample merely to rebuild
 its cache key, then linearly walks that ticker's date entries.
 
-Keep refresh detection with a short worker-local TTL, reuse the parsed index,
-and use bisect for the date lookup. A file change is observed within a few
-seconds; the actual eligibility semantics are identical.
+Keep refresh detection with a short worker-local TTL, reuse both the parsed
+index and per-ticker sorted date tuples, and use bisect for each sample lookup.
+A file change is observed within a few seconds; eligibility semantics are
+identical.
 """
 
 from __future__ import annotations
 
 import bisect
+import sys
 import threading
 import time
 from pathlib import Path
@@ -26,13 +28,14 @@ _LOCK = threading.RLock()
 _STATE_DEADLINE = 0.0
 _STATE_KEY: tuple[str, tuple[tuple[str, int, int], ...]] | None = None
 _STATE_INDEX: dict[str, tuple[tuple[pd.Timestamp, bool, str], ...]] = {}
+_STATE_DATES: dict[str, tuple[pd.Timestamp, ...]] = {}
 _INSTALLED = False
 
 
 def _refresh_state(
     snapshot_dir: Path | None = None,
 ) -> dict[str, tuple[tuple[pd.Timestamp, bool, str], ...]]:
-    global _STATE_DEADLINE, _STATE_KEY, _STATE_INDEX
+    global _STATE_DEADLINE, _STATE_KEY, _STATE_INDEX, _STATE_DATES
     now = time.monotonic()
     if snapshot_dir is None and now < _STATE_DEADLINE:
         return _STATE_INDEX
@@ -45,6 +48,10 @@ def _refresh_state(
         key = (directory_text, signature)
         if key != _STATE_KEY:
             _STATE_INDEX = _history._load_snapshot_index(directory_text, signature)
+            _STATE_DATES = {
+                ticker: tuple(entry[0] for entry in entries)
+                for ticker, entries in _STATE_INDEX.items()
+            }
             _STATE_KEY = key
         if snapshot_dir is None:
             _STATE_DEADLINE = now + _STATE_TTL_SECONDS
@@ -57,12 +64,15 @@ def point_in_time_eligibility(
     snapshot_dir: Path | None = None,
 ) -> tuple[bool | None, str]:
     index = _refresh_state(snapshot_dir)
-    entries = index.get(_history.normalize_ticker(ticker), ())
+    symbol = _history.normalize_ticker(ticker)
+    entries = index.get(symbol, ())
     if not entries:
         return None, "no_point_in_time_snapshot"
 
     cutoff = pd.Timestamp(at_date)
-    dates = [entry[0] for entry in entries]
+    dates = _STATE_DATES.get(symbol)
+    if dates is None:
+        dates = tuple(entry[0] for entry in entries)
     position = bisect.bisect_right(dates, cutoff) - 1
     if position < 0:
         return None, "snapshot_starts_after_signal"
@@ -73,11 +83,12 @@ def point_in_time_eligibility(
 
 
 def clear_historical_lookup_acceleration() -> None:
-    global _STATE_DEADLINE, _STATE_KEY, _STATE_INDEX
+    global _STATE_DEADLINE, _STATE_KEY, _STATE_INDEX, _STATE_DATES
     with _LOCK:
         _STATE_DEADLINE = 0.0
         _STATE_KEY = None
         _STATE_INDEX = {}
+        _STATE_DATES = {}
 
 
 def install() -> None:
@@ -85,10 +96,6 @@ def install() -> None:
     if _INSTALLED:
         return
     _history.point_in_time_eligibility = point_in_time_eligibility
-
-    # analytics_core imports the function directly, so update that bound name
-    # when the analytics runtime is already present.
-    import sys
 
     analytics_core = sys.modules.get("analytics_core")
     if analytics_core is not None:
