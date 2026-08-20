@@ -12,7 +12,7 @@ import web_report_v81 as web
 
 class WebReportV81Tests(unittest.TestCase):
     def _write_csv(self, path: Path, rows: list[dict[str, object]]) -> None:
-        columns = list(rows[0])
+        columns = list(dict.fromkeys(key for row in rows for key in row))
         with path.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=columns)
             writer.writeheader()
