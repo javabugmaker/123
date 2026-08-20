@@ -3,15 +3,12 @@
 These replacements preserve the public indicator formulas while removing the
 largest Python/pandas overheads in the daily scan and exact backtest:
 
+* True Range uses NumPy maximums instead of a temporary 3-column DataFrame;
 * Wilder smoothing uses SciPy's compiled one-pole filter per finite segment;
 * rolling linear-regression slope/R² share NumPy prefix sums instead of many
   pandas rolling objects;
 * Volume Profile uses a difference-array range add instead of allocating a
   rows-by-bins boolean matrix for every ticker/candidate.
-
-The installer patches ``indicators`` in place, so existing references to
-``compute_all_indicators`` continue to use the accelerated globals without
-changing scoring or signal APIs.
 """
 
 from __future__ import annotations
@@ -26,6 +23,23 @@ from scipy.signal import lfilter
 import indicators as _ind
 
 _INSTALLED = False
+
+
+def true_range(df: pd.DataFrame) -> pd.Series:
+    high = pd.to_numeric(df["High"], errors="coerce").to_numpy(dtype=np.float64)
+    low = pd.to_numeric(df["Low"], errors="coerce").to_numpy(dtype=np.float64)
+    close = pd.to_numeric(df["Close"], errors="coerce").to_numpy(dtype=np.float64)
+    previous = np.empty_like(close)
+    if previous.size:
+        previous[0] = np.nan
+        previous[1:] = close[:-1]
+    valid = np.isfinite(high) & np.isfinite(low) & np.isfinite(previous)
+    result = np.maximum(
+        np.maximum(high - low, np.abs(high - previous)),
+        np.abs(low - previous),
+    )
+    result[~valid] = np.nan
+    return pd.Series(result, index=df.index, dtype=np.float64)
 
 
 def wilder_average(series: pd.Series, period: int) -> pd.Series:
@@ -68,7 +82,6 @@ def wilder_average(series: pd.Series, period: int) -> pd.Series:
 
 
 def _window_sums(values: np.ndarray, window: int) -> tuple[np.ndarray, ...]:
-    """Return rolling sufficient statistics using one set of cumulative sums."""
     if window <= 0:
         raise ValueError("window must be positive")
     count = len(values)
@@ -107,7 +120,6 @@ def _rolling_regression(series: pd.Series, window: int) -> tuple[pd.Series, pd.S
         denominator = sum_xx - (sum_x * sum_x) / count
         numerator = sum_xy - (sum_x * sum_y) / count
         slope = numerator / denominator
-
         covariance = count * sum_xy - sum_x * sum_y
         variance_x = count * sum_xx - sum_x * sum_x
         variance_y = count * sum_yy - sum_y * sum_y
@@ -150,7 +162,6 @@ def compute_volume_profile(
     bins: int = _ind.VOLUME_PROFILE_BINS,
     lookback: int = _ind.VOLUME_PROFILE_LOOKBACK,
 ) -> None:
-    """Compute the same inclusive-bin profile using O(rows + bins) range adds."""
     if df is None or df.empty or bins <= 0:
         return
     lookback = min(int(lookback), len(df))
@@ -235,6 +246,7 @@ def install() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
+    _ind.true_range = true_range
     _ind.wilder_average = wilder_average
     _ind._rolling_slope = _rolling_slope
     _ind._rolling_r2 = _rolling_r2
@@ -247,6 +259,7 @@ def install() -> None:
 
     scanner_module = sys.modules.get("scanner")
     if scanner_module is not None:
+        setattr(scanner_module, "true_range", true_range)
         setattr(scanner_module, "wilder_average", wilder_average)
     _INSTALLED = True
 
@@ -257,6 +270,7 @@ install()
 def acceleration_status() -> dict[str, Any]:
     return {
         "installed": bool(_INSTALLED),
+        "true_range": _ind.true_range is true_range,
         "wilder": _ind.wilder_average is wilder_average,
         "rolling_regression": _ind.compute_regression is compute_regression,
         "volume_profile": _ind.compute_volume_profile is compute_volume_profile,
