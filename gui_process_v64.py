@@ -30,9 +30,25 @@ def _popen_group_kwargs() -> dict[str, Any]:
 
 def terminate_process_tree(process: subprocess.Popen[str] | None) -> None:
     """Best-effort termination of the CLI process and its multiprocessing tree."""
-    if process is None or process.poll() is not None:
+    if process is None:
         return
-    pid = int(process.pid)
+    try:
+        return_code = process.poll()
+    except (OSError, subprocess.SubprocessError):
+        return_code = None
+    # A real Popen.poll() returns None while running and an integer after exit.
+    # Treat unexpected compatibility objects conservatively as still running so
+    # cancellation can fall back to their direct terminate() method.
+    if isinstance(return_code, int):
+        return
+    try:
+        pid = int(process.pid)
+    except (TypeError, ValueError, AttributeError):
+        try:
+            process.terminate()
+        except OSError:
+            pass
+        return
     if os.name == "nt":
         # taskkill /T walks the child process tree; /F is required because
         # ProcessPoolExecutor workers do not share a console control handler.
