@@ -1,11 +1,12 @@
-"""v79 analytics facade with vectorised scoring and FAST backtests.
+"""v80 analytics facade with vectorised scoring and workstation backtests.
 
 All v73/v76 analytics semantics remain intact. v77 compiled indicator kernels,
 single-pass enrichment, fast cache hashing and worker benchmark memoization are
 installed on the real analytics runtime. v78 vectorizes the FAST historical
 quick gate and caches TickFlow metadata. v79 reuses normalized score columns and
-endpoint computations across filters/scoring/scanner calls while preserving all
-score, entry and ranking formulas.
+endpoint computations across filters/scoring/scanner calls. v80 moves FAST
+historical scoring, execution/tradeability and benchmark alignment to ticker-
+level arrays while preserving score, entry, ranking and cache-integrity rules.
 """
 
 from __future__ import annotations
@@ -269,6 +270,6 @@ _core.apply_backtest_ranking = apply_backtest_ranking
 _core.BACKTEST_PUBLICATION_INTEGRITY_VERSION = (
     "2026-08-19-v73-journaled-backtest-publication-v2"
 )
-_core.PERFORMANCE_ENGINE_VERSION = "2026-08-20-v79-vectorized-score-pipeline-v1"
+_core.PERFORMANCE_ENGINE_VERSION = "2026-08-20-v80-vectorized-backtest-workstation-v1"
 
 sys.modules[__name__] = _core
