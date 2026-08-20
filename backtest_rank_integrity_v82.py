@@ -1,25 +1,34 @@
 """v82 backtest ranking semantic-integrity helpers.
 
 The live scan builds ``InstitutionalScore`` without signal-recency decay and the
-canonical lifecycle ranker applies recency exactly once.  The historical
+canonical lifecycle ranker applies recency exactly once. The historical
 post-processing path rebuilds ``InstitutionalScore`` after calibration and, in
 legacy code, embeds the same recency multiplier before calling the lifecycle
-ranker.  That makes a post-backtest result decay recency twice.
+ranker. That makes a post-backtest result decay recency twice.
 
-This module normalizes that embedded multiplier only for the single canonical
-backtest finalization call.  It does not change component weights, entry
-thresholds, lifecycle decisions, or the live-scan score formula.
+A permanently installed guard keeps the analytics lifecycle entry point stable.
+A ``ContextVar`` activates normalization only inside the current backtest
+publication context, so unrelated threads/tasks retain the ordinary live-scan
+semantics. No model weight, threshold, decision rule, or public scanner formula
+is changed.
 """
 
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Callable, Iterator
 
 import numpy as np
 import pandas as pd
 
 BACKTEST_RECENCY_NORMALIZATION_VERSION = "2026-08-21-v82-single-recency-ranking-v1"
+_RECENCY_NORMALIZATION_ACTIVE: ContextVar[bool] = ContextVar(
+    "institution_scanner_v82_backtest_recency_normalization",
+    default=False,
+)
+_GUARD_INSTALLED_ATTR = "_v82_single_recency_guard_installed"
+_GUARD_ORIGINAL_ATTR = "_v82_single_recency_guard_original"
 
 
 def _number(
@@ -40,7 +49,7 @@ def strip_embedded_backtest_recency(frame: pd.DataFrame) -> pd.DataFrame:
     """Remove the legacy pre-ranking recency multiplier exactly once.
 
     ``SignalRecencyFactor`` is bounded to the same [0.7, 1.0] domain consumed by
-    the lifecycle engine.  Dividing by ``0.8 + 0.2 * factor`` restores the
+    the lifecycle engine. Dividing by ``0.8 + 0.2 * factor`` restores the
     recency-neutral score anchor; the lifecycle ranker then applies the one
     intended recency decay.
     """
@@ -73,21 +82,35 @@ def strip_embedded_backtest_recency(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-@contextmanager
-def single_recency_ranking_patch(module: Any) -> Iterator[None]:
-    """Patch one analytics module's lifecycle call for a backtest transaction.
+def install_single_recency_ranking_guard(module: Any) -> None:
+    """Install one stable, context-aware guard on an analytics module.
 
-    The wrapper is deliberately scoped by a context manager so the public live
-    scanner retains its normal lifecycle implementation before and after a
-    backtest publication.
+    Installation is idempotent. The guarded function behaves exactly like the
+    original unless ``single_recency_ranking_context`` is active in the current
+    context. This avoids transaction-time global monkey-patching.
     """
+    if bool(getattr(module, _GUARD_INSTALLED_ATTR, False)):
+        return
     original: Callable[[pd.DataFrame], pd.DataFrame] = module.finalize_signal_ranking
 
-    def finalize_once(frame: pd.DataFrame) -> pd.DataFrame:
-        return original(strip_embedded_backtest_recency(frame))
+    def guarded_finalize(frame: pd.DataFrame) -> pd.DataFrame:
+        candidate = (
+            strip_embedded_backtest_recency(frame)
+            if _RECENCY_NORMALIZATION_ACTIVE.get()
+            else frame
+        )
+        return original(candidate)
 
-    module.finalize_signal_ranking = finalize_once
+    setattr(module, _GUARD_ORIGINAL_ATTR, original)
+    module.finalize_signal_ranking = guarded_finalize
+    setattr(module, _GUARD_INSTALLED_ATTR, True)
+
+
+@contextmanager
+def single_recency_ranking_context() -> Iterator[None]:
+    """Activate one-recency semantics only for the current execution context."""
+    token = _RECENCY_NORMALIZATION_ACTIVE.set(True)
     try:
         yield
     finally:
-        module.finalize_signal_ranking = original
+        _RECENCY_NORMALIZATION_ACTIVE.reset(token)
