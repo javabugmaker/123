@@ -332,13 +332,13 @@ def download_ticker(
 
 
 def download_batch(
-    tickers: list[TickerInfo],
+    tickers: list[_core.TickerInfo],
     desc: str = "Downloading",
     force: bool = False,
     source: str | None = None,
     cache_first: bool = False,
     skip_tickers: set[str] | None = None,
-    progress_callback: DownloadProgressCallback | None = None,
+    progress_callback: _core.DownloadProgressCallback | None = None,
 ) -> dict[str, pd.DataFrame]:
     frames = _core._FREE_EOD_LEGACY_DOWNLOAD_BATCH(
         tickers,
