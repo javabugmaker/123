@@ -210,7 +210,10 @@ def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> N
     import report as report_module
 
     with _BACKTEST_PUBLICATION_LOCK:
-        destination = Path(_core.OUTPUT_DIR)
+        # Resolve the transaction root through the same canonical path the
+        # stable implementation reads. This keeps normal pathlib roots and
+        # compatibility path-like wrappers on one concrete destination.
+        destination = Path(_core.OUTPUT_DIR / "AllResults.csv").parent
         report_module.recover_publication_transactions(destination)
         transaction_root = destination / ".backtest_publication_txn" / uuid.uuid4().hex
         stage = transaction_root / "stage"
