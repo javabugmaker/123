@@ -1,11 +1,11 @@
 """v78 backtest worker acceleration bundle.
 
 Each ProcessPool worker reuses one benchmark DataFrame for hundreds/thousands of
-tickers.  Install the v77 numeric market-hash fast path before capturing the
-benchmark delegate, then layer benchmark memoization on top.  v78 also installs
-cache-aware incremental-tail recomputation and historical-universe lookup
-memoization in every spawned worker through the normal ``import analytics``
-initializer path.
+tickers. Install the v77 numeric market-hash fast path before capturing the
+benchmark delegate, then layer benchmark memoization on top. v78 also installs
+cache-aware incremental recomputation, historical-universe lookup memoization
+and profile-aware process tuning in every spawned worker through the normal
+``import analytics`` initializer path.
 """
 
 from __future__ import annotations
@@ -16,15 +16,14 @@ import pandas as pd
 
 import analytics_core as _core
 import backtest_incremental_v78 as _incremental
+import backtest_worker_tuning_v78 as _worker_tuning
 import cache_acceleration_v77 as _cache_acceleration
 import historical_lookup_acceleration_v78 as _historical_lookup
 
-# This module can be imported before analytics.py reaches its explicit install
-# sequence (notably under Windows spawn). Guarantee the fast hash is installed
-# before benchmark delegates are captured.
 _cache_acceleration.install()
 _incremental.install()
 _historical_lookup.install()
+_worker_tuning.install()
 
 _LEGACY_MARKET_CACHE_STATE = _core.market_cache_state
 _LEGACY_MARKET_PREFIX_MATCHES = _core.market_prefix_matches
@@ -88,6 +87,7 @@ def install() -> None:
     _cache_acceleration.install()
     _incremental.install()
     _historical_lookup.install()
+    _worker_tuning.install()
     _core.market_cache_state = market_cache_state
     _core.market_prefix_matches = market_prefix_matches
     _INSTALLED = True
