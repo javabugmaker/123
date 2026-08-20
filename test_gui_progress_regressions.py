@@ -38,6 +38,9 @@ class GuiProgressRegressionTests(unittest.TestCase):
             patch.object(downloader, "_save_cache"),
             patch.object(downloader, "_record_market_manifest"),
             patch.object(downloader, "_flush_market_manifest"),
+            # This fixture verifies outer-batch progress only. Its fixed 2026-08-07
+            # dates must not enter the real post-close settlement contract.
+            patch.object(downloader, "_is_a_share_market_closed", return_value=False),
         ):
             result = downloader.download_batch(
                 tickers,
