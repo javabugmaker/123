@@ -67,10 +67,10 @@ def resolve_backtest_profile(mode: str | None, ticker_count: int):
     if name == "fast":
         # ~8-12 chunks/worker provides load balancing but sharply reduces
         # Windows spawn/future/IPC overhead on 5k-7k symbol universes.
-        target = int(math.ceil(total / max(1, physical * 10)))
+        target = math.ceil(total / max(1, physical * 10))
         chunk_size = min(128, max(32, target))
     else:
-        target = int(math.ceil(total / max(1, physical * 8)))
+        target = math.ceil(total / max(1, physical * 8))
         chunk_size = min(16, max(4, target))
     return replace(profile, chunk_size=chunk_size)
 
