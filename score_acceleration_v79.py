@@ -23,6 +23,7 @@ _LEGACY_SERIES = _score._series
 _LEGACY_LATEST = _score._latest
 _LEGACY_ROLLING_MEAN = _score._rolling_mean
 _LEGACY_SAFE_RETURN = _score._safe_return
+_LEGACY_SCORE_DIMENSIONS_AVAILABLE = _score._score_dimensions_available
 _LEGACY_SCORE_TREND = _score.score_trend
 _LEGACY_SCORE_VOLUME = _score.score_volume
 _LEGACY_SCORE_ACCUMULATION = _score.score_accumulation
@@ -394,7 +395,11 @@ def score_structure(df: pd.DataFrame) -> float:
     if "Above_HVN" in df.columns and "DistToHVN_Pct" in df.columns:
         above_hvn = df["Above_HVN"].iloc[-1]
         dist_hvn = df["DistToHVN_Pct"].iloc[-1]
-        if bool(above_hvn) and _score._is_finite(dist_hvn) and 0 < float(dist_hvn) < 10:
+        if (
+            bool(above_hvn)
+            and _score._is_finite(dist_hvn)
+            and 0 < float(dist_hvn) < 10
+        ):
             score += _score._clamp(1 - float(dist_hvn) / 10, 0, 1) * 2
     return min(score, 15.0)
 
@@ -468,15 +473,13 @@ def _latest_ratio(frame: pd.DataFrame, numerator: str, denominator: str) -> floa
 
 
 def evaluate_volatility_contraction(
-    df: pd.DataFrame,
+    df: pd.DataFrame | None,
 ) -> _vol.VolatilityContractionState:
+    if df is None or df.empty:
+        return _vol.VolatilityContractionState()
     state = _state(df)
     if state.volatility_state is not None:
         return state.volatility_state
-    if df is None or df.empty:
-        result = _vol.VolatilityContractionState()
-        state.volatility_state = result
-        return result
 
     atr_ratio = _latest_ratio(df, "ATR14", "ATR50")
     hv_ratio = _latest_ratio(df, "HV20", "HV60")
