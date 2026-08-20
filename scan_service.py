@@ -1,11 +1,9 @@
-"""v68 scan-service facade with publication-coupled recovery state.
+"""v77 scan-service facade with workstation runtime + v68 integrity contracts.
 
-Before the stable application service is imported, the canonical path installs
-snapshot-safe resume, v68 in-memory frame pinning, non-OHLCV checkpoint
-fingerprints and the AkShare freshness guard. Canonical export enforces both
-enrichment integrity and the cache-first market-date contract. The scan
-checkpoint is deleted only after the report transaction returns successfully;
-publication failure/cancellation therefore keeps current-run work resumable.
+Importing the v77 runtime first caps nested native math threads before scanner /
+NumPy enter through the in-process GUI path. Snapshot-safe resume, pinned frames,
+input fingerprints, freshness gates and publication-coupled checkpoint cleanup
+remain unchanged.
 """
 
 from __future__ import annotations
@@ -15,6 +13,7 @@ import sys
 import threading
 from pathlib import Path
 
+import workstation_runtime_v77 as _runtime  # noqa: F401
 import checkpoint_inputs_v59 as _checkpoint_inputs
 import fundamental_refresh_v61 as _fundamental_refresh
 import scanner as _scanner
@@ -108,8 +107,6 @@ def execute_scan(
             refresh_policy_fn=refresh_policy_fn,
         )
     except BaseException:
-        # Do not discard a valid current-run checkpoint when enrichment,
-        # publication, cancellation or a filesystem operation fails.
         raise
     else:
         if canonical_execution:
