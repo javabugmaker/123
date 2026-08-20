@@ -12,6 +12,10 @@ from pandas.api.types import is_numeric_dtype
 
 import performance_cache as _cache
 
+# performance_cache replaces its public module object with performance_cache_core.
+# Capture the already-installed v69 prefix verifier directly; private facade
+# locals are intentionally not present on the aliased core module.
+_LEGACY_MARKET_PREFIX_MATCHES = _cache.market_prefix_matches
 _INSTALLED = False
 
 
@@ -66,7 +70,7 @@ def market_prefix_matches(df: pd.DataFrame, state: dict[str, Any] | None) -> boo
         return False
     expected_history = str(state.get("history_fingerprint", "") or "").strip()
     if not expected_history:
-        return _cache._LEGACY_MARKET_PREFIX_MATCHES(df, state)
+        return bool(_LEGACY_MARKET_PREFIX_MATCHES(df, state))
     last_text = str(state.get("last", "") or "").strip()
     if not last_text:
         return False
@@ -83,8 +87,8 @@ def market_prefix_matches(df: pd.DataFrame, state: dict[str, Any] | None) -> boo
 
 def install() -> None:
     global _INSTALLED
-    if _INSTALLED:
-        return
+    # Re-asserting is cheap and makes the runtime robust to tests/older facades
+    # rebinding these hooks after initial module import.
     _cache.market_history_fingerprint = market_history_fingerprint
     _cache.market_cache_state = market_cache_state
     _cache.market_prefix_matches = market_prefix_matches
