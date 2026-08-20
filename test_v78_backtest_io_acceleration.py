@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import unittest
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 import pandas as pd
@@ -10,14 +8,24 @@ import pandas as pd
 import analytics_core
 import backtest_acceleration_v77 as worker_accel
 import backtest_incremental_v78 as incremental
+import cache_acceleration_v77
 import historical_lookup_acceleration_v78 as history_accel
 import universe_cache_acceleration_v78 as universe_accel
 
 
 class UniverseMetadataAccelerationTests(unittest.TestCase):
     def setUp(self) -> None:
+        self._metadata_before = dict(universe_accel._downloader._INSTRUMENT_META)
+        self._state_before = universe_accel._LAST_FILE_STATE
         universe_accel._load_for_state.cache_clear()
         universe_accel._price_limit_evidence_tuple.cache_clear()
+
+    def tearDown(self) -> None:
+        universe_accel._load_for_state.cache_clear()
+        universe_accel._price_limit_evidence_tuple.cache_clear()
+        universe_accel._downloader._INSTRUMENT_META.clear()
+        universe_accel._downloader._INSTRUMENT_META.update(self._metadata_before)
+        universe_accel._LAST_FILE_STATE = self._state_before
 
     def test_universe_json_loader_runs_once_per_file_state(self) -> None:
         payload = {
@@ -26,7 +34,9 @@ class UniverseMetadataAccelerationTests(unittest.TestCase):
             "metadata": {"000001.SZ": {"name": "A"}},
         }
         legacy = Mock(return_value=payload)
-        with patch.object(universe_accel, "_file_state", return_value=(100, 200)), patch.object(
+        with patch.object(
+            universe_accel, "_file_state", return_value=(100, 200)
+        ), patch.object(
             universe_accel, "_LEGACY_LOAD_UNIVERSE_CACHE", legacy
         ):
             universe_accel._LAST_FILE_STATE = (100, 200)
@@ -46,7 +56,9 @@ class UniverseMetadataAccelerationTests(unittest.TestCase):
                 "source": "explicit_ratio_metadata",
             }
         )
-        with patch.object(universe_accel, "_LEGACY_GET_PRICE_LIMIT_EVIDENCE", legacy):
+        with patch.object(
+            universe_accel, "_LEGACY_GET_PRICE_LIMIT_EVIDENCE", legacy
+        ):
             first = universe_accel.get_price_limit_evidence("000001.SZ", False)
             second = universe_accel.get_price_limit_evidence("000001.SZ", False)
         self.assertEqual(first, second)
@@ -62,19 +74,21 @@ class UniverseMetadataAccelerationTests(unittest.TestCase):
                 "source": "exchange_fallback",
             }
         )
-        states = iter([(1, 10), (1, 10), (2, 11), (2, 11)])
-        with patch.object(universe_accel, "_file_state", side_effect=lambda: next(states)), patch.object(
+        universe_accel._downloader._INSTRUMENT_META["SENTINEL"] = {"name": "old"}
+        with patch.object(
             universe_accel, "_LEGACY_LOAD_UNIVERSE_CACHE", legacy_loader
         ), patch.object(
             universe_accel, "_LEGACY_GET_PRICE_LIMIT_EVIDENCE", legacy_limit
-        ), patch.object(universe_accel._downloader._INSTRUMENT_META, "clear") as clear:
-            universe_accel._LAST_FILE_STATE = (1, 10)
-            universe_accel.load_universe_cache()
-            universe_accel.get_price_limit_evidence("000001.SZ", False)
-            universe_accel.load_universe_cache()
-            universe_accel.get_price_limit_evidence("000001.SZ", False)
+        ):
+            with patch.object(universe_accel, "_file_state", return_value=(1, 10)):
+                universe_accel._LAST_FILE_STATE = (1, 10)
+                universe_accel.load_universe_cache()
+                universe_accel.get_price_limit_evidence("000001.SZ", False)
+            with patch.object(universe_accel, "_file_state", return_value=(2, 11)):
+                universe_accel.load_universe_cache()
+                universe_accel.get_price_limit_evidence("000001.SZ", False)
 
-        clear.assert_called_once()
+        self.assertNotIn("SENTINEL", universe_accel._downloader._INSTRUMENT_META)
         self.assertEqual(legacy_loader.call_count, 2)
         self.assertEqual(legacy_limit.call_count, 2)
 
@@ -91,7 +105,9 @@ class HistoricalLookupAccelerationTests(unittest.TestCase):
             )
         }
         key = ("cache/historical_universe", (("u.csv", 1, 10),))
-        with patch.object(history_accel._history, "_snapshot_cache_key", return_value=key) as scan, patch.object(
+        with patch.object(
+            history_accel._history, "_snapshot_cache_key", return_value=key
+        ) as scan, patch.object(
             history_accel._history, "_load_snapshot_index", return_value=entries
         ) as load:
             history_accel.clear_historical_lookup_acceleration()
@@ -148,11 +164,13 @@ class IncrementalBacktestAccelerationTests(unittest.TestCase):
         self.assertLess(cutoff, old_rows)
         self.assertGreater(new_rows - cutoff, new_rows - old_rows)
 
-    def test_spawn_worker_bundle_installs_incremental_and_historical_paths(self) -> None:
+    def test_spawn_worker_bundle_composes_fast_hash_and_lookup_modules(self) -> None:
         worker_accel.install()
+        self.assertTrue(incremental._INSTALLED)
+        self.assertTrue(history_accel._INSTALLED)
         self.assertIs(
-            analytics_core._backtest_one_ticker_cached,
-            incremental._backtest_one_ticker_cached,
+            worker_accel._LEGACY_MARKET_CACHE_STATE,
+            cache_acceleration_v77.market_cache_state,
         )
         self.assertIs(
             analytics_core.point_in_time_eligibility,
