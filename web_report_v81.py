@@ -1,9 +1,9 @@
 """v81 public-safe static web report + gh-pages publisher.
 
-The scanner remains the source of truth.  This module only reads committed
+The scanner remains the source of truth. This module only reads committed
 output artifacts after a successful scan/backtest/daily publication, renders a
-self-contained HTML research brief and (when enabled) pushes only the website
-files to the dedicated ``gh-pages`` branch.
+self-contained HTML research brief and, when enabled, pushes only website files
+to the dedicated ``gh-pages`` branch.
 
 Publication is best-effort by design: GitHub/network/authentication failures
 must never turn a successful scan or backtest into a failed trading pipeline.
@@ -20,10 +20,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output"
@@ -169,10 +169,7 @@ def _published_source_dir(output_dir: Path) -> Path:
     return output_dir
 
 
-def _report_date(
-    rows: list[dict[str, str]],
-    daily: dict[str, object],
-) -> str:
+def _report_date(rows: list[dict[str, str]], daily: dict[str, object]) -> str:
     for key in ("effective_trading_date", "expected_trading_date"):
         text = str(daily.get(key, "") or "").strip()
         try:
@@ -220,7 +217,7 @@ def _duration(value: object) -> str:
     number = _number(value)
     if number is None:
         return "—"
-    seconds = max(0, int(round(number)))
+    seconds = max(0, round(number))
     minutes, sec = divmod(seconds, 60)
     hours, minute = divmod(minutes, 60)
     if hours:
@@ -232,7 +229,8 @@ def _duration(value: object) -> str:
 
 def _asset_type(row: dict[str, str]) -> str:
     value = row.get("AssetType", "").strip().upper()
-    if value == "ETF" or row.get("Ticker", "").startswith(("15", "16", "18", "51", "56", "58")):
+    ticker = row.get("Ticker", "")
+    if value == "ETF" or ticker.startswith(("15", "16", "18", "51", "56", "58")):
         return "ETF"
     return "股票"
 
@@ -265,7 +263,7 @@ def _backtest_evidence(row: dict[str, str]) -> str:
     mode = row.get("BacktestMode", "").strip().upper()
     samples = _number(row.get("BacktestSamples", ""))
     confidence = row.get("BacktestConfidenceTier", "").strip()
-    parts = []
+    parts: list[str] = []
     if mode and mode != "NONE":
         parts.append(mode)
     if samples is not None:
@@ -293,13 +291,12 @@ def _decorate_rows(rows: Iterable[dict[str, str]]) -> list[dict[str, str]]:
     output: list[dict[str, str]] = []
     for position, source in enumerate(sorted(rows, key=_sort_key), start=1):
         row = dict(source)
-        rank = (
+        row["OverallRank"] = (
             row.get("CandidateViewRank", "")
             or row.get("ResearchPoolRank", "")
             or row.get("OverallRank", "")
             or str(position)
         )
-        row["OverallRank"] = rank
         row["AssetType"] = _asset_type(row)
         row["IndustryTopic"] = _industry_topic(row)
         row["ReferenceBuyPrice"] = _reference_buy_price(row)
@@ -381,25 +378,28 @@ def _table_html(rows: list[dict[str, str]]) -> str:
             "AssetType": row.get("AssetType", "—"),
             "IndustryTopic": row.get("IndustryTopic", "—"),
             "Close": _fmt_number(row.get("Close", "")),
-            "EntrySignal": f'<span class="badge {signal_class}">{_safe(signal_label)}</span>',
-            "ReferenceBuyPrice": _safe(row.get("ReferenceBuyPrice", "—")),
+            "ReferenceBuyPrice": row.get("ReferenceBuyPrice", "—"),
             "StopLoss": _fmt_number(row.get("StopLoss", "")),
-            "RankingEligibility": (
-                f'<span class="badge {_eligibility_class(eligibility)}">{_safe(eligibility)}</span>'
-            ),
             "RankingScore": _fmt_number(row.get("RankingScore", ""), 1),
-            "InstitutionalStrength": _safe(row.get("InstitutionalStrength", "—")),
-            "BacktestEvidence": _safe(row.get("BacktestEvidence", "—")),
-            "DataAsOf": _safe(row.get("DataAsOf", "—")),
+            "InstitutionalStrength": row.get("InstitutionalStrength", "—"),
+            "BacktestEvidence": row.get("BacktestEvidence", "—"),
+            "DataAsOf": row.get("DataAsOf", "—"),
         }
-        cells = []
+        cells: list[str] = []
         for key, _label in _TABLE_COLUMNS:
-            value = values.get(key, "—")
-            if key not in {"EntrySignal", "RankingEligibility"}:
-                value = _safe(value)
+            if key == "EntrySignal":
+                value = f'<span class="badge {signal_class}">{_safe(signal_label)}</span>'
+            elif key == "RankingEligibility":
+                value = (
+                    f'<span class="badge {_eligibility_class(eligibility)}">'
+                    f"{_safe(eligibility)}</span>"
+                )
+            else:
+                value = _safe(values.get(key, "—"))
             cells.append(f"<td>{value}</td>")
         body.append(
-            f'<tr data-search="{_safe(search)}" data-signal="{_safe(row.get("EntrySignal", "").upper())}" '
+            f'<tr data-search="{_safe(search)}" '
+            f'data-signal="{_safe(row.get("EntrySignal", "").upper())}" '
             f'data-eligibility="{_safe(eligibility)}">{"".join(cells)}</tr>'
         )
     return "\n".join(body)
@@ -412,16 +412,15 @@ def _render_html(
     display_rows: list[dict[str, str]],
     daily: dict[str, object],
     backtest: dict[str, object],
+    history_href: str,
 ) -> str:
     counts = _summary_counts(all_rows)
-    stages = daily.get("stage_seconds", {})
-    stages = stages if isinstance(stages, dict) else {}
-    daily_backtest = daily.get("backtest", {})
-    daily_backtest = daily_backtest if isinstance(daily_backtest, dict) else {}
+    stages_raw = daily.get("stage_seconds", {})
+    stages = stages_raw if isinstance(stages_raw, dict) else {}
+    daily_backtest_raw = daily.get("backtest", {})
+    daily_backtest = daily_backtest_raw if isinstance(daily_backtest_raw, dict) else {}
     mode = str(
-        backtest.get("mode", "")
-        or daily_backtest.get("mode", "")
-        or "—"
+        backtest.get("mode", "") or daily_backtest.get("mode", "") or "—"
     ).upper()
     samples = backtest.get("samples", daily_backtest.get("samples", ""))
     win20 = backtest.get("win_rate_20d", "")
@@ -453,7 +452,7 @@ h1{{margin:5px 0 7px;font-size:34px;letter-spacing:-.04em}} .sub{{color:var(--mu
 </style>
 </head>
 <body><main class="wrap">
-<header class="hero"><div><div class="eyebrow">INSTITUTIONSCANNER · DAILY RESEARCH BRIEF</div><h1>交易快报 {report_date}</h1><div class="sub">行情截止 {_safe(report_date)} · 生成于 {_safe(generated)} · <a href="reports/">历史快报</a></div></div><div class="version">{WEB_REPORT_VERSION}<br>仅展示 public-safe 研究字段</div></header>
+<header class="hero"><div><div class="eyebrow">INSTITUTIONSCANNER · DAILY RESEARCH BRIEF</div><h1>交易快报 {report_date}</h1><div class="sub">行情截止 {_safe(report_date)} · 生成于 {_safe(generated)} · <a href="{_safe(history_href)}">历史快报</a></div></div><div class="version">{WEB_REPORT_VERSION}<br>仅展示 public-safe 研究字段</div></header>
 <section class="grid">
 <div class="card"><div class="k">扫描标的</div><div class="v">{counts['total']:,}</div><div class="x">股票 {counts['stocks']:,} · ETF {counts['etfs']:,}</div></div>
 <div class="card"><div class="k">推荐</div><div class="v">{counts['recommended']:,}</div><div class="x">谨慎候选 {counts['cautious']:,}</div></div>
@@ -529,17 +528,26 @@ def build_web_report(
     site_dir = Path(site_dir)
     report_dir = site_dir / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
-    page = _render_html(
+    latest_page = _render_html(
         report_date=report_date,
         all_rows=all_rows,
         display_rows=decorated,
         daily=daily,
         backtest=backtest,
+        history_href="reports/index.html",
+    )
+    archive_page = _render_html(
+        report_date=report_date,
+        all_rows=all_rows,
+        display_rows=decorated,
+        daily=daily,
+        backtest=backtest,
+        history_href="index.html",
     )
     archive_path = report_dir / f"{report_date}.html"
     index_path = site_dir / "index.html"
-    archive_path.write_text(page, encoding="utf-8")
-    index_path.write_text(page, encoding="utf-8")
+    archive_path.write_text(archive_page, encoding="utf-8")
+    index_path.write_text(latest_page, encoding="utf-8")
     (site_dir / ".nojekyll").write_text("", encoding="utf-8")
     (report_dir / "index.html").write_text(_archive_html(site_dir), encoding="utf-8")
     return WebReportResult(
@@ -603,14 +611,27 @@ def publish_site(
     site_dir = Path(site_dir)
     if not (site_dir / "index.html").is_file():
         raise RuntimeError("WEB_REPORT_SITE_MISSING: index.html not found")
-    remote = _run_git(["-C", str(repo_root), "remote", "get-url", "origin"]).stdout.strip()
+    remote = _run_git(
+        ["-C", str(repo_root), "remote", "get-url", "origin"]
+    ).stdout.strip()
     page_url = github_pages_url_from_remote(remote)
     if not page_url:
         raise RuntimeError("WEB_REPORT_UNSUPPORTED_REMOTE: origin is not github.com")
-    exists = _run_git(
-        ["-C", str(repo_root), "ls-remote", "--exit-code", "--heads", "origin", branch],
-        allow=(0, 2),
-    ).returncode == 0
+    exists = (
+        _run_git(
+            [
+                "-C",
+                str(repo_root),
+                "ls-remote",
+                "--exit-code",
+                "--heads",
+                "origin",
+                branch,
+            ],
+            allow=(0, 2),
+        ).returncode
+        == 0
+    )
 
     with tempfile.TemporaryDirectory(prefix="institution-web-") as temp_dir:
         worktree = Path(temp_dir) / "site"
@@ -646,7 +667,9 @@ def publish_site(
             ["add", "--", "index.html", ".nojekyll", "reports"],
             cwd=worktree,
         )
-        diff = _run_git(["diff", "--cached", "--quiet"], cwd=worktree, allow=(0, 1))
+        diff = _run_git(
+            ["diff", "--cached", "--quiet"], cwd=worktree, allow=(0, 1)
+        )
         if diff.returncode == 1:
             stamp = report_date or date.today().isoformat()
             _run_git(
@@ -662,15 +685,18 @@ def publish_site(
                 ],
                 cwd=worktree,
             )
-            _run_git(["push", "origin", f"HEAD:{branch}"], cwd=worktree, timeout=90)
+            _run_git(
+                ["push", "origin", f"HEAD:{branch}"], cwd=worktree, timeout=90
+            )
             message = f"published {stamp} to {branch}"
         else:
             message = "website already up to date"
 
+    resolved_date = report_date or date.today().isoformat()
     return WebReportResult(
-        report_date=report_date or date.today().isoformat(),
+        report_date=resolved_date,
         index_path=site_dir / "index.html",
-        archive_path=site_dir / "reports" / f"{report_date or date.today().isoformat()}.html",
+        archive_path=site_dir / "reports" / f"{resolved_date}.html",
         page_url=page_url,
         published=True,
         publish_message=message,
@@ -686,11 +712,7 @@ def build_and_publish_web_report(
 ) -> WebReportResult:
     log = logger or logging.getLogger("institution_scanner")
     built = build_web_report(output_dir=output_dir, site_dir=site_dir)
-    log.info(
-        "WEB report generated: %s (%s).",
-        built.archive_path,
-        reason,
-    )
+    log.info("WEB report generated: %s (%s).", built.archive_path, reason)
     if not _truthy_env(WEB_PUBLISH_ENV, True):
         log.info("WEB publication disabled by %s.", WEB_PUBLISH_ENV)
         return built
