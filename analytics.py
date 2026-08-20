@@ -187,6 +187,15 @@ def calibration_stability_stats(
 
 def _transaction_stage_path(path: Path, destination: Path, stage: Path) -> Path:
     candidate = Path(path)
+    # refresh_candidate_exports may already be told to write directly into the
+    # transaction staging root.  Do not remap such a path a second time or the
+    # final publication would land under .backtest_publication_txn/.../stage.
+    try:
+        candidate.relative_to(stage)
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        return candidate
+    except ValueError:
+        pass
     try:
         relative = candidate.relative_to(destination)
     except ValueError:
