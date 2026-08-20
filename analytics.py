@@ -92,7 +92,7 @@ def _backtest_one_ticker_cached(
     split_dates: tuple[pd.Timestamp | None, pd.Timestamp | None],
     benchmark_signature: str = "",
     *,
-    profile: BacktestExecutionProfile | None = None,
+    profile: _core.BacktestExecutionProfile | None = None,
     benchmark_name: str = "沪深300",
 ) -> tuple[list[dict[str, object]], bool]:
     """Never reuse excess-return cache when the benchmark is absent now."""
@@ -134,7 +134,7 @@ def _backtest_one_ticker_cached(
 
 def _apply_backtest_provenance(
     frame: pd.DataFrame,
-    summary: BacktestSummary,
+    summary: _core.BacktestSummary,
     observed: pd.Series,
 ) -> pd.DataFrame:
     result = _LEGACY_APPLY_BACKTEST_PROVENANCE(frame, summary, observed)
@@ -196,7 +196,7 @@ def _transaction_stage_path(path: Path, destination: Path, stage: Path) -> Path:
     return target
 
 
-def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
+def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> None:
     """Run stable backtest postprocess while publishing its result set atomically."""
     import report as report_module
 
