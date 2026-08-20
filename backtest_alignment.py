@@ -143,6 +143,13 @@ def _persist_summary(module: Any, summary: Any) -> None:
 def install_analytics_alignment(module: Any) -> None:
     """Install benchmark-open alignment exactly once on an analytics module."""
     if bool(getattr(module, "_V51_BENCHMARK_ALIGNMENT_INSTALLED", False)):
+        # The alignment wrapper may already exist while a later acceleration
+        # layer is being re-asserted during spawned-worker import.
+        try:
+            import backtest_fastscore_v80 as fastscore_v80
+        except ImportError:
+            return
+        fastscore_v80.install()
         return
 
     original_one = module._backtest_one_ticker
@@ -176,3 +183,12 @@ def install_analytics_alignment(module: Any) -> None:
     module.run_historical_backtest = aligned_run
     module.BACKTEST_BENCHMARK_ENTRY_BASIS = "OPEN"
     module._V51_BENCHMARK_ALIGNMENT_INSTALLED = True
+
+    # v80 must wrap the already-installed v78 FAST evaluator. Keeping this at
+    # the alignment/bootstrap boundary makes Windows spawn import ordering
+    # deterministic and leaves EXACT mode untouched.
+    try:
+        import backtest_fastscore_v80 as fastscore_v80
+    except ImportError:
+        return
+    fastscore_v80.install()
