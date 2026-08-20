@@ -1,10 +1,10 @@
-"""v78 analytics facade with vectorised FAST-backtest gating.
+"""v78 analytics facade with vectorised FAST-backtest and metadata caching.
 
 All v73/v76 analytics semantics remain intact. v77 compiled indicator kernels,
 single-pass enrichment, fast cache hashing and worker benchmark memoization are
-now all installed on the real analytics runtime. v78 additionally vectorizes the
-FAST historical quick gate so full score_ticker work is reserved for endpoints
-that can survive breakout/value-trap/entry screening.
+installed on the real analytics runtime. v78 additionally vectorizes the FAST
+historical quick gate and caches TickFlow universe/price-limit metadata once per
+spawned worker instead of JSON-decoding the full universe for each ticker.
 """
 
 from __future__ import annotations
@@ -19,15 +19,17 @@ import pandas as pd
 
 import analytics_acceleration_v77 as _analytics_acceleration
 import analytics_core as _core
-import cache_acceleration_v77 as _cache_acceleration
 import backtest_acceleration_v77 as _backtest_acceleration
 import backtest_fastpath_v78 as _backtest_fastpath
+import cache_acceleration_v77 as _cache_acceleration
 import indicator_acceleration_v77 as _indicator_acceleration
+import universe_cache_acceleration_v78 as _universe_cache_acceleration
 from analytics_core import *  # noqa: F403
 from backtest_alignment import install_analytics_alignment
 
 _indicator_acceleration.install()
 _cache_acceleration.install()
+_universe_cache_acceleration.install()
 _backtest_acceleration.install()
 _analytics_acceleration.install()
 _backtest_fastpath.install()
@@ -260,6 +262,6 @@ _core.apply_backtest_ranking = apply_backtest_ranking
 _core.BACKTEST_PUBLICATION_INTEGRITY_VERSION = (
     "2026-08-19-v73-journaled-backtest-publication-v2"
 )
-_core.PERFORMANCE_ENGINE_VERSION = "2026-08-20-v78-vectorized-fast-backtest-v1"
+_core.PERFORMANCE_ENGINE_VERSION = "2026-08-20-v78-vectorized-fast-backtest-v2"
 
 sys.modules[__name__] = _core
