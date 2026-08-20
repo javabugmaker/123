@@ -16,7 +16,6 @@ from __future__ import annotations
 import os
 import uuid
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 
@@ -56,7 +55,9 @@ def _snapshot_frame(frame: pd.DataFrame, as_of: pd.Timestamp) -> pd.DataFrame:
         raise ValueError("canonical result set is missing Ticker")
 
     ticker = frame["Ticker"].fillna("").astype(str).map(normalize_ticker)
-    security = ticker.map(lambda value: bool(_historical._SECURITY.fullmatch(value)))
+    security = ticker.map(
+        lambda value: bool(_historical._SECURITY.fullmatch(value))
+    )
     if "UniverseEligible" in frame.columns:
         eligible = _truthy(frame["UniverseEligible"], True)
     else:
@@ -109,7 +110,11 @@ def record_universe_snapshot(
     """
     if frame is None or frame.empty:
         return None
-    market_date = pd.Timestamp(as_of) if as_of is not None else _dominant_market_date(frame)
+    market_date = (
+        pd.Timestamp(as_of)
+        if as_of is not None
+        else _dominant_market_date(frame)
+    )
     if market_date is None or pd.isna(market_date):
         return None
 
