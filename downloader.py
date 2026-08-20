@@ -18,7 +18,6 @@ from __future__ import annotations
 import sys
 import time
 from datetime import timedelta
-from functools import lru_cache
 
 import pandas as pd
 
@@ -60,9 +59,14 @@ def _cached_metadata_available(ticker: str) -> bool:
     return True
 
 
-@lru_cache(maxsize=8192)
 def get_price_limit_pct(ticker: str, is_etf: bool = False) -> float | None:
-    """Resolve a security limit from cached TickFlow metadata only."""
+    """Resolve the current security limit from cached TickFlow metadata.
+
+    Do not memoize this facade across calls: universe metadata can legitimately
+    refresh during a long-lived GUI process. Historical backtests already
+    resolve the rule once per ticker through the v80 tradeability matrix, so a
+    process-wide LRU is unnecessary and could otherwise retain stale limits.
+    """
     if not _cached_metadata_available(ticker):
         return None
     return _v51_price_limit(ticker, is_etf=is_etf)
