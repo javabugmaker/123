@@ -15,24 +15,28 @@ from tradeability import daily_limit_pct, price_limit_source
 
 
 class V52RuntimeOutputIntegrityTests(unittest.TestCase):
+    @staticmethod
+    def _clear_optional_price_limit_caches() -> None:
+        for name in ("get_price_limit_pct", "get_price_limit_evidence"):
+            function = getattr(downloader, name, None)
+            clear = getattr(function, "cache_clear", None)
+            if callable(clear):
+                clear()
+
     def setUp(self) -> None:
-        downloader.get_price_limit_pct.cache_clear()
-        if hasattr(downloader, "get_price_limit_evidence") and hasattr(
-            downloader.get_price_limit_evidence, "cache_clear"
-        ):
-            downloader.get_price_limit_evidence.cache_clear()
+        self._clear_optional_price_limit_caches()
 
     def tearDown(self) -> None:
-        downloader.get_price_limit_pct.cache_clear()
+        self._clear_optional_price_limit_caches()
 
     def _with_metadata(self, symbol: str, metadata: dict) -> object:
         previous = downloader._INSTRUMENT_META.get(symbol)
         downloader._INSTRUMENT_META[symbol] = metadata
-        downloader.get_price_limit_pct.cache_clear()
+        self._clear_optional_price_limit_caches()
         return previous
 
     def _restore_metadata(self, symbol: str, previous: object) -> None:
-        downloader.get_price_limit_pct.cache_clear()
+        self._clear_optional_price_limit_caches()
         if previous is None:
             downloader._INSTRUMENT_META.pop(symbol, None)
         else:
