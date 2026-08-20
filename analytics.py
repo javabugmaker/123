@@ -1,11 +1,9 @@
-"""v73 analytics facade with cache-safe calibration and crash-safe publication.
+"""v77 analytics facade with vectorised kernels and crash-safe publication.
 
-The historical analytics implementation lives in ``analytics_core``. This
-public boundary keeps the v51 T+1-open alignment contract, v56 benchmark
-refresh/evidence provenance, v57 calibration governance and v63 benchmark-cache
-fail-closed behavior. Backtest ranking publication is staged as one result set;
-v73 first recovers any previously interrupted journaled report/backtest
-transaction before beginning a new commit.
+All v73/v76 analytics semantics remain intact.  v77 installs compiled/vectorised
+indicator kernels immediately after the stable core loads, before any scan or
+backtest work begins.  Backtest alignment, benchmark fail-closed behavior,
+calibration governance and journaled ranking publication are unchanged.
 """
 
 from __future__ import annotations
@@ -19,9 +17,11 @@ from pathlib import Path
 import pandas as pd
 
 import analytics_core as _core
+import indicator_acceleration_v77 as _indicator_acceleration
 from analytics_core import *  # noqa: F403
 from backtest_alignment import install_analytics_alignment
 
+_indicator_acceleration.install()
 install_analytics_alignment(_core)
 
 _LEGACY_APPLY_BACKTEST_PROVENANCE = _core._apply_backtest_provenance
@@ -251,5 +251,6 @@ _core.apply_backtest_ranking = apply_backtest_ranking
 _core.BACKTEST_PUBLICATION_INTEGRITY_VERSION = (
     "2026-08-19-v73-journaled-backtest-publication-v2"
 )
+_core.PERFORMANCE_ENGINE_VERSION = "2026-08-20-v77-vectorized-indicators-6c12t-v1"
 
 sys.modules[__name__] = _core
