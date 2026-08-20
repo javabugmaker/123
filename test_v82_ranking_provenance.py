@@ -41,6 +41,26 @@ class RankingDecisionProvenanceV82Tests(unittest.TestCase):
         self.assertEqual(result.loc[0, "DecisionState"], "READY")
         self.assertAlmostEqual(result.loc[0, "RankingDecisionFactor"], 0.88)
         self.assertEqual(result.loc[0, "RankingDecisionStateAtScore"], "OBSERVE")
+        self.assertAlmostEqual(result.loc[0, "RankingTierReconciliationFactor"], 1.0)
+        self.assertAlmostEqual(
+            result.loc[0, "RankingFormulaReconstructionAbsError"], 0.0
+        )
+
+    def test_tier_demotion_is_not_mislabelled_as_initial_observe(self) -> None:
+        source = self._frame()
+        # Same final numeric score can also arise from an initially READY row
+        # that is subsequently demoted by the research-tier reconciliation.
+        source.loc[0, "DecisionState"] = "OBSERVE"
+        source.loc[0, "RankingPenaltyReason"] = "研究等级未达A级执行门槛"
+        result = stamp_ranking_decision_provenance(source)
+
+        self.assertAlmostEqual(result.loc[0, "RankingDecisionFactor"], 1.0)
+        self.assertEqual(result.loc[0, "RankingDecisionStateAtScore"], "READY")
+        self.assertAlmostEqual(result.loc[0, "RankingTierReconciliationFactor"], 0.88)
+        self.assertEqual(
+            result.loc[0, "RankingTierReconciliationState"],
+            "RESEARCH_TIER_DEMOTION",
+        )
         self.assertAlmostEqual(
             result.loc[0, "RankingFormulaReconstructionAbsError"], 0.0
         )
