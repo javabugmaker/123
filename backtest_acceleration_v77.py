@@ -2,9 +2,9 @@
 
 Each ProcessPool worker reuses one benchmark DataFrame for hundreds/thousands of
 tickers. v77/v78 keep exact market-history validation, incremental maturity
-rewind, historical-universe memoization and profile-aware process sizing. v80
-adds O(1) benchmark alignment, vectorised tradeability/exit resolution,
-precomputed sample execution state and a one-hash warm backtest cache path.
+rewind and historical-universe memoization. v80 adds O(1) benchmark alignment,
+vectorised tradeability/exit resolution, precomputed sample execution state,
+one-hash warm cache validation and vectorised-workload process/chunk tuning.
 All layers are installed through ``import analytics`` so Windows spawned workers
 receive the same runtime as the parent process.
 """
@@ -20,7 +20,8 @@ import backtest_alignment_acceleration_v80 as _alignment_v80
 import backtest_cache_acceleration_v80 as _backtest_cache_v80
 import backtest_incremental_v78 as _incremental
 import backtest_sample_acceleration_v80 as _sample_v80
-import backtest_worker_tuning_v78 as _worker_tuning
+import backtest_worker_tuning_v78 as _worker_tuning_v78
+import backtest_worker_tuning_v80 as _worker_tuning_v80
 import cache_acceleration_v77 as _cache_acceleration
 import historical_lookup_acceleration_v78 as _historical_lookup
 import tradeability_acceleration_v80 as _tradeability_v80
@@ -28,7 +29,8 @@ import tradeability_acceleration_v80 as _tradeability_v80
 _cache_acceleration.install()
 _incremental.install()
 _historical_lookup.install()
-_worker_tuning.install()
+_worker_tuning_v78.install()
+_worker_tuning_v80.install()
 _tradeability_v80.install()
 _sample_v80.install()
 _alignment_v80.install()
@@ -95,7 +97,8 @@ def install() -> None:
     _cache_acceleration.install()
     _incremental.install()
     _historical_lookup.install()
-    _worker_tuning.install()
+    _worker_tuning_v78.install()
+    _worker_tuning_v80.install()
     _tradeability_v80.install()
     _sample_v80.install()
     _alignment_v80.install()
