@@ -5,6 +5,7 @@ import unittest
 import pandas as pd
 
 from backtest_rank_integrity_v82 import install_single_recency_ranking_guard
+from model_audit import build_scenarios
 from ranking_provenance_v82 import stamp_ranking_decision_provenance
 
 
@@ -64,6 +65,23 @@ class RankingDecisionProvenanceV82Tests(unittest.TestCase):
         self.assertAlmostEqual(
             result.loc[0, "RankingFormulaReconstructionAbsError"], 0.0
         )
+
+    def test_model_audit_retains_tier_factor_when_removing_decision(self) -> None:
+        source = self._frame()
+        source.loc[0, "DecisionState"] = "OBSERVE"
+        source.loc[0, "RankingPenaltyReason"] = "研究等级未达A级执行门槛"
+        scenarios, diagnostics = build_scenarios(source)
+
+        self.assertAlmostEqual(diagnostics.loc[0, "InferredDecisionFactor"], 1.0)
+        self.assertAlmostEqual(
+            diagnostics.loc[0, "RankingTierReconciliationFactor"], 0.88
+        )
+        no_decision = next(item for item in scenarios if item.name == "no_decision")
+        self.assertAlmostEqual(no_decision.score.loc[0], 72.16)
+        no_both = next(
+            item for item in scenarios if item.name == "no_readiness_or_decision"
+        )
+        self.assertAlmostEqual(no_both.score.loc[0], 88.0)
 
     def test_installed_integrity_guard_stamps_live_ranking_output(self) -> None:
         module = _DummyAnalyticsModule()
