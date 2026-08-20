@@ -20,6 +20,7 @@ import backtest_alignment_acceleration_v80 as _alignment_v80
 import backtest_cache_acceleration_v80 as _backtest_cache_v80
 import backtest_incremental_v78 as _incremental
 import backtest_sample_acceleration_v80 as _sample_v80
+import backtest_sample_guard_v80 as _sample_guard_v80
 import backtest_worker_tuning_v78 as _worker_tuning_v78
 import backtest_worker_tuning_v80 as _worker_tuning_v80
 import cache_acceleration_v77 as _cache_acceleration
@@ -33,6 +34,7 @@ _worker_tuning_v78.install()
 _worker_tuning_v80.install()
 _tradeability_v80.install()
 _sample_v80.install()
+_sample_guard_v80.install()
 _alignment_v80.install()
 
 _LEGACY_MARKET_CACHE_STATE = _core.market_cache_state
@@ -101,6 +103,7 @@ def install() -> None:
     _worker_tuning_v80.install()
     _tradeability_v80.install()
     _sample_v80.install()
+    _sample_guard_v80.install()
     _alignment_v80.install()
     _core.market_cache_state = market_cache_state
     _core.market_prefix_matches = market_prefix_matches
