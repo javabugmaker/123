@@ -1,9 +1,10 @@
-"""v77 analytics/scoring orchestration acceleration.
+"""v77 analytics/scoring/backtest orchestration acceleration.
 
 The stable enrichment path already calculates each ticker's 60-day relative
 return and classification in its threaded first pass, but then recalculates both
-for every ticker in a second pass. Reuse those values. The module also installs
-v77's equivalent NumPy score-availability fast path; no score formulas change.
+for every ticker in a second pass. Reuse those values. Equivalent NumPy score
+checks and per-worker shared-benchmark cache validation are installed alongside
+it; no scoring or cache-integrity formula is weakened.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 import analytics_core as _core
+import backtest_acceleration_v77 as _backtest_acceleration
 import score_acceleration_v77 as _score_acceleration
 
 _INSTALLED = False
@@ -198,6 +200,7 @@ def install() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
+    _backtest_acceleration.install()
     _score_acceleration.install()
     _core.enrich_results = enrich_results
     _INSTALLED = True
