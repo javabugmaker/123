@@ -24,6 +24,7 @@ from typing import Any
 import analytics as _analytics
 import main_core as _main
 import report as _report
+from web_report_v81 import maybe_publish_canonical_report
 
 _LEGACY_CMD_BACKTEST = _main.cmd_backtest
 _COMMAND_LOCK = threading.Lock()
@@ -97,9 +98,15 @@ def cmd_backtest(args: Any) -> int:
                     "BACKTEST_PUBLICATION_FAILED: successful command produced no files"
                 )
             _report._publish_stage(stage, destination, backup)
-            _main.logging.getLogger("institution_scanner").info(
+            log = _main.logging.getLogger("institution_scanner")
+            log.info(
                 "Standalone backtest publication committed transactionally: %d files.",
                 len(files),
+            )
+            maybe_publish_canonical_report(
+                destination,
+                logger=log,
+                reason="backtest-complete",
             )
             return 0
         finally:

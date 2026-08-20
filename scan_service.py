@@ -27,6 +27,7 @@ import scan_service_core as _core  # noqa: E402
 from pipeline_contracts import enforce_enrichment_contract  # noqa: E402
 from publication_guard_v65 import enforce_cache_first_market_contract  # noqa: E402
 from scan_service_core import *  # noqa: E402,F403
+from web_report_v81 import maybe_publish_canonical_report  # noqa: E402
 
 _legacy_execute_scan = _core.execute_scan
 _core._legacy_execute_scan = _legacy_execute_scan
@@ -110,6 +111,11 @@ def execute_scan(
         if canonical_execution:
             _scanner.clear_checkpoint()
             log.info("Canonical publication committed; scan checkpoint cleared.")
+            maybe_publish_canonical_report(
+                Path(_scanner.OUTPUT_DIR),
+                logger=log,
+                reason="scan-complete",
+            )
         return execution
     finally:
         if canonical_execution:
