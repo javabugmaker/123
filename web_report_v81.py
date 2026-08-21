@@ -12,7 +12,10 @@ from pathlib import Path
 
 import web_report_v84 as _v84
 from web_report_v84 import *  # noqa: F403
-from web_report_v84 import _archive_html, _published_source_dir
+
+_archive_html = _v84._archive_html
+_published_source_dir = _v84._published_source_dir
+build_and_publish_web_report = _v84.build_and_publish_web_report
 
 
 def build_web_report(
