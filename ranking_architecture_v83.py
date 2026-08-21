@@ -1,7 +1,7 @@
 """v83 layered research/execution ranking and smooth-breakout shadow diagnostics.
 
-This module is intentionally observational.  It does not rewrite the legacy
-``RankingScore``, ``DecisionState`` or production ``TriggerScore``.  Instead it
+This module is intentionally observational. It does not rewrite the legacy
+``RankingScore``, ``DecisionState`` or production ``TriggerScore``. Instead it
 separates research alpha from execution policy and exposes a continuous shadow
 breakout calculation so future out-of-sample evidence can decide whether the
 legacy cliff should be retired.
@@ -40,14 +40,9 @@ def _bool_series(frame: pd.DataFrame, column: str, default: bool = False) -> pd.
         return pd.Series(default, index=frame.index, dtype=bool)
     values = frame[column]
     if pd.api.types.is_bool_dtype(values.dtype):
-        return values.fillna(default).astype(bool)
-    return (
-        values.fillna(default)
-        .astype(str)
-        .str.strip()
-        .str.lower()
-        .isin({"true", "1", "yes", "y", "是"})
-    )
+        return values.astype("boolean").fillna(default).astype(bool)
+    normalized = values.astype("string").fillna("true" if default else "false")
+    return normalized.str.strip().str.lower().isin({"true", "1", "yes", "y", "是"})
 
 
 def _asset_group(frame: pd.DataFrame) -> pd.Series:
@@ -99,7 +94,9 @@ def _legacy_breakout_price_component(clearance_pct: np.ndarray) -> np.ndarray:
     return result
 
 
-def _smooth_breakout_price_component(clearance_pct: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _smooth_breakout_price_component(
+    clearance_pct: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
     """Smooth only the -0.5%..+0.5% cliff while matching legacy values at both edges."""
     clearance = np.asarray(clearance_pct, dtype=np.float64)
     legacy = _legacy_breakout_price_component(clearance)
@@ -124,7 +121,10 @@ def _rank_within_asset(score: pd.Series, asset: pd.Series) -> tuple[pd.Series, p
     valid = score.notna() & np.isfinite(score)
     ranked = score.where(valid)
     rank = ranked.groupby(asset, sort=False).rank(method="min", ascending=False)
-    percentile = ranked.groupby(asset, sort=False).rank(method="average", pct=True) * 100.0
+    # Ascending percentile intentionally makes the strongest score approach 100.
+    percentile = (
+        ranked.groupby(asset, sort=False).rank(method="average", pct=True) * 100.0
+    )
     return rank.astype("Int64"), percentile.round(2)
 
 
@@ -167,7 +167,10 @@ def stamp_layered_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     alpha_raw = base * setup_weight + trigger * trigger_weight + execution * execution_weight
     coverage_cap = 40.0 + 60.0 * coverage
     reconstructed_alpha = pd.Series(
-        np.minimum(alpha_raw.to_numpy(dtype=np.float64), coverage_cap.to_numpy(dtype=np.float64)),
+        np.minimum(
+            alpha_raw.to_numpy(dtype=np.float64),
+            coverage_cap.to_numpy(dtype=np.float64),
+        ),
         index=result.index,
     ).clip(0.0, 100.0)
 
@@ -205,20 +208,21 @@ def stamp_layered_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     result["ExecutionState"] = decision
     result["ExecutionPriorityBucket"] = decision.map(_STATE_PRIORITY).fillna(4).astype(int)
     result["ExecutionEligible"] = decision.isin({"READY", "CAUTIOUS"})
+    result["ExecutionHardGatePassed"] = _bool_series(result, "HardGatePassed", True)
     result["TradeRank"] = _trade_rank(result["AlphaScore"], asset, decision)
 
     is_etf = asset.eq("ETF")
     hard_data_complete = _bool_series(result, "QualityHardDataComplete", True)
     quality_policy = _bool_series(result, "QualityGate", True)
-    result["QualityHardGatePassed"] = is_etf | hard_data_complete
+    result["QualityDataIntegrityPassed"] = is_etf | hard_data_complete
     result["QualityPolicyGatePassed"] = is_etf | quality_policy
     result["QualityLayerStatus"] = np.select(
         [
             is_etf,
-            ~result["QualityHardGatePassed"],
+            ~result["QualityDataIntegrityPassed"],
             ~result["QualityPolicyGatePassed"],
         ],
-        ["NOT_APPLICABLE", "HARD_BLOCK", "POLICY_FAIL"],
+        ["NOT_APPLICABLE", "DATA_INCOMPLETE", "POLICY_FAIL"],
         default="PASS",
     )
 
@@ -238,13 +242,19 @@ def stamp_layered_ranking(frame: pd.DataFrame) -> pd.DataFrame:
 
     trigger_coverage = 0.75 + 0.25 * coverage.to_numpy(dtype=np.float64)
     trigger_delta = (smooth_price - legacy_price) * trigger_coverage
-    smooth_trigger = np.clip(trigger.to_numpy(dtype=np.float64) + trigger_delta, 0.0, 100.0)
+    smooth_trigger = np.clip(
+        trigger.to_numpy(dtype=np.float64) + trigger_delta,
+        0.0,
+        100.0,
+    )
     result["BreakoutClearancePct"] = clearance.round(4)
     result["LegacyBreakoutPriceComponent"] = np.round(legacy_price, 4)
     result["SmoothBreakoutPriceComponent"] = np.round(smooth_price, 4)
     result["BreakoutPriceConfirmationScore"] = np.round(confirmation, 2)
     result["SmoothTriggerScore"] = np.round(smooth_trigger, 4)
-    result["SmoothTriggerDelta"] = np.round(smooth_trigger - trigger.to_numpy(dtype=np.float64), 4)
+    result["SmoothTriggerDelta"] = np.round(
+        smooth_trigger - trigger.to_numpy(dtype=np.float64), 4
+    )
     result["SmoothTriggerApproximate"] = trigger.ge(99.999)
 
     smooth_alpha_raw = (
@@ -252,7 +262,10 @@ def stamp_layered_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         + smooth_trigger * trigger_weight.to_numpy(dtype=np.float64)
         + execution.to_numpy(dtype=np.float64) * execution_weight.to_numpy(dtype=np.float64)
     )
-    smooth_alpha = np.minimum(smooth_alpha_raw, coverage_cap.to_numpy(dtype=np.float64))
+    smooth_alpha = np.minimum(
+        smooth_alpha_raw,
+        coverage_cap.to_numpy(dtype=np.float64),
+    )
     result["SmoothAlphaScore"] = np.round(np.clip(smooth_alpha, 0.0, 100.0), 4)
     smooth_rank, smooth_pct = _rank_within_asset(result["SmoothAlphaScore"], asset)
     result["SmoothResearchRank"] = smooth_rank
