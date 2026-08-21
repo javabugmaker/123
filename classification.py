@@ -10,6 +10,7 @@ ETF_THEME_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("医药医疗", ("创新药", "医疗", "医药", "生物科技", "生物医药", "医疗器械", "医疗设备", "药ETF", "疫苗")),
     ("半导体芯片", ("半导体", "芯片", "集成电路")),
     ("人工智能", ("人工智能", "AI", "算力", "数据中心")),
+    ("数字货币", ("数字货币", "加密货币")),
     ("机器人", ("机器人", "人形机器人")),
     ("黄金", ("黄金", "金矿")),
     ("有色金属", ("有色", "铜", "铝", "稀土", "锂")),
@@ -24,7 +25,22 @@ ETF_THEME_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("房地产", ("房地产", "地产ETF")),
     ("红利", ("红利", "高股息")),
     ("现金流因子", ("自由现金流", "全指现金流", "中证现金流", "现金流ETF")),
-    ("货币现金管理", ("快钱", "天天金", "添益", "货币ETF", "现金管理")),
+    (
+        "货币现金管理",
+        (
+            "快钱",
+            "天天金",
+            "添益",
+            "财富宝",
+            "银华日利",
+            "收益宝",
+            "保证金",
+            "招商快线",
+            "场内货币",
+            "货币ETF",
+            "现金管理",
+        ),
+    ),
 )
 
 ETF_RESEARCH_EXCLUDED_LABELS = frozenset(
@@ -45,6 +61,16 @@ ETF_RESEARCH_EXCLUDED_KEYWORDS: tuple[str, ...] = (
     "快钱",
     "天天金",
     "添益",
+    "财富宝",
+    "银华日利",
+    "收益宝",
+    "保证金",
+    "招商快线",
+    "场内货币",
+)
+ETF_RESEARCH_DIRECTIONAL_CURRENCY_KEYWORDS: tuple[str, ...] = (
+    "数字货币",
+    "加密货币",
 )
 
 
@@ -222,6 +248,11 @@ def etf_research_eligibility(
     if resolved in ETF_RESEARCH_EXCLUDED_LABELS:
         return False, f"ETF分类排除：{resolved}"
     for keyword in ETF_RESEARCH_EXCLUDED_KEYWORDS:
+        if keyword == "货币ETF" and any(
+            directional.upper() in text
+            for directional in ETF_RESEARCH_DIRECTIONAL_CURRENCY_KEYWORDS
+        ):
+            continue
         if keyword.upper() in text:
             return False, f"ETF现金管理产品排除：{keyword}"
     return True, ""

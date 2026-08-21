@@ -25,6 +25,7 @@ import pyarrow.parquet as pq
 from analytics import refresh_research_outcomes, write_research_reports
 from classification import (
     ETF_CANONICAL_TRACKING_KEYS,
+    ETF_RESEARCH_DIRECTIONAL_CURRENCY_KEYWORDS,
     ETF_RESEARCH_EXCLUDED_KEYWORDS,
     ETF_RESEARCH_EXCLUDED_LABELS,
     etf_theme_key,
@@ -637,11 +638,19 @@ def _vectorized_etf_research_policy(
             resolved_values[exact_exclusion].astype(str),
         )
 
+    directional_currency = np.zeros(len(etf_frame), dtype=bool)
+    for directional in ETF_RESEARCH_DIRECTIONAL_CURRENCY_KEYWORDS:
+        directional_currency |= combined.str.contains(
+            str(directional).upper(), regex=False, na=False
+        ).to_numpy(dtype=bool)
+
     unmatched = ~exact_exclusion
     for keyword in ETF_RESEARCH_EXCLUDED_KEYWORDS:
         keyword_match = unmatched & combined.str.contains(
             str(keyword).upper(), regex=False, na=False
         ).to_numpy(dtype=bool)
+        if keyword == "货币ETF":
+            keyword_match &= ~directional_currency
         if np.any(keyword_match):
             excluded_positions = etf_positions[keyword_match]
             eligible[excluded_positions] = False

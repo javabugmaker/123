@@ -125,6 +125,10 @@ def _prepare_samples(frame: pd.DataFrame) -> pd.DataFrame:
         include_lowest=True,
     ).astype("object")
     result["entry_date"] = pd.to_datetime(result.get("entry_date"), errors="coerce")
+    result["exit20_date"] = pd.to_datetime(
+        result.get("exit20_date", pd.Series(pd.NaT, index=result.index)),
+        errors="coerce",
+    )
     return result
 
 
@@ -517,8 +521,18 @@ def walk_forward_stats(
     for year in years:
         start = pd.Timestamp(year=year, month=1, day=1)
         end = pd.Timestamp(year=year + 1, month=1, day=1)
-        train = sample.loc[sample["entry_date"] < start]
-        test = sample.loc[(sample["entry_date"] >= start) & (sample["entry_date"] < end)]
+        # The 20-day target must mature inside its own fold. Falling back to
+        # entry_date preserves compatibility with legacy caches that predate
+        # explicit exit dates, while current samples are purged strictly.
+        label_end = sample["exit20_date"].fillna(sample["entry_date"])
+        train = sample.loc[
+            (sample["entry_date"] < start) & (label_end < start)
+        ]
+        test = sample.loc[
+            (sample["entry_date"] >= start)
+            & (sample["entry_date"] < end)
+            & (label_end < end)
+        ]
         if len(train) < min_train_samples or len(test) < min_test_samples:
             continue
         calibration = build_global_calibration(train)

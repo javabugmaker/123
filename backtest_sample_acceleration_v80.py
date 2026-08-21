@@ -351,12 +351,16 @@ def _backtest_one_ticker(
             entry_price, closes, lows, entry_index, exit60_index
         )
 
-        if test_start is not None and entry_date >= test_start:
-            split = "test"
-        elif validation_end is not None and entry_date >= validation_end:
-            split = "validation"
-        else:
-            split = "train"
+        outcome_end_date = max(
+            pd.Timestamp(enriched.index[exit20_index]),
+            pd.Timestamp(enriched.index[exit60_index]),
+        )
+        split = _core._assign_sample_split(
+            entry_date,
+            outcome_end_date,
+            validation_end,
+            test_start,
+        )
         spacing = (
             outcome_horizon
             if previous_sample_index is None

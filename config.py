@@ -1,8 +1,8 @@
-"""InstitutionScanner v86 scoring-integrity/performance configuration facade.
+"""InstitutionScanner v87 backtest-statistical-integrity configuration facade.
 
-v86 preserves every v82 scoring weight and trade threshold while making public
-score calls cache-safe and moving report policy / benchmark alignment work onto
-bulk array paths.  No setup/trigger/execution formula is changed here.
+v87 preserves every v82 scoring weight and trade threshold while purging labels
+that cross dataset boundaries, applying overlap weights to published backtest
+statistics, and tightening cash-management ETF research policy.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ SCORING_VERSION: str = (
     + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-21-v87-backtest-statistical-integrity-"
     "2026-08-21-v86-cache-safe-vectorized-policy-alignment-"
     "2026-08-21-v82-ranking-integrity-audit-"
     "2026-08-20-v80-vectorized-backtest-workstation-engine-"
@@ -70,6 +71,7 @@ DECISION_INTEGRITY_VERSION: str = (
     + _v51.DECISION_INTEGRITY_VERSION
 )
 OUTPUT_CONTRACT_VERSION: str = (
+    "2026-08-21-v87-purged-split-diagnostics-"
     "2026-08-21-v82-ranking-audit-provenance-"
     "2026-08-19-v76-whole-backtest-result-set-"
     "2026-08-19-v75-idempotent-crash-recovery-"
@@ -96,6 +98,7 @@ MARKET_DATA_VERSION: str = (
     + _v51.MARKET_DATA_VERSION
 )
 BACKTEST_PROVENANCE_VERSION: str = (
+    "2026-08-21-v87-purged-label-weighted-statistics-"
     "2026-08-21-v82-single-recency-ranking-"
     "2026-08-20-v80-vectorized-fastscore-execution-cache-"
     "2026-08-20-v78-cache-aware-maturity-tail-equivalent-"
