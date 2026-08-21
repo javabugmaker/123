@@ -59,6 +59,15 @@ class WebReportV85Tests(unittest.TestCase):
                     "QualityLayerStatus": "PASS",
                     "DataAsOf": "2026-08-20",
                     "SignalStatus": "NEW",
+                    "DirectionalResearchEligible": "True",
+                    "DirectionalResearchReason": "",
+                    "BreakoutPriceConfirmationScore": "82.5",
+                    "BreakoutPriceGatePassed": "True",
+                    "BreakoutPriceGateReason": "突破价格确认强度满足执行门槛",
+                    "TradeEconomicsPassed": "True",
+                    "TradeEstimatedRoundTripCostPct": "0.238829",
+                    "TradeTargetCostMultiple": "8.20",
+                    "TradeEconomicsReason": "预期目标足以覆盖估算往返交易成本",
                     "UserAccountSecret": "MUST_NOT_LEAK",
                 },
                 {
@@ -78,6 +87,15 @@ class WebReportV85Tests(unittest.TestCase):
                     "QualityLayerStatus": "NOT_APPLICABLE",
                     "DataAsOf": "2026-08-20",
                     "SignalStatus": "ACTIVE",
+                    "DirectionalResearchEligible": "False",
+                    "DirectionalResearchReason": "ETF现金管理产品排除：财富宝</script><script>alert(2)</script>",
+                    "BreakoutPriceConfirmationScore": "50.3",
+                    "BreakoutPriceGatePassed": "False",
+                    "BreakoutPriceGateReason": "突破幅度仍处于零附近过渡区，价格确认强度不足",
+                    "TradeEconomicsPassed": "False",
+                    "TradeEstimatedRoundTripCostPct": "0.238829",
+                    "TradeTargetCostMultiple": "0.1465",
+                    "TradeEconomicsReason": "预期目标不足以覆盖最低往返成本倍数",
                 },
                 {
                     "Ticker": "600000.SH",
@@ -136,6 +154,13 @@ class WebReportV85Tests(unittest.TestCase):
         self.assertNotIn("MUST_NOT_LEAK", page)
         self.assertNotIn("<script>alert(1)</script>", page)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
+        self.assertIn("方向性研究准入", page)
+        self.assertIn("突破价格确认", page)
+        self.assertIn("估算往返成本", page)
+        self.assertIn("目标 / 成本", page)
+        self.assertIn("执行经济性", page)
+        self.assertIn("2026-08-21-v87-directional-execution-diagnostics-v1", page)
+        self.assertNotIn("</script><script>alert(2)</script>", page)
 
         positions = [page.index(f'data-section="{section}"') for section in HOME_SECTIONS]
         self.assertEqual(positions, sorted(positions))
@@ -151,6 +176,29 @@ class WebReportV85Tests(unittest.TestCase):
         assert match is not None
         charts = json.loads(match.group(1))
         self.assertEqual(max(charts["000001.SZ"]["d"]), "2026-08-20")
+
+        details_match = re.search(
+            r'<script id="详情数据" type="application/json">(.*?)</script>',
+            page,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(details_match)
+        assert details_match is not None
+        details = json.loads(details_match.group(1))
+        stock = details["000001.SZ"]
+        self.assertEqual(stock["directionalGate"], "通过")
+        self.assertEqual(stock["breakoutGate"], "通过")
+        self.assertEqual(stock["breakoutConfirmation"], 82.5)
+        self.assertEqual(stock["economicsGate"], "通过")
+        self.assertAlmostEqual(stock["roundTripCostPct"], 0.238829)
+        self.assertEqual(stock["targetCostMultiple"], 8.2)
+
+        excluded = details["510300.SH"]
+        self.assertEqual(excluded["directionalGate"], "未通过")
+        self.assertEqual(excluded["breakoutGate"], "未通过")
+        self.assertEqual(excluded["economicsGate"], "未通过")
+        self.assertEqual(excluded["targetCostMultiple"], 0.1465)
+        self.assertIn("财富宝</script>", excluded["directionalReason"])
 
     def test_archive_is_newest_first(self) -> None:
         with TemporaryDirectory() as temp_dir:

@@ -87,6 +87,17 @@ _PUBLIC_COLUMNS = (
     "TradeReadinessReason",
     "DecisionReason",
     "RankingReason",
+    # v87 execution-integrity diagnostics. Keep this list explicit: the
+    # public report must never fall back to serialising arbitrary CSV fields.
+    "DirectionalResearchEligible",
+    "DirectionalResearchReason",
+    "BreakoutPriceConfirmationScore",
+    "BreakoutPriceGatePassed",
+    "BreakoutPriceGateReason",
+    "TradeEconomicsPassed",
+    "TradeEstimatedRoundTripCostPct",
+    "TradeTargetCostMultiple",
+    "TradeEconomicsReason",
 )
 
 

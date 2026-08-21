@@ -25,7 +25,6 @@ from v85_terminal_config import (
     HOME_SECTIONS,
     PAGE_LABEL,
     SECTION_TITLES,
-    TERMINAL_VERSION,
 )
 
 PROJECT_ROOT = _v84.PROJECT_ROOT
@@ -33,13 +32,78 @@ DEFAULT_OUTPUT_DIR = _v84.DEFAULT_OUTPUT_DIR
 DEFAULT_SITE_DIR = _v84.DEFAULT_SITE_DIR
 WEB_PUBLISH_ENV = _v84.WEB_PUBLISH_ENV
 GH_PAGES_BRANCH = _v84.GH_PAGES_BRANCH
-WEB_REPORT_VERSION = TERMINAL_VERSION
+WEB_REPORT_VERSION = "2026-08-21-v87-directional-execution-diagnostics-v1"
 WebReportResult = _v84.WebReportResult
 
 # Compatibility exports used by old callers/tests.
 _published_source_dir = _v84._published_source_dir
 is_canonical_output_dir = _v84.is_canonical_output_dir
 github_pages_url_from_remote = _v84.github_pages_url_from_remote
+
+
+def _gate_label(value: object, reason: object = "") -> str:
+    """Return a public tri-state label without treating missing data as pass."""
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return ""
+    reason_text = str(reason or "")
+    if "不适用" in reason_text or "沿用旧执行语义" in reason_text:
+        return "不适用"
+    if normalized in {"1", "true", "yes", "y", "是", "pass", "passed"}:
+        return "通过"
+    if normalized in {"0", "false", "no", "n", "否", "fail", "failed"}:
+        return "未通过"
+    return ""
+
+
+def _details_payload(rows: list[dict[str, str]]) -> dict[str, dict[str, object]]:
+    """Extend v84's fixed payload with explicitly allowlisted v87 audit fields."""
+    payload = _v84._details_payload(rows)
+    rows_by_ticker = {
+        row.get("Ticker", ""): row
+        for row in rows[: _v84._max_rows()]
+        if row.get("Ticker", "")
+    }
+    for ticker, details in payload.items():
+        row = rows_by_ticker.get(ticker, {})
+        directional_reason = row.get("DirectionalResearchReason", "")
+        breakout_reason = row.get("BreakoutPriceGateReason", "")
+        economics_reason = row.get("TradeEconomicsReason", "")
+        directional_gate = _gate_label(
+            row.get("DirectionalResearchEligible", ""), directional_reason
+        )
+        breakout_gate = _gate_label(
+            row.get("BreakoutPriceGatePassed", ""), breakout_reason
+        )
+        economics_gate = _gate_label(
+            row.get("TradeEconomicsPassed", ""), economics_reason
+        )
+        details.update(
+            {
+                "directionalGate": directional_gate,
+                "directionalReason": directional_reason,
+                "breakoutConfirmation": (
+                    _v84._number(row.get("BreakoutPriceConfirmationScore", ""))
+                    if breakout_gate not in {"", "不适用"}
+                    else None
+                ),
+                "breakoutGate": breakout_gate,
+                "breakoutReason": breakout_reason,
+                "roundTripCostPct": (
+                    _v84._number(row.get("TradeEstimatedRoundTripCostPct", ""))
+                    if economics_gate not in {"", "不适用"}
+                    else None
+                ),
+                "targetCostMultiple": (
+                    _v84._number(row.get("TradeTargetCostMultiple", ""))
+                    if economics_gate not in {"", "不适用"}
+                    else None
+                ),
+                "economicsGate": economics_gate,
+                "economicsReason": economics_reason,
+            }
+        )
+    return payload
 
 
 def _read_view(source_dir: Path, output_dir: Path, names: Iterable[str]) -> list[dict[str, str]]:
@@ -364,11 +428,17 @@ for(const button of document.querySelectorAll('.tab'))button.addEventListener('c
 const 遮罩=document.getElementById('遮罩');document.getElementById('关闭').onclick=()=>遮罩.classList.remove('open');遮罩.addEventListener('click',e=>{if(e.target===遮罩)遮罩.classList.remove('open')});document.addEventListener('keydown',e=>{if(e.key==='Escape')遮罩.classList.remove('open')});
 function 文本(v,d='—'){return v===null||v===undefined||v===''?d:String(v)}
 function 安全(v){return 文本(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;')}
-function 数字(v,n=2){const x=Number(v);return Number.isFinite(x)?x.toFixed(n):'—'}
+function 数字(v,n=2){if(v===null||v===undefined||v==='')return '—';const x=Number(v);return Number.isFinite(x)?x.toFixed(n):'—'}
 function 详情项(k,v){return `<div class="detail-item"><span>${安全(k)}</span><strong>${安全(v)}</strong></div>`}
+function 有值(v){return v!==null&&v!==undefined&&v!==''}
+function 可选详情项(k,v){return 有值(v)?详情项(k,v):''}
+function 百分比(v,n=3){return 有值(v)?`${数字(v,n)}%`:''}
+function 倍数(v){return 有值(v)?`${数字(v,2)}×`:''}
+function 突破诊断(d){if(!有值(d.breakoutGate))return '';const score=有值(d.breakoutConfirmation)?`${数字(d.breakoutConfirmation,1)} / 100 · `:'';return `${score}${d.breakoutGate}`}
+function 诊断说明(d){const values=[d.reason,d.directionalGate==='未通过'?d.directionalReason:'',d.breakoutGate==='未通过'?d.breakoutReason:'',d.economicsGate==='未通过'?d.economicsReason:''].filter(v=>有值(v)&&v!=='—');return [...new Set(values)].join('；')||'—'}
 function 线(points,color,width=1.5){return `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="${width}" stroke-linejoin="round" stroke-linecap="round"/>`}
 function 画K线(ticker,d){const svg=document.getElementById('日K图'),x=图表[ticker];if(!x||!x.c||x.c.length<2){svg.innerHTML='<text x="470" y="250" text-anchor="middle" fill="#6b7078" font-size="14">暂无本地日 K 缓存</text>';return}const n=x.c.length,W=940,H=520,left=52,right=72,top=24,priceBottom=390,volTop=414,volBottom=490;let vals=[...x.h,...x.l,...x.e20,...x.e50,...x.e200].filter(Number.isFinite);for(const k of ['buy','breakout','stop','target']){const v=Number(d[k]);if(Number.isFinite(v))vals.push(v)}let lo=Math.min(...vals),hi=Math.max(...vals),pad=Math.max((hi-lo)*.06,hi*.005,1e-6);lo-=pad;hi+=pad;const pw=W-left-right,step=pw/n,cw=Math.max(1.4,Math.min(7,step*.58));const X=i=>left+(i+.5)*step,Y=v=>top+(hi-v)/(hi-lo)*(priceBottom-top),vmax=Math.max(...x.v,1),V=v=>volBottom-v/vmax*(volBottom-volTop);let out=`<rect x="0" y="0" width="${W}" height="${H}" fill="#fff"/>`;for(let i=0;i<5;i++){const yy=top+i*(priceBottom-top)/4,price=hi-i*(hi-lo)/4;out+=`<line x1="${left}" x2="${W-right}" y1="${yy}" y2="${yy}" stroke="#eceef1"/><text x="${W-right+8}" y="${yy+4}" fill="#6b7078" font-size="10">${price.toFixed(2)}</text>`}for(let i=0;i<n;i++){const up=x.c[i]>=x.o[i],color=up?'#E33D3D':'#197A55',xx=X(i),yo=Y(x.o[i]),yc=Y(x.c[i]),yh=Y(x.h[i]),yl=Y(x.l[i]);out+=`<line x1="${xx}" x2="${xx}" y1="${yh}" y2="${yl}" stroke="${color}"/><rect x="${xx-cw/2}" y="${Math.min(yo,yc)}" width="${cw}" height="${Math.max(1,Math.abs(yc-yo))}" fill="${color}"/><rect x="${xx-cw/2}" y="${V(x.v[i])}" width="${cw}" height="${volBottom-V(x.v[i])}" fill="${color}" opacity=".35"/>`}for(const [arr,color] of [[x.e20,'#1769AA'],[x.e50,'#B56A13'],[x.e200,'#6955B8']]){const pts=arr.map((v,i)=>Number.isFinite(v)?`${X(i).toFixed(1)},${Y(v).toFixed(1)}`:null).filter(Boolean).join(' ');out+=线(pts,color,1.35)}const levels=[['buy','买点','#1769AA'],['breakout','突破','#B56A13'],['stop','止损','#197A55'],['target','目标','#E33D3D']];for(const [k,label,color] of levels){const v=Number(d[k]);if(!Number.isFinite(v)||v<lo||v>hi)continue;const yy=Y(v);out+=`<line x1="${left}" x2="${W-right}" y1="${yy}" y2="${yy}" stroke="${color}" stroke-dasharray="5 4" opacity=".75"/><text x="${left+4}" y="${yy-4}" fill="${color}" font-size="10" font-weight="700">${label} ${v.toFixed(2)}</text>`}out+=`<text x="${left}" y="${H-8}" fill="#6b7078" font-size="10">${x.d[0]}</text><text x="${W-right}" y="${H-8}" text-anchor="end" fill="#6b7078" font-size="10">${x.d[n-1]}</text><text x="${left}" y="${top-7}" fill="#1769AA" font-size="10">EMA20</text><text x="${left+48}" y="${top-7}" fill="#B56A13" font-size="10">EMA50</text><text x="${left+96}" y="${top-7}" fill="#6955B8" font-size="10">EMA200</text>`;svg.innerHTML=out}
-function 打开(ticker){const d=详情[ticker];if(!d)return;document.getElementById('详情标题').textContent=`${d.ticker} · ${d.name||''}`;document.getElementById('详情副标题').textContent=`${d.asset||''} · ${d.topic||''} · 数据日 ${d.asof||'—'}`;document.getElementById('详情格').innerHTML=详情项('研究排名','#'+文本(d.researchRank))+详情项('交易排名','#'+文本(d.tradeRank))+详情项('Alpha',数字(d.alpha,1))+详情项('执行状态',d.execution)+详情项('技术信号',d.signal)+详情项('质量层',d.quality)+详情项('收盘',数字(d.close,3))+详情项('参考买点',d.buyText)+详情项('止损',数字(d.stop,3))+详情项('目标',数字(d.target,3))+详情项('盈亏比',数字(d.rr,2))+详情项('平滑触发',数字(d.smoothTrigger,1));document.getElementById('解释').textContent=d.reason||'—';画K线(ticker,d);遮罩.classList.add('open')}
+function 打开(ticker){const d=详情[ticker];if(!d)return;document.getElementById('详情标题').textContent=`${d.ticker} · ${d.name||''}`;document.getElementById('详情副标题').textContent=`${d.asset||''} · ${d.topic||''} · 数据日 ${d.asof||'—'}`;document.getElementById('详情格').innerHTML=详情项('研究排名','#'+文本(d.researchRank))+详情项('交易排名','#'+文本(d.tradeRank))+详情项('Alpha',数字(d.alpha,1))+详情项('执行状态',d.execution)+详情项('技术信号',d.signal)+详情项('质量层',d.quality)+详情项('收盘',数字(d.close,3))+详情项('参考买点',d.buyText)+详情项('止损',数字(d.stop,3))+详情项('目标',数字(d.target,3))+详情项('盈亏比',数字(d.rr,2))+详情项('平滑触发',数字(d.smoothTrigger,1))+可选详情项('方向性研究准入',d.directionalGate)+可选详情项('突破价格确认',突破诊断(d))+可选详情项('估算往返成本',百分比(d.roundTripCostPct))+可选详情项('目标 / 成本',倍数(d.targetCostMultiple))+可选详情项('执行经济性',d.economicsGate);document.getElementById('解释').textContent=诊断说明(d);画K线(ticker,d);遮罩.classList.add('open')}
 for(const row of document.querySelectorAll('[data-ticker]'))row.addEventListener('click',()=>打开(row.dataset.ticker));
 """
 
@@ -385,7 +455,7 @@ def _render_html(
     history_href: str,
 ) -> str:
     charts, spark = _v84._chart_payload(merged_rows, report_date)
-    details = _v84._details_payload(merged_rows)
+    details = _details_payload(merged_rows)
     top_rows = views.get("mixed", merged_rows)
     sector_items = _sector_rotation(all_rows)
     risk_items = _risk_items(all_rows, daily)
@@ -404,7 +474,7 @@ def _render_html(
         ("回测模式", mode),
         ("信号样本标的", samples or "—"),
         ("发布状态", str(daily.get("publish_status", "已生成") or "已生成")),
-        ("页面版本", "v85"),
+        ("页面版本", "v87"),
     )
     run_html = "".join(
         f'<div class="run-item"><span>{_v84._safe(label)}</span><strong>{_v84._safe(value)}</strong></div>'
