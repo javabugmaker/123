@@ -12,6 +12,11 @@ backtest publication context, so unrelated threads/tasks retain ordinary live-
 scan semantics. The same stable guard stamps observational ranking-time decision
 provenance after the one canonical ranking pass. No model weight, threshold,
 decision rule, or public scanner formula is changed.
+
+v83 runtime installation is imported here because analytics.py loads this module
+after analytics_core and signal_lifecycle are fully initialized. That gives the
+layered research/execution architecture one deterministic, worker-safe hook
+without changing any production score or decision formula.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+import runtime_v83 as _runtime_v83  # noqa: F401
 from ranking_provenance_v82 import stamp_ranking_decision_provenance
 
 BACKTEST_RECENCY_NORMALIZATION_VERSION = "2026-08-21-v82-single-recency-ranking-v1"
