@@ -1,8 +1,7 @@
-"""InstitutionScanner v87 research-integrity configuration facade.
+"""InstitutionScanner v88 research-integrity extension configuration facade.
 
-v87 keeps the established component weights and execution thresholds while
-making missing setup evidence fail closed and tightening historical validation,
-sample independence, and point-in-time universe governance.
+v88 builds on v87 directional execution while making missing setup evidence
+fail closed and enforcing date-balanced, point-in-time backtest governance.
 """
 
 from __future__ import annotations
@@ -24,13 +23,14 @@ BACKTEST_FAST_CHUNK_SIZE: int = _RUNTIME.backtest_fast_chunk_size
 BACKTEST_INCREMENTAL_TAIL_BARS: int = _RUNTIME.backtest_incremental_tail_bars
 
 SCORING_VERSION: str = (
-    "2026-08-21-v87-missing-evidence-no-renormalization-"
+    "2026-08-21-v88-missing-evidence-no-renormalization-"
     "2026-08-21-v82-single-recency-ranking-"
     "2026-08-17-v52-setup-backed-breakout-"
     + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
-    "2026-08-21-v87-purged-date-balanced-point-in-time-research-"
+    "2026-08-21-v88-purged-date-balanced-point-in-time-research-"
+    "2026-08-21-v87-directional-execution-backtest-integrity-"
     "2026-08-21-v86-cache-safe-vectorized-policy-alignment-"
     "2026-08-21-v82-ranking-integrity-audit-"
     "2026-08-20-v80-vectorized-backtest-workstation-engine-"
@@ -65,6 +65,7 @@ PIPELINE_VERSION: str = (
     + _v51.PIPELINE_VERSION
 )
 DECISION_INTEGRITY_VERSION: str = (
+    "2026-08-21-v87-directional-price-cost-gates-"
     "2026-08-19-v60-future-date-execution-gate-"
     "2026-08-19-v58-current-data-execution-gate-"
     "2026-08-18-v54-trade-ready-liquidity-gate-"
@@ -72,7 +73,8 @@ DECISION_INTEGRITY_VERSION: str = (
     + _v51.DECISION_INTEGRITY_VERSION
 )
 OUTPUT_CONTRACT_VERSION: str = (
-    "2026-08-21-v87-research-integrity-audit-provenance-"
+    "2026-08-21-v88-research-integrity-audit-provenance-"
+    "2026-08-21-v87-execution-economics-backtest-evidence-"
     "2026-08-21-v82-ranking-audit-provenance-"
     "2026-08-19-v76-whole-backtest-result-set-"
     "2026-08-19-v75-idempotent-crash-recovery-"
@@ -99,7 +101,8 @@ MARKET_DATA_VERSION: str = (
     + _v51.MARKET_DATA_VERSION
 )
 BACKTEST_PROVENANCE_VERSION: str = (
-    "2026-08-21-v87-purged-overlap-point-in-time-calibration-"
+    "2026-08-21-v88-purged-overlap-point-in-time-calibration-"
+    "2026-08-21-v87-purged-weighted-net-excess-"
     "2026-08-21-v82-single-recency-ranking-"
     "2026-08-20-v80-vectorized-fastscore-execution-cache-"
     "2026-08-20-v78-cache-aware-maturity-tail-equivalent-"
@@ -147,6 +150,25 @@ TRADE_LIQUIDITY_RULE_VERSION: str = "2026-08-18-v54-order-participation"
 TRADE_READY_MAX_DATA_AGE_TRADING_DAYS: int = 0
 TRADE_FRESHNESS_RULE_VERSION: str = "2026-08-19-v60-completed-session-only"
 
+# A directional signal must clear resistance by enough to escape the legacy
+# zero-percent discontinuity.  The score is the monotone smooth-step diagnostic
+# already introduced in v83; v87 turns only this confirmation into an execution
+# gate and leaves TriggerScore/FinalScore unchanged.
+TRADE_READY_MIN_BREAKOUT_PRICE_CONFIRMATION_SCORE: float = 60.0
+TRADE_READY_BASE_SLIPPAGE_RATE: float = 0.001
+TRADE_READY_STOCK_STAMP_DUTY_RATE: float = 0.0005
+TRADE_READY_MIN_TARGET_COST_MULTIPLE: float = 1.50
+TRADE_ECONOMICS_RULE_VERSION: str = "2026-08-21-v87-round-trip-cost-coverage-v1"
+
+# Name classification remains the first line of defence.  These behavioural
+# bounds catch unlabelled cash-equivalent ETFs without excluding ordinary low-
+# volatility equity products on a single metric alone.
+ETF_CASH_EQUIVALENT_MAX_ATR_PCT: float = 0.20
+ETF_CASH_EQUIVALENT_MAX_ABS_RETURN_20D_PCT: float = 0.50
+ETF_DIRECTIONAL_RESEARCH_RULE_VERSION: str = (
+    "2026-08-21-v87-name-and-behaviour-cash-equivalent-v1"
+)
+
 CHECKPOINT_RESUME_VERSION: str = "2026-08-19-v68-pinned-frame-publish-clear-v3"
 FUNDAMENTAL_REFRESH_INTEGRITY_VERSION: str = "2026-08-19-v70-hard-financial-coverage-v3"
 CACHE_HISTORY_INTEGRITY_VERSION: str = "2026-08-19-v69-full-ohlcv-content-check-v2"
@@ -163,6 +185,7 @@ BACKTEST_COMMAND_INTEGRITY_VERSION: str = (
     "2026-08-19-v76-whole-command-transaction-v1"
 )
 PERFORMANCE_ENGINE_VERSION: str = (
+    "2026-08-21-v87-vectorized-integrity-"
     "2026-08-21-v86-vectorized-policy-alignment-workstation-v1"
 )
 SCORE_PIPELINE_ACCELERATION_VERSION: str = (
@@ -173,7 +196,7 @@ BACKTEST_IO_CACHE_VERSION: str = (
     "2026-08-21-v86-vectorized-benchmark-alignment-v1"
 )
 RESEARCH_POLICY_ACCELERATION_VERSION: str = (
-    "2026-08-21-v86-vectorized-research-policy-v1"
+    "2026-08-21-v87-vectorized-name-behaviour-policy-v1"
 )
 BACKTEST_INCREMENTAL_ENGINE_VERSION: str = "2026-08-20-v78-cache-maturity-rewind-v1"
 BACKTEST_EXECUTION_ACCELERATION_VERSION: str = (
@@ -184,13 +207,13 @@ BACKTEST_WORKSTATION_TUNING_VERSION: str = (
 )
 
 BACKTEST_RANKING_INTEGRITY_VERSION: str = (
-    "2026-08-21-v87-verified-point-in-time-ranking-v1"
+    "2026-08-21-v88-verified-point-in-time-ranking-v1"
 )
 FULL_UNIVERSE_AUDIT_VERSION: str = (
     "2026-08-21-v82-full-universe-perturbation-v1"
 )
 UNIVERSE_SNAPSHOT_VERSION: str = (
-    "2026-08-21-v87-stock-etf-universe-snapshot-v1"
+    "2026-08-21-v88-stock-etf-universe-snapshot-v1"
 )
 
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"

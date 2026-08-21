@@ -25,8 +25,6 @@ import pyarrow.parquet as pq
 from analytics import refresh_research_outcomes, write_research_reports
 from classification import (
     ETF_CANONICAL_TRACKING_KEYS,
-    ETF_RESEARCH_EXCLUDED_KEYWORDS,
-    ETF_RESEARCH_EXCLUDED_LABELS,
     etf_theme_key,
     etf_tracking_key,
     theme_cluster,
@@ -59,6 +57,7 @@ from config import (
 )
 from evidence import enrich_evidence_fields
 from performance_cache import BACKTEST_CACHE_VERSION, INDICATOR_CACHE_VERSION
+from research_policy_v87 import vectorized_etf_research_policy
 from result_contract import (
     FULL_UNIVERSE_SCOPE,
     decision_policy_signature,
@@ -574,81 +573,8 @@ def _vectorized_etf_research_policy(
     frame: pd.DataFrame,
     is_etf: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Evaluate the ETF exclusion policy in bulk with an exact fallback.
-
-    Normal report rows already carry ``ModelClassification`` and stay entirely
-    on the pandas string-vector path.  Only ETF rows whose classification is
-    genuinely absent call the canonical theme resolver, preserving its ordered
-    fallback semantics without paying a Python-row cost for the full universe.
-    """
-    eligible = np.ones(len(frame), dtype=bool)
-    reasons = np.full(len(frame), "", dtype=object)
-    etf_positions = np.flatnonzero(is_etf)
-    if not etf_positions.size:
-        return eligible, reasons
-
-    etf_frame = frame.iloc[etf_positions]
-    name = _policy_text(_policy_column(etf_frame, "Name", ""))
-    industry = _policy_text(_policy_column(etf_frame, "Industry", ""))
-    sector = _policy_text(_policy_column(etf_frame, "Sector", ""))
-    classification_column = (
-        "ModelClassification"
-        if "ModelClassification" in frame.columns
-        else "ETFTheme"
-    )
-    resolved = _policy_text(_policy_column(etf_frame, classification_column, ""))
-
-    unresolved = np.flatnonzero(resolved.eq("").to_numpy(dtype=bool))
-    if unresolved.size:
-        ticker = _policy_text(_policy_column(etf_frame, "Ticker", ""))
-        resolved_values = resolved.to_numpy(dtype=object, copy=True)
-        name_values = name.to_numpy(dtype=object, copy=False)
-        industry_values = industry.to_numpy(dtype=object, copy=False)
-        sector_values = sector.to_numpy(dtype=object, copy=False)
-        ticker_values = ticker.to_numpy(dtype=object, copy=False)
-        for position in unresolved:
-            index = int(position)
-            resolved_values[index] = etf_theme_key(
-                name=name_values[index],
-                industry=industry_values[index],
-                sector=sector_values[index],
-                ticker=ticker_values[index],
-            )
-        resolved = pd.Series(resolved_values, copy=False, dtype="string")
-
-    # De-duplication inside _classification_text does not affect substring
-    # membership, so one vectorized concatenation is semantically equivalent.
-    combined = (
-        name.str.upper()
-        + " "
-        + industry.str.upper()
-        + " "
-        + sector.str.upper()
-        + " "
-        + resolved.str.upper()
-    )
-    exact_exclusion = resolved.isin(ETF_RESEARCH_EXCLUDED_LABELS).to_numpy(dtype=bool)
-    if np.any(exact_exclusion):
-        excluded_positions = etf_positions[exact_exclusion]
-        eligible[excluded_positions] = False
-        resolved_values = resolved.to_numpy(dtype=object, copy=False)
-        reasons[excluded_positions] = np.char.add(
-            "ETF分类排除：",
-            resolved_values[exact_exclusion].astype(str),
-        )
-
-    unmatched = ~exact_exclusion
-    for keyword in ETF_RESEARCH_EXCLUDED_KEYWORDS:
-        keyword_match = unmatched & combined.str.contains(
-            str(keyword).upper(), regex=False, na=False
-        ).to_numpy(dtype=bool)
-        if np.any(keyword_match):
-            excluded_positions = etf_positions[keyword_match]
-            eligible[excluded_positions] = False
-            reasons[excluded_positions] = f"ETF现金管理产品排除：{keyword}"
-            unmatched &= ~keyword_match
-
-    return eligible, reasons
+    """Compatibility entry point for the shared vectorized v87 policy."""
+    return vectorized_etf_research_policy(frame, is_etf)
 
 
 def _apply_research_policy(frame: pd.DataFrame) -> pd.DataFrame:
@@ -1177,7 +1103,21 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
             "backtest status disagrees with request/sample provenance",
             status.ne(expected_status),
         )
-        expected_eligible = requested & samples.ge(BACKTEST_MIN_SAMPLES_FOR_RANKING)
+        effective_samples = pd.to_numeric(
+            frame.get(
+                "BacktestEffectiveSamples",
+                pd.Series(np.nan, index=frame.index),
+            ),
+            errors="coerce",
+        ).replace([np.inf, -np.inf], np.nan)
+        effective_samples = effective_samples.where(
+            effective_samples.gt(0.0), samples
+        ).clip(lower=0.0, upper=samples)
+        expected_eligible = (
+            requested
+            & samples.ge(BACKTEST_MIN_SAMPLES_FOR_RANKING)
+            & effective_samples.ge(BACKTEST_MIN_SAMPLES_FOR_RANKING)
+        )
         record(
             "backtest ranking eligibility disagrees with sample provenance",
             _bool_series_for_integrity(frame, "BacktestEligibleForRanking").ne(
@@ -1275,6 +1215,40 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
                 )
 
         actionable = eligibility.isin({"推荐", "谨慎候选"})
+        if "DirectionalResearchEligible" in frame.columns:
+            directional = _bool_series_for_integrity(
+                frame, "DirectionalResearchEligible"
+            )
+            record(
+                "actionable rows violate directional-research product policy",
+                actionable & ~directional,
+            )
+            if "ResearchEligible" in frame.columns:
+                record(
+                    "report research policy disagrees with lifecycle product policy",
+                    _bool_series_for_integrity(frame, "ResearchEligible")
+                    & ~directional,
+                )
+        if {
+            "BreakoutPriceGateApplicable",
+            "BreakoutPriceGatePassed",
+        }.issubset(frame.columns):
+            record(
+                "actionable breakouts fail price-confirmation gate",
+                actionable
+                & _bool_series_for_integrity(frame, "BreakoutPriceGateApplicable")
+                & ~_bool_series_for_integrity(frame, "BreakoutPriceGatePassed"),
+            )
+        if {
+            "TradeEconomicsApplicable",
+            "TradeEconomicsPassed",
+        }.issubset(frame.columns):
+            record(
+                "actionable rows fail executable target-cost coverage",
+                actionable
+                & _bool_series_for_integrity(frame, "TradeEconomicsApplicable")
+                & ~_bool_series_for_integrity(frame, "TradeEconomicsPassed"),
+            )
         evidence_columns = {
             "BacktestRequested",
             "BacktestSamples",
@@ -1284,6 +1258,16 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
         if current_contract.any() and evidence_columns.issubset(frame.columns):
             requested = _bool_series_for_integrity(frame, "BacktestRequested")
             samples = numeric("BacktestSamples").fillna(0.0)
+            effective_samples = pd.to_numeric(
+                frame.get(
+                    "BacktestEffectiveSamples",
+                    pd.Series(np.nan, index=frame.index),
+                ),
+                errors="coerce",
+            ).replace([np.inf, -np.inf], np.nan)
+            effective_samples = effective_samples.where(
+                effective_samples.gt(0.0), samples
+            ).clip(lower=0.0, upper=samples)
             eligible_for_calibration = _bool_series_for_integrity(
                 frame, "BacktestEligibleForRanking"
             )
@@ -1294,7 +1278,10 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
                 actionable
                 & requested
                 & ~eligible_for_calibration
-                & samples.lt(BACKTEST_MIN_SAMPLES_FOR_RANKING)
+                & (
+                    samples.lt(BACKTEST_MIN_SAMPLES_FOR_RANKING)
+                    | effective_samples.lt(BACKTEST_MIN_SAMPLES_FOR_RANKING)
+                )
             )
             record(
                 "actionable row omits local backtest evidence limitation",

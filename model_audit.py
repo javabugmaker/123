@@ -44,13 +44,15 @@ from config import (
     OUTPUT_DIR,
     QUALITY_MIN_COMPLETENESS_FOR_ACTIONABLE,
     TRADE_READY_MAX_STOP_DISTANCE_PCT,
+    TRADE_READY_MIN_BREAKOUT_PRICE_CONFIRMATION_SCORE,
     TRADE_READY_MIN_REWARD_RISK,
+    TRADE_READY_MIN_TARGET_COST_MULTIPLE,
     VALUE_TRAP_HARD_RISK_THRESHOLD,
     VALUE_TRAP_RISK_THRESHOLD,
 )
 from ranking_provenance_v82 import stamp_ranking_decision_provenance
 
-AUDIT_VERSION = "2026-08-21-v82-decision-tier-separation-v2"
+AUDIT_VERSION = "2026-08-21-v87-directional-execution-backtest-audit-v1"
 _QUALITY_READINESS_FACTOR = 0.82
 _LIFECYCLE_FAILED_READINESS_FACTOR = 0.70
 _FILTER_FAILED_READINESS_FACTOR = 0.90
@@ -472,6 +474,22 @@ def threshold_report(frame: pd.DataFrame) -> pd.DataFrame:
                 0.10,
                 (1.10, 1.15, 1.20, 1.25, 1.30),
                 "entry/confirmation rerun required",
+            ),
+            _threshold_row(
+                "BreakoutPriceConfirmationScore",
+                _number(frame, "BreakoutPriceConfirmationScore", np.nan),
+                float(TRADE_READY_MIN_BREAKOUT_PRICE_CONFIRMATION_SCORE),
+                10.0,
+                (50.0, 55.0, 60.0, 65.0, 70.0),
+                "v87 execution price-confirmation boundary",
+            ),
+            _threshold_row(
+                "TradeTargetCostMultiple",
+                _number(frame, "TradeTargetCostMultiple", np.nan),
+                float(TRADE_READY_MIN_TARGET_COST_MULTIPLE),
+                0.50,
+                (1.0, 1.25, 1.50, 1.75, 2.0),
+                "v87 executable target-to-round-trip-cost boundary",
             ),
             _threshold_row(
                 "EntryScoreHigh",

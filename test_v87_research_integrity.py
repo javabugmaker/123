@@ -16,7 +16,7 @@ from model_calibration import build_global_calibration
 from score import score_ticker
 
 
-class ResearchIntegrityV87Tests(unittest.TestCase):
+class ResearchIntegrityV88Tests(unittest.TestCase):
     def test_official_2026_exchange_closures_survive_missing_dependency(self) -> None:
         with patch.object(trading_calendar, "holidays", None):
             trading_calendar._china_holidays.cache_clear()
@@ -137,8 +137,8 @@ class ResearchIntegrityV87Tests(unittest.TestCase):
         row = analytics._ticker_backtest_rows(frame)[0]
 
         self.assertAlmostEqual(row["win_rate_20d"], 1.0 / 1.1, places=4)
-        self.assertEqual(row["average_return_20d"], 10.0)
-        self.assertEqual(row["raw_objective_value"], 10.0)
+        self.assertAlmostEqual(row["average_return_20d"], 8.1818, places=4)
+        self.assertAlmostEqual(row["raw_objective_value"], 8.1818, places=4)
         self.assertEqual(row["profit_factor"], 10.0)
 
     def test_global_calibration_equal_weights_signal_dates(self) -> None:
@@ -183,6 +183,18 @@ class ResearchIntegrityV87Tests(unittest.TestCase):
         self.assertAlmostEqual(global_row["effective_samples"], 3.0, places=4)
         self.assertAlmostEqual(global_row["mean_net_excess20"], 0.0, places=4)
 
+    def test_date_balance_caps_cross_section_without_boosting_overlap(self) -> None:
+        prepared = model_calibration._prepare_samples(
+            pd.DataFrame(
+                {
+                    "entry_date": ["2025-01-02", "2025-01-03"],
+                    "sample_weight": [0.1, 0.2],
+                }
+            )
+        )
+
+        self.assertEqual(prepared["calibration_weight"].tolist(), [0.1, 0.2])
+
     def test_component_rank_ic_uses_sample_independence_weights(self) -> None:
         score = pd.Series([1.0, 2.0, 3.0])
         target = pd.Series([1.0, 2.0, -10.0])
@@ -213,10 +225,10 @@ class ResearchIntegrityV87Tests(unittest.TestCase):
 
         self.assertEqual(verified["ticker"].tolist(), ["000001.SZ", "510300.SH"])
 
-    def test_v87_formula_and_provenance_versions_are_explicit(self) -> None:
-        self.assertIn("v87", config.SCORING_VERSION)
-        self.assertIn("v87", config.BACKTEST_PROVENANCE_VERSION)
-        self.assertIn("v87", config.OUTPUT_CONTRACT_VERSION)
+    def test_v88_formula_and_provenance_versions_are_explicit(self) -> None:
+        self.assertIn("v88", config.SCORING_VERSION)
+        self.assertIn("v88", config.BACKTEST_PROVENANCE_VERSION)
+        self.assertIn("v88", config.OUTPUT_CONTRACT_VERSION)
 
 
 if __name__ == "__main__":

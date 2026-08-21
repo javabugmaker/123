@@ -34,6 +34,8 @@ class ComponentCalibration:
     test_default_ic: float = 0.0
     validation_samples: int = 0
     test_samples: int = 0
+    validation_effective_samples: float = 0.0
+    test_effective_samples: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -47,6 +49,10 @@ class ComponentCalibration:
             "test_default_ic": round(float(self.test_default_ic), 6),
             "validation_samples": int(self.validation_samples),
             "test_samples": int(self.test_samples),
+            "validation_effective_samples": round(
+                float(self.validation_effective_samples), 4
+            ),
+            "test_effective_samples": round(float(self.test_effective_samples), 4),
         }
 
 
@@ -148,7 +154,7 @@ def _prepare_samples(frame: pd.DataFrame) -> pd.DataFrame:
     date_weight = result["sample_weight"].groupby(date_key).transform("sum")
     result["calibration_weight"] = (
         result["sample_weight"]
-        .div(date_weight.where(date_weight.gt(0.0)))
+        .div(date_weight.clip(lower=1.0))
         .where(date_key.notna(), 0.0)
         .fillna(0.0)
     )
@@ -168,6 +174,10 @@ def _prepare_samples(frame: pd.DataFrame) -> pd.DataFrame:
         right=False,
         include_lowest=True,
     ).astype("object")
+    result["exit60_date"] = pd.to_datetime(
+        result.get("exit60_date", pd.Series(pd.NaT, index=result.index)),
+        errors="coerce",
+    )
     return result
 
 
@@ -194,6 +204,8 @@ def build_global_calibration(
     if frame is None or frame.empty:
         return []
     sample = _prepare_samples(frame)
+    if "split" in sample.columns:
+        sample = sample.loc[~sample["split"].astype(str).eq("purged")]
     sample = sample.dropna(subset=["net_excess20", "score"])
     if sample.empty:
         return []
@@ -515,8 +527,15 @@ def calibrate_component_weights(frame: pd.DataFrame) -> ComponentCalibration:
     sample = sample.dropna(subset=[*required, "net_excess20"])
     validation = sample.loc[sample.get("split", "").astype(str).eq("validation")]
     test = sample.loc[sample.get("split", "").astype(str).eq("test")]
-    if len(validation) < 30:
-        return ComponentCalibration(validation_samples=len(validation), test_samples=len(test))
+    validation_effective = float(validation["calibration_weight"].sum())
+    test_effective = float(test["calibration_weight"].sum())
+    if len(validation) < 30 or validation_effective < 30.0:
+        return ComponentCalibration(
+            validation_samples=len(validation),
+            test_samples=len(test),
+            validation_effective_samples=validation_effective,
+            test_effective_samples=test_effective,
+        )
 
     default_validation = _spearman(
         _component_score(validation, DEFAULT_COMPONENT_WEIGHTS),
@@ -543,16 +562,24 @@ def calibrate_component_weights(frame: pd.DataFrame) -> ComponentCalibration:
 
     accepted = bool(best_weights != DEFAULT_COMPONENT_WEIGHTS and best_ic >= default_validation + 0.01)
     selected = best_weights if accepted else DEFAULT_COMPONENT_WEIGHTS
-    test_selected = _spearman(
-        _component_score(test, selected),
-        test["net_excess20"],
-        test["calibration_weight"],
-    ) if len(test) >= 3 else 0.0
-    test_default = _spearman(
-        _component_score(test, DEFAULT_COMPONENT_WEIGHTS),
-        test["net_excess20"],
-        test["calibration_weight"],
-    ) if len(test) >= 3 else 0.0
+    test_selected = (
+        _spearman(
+            _component_score(test, selected),
+            test["net_excess20"],
+            test["calibration_weight"],
+        )
+        if len(test) >= 3
+        else 0.0
+    )
+    test_default = (
+        _spearman(
+            _component_score(test, DEFAULT_COMPONENT_WEIGHTS),
+            test["net_excess20"],
+            test["calibration_weight"],
+        )
+        if len(test) >= 3
+        else 0.0
+    )
     return ComponentCalibration(
         setup_weight=selected[0],
         trigger_weight=selected[1],
@@ -564,6 +591,8 @@ def calibrate_component_weights(frame: pd.DataFrame) -> ComponentCalibration:
         test_default_ic=test_default,
         validation_samples=len(validation),
         test_samples=len(test),
+        validation_effective_samples=validation_effective,
+        test_effective_samples=test_effective,
     )
 
 
@@ -577,11 +606,8 @@ def walk_forward_stats(
     if frame is None or frame.empty:
         return []
     sample = _prepare_samples(frame)
-    sample["exit20_date"] = pd.to_datetime(
-        sample.get("exit20_date"), errors="coerce"
-    )
     sample = sample.dropna(
-        subset=["entry_date", "exit20_date", "net_excess20", "score"]
+        subset=["entry_date", "exit60_date", "net_excess20", "score"]
     )
     if sample.empty:
         return []
@@ -590,18 +616,26 @@ def walk_forward_stats(
     for year in years:
         start = pd.Timestamp(year=year, month=1, day=1)
         end = pd.Timestamp(year=year + 1, month=1, day=1)
-        # A fold may only use labels that are fully known before its boundary.
-        # Entry-date-only slicing leaked late-December outcomes into the next
-        # year's evaluation.
+        # A fold may only use labels whose longest outcome is fully known
+        # before its boundary.  Entry-date-only slicing leaked late-December
+        # outcomes into the following year's evaluation.
         train = sample.loc[
-            (sample["entry_date"] < start) & (sample["exit20_date"] < start)
+            sample["entry_date"].lt(start)
+            & sample["exit60_date"].lt(start)
         ]
         test = sample.loc[
-            (sample["entry_date"] >= start)
-            & (sample["entry_date"] < end)
-            & (sample["exit20_date"] < end)
+            sample["entry_date"].ge(start)
+            & sample["entry_date"].lt(end)
+            & sample["exit60_date"].lt(end)
         ]
-        if len(train) < min_train_samples or len(test) < min_test_samples:
+        train_effective = float(train["calibration_weight"].sum())
+        test_effective = float(test["calibration_weight"].sum())
+        if (
+            len(train) < min_train_samples
+            or len(test) < min_test_samples
+            or train_effective < float(min_train_samples)
+            or test_effective < float(min_test_samples)
+        ):
             continue
         calibration = build_global_calibration(train)
         predicted, confidence = calibration_scores_for_frame(
@@ -612,8 +646,17 @@ def walk_forward_stats(
         test_weight = test["calibration_weight"].reset_index(drop=True)
         predicted = predicted.reset_index(drop=True)
         confidence = confidence.reset_index(drop=True)
-        valid = predicted.notna() & test_target.notna() & confidence.gt(0)
-        if valid.sum() < min_test_samples:
+        valid = (
+            predicted.notna()
+            & test_target.notna()
+            & confidence.gt(0)
+            & test_weight.gt(0)
+        )
+        valid_effective = float(test_weight.loc[valid].sum())
+        if (
+            valid.sum() < min_test_samples
+            or valid_effective < float(min_test_samples)
+        ):
             continue
         rank_ic = _spearman(
             predicted.loc[valid],
@@ -640,6 +683,8 @@ def walk_forward_stats(
                 "year": year,
                 "train_samples": len(train),
                 "test_samples": int(valid.sum()),
+                "train_effective_samples": round(train_effective, 4),
+                "test_effective_samples": round(valid_effective, 4),
                 "rank_ic": round(rank_ic, 6),
                 "top_bucket_net_excess20": round(float(top_mean), 4) if not top.empty else np.nan,
                 "bottom_bucket_net_excess20": round(float(bottom_mean), 4) if not bottom.empty else np.nan,

@@ -23,7 +23,7 @@ import pandas as pd
 import historical_universe as _historical
 from downloader import normalize_ticker
 
-UNIVERSE_SNAPSHOT_VERSION = "2026-08-21-v87-stock-etf-universe-snapshot-v1"
+UNIVERSE_SNAPSHOT_VERSION = "2026-08-21-v88-stock-etf-universe-snapshot-v1"
 
 
 def _truthy(values: pd.Series, default: bool = True) -> pd.Series:
