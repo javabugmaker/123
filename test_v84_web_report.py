@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -81,8 +82,17 @@ class WebReportV84Tests(unittest.TestCase):
         self.assertIn("000001.SZ", page)
         self.assertIn("可执行", page)
         self.assertNotIn("MUST_NOT_LEAK", page)
-        # 报告日为 8/20；即使缓存已有 8/21，也绝不能写入历史报告图表。
-        self.assertNotIn("2026-08-21", page)
+
+        # 报告日为 8/20；版本号可以含 8/21，但图表日期数组绝不能含未来行情。
+        match = re.search(
+            r'<script id="图表数据" type="application/json">(.*?)</script>',
+            page,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        assert match is not None
+        charts = json.loads(match.group(1))
+        self.assertEqual(max(charts["000001.SZ"]["d"]), "2026-08-20")
 
     def test_chart_frame_is_cut_off_at_report_date(self) -> None:
         with patch.object(web, "_load_cache", return_value=self._ohlcv()):
