@@ -351,15 +351,11 @@ def _backtest_one_ticker(
             entry_price, closes, lows, entry_index, exit60_index
         )
 
-        outcome_end_date = max(
-            pd.Timestamp(enriched.index[exit20_index]),
-            pd.Timestamp(enriched.index[exit60_index]),
-        )
-        split = _core._assign_sample_split(
+        exit60_date = pd.Timestamp(enriched.index[exit60_index])
+        split = _core._purged_split_label(
             entry_date,
-            outcome_end_date,
-            validation_end,
-            test_start,
+            exit60_date,
+            (validation_end, test_start),
         )
         spacing = (
             outcome_horizon
@@ -385,7 +381,7 @@ def _backtest_one_ticker(
                 "entry_date": entry_date.strftime("%Y-%m-%d"),
                 "entry_price": entry_price,
                 "exit20_date": pd.Timestamp(enriched.index[exit20_index]).strftime("%Y-%m-%d"),
-                "exit60_date": pd.Timestamp(enriched.index[exit60_index]).strftime("%Y-%m-%d"),
+                "exit60_date": exit60_date.strftime("%Y-%m-%d"),
                 "exit20_delay_days": int(exit20_delay),
                 "exit60_delay_days": int(exit60_delay),
                 "exit20_delay_reason": str(exit20_reason),
