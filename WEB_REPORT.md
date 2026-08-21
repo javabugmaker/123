@@ -1,19 +1,27 @@
-# v81 Web Report / GitHub Pages
+# v85 A 股研究简报 / GitHub Pages
 
-InstitutionScanner can generate a public-safe static research brief after a successful canonical scan, standalone backtest, or completed DAILY pipeline.
+InstitutionScanner can generate a public-safe static research briefing after a successful canonical scan, standalone backtest, or completed DAILY pipeline. The v85 presentation uses the same compact editorial system as the desktop GUI without changing scores, decisions, or source data.
 
 ## Automatic behavior
 
-Successful canonical runs call `web_report_v81.maybe_publish_canonical_report(...)`.
+Successful canonical runs continue to call the stable compatibility entry point `web_report_v81.maybe_publish_canonical_report(...)`, which now delegates rendering and publishing to `web_report_v85.py`.
 
 The publisher:
 
-1. Reads only published `AllResults.csv` / `DecisionResults.csv`, `Top50Mixed.csv`, `DailyRunSummary.json`, and `BacktestSummary.json`.
+1. Reads only already-published candidate views, run summaries, and the historical price cache required for the selected report date.
 2. Keeps a strict public-field allowlist.
 3. Writes the local static site to `output/web_report/`.
 4. Uses a temporary Git working directory.
 5. Pushes only `index.html`, `.nojekyll`, and `reports/` to the `gh-pages` branch.
 6. Never changes the scan/backtest return code when GitHub/network authentication fails.
+
+The report contains these primary sections:
+
+- 市场状态与核心指标
+- 重点机会和可切换研究视图
+- 板块轮动与风险雷达
+- 模型变化与运行状态
+- 严格按报告日截断的交互 K 线详情
 
 The expected site for this repository is:
 
@@ -55,4 +63,4 @@ $env:INSTITUTION_SCANNER_WEB_REPORT_ROWS="250"
 
 ## Safety boundary
 
-The website does not publish raw price-cache files, logs, local filesystem paths, credentials, account information, or arbitrary columns from the scanner output. Only the explicit allowlist in `web_report_v81.py` can enter the generated HTML.
+The website does not publish raw price-cache files, logs, local filesystem paths, credentials, account information, or arbitrary columns from the scanner output. v85 reuses the explicit public allowlist from the stable report layer; every dynamic HTML value is escaped and historical charts are cut off at the report date.

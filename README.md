@@ -65,8 +65,12 @@ pip install -r requirements-optional.txt
 ## 运行 GUI
 
 ```bash
-python gui.py
+python gui_v85.py
 ```
+
+Windows 也可以双击 `启动研究终端.bat`。v85 采用 1366×768 紧凑研究简报布局，
+统一桌面端与发布页的信息层级：数据日期、研究榜、板块轮动、风险雷达、模型变化和
+运行状态。扫描、排名、回测与结果字段仍复用稳定实现，不改变模型口径。
 
 GUI 行情源固定显示为 `TickFlow Free`，基本面来源为 `AkShare（低频缓存）`。
 
@@ -134,6 +138,7 @@ python main.py scan --refresh-fundamentals
 - `DailyRunSummary.json` 记录阻断项统计、与上一运行的资格升降、分数大幅变化、成本模型、校准稳定性和历史股票池覆盖情况。
 - 行情结果记录复权方式、复权基准日、ATR 截止日和复权重建标记，避免不同价格口径混用。
 - `DecisionResults.csv` 保留执行流动性与行情时效诊断；研究排序可以保留延迟数据，但即时 `READY/CAUTIOUS` 必须使用最新完成交易日。
+- 成功的正式运行会生成 v85 A 股研究简报站点；页面只读取公开字段白名单，并按报告日期截断 K 线，避免历史页面混入未来数据。详见 [WEB_REPORT.md](WEB_REPORT.md)。
 
 ## 回测交易成本
 

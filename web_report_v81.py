@@ -1,7 +1,7 @@
-"""v81 兼容入口。
+"""v81 compatibility entry for the current public research briefing.
 
-v84 已将网页报告重构为中文研究终端。保留这个模块名是为了让
-scan_service.py、daily_pipeline.py、旧测试和外部脚本无需迁移即可继续工作。
+Keep this historical module name so scan_service.py, daily_pipeline.py, old
+tests and external scripts continue to work while v85 owns presentation.
 """
 
 from __future__ import annotations
@@ -10,20 +10,20 @@ import csv
 import logging
 from pathlib import Path
 
-import web_report_v84 as _v84
-from web_report_v84 import *  # noqa: F403
+import web_report_v85 as _v85
+from web_report_v85 import *  # noqa: F403
 
-_archive_html = _v84._archive_html
-_published_source_dir = _v84._published_source_dir
-build_and_publish_web_report = _v84.build_and_publish_web_report
+_archive_html = _v85._archive_html
+_published_source_dir = _v85._published_source_dir
+build_and_publish_web_report = _v85.build_and_publish_web_report
 
 
 def build_web_report(
-    output_dir: Path = _v84.DEFAULT_OUTPUT_DIR,
-    site_dir: Path = _v84.DEFAULT_SITE_DIR,
-) -> _v84.WebReportResult:
-    """调用 v84 生成器，同时保留旧页面测试依赖的“交易快报”标记。"""
-    result = _v84.build_web_report(output_dir=output_dir, site_dir=site_dir)
+    output_dir: Path = _v85.DEFAULT_OUTPUT_DIR,
+    site_dir: Path = _v85.DEFAULT_SITE_DIR,
+) -> _v85.WebReportResult:
+    """Call v85 while retaining the hidden legacy report marker."""
+    result = _v85.build_web_report(output_dir=output_dir, site_dir=site_dir)
     marker = f"交易快报 {result.report_date}"
     for path in (result.index_path, result.archive_path):
         try:
@@ -45,9 +45,9 @@ def maybe_publish_canonical_report(
     *,
     logger: logging.Logger | None = None,
     reason: str,
-) -> _v84.WebReportResult | None:
-    """保留 v81 patch/mock 语义；实际发布器仍由 v84 提供。"""
-    if not _v84.is_canonical_output_dir(Path(output_dir)):
+) -> _v85.WebReportResult | None:
+    """Preserve v81 patch/mock semantics while v85 performs publication."""
+    if not _v85.is_canonical_output_dir(Path(output_dir)):
         return None
     try:
         return build_and_publish_web_report(

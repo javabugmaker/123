@@ -1,4 +1,4 @@
-"""Manual retry entry point for the v81 GitHub Pages report."""
+"""Manual retry entry point for the current GitHub Pages research briefing."""
 
 from __future__ import annotations
 
