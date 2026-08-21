@@ -1,9 +1,8 @@
-"""InstitutionScanner v82 ranking-integrity configuration facade.
+"""InstitutionScanner v86 scoring-integrity/performance configuration facade.
 
-v82 preserves v80 scoring weights and workstation acceleration while fixing
-post-backtest recency semantics, adding full-universe perturbation auditing and
-prospective point-in-time universe snapshots.  No setup/trigger/execution
-weight or trade threshold is changed here.
+v86 preserves every v82 scoring weight and trade threshold while making public
+score calls cache-safe and moving report policy / benchmark alignment work onto
+bulk array paths.  No setup/trigger/execution formula is changed here.
 """
 
 from __future__ import annotations
@@ -30,6 +29,7 @@ SCORING_VERSION: str = (
     + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-21-v86-cache-safe-vectorized-policy-alignment-"
     "2026-08-21-v82-ranking-integrity-audit-"
     "2026-08-20-v80-vectorized-backtest-workstation-engine-"
     "2026-08-20-v79-vectorized-score-endpoint-cache-"
@@ -158,12 +158,19 @@ DAILY_RECOVERY_INTEGRITY_VERSION: str = (
 BACKTEST_COMMAND_INTEGRITY_VERSION: str = (
     "2026-08-19-v76-whole-command-transaction-v1"
 )
-PERFORMANCE_ENGINE_VERSION: str = "2026-08-20-v80-vectorized-backtest-workstation-v1"
+PERFORMANCE_ENGINE_VERSION: str = (
+    "2026-08-21-v86-vectorized-policy-alignment-workstation-v1"
+)
 SCORE_PIPELINE_ACCELERATION_VERSION: str = (
-    "2026-08-20-v79-threadlocal-series-endpoint-cache-v1"
+    "2026-08-21-v86-cache-safe-score-transaction-v1"
 )
 BACKTEST_FASTPATH_VERSION: str = "2026-08-20-v80-whole-ticker-fastscore-v1"
-BACKTEST_IO_CACHE_VERSION: str = "2026-08-20-v80-one-hash-benchmark-lookup-v1"
+BACKTEST_IO_CACHE_VERSION: str = (
+    "2026-08-21-v86-vectorized-benchmark-alignment-v1"
+)
+RESEARCH_POLICY_ACCELERATION_VERSION: str = (
+    "2026-08-21-v86-vectorized-research-policy-v1"
+)
 BACKTEST_INCREMENTAL_ENGINE_VERSION: str = "2026-08-20-v78-cache-maturity-rewind-v1"
 BACKTEST_EXECUTION_ACCELERATION_VERSION: str = (
     "2026-08-20-v80-tradeability-sample-array-v1"

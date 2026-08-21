@@ -25,7 +25,8 @@ import pyarrow.parquet as pq
 from analytics import refresh_research_outcomes, write_research_reports
 from classification import (
     ETF_CANONICAL_TRACKING_KEYS,
-    etf_research_eligibility,
+    ETF_RESEARCH_EXCLUDED_KEYWORDS,
+    ETF_RESEARCH_EXCLUDED_LABELS,
     etf_theme_key,
     etf_tracking_key,
     theme_cluster,
@@ -537,6 +538,119 @@ def _atomic_write_parquet(df: pd.DataFrame, path: Path) -> None:
             temporary_path.unlink()
 
 
+_NULLISH_TEXT = frozenset({"", "nan", "none", "nat", "<na>"})
+_TRUTHY_TEXT = frozenset({"true", "1", "yes", "y", "是"})
+
+
+def _policy_column(
+    frame: pd.DataFrame,
+    column: str,
+    default: object,
+) -> pd.Series:
+    """Return a position-indexed column so duplicate source indexes are safe."""
+    if column in frame.columns:
+        return pd.Series(frame[column].to_numpy(copy=False), copy=False)
+    return pd.Series(np.full(len(frame), default, dtype=object), copy=False)
+
+
+def _policy_text(values: pd.Series) -> pd.Series:
+    """Vectorized counterpart of classification.safe_text/_clean_group_key."""
+    text = values.astype("string").fillna("").str.strip()
+    return text.mask(text.str.lower().isin(_NULLISH_TEXT), "")
+
+
+def _policy_truthy(values: pd.Series) -> np.ndarray:
+    return (
+        values.astype("string")
+        .fillna("")
+        .str.strip()
+        .str.lower()
+        .isin(_TRUTHY_TEXT)
+        .to_numpy(dtype=bool)
+    )
+
+
+def _vectorized_etf_research_policy(
+    frame: pd.DataFrame,
+    is_etf: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Evaluate the ETF exclusion policy in bulk with an exact fallback.
+
+    Normal report rows already carry ``ModelClassification`` and stay entirely
+    on the pandas string-vector path.  Only ETF rows whose classification is
+    genuinely absent call the canonical theme resolver, preserving its ordered
+    fallback semantics without paying a Python-row cost for the full universe.
+    """
+    eligible = np.ones(len(frame), dtype=bool)
+    reasons = np.full(len(frame), "", dtype=object)
+    etf_positions = np.flatnonzero(is_etf)
+    if not etf_positions.size:
+        return eligible, reasons
+
+    etf_frame = frame.iloc[etf_positions]
+    name = _policy_text(_policy_column(etf_frame, "Name", ""))
+    industry = _policy_text(_policy_column(etf_frame, "Industry", ""))
+    sector = _policy_text(_policy_column(etf_frame, "Sector", ""))
+    classification_column = (
+        "ModelClassification"
+        if "ModelClassification" in frame.columns
+        else "ETFTheme"
+    )
+    resolved = _policy_text(_policy_column(etf_frame, classification_column, ""))
+
+    unresolved = np.flatnonzero(resolved.eq("").to_numpy(dtype=bool))
+    if unresolved.size:
+        ticker = _policy_text(_policy_column(etf_frame, "Ticker", ""))
+        resolved_values = resolved.to_numpy(dtype=object, copy=True)
+        name_values = name.to_numpy(dtype=object, copy=False)
+        industry_values = industry.to_numpy(dtype=object, copy=False)
+        sector_values = sector.to_numpy(dtype=object, copy=False)
+        ticker_values = ticker.to_numpy(dtype=object, copy=False)
+        for position in unresolved:
+            index = int(position)
+            resolved_values[index] = etf_theme_key(
+                name=name_values[index],
+                industry=industry_values[index],
+                sector=sector_values[index],
+                ticker=ticker_values[index],
+            )
+        resolved = pd.Series(resolved_values, copy=False, dtype="string")
+
+    # De-duplication inside _classification_text does not affect substring
+    # membership, so one vectorized concatenation is semantically equivalent.
+    combined = (
+        name.str.upper()
+        + " "
+        + industry.str.upper()
+        + " "
+        + sector.str.upper()
+        + " "
+        + resolved.str.upper()
+    )
+    exact_exclusion = resolved.isin(ETF_RESEARCH_EXCLUDED_LABELS).to_numpy(dtype=bool)
+    if np.any(exact_exclusion):
+        excluded_positions = etf_positions[exact_exclusion]
+        eligible[excluded_positions] = False
+        resolved_values = resolved.to_numpy(dtype=object, copy=False)
+        reasons[excluded_positions] = np.char.add(
+            "ETF分类排除：",
+            resolved_values[exact_exclusion].astype(str),
+        )
+
+    unmatched = ~exact_exclusion
+    for keyword in ETF_RESEARCH_EXCLUDED_KEYWORDS:
+        keyword_match = unmatched & combined.str.contains(
+            str(keyword).upper(), regex=False, na=False
+        ).to_numpy(dtype=bool)
+        if np.any(keyword_match):
+            excluded_positions = etf_positions[keyword_match]
+            eligible[excluded_positions] = False
+            reasons[excluded_positions] = f"ETF现金管理产品排除：{keyword}"
+            unmatched &= ~keyword_match
+
+    return eligible, reasons
+
+
 def _apply_research_policy(frame: pd.DataFrame) -> pd.DataFrame:
     """Mark non-directional ETF products before any TopN candidate ranking."""
     working = frame.copy()
@@ -544,44 +658,53 @@ def _apply_research_policy(frame: pd.DataFrame) -> pd.DataFrame:
         working["ResearchEligible"] = pd.Series(dtype=bool)
         working["ResearchExclusionReason"] = pd.Series(dtype="object")
         return working
-    eligibility: list[bool] = []
-    reasons: list[str] = []
-    for _, row in working.iterrows():
-        asset = str(row.get("AssetType", "") or "").strip().lower()
-        is_etf = _truthy(row.get("IsETF", False)) or asset == "etf"
-        eligible, reason = etf_research_eligibility(
-            is_etf=is_etf,
-            name=row.get("Name", ""),
-            industry=row.get("Industry", ""),
-            sector=row.get("Sector", ""),
-            classification=row.get("ModelClassification", row.get("ETFTheme", "")),
-            ticker=row.get("Ticker", ""),
-        )
-        hard_value = row.get("HardGatePassed", None)
-        try:
-            hard_missing = hard_value is None or pd.isna(hard_value)
-        except (TypeError, ValueError):
-            hard_missing = hard_value is None
-        if hard_missing or str(hard_value).strip() == "":
-            hard_value = row.get("UniverseEligible", True)
-        hard_ok = _truthy(hard_value)
-        failed_names = _clean_group_key(row.get("HardGateFailedNames", ""))
-        legacy_combined_pass = (
-            not hard_ok
-            and not failed_names
-            and _truthy(row.get("PassedFilters", False))
-        )
-        if legacy_combined_pass:
-            hard_ok = True
-        if not hard_ok:
-            hard_reason = (
-                f"硬准入失败：{failed_names}" if failed_names else "硬准入条件未通过"
-            )
-            reason = f"{reason}；{hard_reason}" if reason else hard_reason
-        eligibility.append(bool(eligible) and hard_ok)
-        reasons.append(str(reason or ""))
-    working["ResearchEligible"] = eligibility
-    working["ResearchExclusionReason"] = reasons
+
+    asset_type = _policy_text(_policy_column(working, "AssetType", ""))
+    is_etf = _policy_truthy(_policy_column(working, "IsETF", False)) | asset_type.str.lower().eq(
+        "etf"
+    ).to_numpy(dtype=bool)
+    etf_eligible, etf_reasons = _vectorized_etf_research_policy(working, is_etf)
+
+    hard_value = _policy_column(working, "HardGatePassed", None)
+    hard_text = hard_value.astype("string").fillna("").str.strip()
+    hard_missing = hard_value.isna().to_numpy(dtype=bool) | hard_text.eq("").to_numpy(
+        dtype=bool
+    )
+    universe_value = _policy_column(working, "UniverseEligible", True)
+    effective_hard_value = hard_value.astype(object).copy()
+    effective_hard_value.iloc[np.flatnonzero(hard_missing)] = universe_value.iloc[
+        np.flatnonzero(hard_missing)
+    ].to_numpy(copy=False)
+    hard_ok = _policy_truthy(effective_hard_value)
+
+    failed_names = _policy_text(_policy_column(working, "HardGateFailedNames", ""))
+    failed_blank = failed_names.eq("").to_numpy(dtype=bool)
+    legacy_combined_pass = (
+        ~hard_ok
+        & failed_blank
+        & _policy_truthy(_policy_column(working, "PassedFilters", False))
+    )
+    hard_ok |= legacy_combined_pass
+
+    hard_failed = ~hard_ok
+    hard_reason = pd.Series(
+        np.where(
+            failed_blank,
+            "硬准入条件未通过",
+            "硬准入失败：" + failed_names.astype(str),
+        ),
+        dtype="string",
+    )
+    reason = pd.Series(etf_reasons, dtype="string")
+    has_etf_reason = reason.ne("").to_numpy(dtype=bool)
+    reason = reason.mask(hard_failed & ~has_etf_reason, hard_reason)
+    reason = reason.mask(
+        hard_failed & has_etf_reason,
+        reason + "；" + hard_reason,
+    )
+
+    working["ResearchEligible"] = etf_eligible & hard_ok
+    working["ResearchExclusionReason"] = reason.fillna("").to_numpy(dtype=object)
     return working
 
 

@@ -92,7 +92,19 @@ def trigger_event_score(df: pd.DataFrame) -> float:
 
 
 def score_ticker(df: pd.DataFrame, is_etf: bool = False):
-    """Run the stable feature engine, then replace duplicated TriggerScore."""
+    """Run one cache-safe scoring transaction, then replace TriggerScore.
+
+    The v79 numeric cache is intentionally keyed by ``DataFrame`` identity so
+    all component kernels can share converted arrays during one score.  A
+    caller may nevertheless update an existing frame in place before asking
+    for a fresh score.  Clear the thread-local state at this public transaction
+    boundary so the new call can never observe arrays from the previous frame
+    contents; reuse inside the transaction remains unchanged.
+    """
+    acceleration = sys.modules.get("score_acceleration_v79")
+    clear_cache = getattr(acceleration, "clear_thread_score_cache", None)
+    if callable(clear_cache):
+        clear_cache()
     result = _legacy_score_ticker(df, is_etf=is_etf)
     if result.confidence <= 0.0:
         return result
