@@ -989,17 +989,27 @@ def run_daily_pipeline(
         )
         return 0
     except Exception:
+        staged_checkpoint_discarded = bool(
+            stage_dir is not None and (stage_dir / "_checkpoint.json").is_file()
+        )
         logger.exception("DAILY unexpected failure; restoring previous published result set.")
         if tx_dir is not None:
             _rollback_transaction(tx_dir, previous_files)
         if run_dir is not None:
             shutil.rmtree(run_dir, ignore_errors=True)
+        if staged_checkpoint_discarded:
+            logger.warning(
+                "DAILY failed staging contains a scan checkpoint, but the isolated "
+                "transaction will be discarded; the next DAILY run performs a "
+                "clean full-market scan."
+            )
         _atomic_write_json(
             OUTPUT_DIR / "PublicationStatus.json",
             {
                 "status": "failed",
                 "run_id": pipeline_run_id,
                 "latest_run_unchanged": True,
+                "scan_checkpoint_discarded": staged_checkpoint_discarded,
             },
         )
         return 2

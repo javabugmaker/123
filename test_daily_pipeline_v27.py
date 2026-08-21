@@ -77,6 +77,34 @@ class DailyPipelineV27Tests(unittest.TestCase):
         self.assertEqual(code, 2)
         backtest.assert_not_called()
 
+    def test_daily_failure_discloses_discarded_staging_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+
+            def failed_scan(_args):
+                runtime_output = Path(daily_pipeline.scanner_cli.OUTPUT_DIR)
+                (runtime_output / "_checkpoint.json").write_text(
+                    "{}", encoding="utf-8"
+                )
+                return 2
+
+            with patch.object(daily_pipeline, "OUTPUT_DIR", output), patch.object(
+                daily_pipeline.scanner_cli,
+                "cmd_scan",
+                side_effect=failed_scan,
+            ):
+                code = daily_pipeline.run_daily_pipeline(
+                    workers=1, quality_gates=False
+                )
+
+            self.assertEqual(code, 2)
+            publication = json.loads(
+                (output / "PublicationStatus.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(publication["scan_checkpoint_discarded"])
+            staging = output / ".staging"
+            self.assertFalse(staging.exists() and any(staging.iterdir()))
+
     def test_daily_pipeline_requires_all_three_final_lists(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)

@@ -256,13 +256,16 @@ class ResearchPolicyVectorizationTests(unittest.TestCase):
             ],
             index=[4, 4, 9, 12, 12],
         )
-        expected = _scalar_research_policy(frame)
-        with patch.object(
-            pd.DataFrame,
-            "iterrows",
-            side_effect=AssertionError("research policy must stay on the bulk path"),
-        ):
-            actual = report._apply_research_policy(frame)
+        with pd.option_context("mode.copy_on_write", True):
+            expected = _scalar_research_policy(frame)
+            with patch.object(
+                pd.DataFrame,
+                "iterrows",
+                side_effect=AssertionError(
+                    "research policy must stay on the bulk path"
+                ),
+            ):
+                actual = report._apply_research_policy(frame)
         pd.testing.assert_frame_equal(actual, expected, check_dtype=False)
 
 
