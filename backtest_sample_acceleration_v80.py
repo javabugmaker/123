@@ -351,12 +351,12 @@ def _backtest_one_ticker(
             entry_price, closes, lows, entry_index, exit60_index
         )
 
-        if test_start is not None and entry_date >= test_start:
-            split = "test"
-        elif validation_end is not None and entry_date >= validation_end:
-            split = "validation"
-        else:
-            split = "train"
+        exit60_date = pd.Timestamp(enriched.index[exit60_index])
+        split = _core._purged_split_label(
+            entry_date,
+            exit60_date,
+            (validation_end, test_start),
+        )
         spacing = (
             outcome_horizon
             if previous_sample_index is None
@@ -381,7 +381,7 @@ def _backtest_one_ticker(
                 "entry_date": entry_date.strftime("%Y-%m-%d"),
                 "entry_price": entry_price,
                 "exit20_date": pd.Timestamp(enriched.index[exit20_index]).strftime("%Y-%m-%d"),
-                "exit60_date": pd.Timestamp(enriched.index[exit60_index]).strftime("%Y-%m-%d"),
+                "exit60_date": exit60_date.strftime("%Y-%m-%d"),
                 "exit20_delay_days": int(exit20_delay),
                 "exit60_delay_days": int(exit60_delay),
                 "exit20_delay_reason": str(exit20_reason),

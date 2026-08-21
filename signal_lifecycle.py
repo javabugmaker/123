@@ -20,6 +20,11 @@ import pandas as pd
 
 import config as _config
 import signal_lifecycle_v51 as _core
+from execution_integrity_v87 import (
+    stamp_breakout_price_diagnostics,
+    stamp_trade_economics_diagnostics,
+)
+from research_policy_v87 import vectorized_etf_research_policy
 from signal_lifecycle_v51 import *  # noqa: F403
 
 _LEGACY_FINALIZE_SIGNAL_RANKING = _core.finalize_signal_ranking
@@ -314,6 +319,146 @@ def _append_dynamic_reason(
     return output
 
 
+def _apply_directional_research_gate(
+    result: pd.DataFrame,
+    is_etf: pd.Series,
+) -> pd.Series:
+    """Block cash-equivalent ETFs from directional research and execution."""
+    eligible_values, reason_values = vectorized_etf_research_policy(
+        result,
+        is_etf.to_numpy(dtype=bool),
+    )
+    eligible = pd.Series(eligible_values, index=result.index, dtype=bool)
+    reason = pd.Series(reason_values, index=result.index, dtype=object)
+    applicable = is_etf.fillna(False).astype(bool)
+    result["DirectionalResearchGateApplicable"] = applicable
+    result["DirectionalResearchEligible"] = eligible
+    result["DirectionalResearchReason"] = reason
+    result["DirectionalResearchStatus"] = np.select(
+        [~applicable, eligible],
+        ["NOT_APPLICABLE", "PASS"],
+        default="FAIL",
+    )
+
+    decision = _core._text_series(result, "DecisionState", "OBSERVE").str.upper()
+    demote = applicable & ~eligible & decision.ne("BLOCKED")
+    result["DirectionalResearchGateApplied"] = demote
+    if not demote.any():
+        return demote
+
+    result.loc[demote, "DecisionState"] = "BLOCKED"
+    result.loc[demote, "RankingEligibility"] = "风险过滤"
+    result.loc[demote, "TradeReadiness"] = "风险过滤"
+    readiness = _core._text_series(result, "TradeReadinessReason", "")
+    readiness = _append_dynamic_reason(readiness, demote, reason)
+    result["TradeReadinessReason"] = readiness
+    result["DecisionReason"] = readiness
+    ranking_reason = _core._text_series(result, "RankingReason", "")
+    result["RankingReason"] = _append_dynamic_reason(
+        ranking_reason,
+        demote,
+        pd.Series(
+            "非方向性现金等价产品，不进入股票/方向性ETF研究候选",
+            index=result.index,
+        ),
+    )
+    action = _core._text_series(result, "ActionSuggestion", "等待条件改善")
+    action.loc[demote] = "排除：非方向性现金等价产品"
+    result["ActionSuggestion"] = action
+    risk_note = _core._text_series(result, "RiskNote", "结构仍需确认")
+    risk_note.loc[demote] = "产品属性不适用于方向性信号研究"
+    result["RiskNote"] = risk_note
+    advice = _core._text_series(result, "OperationAdvice", "")
+    advice.loc[demote] = "该产品不属于本项目的方向性股票/ETF研究范围。"
+    result["OperationAdvice"] = advice
+    return demote
+
+
+def _apply_breakout_price_gate(result: pd.DataFrame) -> pd.Series:
+    """Demote weak zero-neighbourhood breakouts without changing alpha."""
+    passed = stamp_breakout_price_diagnostics(result)
+    applicable = _core._bool_series(result, "BreakoutPriceGateApplicable", False)
+    decision = _core._text_series(result, "DecisionState", "OBSERVE").str.upper()
+    demote = decision.isin({"READY", "CAUTIOUS"}) & applicable & ~passed
+    result["BreakoutPriceGateApplied"] = demote
+    if not demote.any():
+        return demote
+
+    result.loc[demote, "DecisionState"] = "OBSERVE"
+    result.loc[demote, "RankingEligibility"] = "观察"
+    result.loc[demote, "TradeReadiness"] = "观察"
+    gate_reason = _core._text_series(
+        result, "BreakoutPriceGateReason", "突破价格确认不足"
+    )
+    readiness = _core._text_series(result, "TradeReadinessReason", "")
+    readiness = _append_dynamic_reason(readiness, demote, gate_reason)
+    result["TradeReadinessReason"] = readiness
+    result["DecisionReason"] = readiness
+    ranking_reason = _core._text_series(result, "RankingReason", "")
+    result["RankingReason"] = _append_dynamic_reason(
+        ranking_reason,
+        demote,
+        pd.Series(
+            "研究排序保留，但突破价格确认不足，不进入推荐",
+            index=result.index,
+        ),
+    )
+    action = _core._text_series(result, "ActionSuggestion", "等待条件改善")
+    action.loc[demote] = "仅观察，等待价格有效脱离突破位"
+    result["ActionSuggestion"] = action
+    risk_note = _core._text_series(result, "RiskNote", "结构仍需确认")
+    risk_note.loc[demote] = "突破价格确认不足"
+    result["RiskNote"] = risk_note
+    advice = _core._text_series(result, "OperationAdvice", "")
+    advice.loc[demote] = "突破仍处于零附近过渡区，等待更明确的价格确认。"
+    result["OperationAdvice"] = advice
+    return demote
+
+
+def _apply_trade_economics_gate(
+    result: pd.DataFrame,
+    is_etf: pd.Series,
+) -> pd.Series:
+    """Demote candidates whose projected target cannot cover friction."""
+    passed = stamp_trade_economics_diagnostics(result, is_etf)
+    applicable = _core._bool_series(result, "TradeEconomicsApplicable", False)
+    decision = _core._text_series(result, "DecisionState", "OBSERVE").str.upper()
+    demote = decision.isin({"READY", "CAUTIOUS"}) & applicable & ~passed
+    result["TradeEconomicsGateApplied"] = demote
+    if not demote.any():
+        return demote
+
+    result.loc[demote, "DecisionState"] = "OBSERVE"
+    result.loc[demote, "RankingEligibility"] = "观察"
+    result.loc[demote, "TradeReadiness"] = "观察"
+    economics_reason = _core._text_series(
+        result, "TradeEconomicsReason", "预期目标无法覆盖交易成本"
+    )
+    readiness = _core._text_series(result, "TradeReadinessReason", "")
+    readiness = _append_dynamic_reason(readiness, demote, economics_reason)
+    result["TradeReadinessReason"] = readiness
+    result["DecisionReason"] = readiness
+    ranking_reason = _core._text_series(result, "RankingReason", "")
+    result["RankingReason"] = _append_dynamic_reason(
+        ranking_reason,
+        demote,
+        pd.Series(
+            "研究排序保留，但目标空间不足以覆盖往返成本，不进入推荐",
+            index=result.index,
+        ),
+    )
+    action = _core._text_series(result, "ActionSuggestion", "等待条件改善")
+    action.loc[demote] = "仅观察，等待目标空间扩大或成本下降"
+    result["ActionSuggestion"] = action
+    risk_note = _core._text_series(result, "RiskNote", "结构仍需确认")
+    risk_note.loc[demote] = "预期目标无法充分覆盖交易成本"
+    result["RiskNote"] = risk_note
+    advice = _core._text_series(result, "OperationAdvice", "")
+    advice.loc[demote] = "按统一成本模型估算后净目标不足，当前不满足执行经济性。"
+    result["OperationAdvice"] = advice
+    return demote
+
+
 def _apply_trade_liquidity_gate(result: pd.DataFrame) -> pd.Series:
     """Demote only execution readiness; keep research ranking untouched."""
     passed = _trade_liquidity_diagnostics(result)
@@ -472,17 +617,20 @@ def _apply_trade_freshness_gate(result: pd.DataFrame) -> pd.Series:
 
 
 def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
-    """Run stable ranking, then apply execution-only liquidity/freshness gates."""
+    """Run stable ranking, then apply vectorized v87 integrity gates."""
     result = _LEGACY_FINALIZE_SIGNAL_RANKING(frame)
     if result is None or result.empty:
         return result
 
     corrected, is_etf = _board_diagnostic_inputs(result)
     _add_board_diagnostics(result, corrected, is_etf)
+    _apply_directional_research_gate(result, is_etf)
+    _apply_breakout_price_gate(result)
+    _apply_trade_economics_gate(result, is_etf)
     _apply_trade_liquidity_gate(result)
     _apply_trade_freshness_gate(result)
 
-    # v54/v58 gates are execution-only: never alter the research RankingScore.
+    # v54/v58/v87 gates never alter the research RankingScore.
     result["RankingScore"] = _core._number(
         result.get("RankingScore", pd.Series(0.0, index=result.index)),
         0.0,
@@ -497,6 +645,9 @@ _core._is_active = _is_active
 _core._trading_board_series = _trading_board_series
 _core._add_board_diagnostics = _add_board_diagnostics
 _core._board_diagnostic_inputs = _board_diagnostic_inputs
+_core._apply_directional_research_gate = _apply_directional_research_gate
+_core._apply_breakout_price_gate = _apply_breakout_price_gate
+_core._apply_trade_economics_gate = _apply_trade_economics_gate
 _core._trade_liquidity_threshold = _trade_liquidity_threshold
 _core._trade_liquidity_diagnostics = _trade_liquidity_diagnostics
 _core._apply_trade_liquidity_gate = _apply_trade_liquidity_gate

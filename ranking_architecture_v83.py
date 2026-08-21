@@ -13,6 +13,10 @@ import numpy as np
 import pandas as pd
 
 from config import MODEL_EXECUTION_WEIGHT, MODEL_SETUP_WEIGHT, MODEL_TRIGGER_WEIGHT
+from execution_integrity_v87 import (
+    legacy_breakout_price_component,
+    smooth_breakout_price_component,
+)
 
 RANKING_ARCHITECTURE_VERSION = "2026-08-21-v83-layered-research-execution-v1"
 SMOOTH_TRIGGER_VERSION = "2026-08-21-v83-smooth-breakout-shadow-v1"
@@ -84,37 +88,15 @@ def _model_weights(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.Series
 
 
 def _legacy_breakout_price_component(clearance_pct: np.ndarray) -> np.ndarray:
-    """Vectorised exact copy of the production trigger's price-breakout component."""
-    clearance = np.asarray(clearance_pct, dtype=np.float64)
-    result = np.zeros(clearance.shape, dtype=np.float64)
-    positive = np.isfinite(clearance) & (clearance > 0.0)
-    near = np.isfinite(clearance) & ~positive & (clearance >= -1.5)
-    result[positive] = 35.0 + np.clip(clearance[positive] / 3.0, 0.0, 1.0) * 15.0
-    result[near] = np.clip((clearance[near] + 1.5) / 1.5, 0.0, 1.0) * 12.0
-    return result
+    """Compatibility alias for the single canonical v87 implementation."""
+    return legacy_breakout_price_component(clearance_pct)
 
 
 def _smooth_breakout_price_component(
     clearance_pct: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Smooth only the -0.5%..+0.5% cliff while matching legacy values at both edges."""
-    clearance = np.asarray(clearance_pct, dtype=np.float64)
-    legacy = _legacy_breakout_price_component(clearance)
-    smooth = legacy.copy()
-    valid = np.isfinite(clearance)
-    transition = valid & (clearance >= -0.5) & (clearance <= 0.5)
-    if np.any(transition):
-        x = np.clip((clearance[transition] + 0.5) / 1.0, 0.0, 1.0)
-        step = x * x * (3.0 - 2.0 * x)
-        # Exact legacy price-component values at -0.5% and +0.5% are 8 and 37.5.
-        smooth[transition] = 8.0 + (37.5 - 8.0) * step
-    confirmation = np.zeros(clearance.shape, dtype=np.float64)
-    confirmation[valid & (clearance >= 0.5)] = 100.0
-    middle = valid & (clearance > -0.5) & (clearance < 0.5)
-    if np.any(middle):
-        x = np.clip((clearance[middle] + 0.5) / 1.0, 0.0, 1.0)
-        confirmation[middle] = (x * x * (3.0 - 2.0 * x)) * 100.0
-    return smooth, confirmation
+    """Compatibility alias for the single canonical v87 implementation."""
+    return smooth_breakout_price_component(clearance_pct)
 
 
 def _rank_within_asset(score: pd.Series, asset: pd.Series) -> tuple[pd.Series, pd.Series]:

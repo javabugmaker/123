@@ -36,6 +36,15 @@ _PUBLICATION_LOCK = threading.Lock()
 _TRANSACTION_GROUPS = (".publication_txn", ".backtest_publication_txn")
 
 _DECISION_EXECUTION_DIAGNOSTICS = (
+    "DirectionalResearchEligible",
+    "DirectionalResearchReason",
+    "BreakoutPriceConfirmationScore",
+    "BreakoutPriceGatePassed",
+    "BreakoutPriceGateReason",
+    "TradeEconomicsPassed",
+    "TradeEstimatedRoundTripCostPct",
+    "TradeTargetCostMultiple",
+    "TradeEconomicsReason",
     "TradeLiquidityApplicable",
     "TradeLiquidityPassed",
     "TradeLiquidityStatus",
