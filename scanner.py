@@ -311,9 +311,11 @@ def _parse_float(value: Any, default: float = np.nan) -> float:
     return parsed if np.isfinite(parsed) else default
 
 
-def _quality_hard_data_complete_from_row(row: pd.Series) -> bool:
+def _quality_hard_data_complete_from_row(
+    row: pd.Series | dict[str, Any],
+) -> bool:
     """Read v43 completeness or derive it from legacy fundamental columns."""
-    if "QualityHardDataComplete" in row.index and pd.notna(
+    if "QualityHardDataComplete" in row and pd.notna(
         row.get("QualityHardDataComplete")
     ):
         return _parse_bool(row.get("QualityHardDataComplete"), False)
@@ -957,7 +959,10 @@ def run_scan(
         else:
             try:
                 prev_df = pd.read_parquet(prev_parquet)
-                for _, row in prev_df.iterrows():
+                # ``to_dict(records)`` avoids pandas Series construction for
+                # every resumed ticker while preserving the existing mapping
+                # contract used by the compatibility parser below.
+                for row in prev_df.to_dict(orient="records"):
                     ticker = _normalize_ticker(str(row.get("Ticker", "")))
                     if not ticker:
                         continue

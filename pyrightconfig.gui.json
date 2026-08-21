@@ -2,7 +2,9 @@
   "extends": "./pyrightconfig.json",
   "include": [
     "gui.py",
-    "gui_core.py"
+    "gui_core.py",
+    "gui_v84.py",
+    "gui_v85.py"
   ],
   "reportAttributeAccessIssue": "error"
 }

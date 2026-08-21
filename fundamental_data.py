@@ -264,7 +264,7 @@ def _batch_fetch_financial_data() -> dict[str, dict[str, Any]]:
         if frame is None or frame.empty:
             continue
         profit_column = f"NetProfitY{report_number}"
-        for _, row in frame.iterrows():
+        for row in frame.to_dict(orient="records"):
             ticker = _code_to_ticker(
                 _row_value(row, "股票代码", "证券代码", "代码")
             )
@@ -342,7 +342,7 @@ def _batch_fetch_institutional_data() -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for snapshot_index, (report_symbol, frame) in enumerate(snapshots, start=1):
         change_key = f"OrgNumChange{snapshot_index}"
-        for _, row in frame.iterrows():
+        for row in frame.to_dict(orient="records"):
             ticker = _code_to_ticker(
                 _row_value(row, "证券代码", "股票代码", "代码")
             )

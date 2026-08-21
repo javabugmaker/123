@@ -384,7 +384,7 @@ def _path_value() -> Path | None:
 
 
 @lru_cache(maxsize=4)
-def load_fundamental_data(path_value: str) -> dict[str, pd.Series]:
+def load_fundamental_data(path_value: str) -> dict[str, dict[str, Any]]:
     path = Path(path_value)
     try:
         frame = pd.read_csv(path, dtype={"Ticker": str})
@@ -397,10 +397,9 @@ def load_fundamental_data(path_value: str) -> dict[str, pd.Series]:
         frame["Industry"] = ""
     frame = frame.loc[:, FUNDAMENTAL_COLUMNS].copy()
     frame["Ticker"] = frame["Ticker"].map(_ticker)
-    return {
-        ticker: row
-        for ticker, row in frame.drop_duplicates("Ticker", keep="last").set_index("Ticker").iterrows()
-    }
+    return frame.drop_duplicates("Ticker", keep="last").set_index("Ticker").to_dict(
+        orient="index"
+    )
 
 
 def get_quality(ticker: str, is_etf: bool = False) -> FundamentalQuality:
