@@ -684,7 +684,11 @@ def _apply_research_policy(frame: pd.DataFrame) -> pd.DataFrame:
         & failed_blank
         & _policy_truthy(_policy_column(working, "PassedFilters", False))
     )
-    hard_ok |= legacy_combined_pass
+    # ``Series.to_numpy`` may return a read-only view when pandas
+    # Copy-on-Write is enabled (and under pandas versions where CoW is the
+    # default). Keep this as a vectorized, non-mutating OR so report export is
+    # portable across pandas runtime modes.
+    hard_ok = hard_ok | legacy_combined_pass
 
     hard_failed = ~hard_ok
     hard_reason = pd.Series(

@@ -41,3 +41,10 @@ jobs:
         env:
           MPLBACKEND: Agg
         run: python -m unittest discover -v
+      - name: Pandas Copy-on-Write vectorization contract
+        env:
+          MPLBACKEND: Agg
+          PANDAS_COPY_ON_WRITE: "1"
+        run: >-
+          python -m unittest -v
+          test_v86_score_vectorization_integrity.ResearchPolicyVectorizationTests
