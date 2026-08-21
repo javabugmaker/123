@@ -30,6 +30,7 @@ class LayeredRankingV83Tests(unittest.TestCase):
                 # Legacy penalties intentionally reverse the two stock rows.
                 "RankingScore": [20.0, 40.0, 35.0, 30.0],
                 "DecisionState": ["OBSERVE", "READY", "READY", "OBSERVE"],
+                "HardGatePassed": [True, False, True, True],
                 "QualityHardDataComplete": [True, True, True, True],
                 "QualityGate": [False, True, True, True],
                 "QualityScore": [40.0, 80.0, np.nan, np.nan],
@@ -55,6 +56,7 @@ class LayeredRankingV83Tests(unittest.TestCase):
 
         self.assertEqual(int(result.loc[0, "ResearchRank"]), 1)
         self.assertEqual(int(result.loc[1, "ResearchRank"]), 2)
+        self.assertEqual(float(result.loc[0, "ResearchPercentile"]), 100.0)
         self.assertEqual(int(result.loc[0, "LegacyRankingAssetRank"]), 2)
         self.assertEqual(int(result.loc[1, "LegacyRankingAssetRank"]), 1)
         self.assertEqual(int(result.loc[0, "ResearchVsLegacyRankDelta"]), 1)
@@ -69,6 +71,16 @@ class LayeredRankingV83Tests(unittest.TestCase):
         # ETF ranking is independent from the stock pool.
         self.assertEqual(int(result.loc[2, "TradeRank"]), 1)
         self.assertEqual(int(result.loc[3, "TradeRank"]), 2)
+        self.assertFalse(bool(result.loc[1, "ExecutionHardGatePassed"]))
+
+    def test_quality_data_integrity_is_not_mislabeled_as_hard_policy_gate(self) -> None:
+        source = self._frame()
+        source.loc[1, "QualityHardDataComplete"] = False
+        result = stamp_layered_ranking(source)
+
+        self.assertFalse(bool(result.loc[1, "QualityDataIntegrityPassed"]))
+        self.assertTrue(bool(result.loc[1, "QualityPolicyGatePassed"]))
+        self.assertEqual(result.loc[1, "QualityLayerStatus"], "DATA_INCOMPLETE")
 
     def test_runtime_weight_signature_reconstructs_canonical_alpha(self) -> None:
         result = stamp_layered_ranking(self._frame())
