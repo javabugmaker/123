@@ -2,6 +2,9 @@
 
 复用 gui.py 的成熟扫描、回测、筛选、日志和详情逻辑，只重构信息架构与视觉语言：
 研究排名负责“谁强”，交易排名/执行状态负责“谁现在能做”。
+
+模块导入本身不修改 gui_core 全局状态；只有真正启动 v84 工作台时才安装展示配置，
+从而保证旧 GUI、旧测试与 v84 可以长期共存。
 """
 
 from __future__ import annotations
@@ -22,10 +25,9 @@ import gui_core as _core
 通过绿 = "#197A55"
 观察黄 = "#B56A13"
 
-GUI_VERSION = "2026-08-21-v84-chinese-research-terminal-v1"
+GUI_VERSION = "2026-08-21-v84-chinese-research-terminal-v2"
 
-# v84 主表直接使用 v83 的分层排名字段。旧 RankingScore 仍保留在完整详情中。
-_core.DISPLAY_COLUMNS = (
+V84_DISPLAY_COLUMNS = (
     "ResearchRank",
     "TradeRank",
     "Ticker",
@@ -43,51 +45,60 @@ _core.DISPLAY_COLUMNS = (
     "SignalStatus",
     "SignalDays",
 )
-_core.COLUMN_NAMES.update(
-    {
-        "ResearchRank": "研究排名",
-        "TradeRank": "交易排名",
-        "AlphaScore": "研究 Alpha",
-        "ExecutionState": "执行状态",
-        "SmoothTriggerScore": "平滑触发",
-        "QualityLayerStatus": "质量层",
-        "ProjectedTarget": "模型目标",
-        "ReferenceBuyPrice": "参考买点",
-        "IndustryTopic": "行业 / 主题",
-        "Close": "收盘",
-        "EntrySignal": "技术信号",
-        "SignalStatus": "信号状态",
-        "SignalDays": "持续天数",
-    }
-)
-_core.COLUMN_WIDTHS.update(
-    {
-        "ResearchRank": 68,
-        "TradeRank": 68,
-        "Ticker": 94,
-        "Name": 108,
-        "AssetType": 54,
-        "IndustryTopic": 118,
-        "Close": 80,
-        "AlphaScore": 86,
-        "ExecutionState": 82,
-        "EntrySignal": 102,
-        "ReferenceBuyPrice": 110,
-        "StopLoss": 80,
-        "ProjectedTarget": 86,
-        "SmoothTriggerScore": 86,
-        "SignalStatus": 82,
-        "SignalDays": 66,
-    }
-)
-for _column in ("ResearchRank", "TradeRank", "AlphaScore", "SmoothTriggerScore"):
-    _core.NUMBER_COLUMNS.add(_column)
-for _column in ("ResearchRank", "TradeRank"):
-    _core.INTEGER_COLUMNS.add(_column)
+
+V84_COLUMN_NAMES = {
+    "ResearchRank": "研究排名",
+    "TradeRank": "交易排名",
+    "AlphaScore": "研究 Alpha",
+    "ExecutionState": "执行状态",
+    "SmoothTriggerScore": "平滑触发",
+    "QualityLayerStatus": "质量层",
+    "ProjectedTarget": "模型目标",
+    "ReferenceBuyPrice": "参考买点",
+    "IndustryTopic": "行业 / 主题",
+    "Close": "收盘",
+    "EntrySignal": "技术信号",
+    "SignalStatus": "信号状态",
+    "SignalDays": "持续天数",
+}
+
+V84_COLUMN_WIDTHS = {
+    "ResearchRank": 68,
+    "TradeRank": 68,
+    "Ticker": 94,
+    "Name": 108,
+    "AssetType": 54,
+    "IndustryTopic": 118,
+    "Close": 80,
+    "AlphaScore": 86,
+    "ExecutionState": 82,
+    "EntrySignal": 102,
+    "ReferenceBuyPrice": 110,
+    "StopLoss": 80,
+    "ProjectedTarget": 86,
+    "SmoothTriggerScore": 86,
+    "SignalStatus": 82,
+    "SignalDays": 66,
+}
+
+
+def install_v84_presentation() -> None:
+    """幂等安装 v84 展示字段；不改变任何评分、筛选或交易决策逻辑。"""
+    _core.DISPLAY_COLUMNS = V84_DISPLAY_COLUMNS
+    _core.COLUMN_NAMES.update(V84_COLUMN_NAMES)
+    _core.COLUMN_WIDTHS.update(V84_COLUMN_WIDTHS)
+    for column in ("ResearchRank", "TradeRank", "AlphaScore", "SmoothTriggerScore"):
+        _core.NUMBER_COLUMNS.add(column)
+    for column in ("ResearchRank", "TradeRank"):
+        _core.INTEGER_COLUMNS.add(column)
 
 
 class ResearchTerminalGUI(_legacy.DecisionScannerGUI):
     """灰白黑红的中文研究终端，业务行为继承稳定工作台。"""
+
+    def __init__(self, root) -> None:
+        install_v84_presentation()
+        super().__init__(root)
 
     def _build_ui_configure_styles(self) -> None:
         ttk = _core.ttk
@@ -287,6 +298,7 @@ ScannerGUI = ResearchTerminalGUI
 
 
 def main() -> None:
+    install_v84_presentation()
     ctk.set_appearance_mode("light")
     root = ctk.CTk(fg_color=背景)
     ResearchTerminalGUI(root)
