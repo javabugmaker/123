@@ -97,38 +97,41 @@ def _spearman(
     weights: pd.Series | None = None,
 ) -> float:
     weight = (
-        pd.Series(1.0, index=score.index)
+        pd.Series(1.0, index=score.index, dtype=float)
         if weights is None
         else pd.to_numeric(weights, errors="coerce")
     )
-    data = pd.concat(
-        [
-            pd.to_numeric(score, errors="coerce"),
-            pd.to_numeric(target, errors="coerce"),
-            weight,
-        ],
-        axis=1,
+    data = pd.DataFrame(
+        {
+            "score": pd.to_numeric(score, errors="coerce"),
+            "target": pd.to_numeric(target, errors="coerce"),
+            "weight": weight,
+        }
     ).replace([np.inf, -np.inf], np.nan).dropna()
-    data = data.loc[data.iloc[:, 2].gt(0.0)]
-    if len(data) < 3 or data.iloc[:, 0].nunique() < 2 or data.iloc[:, 1].nunique() < 2:
+    data = data.loc[data["weight"].gt(0.0)]
+    if (
+        len(data) < 3
+        or data["score"].nunique() < 2
+        or data["target"].nunique() < 2
+    ):
         return 0.0
-    left = data.iloc[:, 0].rank(method="average").to_numpy(dtype=float)
-    right = data.iloc[:, 1].rank(method="average").to_numpy(dtype=float)
-    weight_values = data.iloc[:, 2].to_numpy(dtype=float)
-    total = float(weight_values.sum())
+    score_rank = data["score"].rank(method="average").to_numpy(dtype=float)
+    target_rank = data["target"].rank(method="average").to_numpy(dtype=float)
+    weight_array = data["weight"].to_numpy(dtype=float)
+    total = float(weight_array.sum())
     if total <= 0.0:
         return 0.0
-    left -= float(np.dot(left, weight_values) / total)
-    right -= float(np.dot(right, weight_values) / total)
-    denominator = float(
-        np.sqrt(
-            np.dot(left**2, weight_values) * np.dot(right**2, weight_values)
-        )
-    )
+    score_mean = float(np.dot(score_rank, weight_array) / total)
+    target_mean = float(np.dot(target_rank, weight_array) / total)
+    score_centered = score_rank - score_mean
+    target_centered = target_rank - target_mean
+    score_variance = float(np.dot(weight_array, np.square(score_centered)))
+    target_variance = float(np.dot(weight_array, np.square(target_centered)))
+    denominator = float(np.sqrt(score_variance * target_variance))
     if denominator <= 0.0:
         return 0.0
-    value = float(np.dot(left * right, weight_values) / denominator)
-    return float(value) if pd.notna(value) and np.isfinite(value) else 0.0
+    value = float(np.dot(weight_array, score_centered * target_centered) / denominator)
+    return value if np.isfinite(value) else 0.0
 
 
 def _prepare_samples(frame: pd.DataFrame) -> pd.DataFrame:
