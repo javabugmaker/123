@@ -1,8 +1,8 @@
 """v83 vectorised lifecycle/history reconciliation.
 
-The stable lifecycle policy remains authoritative.  This module replaces only
+The stable lifecycle policy remains authoritative. This module replaces only
 the row-by-row history lookup/status construction with one searchsorted/merge
-pass plus NumPy masks.  Ranking, persistence columns and signal semantics stay
+pass plus NumPy masks. Ranking, persistence columns and signal semantics stay
 identical to the stable engine.
 """
 
@@ -17,15 +17,11 @@ LIFECYCLE_ACCELERATION_VERSION = "2026-08-21-v83-vectorized-lifecycle-history-v1
 
 
 def _truthy_series(values: pd.Series, default: bool = False) -> pd.Series:
+    """Parse bool-like values without object-dtype fillna downcast warnings."""
     if pd.api.types.is_bool_dtype(values.dtype):
-        return values.fillna(default).astype(bool)
-    return (
-        values.fillna(default)
-        .astype(str)
-        .str.strip()
-        .str.lower()
-        .isin({"true", "1", "yes", "y", "是"})
-    )
+        return values.astype("boolean").fillna(default).astype(bool)
+    normalized = values.astype("string").fillna("true" if default else "false")
+    return normalized.str.strip().str.lower().isin({"true", "1", "yes", "y", "是"})
 
 
 def vectorized_lifecycle_state(
@@ -49,7 +45,7 @@ def vectorized_lifecycle_state(
     ticker = result["Ticker"].fillna("").astype(str).str.strip().str.upper()
     parsed_trade_dates = pd.to_datetime(trade_dates, errors="coerce")
     opportunity = pd.to_numeric(result["OpportunityScore"], errors="coerce")
-    active_values = active.fillna(False).astype(bool).to_numpy(dtype=bool)
+    active_values = _truthy_series(active, False).to_numpy(dtype=bool)
 
     prior_history = history.copy()
     if "Ticker" not in prior_history.columns:
@@ -65,7 +61,11 @@ def vectorized_lifecycle_state(
     dated_history = prior_history.dropna(subset=["_TradeDate"])
     deduped = dated_history.drop_duplicates(["_TradeDate", "Ticker"], keep="last")
 
-    previous_dates = np.full(row_count, np.datetime64("NaT"), dtype="datetime64[ns]")
+    previous_dates = np.full(
+        row_count,
+        np.datetime64("NaT", "ns"),
+        dtype="datetime64[ns]",
+    )
     if not dated_history.empty:
         historical_dates = np.sort(
             dated_history["_TradeDate"].dropna().unique().astype("datetime64[ns]")
@@ -112,18 +112,19 @@ def vectorized_lifecycle_state(
         validate="many_to_one",
     ).sort_values("_Position", kind="mergesort")
 
-    prev_exists = merged.get(
-        "_PrevExists", pd.Series(False, index=merged.index)
-    ).fillna(False).astype(bool)
+    if "_PrevExists" in merged.columns:
+        prev_exists = merged["_PrevExists"].eq(True)  # noqa: E712
+    else:
+        prev_exists = pd.Series(False, index=merged.index, dtype=bool)
     prev_active_raw = merged.get(
-        "_PrevSignalActive", pd.Series(False, index=merged.index)
+        "_PrevSignalActive", pd.Series(False, index=merged.index, dtype=bool)
     )
     prior_active = (
         prev_exists.to_numpy(dtype=bool)
         & _truthy_series(prev_active_raw, False).to_numpy(dtype=bool)
     )
     prev_days = pd.to_numeric(
-        merged.get("_PrevSignalDays", pd.Series(0, index=merged.index)),
+        merged.get("_PrevSignalDays", pd.Series(0.0, index=merged.index)),
         errors="coerce",
     ).fillna(0.0).to_numpy(dtype=np.float64)
     days = np.where(
@@ -135,8 +136,8 @@ def vectorized_lifecycle_state(
     trade_date_text = trade_dates.fillna("").astype(str).to_numpy(dtype=str)
     prev_start = (
         merged.get("_PrevSignalStartDate", pd.Series("", index=merged.index))
+        .astype("string")
         .fillna("")
-        .astype(str)
         .to_numpy(dtype=str)
     )
     starts = np.where(
@@ -181,7 +182,9 @@ def vectorized_lifecycle_state(
         )
         tail["_Strength"] = np.char.mod("%.0f", tail_values)
         prefix = tail.groupby("Ticker", sort=False)["_Strength"].agg("|".join)
-        mapped_prefix = ticker.map(prefix).fillna("").astype(str).to_numpy(dtype=str)
+        mapped_prefix = (
+            ticker.map(prefix).astype("string").fillna("").to_numpy(dtype=str)
+        )
         strengths = np.where(
             mapped_prefix != "",
             np.char.add(np.char.add(mapped_prefix, "|"), current_strength),
@@ -377,7 +380,11 @@ def _build_enricher(core: Any):
                 how="left",
                 validate="one_to_one",
             )
-        history = snapshot if history.empty else pd.concat([history, snapshot], ignore_index=True)
+        history = (
+            snapshot
+            if history.empty
+            else pd.concat([history, snapshot], ignore_index=True)
+        )
         history = history.drop_duplicates(
             ["TradeDate", "Ticker"], keep="last"
         ).sort_values(["TradeDate", "Ticker"])
