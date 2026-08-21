@@ -1294,13 +1294,13 @@ class RegressionTests(TestCase):
         )
         self.assertLess(points[-1], len(frame) - analytics.BACKTEST_OUTCOME_HORIZON_DAYS)
 
-    def test_score_ticker_normalizes_using_available_indicator_weights(self):
+    def test_score_ticker_does_not_renormalize_missing_indicator_weights(self):
         frame = pd.DataFrame({
             "Close": [10.0] * 252,
             "High": [11.0] * 252,
             "Low": [9.0] * 252,
             "Volume": [1000.0] * 252,
-            "MA200": [np.nan] * 252,
+            "MA200": [9.0] * 252,
             "VolMA20": [np.nan] * 252,
             "OBV": [np.nan] * 252,
             "ATR14": [np.nan] * 252,
@@ -1308,8 +1308,9 @@ class RegressionTests(TestCase):
 
         score = score_ticker(frame)
 
-        self.assertEqual(score.indicator_coverage, 0.2)
-        self.assertEqual(score.total, score.structure / 15.0 * 100.0)
+        self.assertEqual(score.indicator_coverage, 0.4)
+        self.assertGreater(score.total, 0.0)
+        self.assertEqual(score.total, score.trend + score.structure)
 
     def test_score_ticker_returns_zero_when_no_dimensions_are_available(self):
         frame = pd.DataFrame({"Close": [10.0] * 60})

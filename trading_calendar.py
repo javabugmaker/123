@@ -12,16 +12,56 @@ except ImportError:  # pragma: no cover - requirements install provides it
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _CLOSE_MINUTE = 15 * 60
 
+# Exchange closures are not identical to a generic public-holiday calendar and
+# newly announced years may not yet exist in the installed ``holidays`` build.
+# Keep the official SSE schedule for the publication years as a deterministic
+# override; ``holidays`` remains the broader historical-calendar provider.
+# Source: https://www.sse.com.cn/disclosure/dealinstruc/closed/
+_OFFICIAL_A_SHARE_HOLIDAY_RANGES: dict[
+    int, tuple[tuple[date, date], ...]
+] = {
+    2025: (
+        (date(2025, 1, 1), date(2025, 1, 1)),
+        (date(2025, 1, 28), date(2025, 2, 4)),
+        (date(2025, 4, 4), date(2025, 4, 6)),
+        (date(2025, 5, 1), date(2025, 5, 5)),
+        (date(2025, 5, 31), date(2025, 6, 2)),
+        (date(2025, 10, 1), date(2025, 10, 8)),
+    ),
+    2026: (
+        (date(2026, 1, 1), date(2026, 1, 3)),
+        (date(2026, 2, 15), date(2026, 2, 23)),
+        (date(2026, 4, 4), date(2026, 4, 6)),
+        (date(2026, 5, 1), date(2026, 5, 5)),
+        (date(2026, 6, 19), date(2026, 6, 21)),
+        (date(2026, 9, 25), date(2026, 9, 27)),
+        (date(2026, 10, 1), date(2026, 10, 7)),
+    ),
+}
+
+
+@lru_cache(maxsize=16)
+def _official_a_share_holidays(year: int) -> frozenset[date]:
+    closures: set[date] = set()
+    for start, end in _OFFICIAL_A_SHARE_HOLIDAY_RANGES.get(int(year), ()):
+        cursor = start
+        while cursor <= end:
+            closures.add(cursor)
+            cursor += timedelta(days=1)
+    return frozenset(closures)
+
 
 @lru_cache(maxsize=16)
 def _china_holidays(year: int) -> frozenset[date]:
+    official = _official_a_share_holidays(year)
     if holidays is None:
-        return frozenset()
+        return official
     try:
         calendar = holidays.country_holidays("CN", years=[int(year)])
     except Exception:
-        return frozenset()
-    return frozenset(day for day in calendar.keys() if isinstance(day, date))
+        return official
+    generic = frozenset(day for day in calendar.keys() if isinstance(day, date))
+    return official | generic
 
 
 def is_trading_day(day: date) -> bool:

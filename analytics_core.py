@@ -140,6 +140,11 @@ class BacktestSummary:
     point_in_time_universe: dict[str, Any] = field(default_factory=dict)
     split_dates: dict[str, str | None] = field(default_factory=dict)
     all_samples: int = 0
+    purged_samples: int = 0
+    universe_verified_samples: int = 0
+    universe_unverified_samples: int = 0
+    ranking_calibration_samples: int = 0
+    ranking_calibration_status: str = "DISABLED_NO_VERIFIED_POINT_IN_TIME_SAMPLES"
     commission: float = BACKTEST_STOCK_COMMISSION_RATE
     stamp_duty: float = 0.0005
     slippage: float = 0.001
@@ -272,18 +277,122 @@ def _quality_adjusted_score(
     return float(score)
 
 
-def _robust_mean(values: pd.Series) -> float:
-    numeric = (
-        pd.to_numeric(values, errors="coerce")
-        .replace([np.inf, -np.inf], np.nan)
-        .dropna()
+def _weighted_observations(
+    values: pd.Series, weights: pd.Series | None = None
+) -> pd.DataFrame:
+    numeric = pd.to_numeric(values, errors="coerce").replace(
+        [np.inf, -np.inf], np.nan
     )
-    if numeric.empty:
+    if weights is None:
+        weight = pd.Series(1.0, index=numeric.index, dtype=float)
+    else:
+        weight = pd.to_numeric(weights, errors="coerce").replace(
+            [np.inf, -np.inf], np.nan
+        )
+    return (
+        pd.DataFrame({"value": numeric, "weight": weight})
+        .dropna()
+        .loc[lambda frame: frame["weight"].gt(0.0)]
+    )
+
+
+def _weighted_quantile(
+    values: pd.Series, weights: pd.Series | None, quantile: float
+) -> float:
+    observations = _weighted_observations(values, weights).sort_values(
+        "value", kind="mergesort"
+    )
+    if observations.empty:
         return float("nan")
-    if len(numeric) < 5:
-        return float(numeric.median())
-    lower, upper = numeric.quantile([0.1, 0.9])
-    return float(numeric.clip(lower, upper).mean())
+    total = float(observations["weight"].sum())
+    cutoff = float(np.clip(quantile, 0.0, 1.0)) * total
+    cumulative = observations["weight"].cumsum().to_numpy(dtype=float)
+    position = int(np.searchsorted(cumulative, cutoff, side="left"))
+    position = min(position, len(observations) - 1)
+    value = float(observations["value"].iloc[position])
+    # Preserve the ordinary even-sample median when all weights are equal,
+    # while still letting a genuinely dominant observation determine the
+    # weighted median.
+    if (
+        position + 1 < len(observations)
+        and np.isclose(cumulative[position], cutoff, rtol=0.0, atol=1e-12)
+    ):
+        value = (value + float(observations["value"].iloc[position + 1])) / 2.0
+    return value
+
+
+def _weighted_mean(values: pd.Series, weights: pd.Series | None = None) -> float:
+    observations = _weighted_observations(values, weights)
+    if observations.empty:
+        return float("nan")
+    total = float(observations["weight"].sum())
+    return float(
+        np.dot(observations["value"], observations["weight"]) / total
+    )
+
+
+def _weighted_rate(values: pd.Series, weights: pd.Series | None = None) -> float:
+    numeric = pd.to_numeric(values, errors="coerce")
+    return _weighted_mean(numeric.gt(0.0).where(numeric.notna()), weights)
+
+
+def _weighted_std(values: pd.Series, weights: pd.Series | None = None) -> float:
+    observations = _weighted_observations(values, weights)
+    if observations.empty:
+        return float("nan")
+    total = float(observations["weight"].sum())
+    mean = float(np.dot(observations["value"], observations["weight"]) / total)
+    variance = float(
+        np.dot(
+            np.square(observations["value"] - mean), observations["weight"]
+        )
+        / total
+    )
+    return float(np.sqrt(max(variance, 0.0)))
+
+
+def _robust_mean(
+    values: pd.Series, weights: pd.Series | None = None
+) -> float:
+    observations = _weighted_observations(values, weights)
+    if observations.empty:
+        return float("nan")
+    if len(observations) < 5:
+        return _weighted_quantile(values, weights, 0.5)
+    lower = _weighted_quantile(values, weights, 0.1)
+    upper = _weighted_quantile(values, weights, 0.9)
+    clipped = observations["value"].clip(lower, upper)
+    return _weighted_mean(clipped, observations["weight"])
+
+
+def _date_balanced_weights(frame: pd.DataFrame) -> pd.Series:
+    base = pd.to_numeric(
+        frame.get("sample_weight", pd.Series(1.0, index=frame.index)),
+        errors="coerce",
+    ).replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(lower=0.0)
+    dates = pd.to_datetime(
+        frame.get("entry_date", pd.Series(pd.NaT, index=frame.index)),
+        errors="coerce",
+    ).dt.normalize()
+    daily_total = base.groupby(dates).transform("sum")
+    balanced = base.div(daily_total.where(daily_total.gt(0.0)))
+    # Undated legacy diagnostics remain visible but cannot influence a
+    # date-balanced estimator as if they were independent observations.
+    return balanced.where(dates.notna(), 0.0).fillna(0.0)
+
+
+def _verified_point_in_time_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Return only samples whose historical universe state was observed."""
+    if "universe_snapshot_status" not in frame.columns:
+        return frame.iloc[0:0].copy()
+    status = (
+        frame["universe_snapshot_status"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+    return frame.loc[status.eq("ELIGIBLE")].copy()
 
 
 def _load_benchmark_frames(source: str) -> dict[str, pd.DataFrame]:
@@ -1303,7 +1412,6 @@ def _backtest_one_ticker(
         if last < ma60 and last < ma200 and ret60 < -3.0:
             return "RISK_OFF"
         return "NEUTRAL"
-    validation_end, test_start = split_dates
     samples: list[dict[str, Any]] = []
     previous_sample_index: int | None = None
     for index in valid_points:
@@ -1379,12 +1487,11 @@ def _backtest_one_ticker(
         lows60 = np.concatenate(([entry_price], lows[entry_index : exit60_index + 1]))
         drawdown20 = float(((lows20 / np.maximum.accumulate(prices20) - 1).min()) * 100)
         drawdown60 = float(((lows60 / np.maximum.accumulate(prices60) - 1).min()) * 100)
-        if test_start is not None and entry_date >= test_start:
-            split = "test"
-        elif validation_end is not None and entry_date >= validation_end:
-            split = "validation"
-        else:
-            split = "train"
+        split = _purged_sample_split(
+            entry_date,
+            pd.Timestamp(enriched.index[exit60_index]),
+            split_dates,
+        )
         spacing = outcome_horizon if previous_sample_index is None else max(1, index - previous_sample_index)
         sample_weight = min(1.0, spacing / float(outcome_horizon))
         historical_score, historical_signal = evaluation_map[index]
@@ -1432,21 +1539,40 @@ def _backtest_one_ticker(
     return samples
 
 
+def _purged_sample_split(
+    entry_date: str | pd.Timestamp,
+    outcome_date: str | pd.Timestamp,
+    split_dates: tuple[pd.Timestamp | None, pd.Timestamp | None],
+) -> str:
+    """Assign a split only when the complete label stays inside that split."""
+    validation_start, test_start = split_dates
+    entry = pd.Timestamp(entry_date)
+    outcome = pd.Timestamp(outcome_date)
+    if test_start is not None and entry >= test_start:
+        return "test"
+    if validation_start is not None and entry >= validation_start:
+        if test_start is not None and outcome >= test_start:
+            return "purged"
+        return "validation"
+    if validation_start is not None and outcome >= validation_start:
+        return "purged"
+    return "train"
+
+
 def _relabel_sample_splits(
     samples: list[dict[str, Any]],
     split_dates: tuple[pd.Timestamp | None, pd.Timestamp | None],
 ) -> list[dict[str, Any]]:
-    validation_end, test_start = split_dates
     result: list[dict[str, Any]] = []
     for sample in samples:
         item = dict(sample)
         entry_date = pd.Timestamp(item.get("entry_date"))
-        if test_start is not None and entry_date >= test_start:
-            item["split"] = "test"
-        elif validation_end is not None and entry_date >= validation_end:
-            item["split"] = "validation"
-        else:
-            item["split"] = "train"
+        outcome_date = pd.to_datetime(item.get("exit60_date"), errors="coerce")
+        item["split"] = (
+            _purged_sample_split(entry_date, outcome_date, split_dates)
+            if pd.notna(outcome_date)
+            else "purged"
+        )
         result.append(item)
     return result
 
@@ -1714,27 +1840,27 @@ def _ticker_backtest_rows(
     for (ticker, entry_signal), group in sample_frame.groupby(
         ["ticker", "entry_signal"], sort=False
     ):
-        win20 = float((group["return20"] > 0).mean())
-        win60 = float((group["return60"] > 0).mean())
-        avg20 = _robust_mean(group["return20"])
-        avg60 = _robust_mean(group["return60"])
-        median20 = float(pd.to_numeric(group["return20"], errors="coerce").median())
-        median60 = float(pd.to_numeric(group["return60"], errors="coerce").median())
+        weights = group["sample_weight"]
+        win20 = _weighted_rate(group["return20"], weights)
+        win60 = _weighted_rate(group["return60"], weights)
+        avg20 = _robust_mean(group["return20"], weights)
+        avg60 = _robust_mean(group["return60"], weights)
+        median20 = _weighted_quantile(group["return20"], weights, 0.5)
+        median60 = _weighted_quantile(group["return60"], weights, 0.5)
         max_drawdown20 = float(
             pd.to_numeric(group["drawdown20"], errors="coerce").min()
         )
         max_drawdown60 = float(
             pd.to_numeric(group["drawdown60"], errors="coerce").min()
         )
-        std20 = float(
-            pd.to_numeric(group["return20"], errors="coerce").std(ddof=0)
+        std20 = _weighted_std(group["return20"], weights)
+        return20 = pd.to_numeric(group["return20"], errors="coerce")
+        gross_profit = float(
+            (return20.where(return20 > 0.0, 0.0) * weights).sum()
         )
-        gross_profit = pd.to_numeric(
-            group.loc[group["return20"] > 0, "return20"], errors="coerce"
-        ).sum()
-        gross_loss = pd.to_numeric(
-            group.loc[group["return20"] < 0, "return20"], errors="coerce"
-        ).abs().sum()
+        gross_loss = float(
+            (return20.where(return20 < 0.0, 0.0).abs() * weights).sum()
+        )
         profit_factor = (
             float(gross_profit / gross_loss)
             if gross_loss > 0
@@ -1756,9 +1882,12 @@ def _ticker_backtest_rows(
             if signal_dates.notna().any()
             else ""
         )
-        negative_returns60 = group.loc[group["return60"] < 0, "return60"]
+        negative_mask60 = pd.to_numeric(
+            group["return60"], errors="coerce"
+        ).lt(0.0)
+        negative_returns60 = group.loc[negative_mask60, "return60"]
         downside60 = (
-            _robust_mean(negative_returns60)
+            _robust_mean(negative_returns60, weights.loc[negative_mask60])
             if not negative_returns60.empty
             else 0.0
         )
@@ -1783,7 +1912,9 @@ def _ticker_backtest_rows(
         objective_frame = objective_frame.replace([np.inf, -np.inf], np.nan).dropna(
             subset=[target_map[objective]]
         )
-        raw_objective_value = _robust_mean(objective_frame[target_map[objective]])
+        raw_objective_value = _robust_mean(
+            objective_frame[target_map[objective]], objective_frame["sample_weight"]
+        )
         objective_value = (
             raw_objective_value * reliability
             if np.isfinite(raw_objective_value)
@@ -2833,35 +2964,41 @@ def _bucket_rows(sample_frame: pd.DataFrame) -> list[dict[str, Any]]:
     )
     rows = []
     for bucket, group in frame.groupby("bucket", dropna=True):
+        weights = _date_balanced_weights(group)
         rows.append(
             {
                 "bucket": int(bucket) + 1,
                 "samples": len(group),
-                "average_return20": round(float(group["return20"].mean()), 4),
-                "average_return60": round(float(group["return60"].mean()), 4),
+                "effective_entry_dates": round(float(weights.sum()), 4),
+                "average_return20": round(
+                    _robust_mean(group["return20"], weights), 4
+                ),
+                "average_return60": round(
+                    _robust_mean(group["return60"], weights), 4
+                ),
                 "average_benchmark_return20": round(
-                    float(group["benchmark_return20"].mean()), 4
+                    _weighted_mean(group["benchmark_return20"], weights), 4
                 ),
                 "average_benchmark_return60": round(
-                    float(group["benchmark_return60"].mean()), 4
+                    _weighted_mean(group["benchmark_return60"], weights), 4
                 ),
                 "average_excess_return20": round(
-                    float(
-                        (group["return20"] - group["benchmark_return20"]).mean()
+                    _robust_mean(
+                        group["return20"] - group["benchmark_return20"], weights
                     ),
                     4,
                 ),
                 "average_excess_return60": round(
-                    float(
-                        (group["return60"] - group["benchmark_return60"]).mean()
+                    _robust_mean(
+                        group["return60"] - group["benchmark_return60"], weights
                     ),
                     4,
                 ),
                 "average_net_return20": round(
-                    float(group["net_return20"].mean()), 4
+                    _robust_mean(group["net_return20"], weights), 4
                 ),
                 "average_net_return60": round(
-                    float(group["net_return60"].mean()), 4
+                    _robust_mean(group["net_return60"], weights), 4
                 ),
             }
         )
@@ -3247,7 +3384,8 @@ def run_historical_backtest(
     if bool(summary.point_in_time_universe.get("available", False)):
         summary.universe_type = "point_in_time_snapshots_plus_cache"
         summary.current_pool_selection_warning = (
-            "已按可用历史快照过滤ST/非成分状态；快照覆盖区间外仍保留幸存者偏差提示"
+            "已按可用历史快照过滤ST/非成分状态；快照覆盖区间外样本仅作诊断，"
+            "不参与线上排序或权重校准"
         )
     summary.cache_hits = int(cache_hits)
     summary.cache_hit_tickers = sorted(cache_hit_tickers)
@@ -3260,15 +3398,31 @@ def run_historical_backtest(
     else:
         all_frame = pd.concat(sample_batches, ignore_index=True)
         summary.all_samples = len(all_frame)
-        calibration_frame = all_frame.loc[all_frame["split"].isin(["train", "validation"])].copy()
+        summary.purged_samples = int(all_frame["split"].astype(str).eq("purged").sum())
+        verified_frame = _verified_point_in_time_frame(all_frame)
+        verified_model_frame = verified_frame.loc[
+            verified_frame["split"].isin(["train", "validation", "test"])
+        ].copy()
+        summary.universe_verified_samples = len(verified_model_frame)
+        summary.universe_unverified_samples = max(
+            0,
+            int(
+                all_frame["split"].isin(["train", "validation", "test"]).sum()
+            )
+            - summary.universe_verified_samples,
+        )
+        summary.ranking_calibration_samples = len(verified_model_frame)
+        calibration_frame = verified_model_frame.loc[
+            verified_model_frame["split"].isin(["train", "validation"])
+        ].copy()
         summary.global_calibration = build_global_calibration(
             calibration_frame, min_samples=GLOBAL_CALIBRATION_MIN_SAMPLES
         )
-        summary.walk_forward = walk_forward_stats(all_frame)
+        summary.walk_forward = walk_forward_stats(verified_model_frame)
         summary.calibration_stability = calibration_stability_stats(
             summary.walk_forward
         )
-        component_calibration = calibrate_component_weights(all_frame)
+        component_calibration = calibrate_component_weights(verified_model_frame)
         summary.component_calibration = component_calibration.to_dict()
         calibration_path = OUTPUT_DIR / "ScoreCalibration.json"
         try:
@@ -3285,20 +3439,37 @@ def run_historical_backtest(
             test_frame = all_frame.iloc[0:0]
         sample_frame = test_frame.replace([np.inf, -np.inf], np.nan)
         summary.samples = len(sample_frame)
-        summary.win_rate_20d = float((sample_frame["return20"] > 0).mean())
-        summary.win_rate_60d = float((sample_frame["return60"] > 0).mean())
-        summary.average_return_20d = float(sample_frame["return20"].mean())
-        summary.average_return_60d = float(sample_frame["return60"].mean())
-        summary.median_return_20d = float(sample_frame["return20"].median())
-        summary.median_return_60d = float(sample_frame["return60"].median())
-        summary.average_benchmark_return_20d = float(
-            sample_frame["benchmark_return20"].mean()
+        summary_weights = _date_balanced_weights(sample_frame)
+        summary.win_rate_20d = _weighted_rate(
+            sample_frame["return20"], summary_weights
         )
-        summary.average_benchmark_return_60d = float(
-            sample_frame["benchmark_return60"].mean()
+        summary.win_rate_60d = _weighted_rate(
+            sample_frame["return60"], summary_weights
         )
-        summary.average_net_return_20d = float(sample_frame["net_return20"].mean())
-        summary.average_net_return_60d = float(sample_frame["net_return60"].mean())
+        summary.average_return_20d = _robust_mean(
+            sample_frame["return20"], summary_weights
+        )
+        summary.average_return_60d = _robust_mean(
+            sample_frame["return60"], summary_weights
+        )
+        summary.median_return_20d = _weighted_quantile(
+            sample_frame["return20"], summary_weights, 0.5
+        )
+        summary.median_return_60d = _weighted_quantile(
+            sample_frame["return60"], summary_weights, 0.5
+        )
+        summary.average_benchmark_return_20d = _weighted_mean(
+            sample_frame["benchmark_return20"], summary_weights
+        )
+        summary.average_benchmark_return_60d = _weighted_mean(
+            sample_frame["benchmark_return60"], summary_weights
+        )
+        summary.average_net_return_20d = _robust_mean(
+            sample_frame["net_return20"], summary_weights
+        )
+        summary.average_net_return_60d = _robust_mean(
+            sample_frame["net_return60"], summary_weights
+        )
         sample_frame["excess20"] = (
             sample_frame["return20"] - sample_frame["benchmark_return20"]
         )
@@ -3311,17 +3482,17 @@ def run_historical_backtest(
         sample_frame["net_excess60"] = (
             sample_frame["net_return60"] - sample_frame["benchmark_return60"]
         )
-        summary.average_net_excess_return_20d = float(
-            sample_frame["net_excess20"].mean()
+        summary.average_net_excess_return_20d = _robust_mean(
+            sample_frame["net_excess20"], summary_weights
         )
-        summary.average_net_excess_return_60d = float(
-            sample_frame["net_excess60"].mean()
+        summary.average_net_excess_return_60d = _robust_mean(
+            sample_frame["net_excess60"], summary_weights
         )
-        summary.median_net_excess_return_20d = float(
-            sample_frame["net_excess20"].median()
+        summary.median_net_excess_return_20d = _weighted_quantile(
+            sample_frame["net_excess20"], summary_weights, 0.5
         )
-        summary.median_net_excess_return_60d = float(
-            sample_frame["net_excess60"].median()
+        summary.median_net_excess_return_60d = _weighted_quantile(
+            sample_frame["net_excess60"], summary_weights, 0.5
         )
         summary.maximum_drawdown_20d = float(sample_frame["drawdown20"].min())
         summary.maximum_drawdown_60d = float(sample_frame["drawdown60"].min())
@@ -3330,7 +3501,22 @@ def run_historical_backtest(
         ].abs().replace(0, np.nan)
         summary.rank_ic_20d = _spearman(sample_frame, "return20")
         summary.rank_ic_60d = _spearman(sample_frame, "return60")
-        summary.by_ticker = _ticker_backtest_rows(sample_frame, objective)
+        ranking_test_frame = verified_model_frame.loc[
+            verified_model_frame["split"].eq("test")
+        ].replace([np.inf, -np.inf], np.nan)
+        if len(ranking_test_frame) >= 2:
+            summary.ranking_calibration_status = "ENABLED_VERIFIED_POINT_IN_TIME"
+            summary.by_ticker = _ticker_backtest_rows(ranking_test_frame, objective)
+        elif verified_model_frame.empty:
+            summary.ranking_calibration_status = (
+                "DISABLED_NO_VERIFIED_POINT_IN_TIME_SAMPLES"
+            )
+            summary.by_ticker = []
+        else:
+            summary.ranking_calibration_status = (
+                "DISABLED_INSUFFICIENT_VERIFIED_TEST_SAMPLES"
+            )
+            summary.by_ticker = []
         last_evaluated = split_dates.get("global_end") or ""
         for row in summary.by_ticker:
             row["backtest_mode"] = profile.name.upper()
@@ -3370,9 +3556,9 @@ def run_historical_backtest(
             "max_drawdown": sample_frame["drawdown60"],
             "risk_adjusted": sample_frame["risk_adjusted"],
         }[objective]
-        objective_values = pd.to_numeric(objective_series, errors="coerce").dropna()
+        objective_value = _robust_mean(objective_series, summary_weights)
         summary.objective_value = (
-            float(objective_values.mean()) if not objective_values.empty else 0.0
+            float(objective_value) if np.isfinite(objective_value) else 0.0
         )
         summary.benchmark_valid_count_20d = int(
             sample_frame["benchmark_return20"].notna().sum()
@@ -3399,11 +3585,11 @@ def run_historical_backtest(
         }
         summary.rolling_oos = {
             split: int((all_frame["split"] == split).sum())
-            for split in ("train", "validation", "test")
+            for split in ("train", "validation", "test", "purged")
         }
         summary.rolling_oos_stats = {
             split: {"samples": len(all_frame[all_frame["split"] == split])}
-            for split in ("train", "validation", "test")
+            for split in ("train", "validation", "test", "purged")
         }
         summary.rolling_oos_stats["walk_forward"] = summary.walk_forward
         for split in ("validation", "test"):

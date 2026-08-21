@@ -1,4 +1,4 @@
-"""v82 analytics facade with ranking-integrity normalization.
+"""v87 analytics facade with point-in-time and ranking-integrity normalization.
 
 All v80 workstation/backtest acceleration semantics remain intact. v82 fixes a
 post-backtest semantic drift: the legacy calibration path embeds signal recency
@@ -331,7 +331,10 @@ _core.apply_backtest_ranking = apply_backtest_ranking
 _core.BACKTEST_PUBLICATION_INTEGRITY_VERSION = (
     "2026-08-19-v73-journaled-backtest-publication-v2"
 )
-_core.BACKTEST_RANKING_INTEGRITY_VERSION = BACKTEST_RECENCY_NORMALIZATION_VERSION
+_core.BACKTEST_RANKING_INTEGRITY_VERSION = (
+    "2026-08-21-v87-verified-point-in-time-ranking-"
+    + BACKTEST_RECENCY_NORMALIZATION_VERSION
+)
 _core.PERFORMANCE_ENGINE_VERSION = "2026-08-20-v80-vectorized-backtest-workstation-v1"
 
 sys.modules[__name__] = _core
