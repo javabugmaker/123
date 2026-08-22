@@ -1,9 +1,9 @@
-"""v79 scoring policy facade.
+"""v89 scoring policy facade.
 
-``score_core`` contains the stable feature/entry implementation.  This facade
+``score_core`` contains the stable feature/entry implementation. This facade
 keeps style labels descriptive, keeps TriggerScore orthogonal to setup trend,
-uses one volatility-contraction definition for filters/scoring, and installs the
-v79 exact-formula NumPy/endpoint-cache acceleration layer.
+uses one volatility-contraction definition for filters/scoring, and shares the
+same continuous breakout-price evidence used by the execution integrity gate.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 import score_core as _core
+from execution_integrity_v87 import smooth_breakout_price_component
 from score_core import *  # noqa: F403
 from volatility_state import volatility_contraction_score
 
@@ -38,6 +39,14 @@ def _finite_values(series: pd.Series) -> np.ndarray:
     return values[np.isfinite(values)]
 
 
+def _continuous_breakout_price_points(clearance_pct: float) -> float:
+    """Map resistance clearance to the canonical continuous price component."""
+    component, _ = smooth_breakout_price_component(
+        np.asarray([clearance_pct], dtype=np.float64)
+    )
+    return float(component[0])
+
+
 def trigger_event_score(df: pd.DataFrame) -> float:
     """Score new launch evidence without reusing MA trend/setup evidence."""
     close = _core._series(df, "Close").to_numpy(dtype=np.float64, copy=False)
@@ -58,10 +67,7 @@ def trigger_event_score(df: pd.DataFrame) -> float:
 
     if resistance > 0.0:
         clearance_pct = (price / resistance - 1.0) * 100.0
-        if clearance_pct > 0.0:
-            points += 35.0 + _core._clamp(clearance_pct / 3.0) * 15.0
-        elif clearance_pct >= -1.5:
-            points += _core._clamp((clearance_pct + 1.5) / 1.5) * 12.0
+        points += _continuous_breakout_price_points(clearance_pct)
 
     if volume_baseline > 0.0:
         volume_ratio = volume_now / volume_baseline
@@ -95,9 +101,9 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False):
     """Run one cache-safe scoring transaction, then replace TriggerScore.
 
     The v79 numeric cache is intentionally keyed by ``DataFrame`` identity so
-    all component kernels can share converted arrays during one score.  A
-    caller may nevertheless update an existing frame in place before asking
-    for a fresh score.  Clear the thread-local state at this public transaction
+    all component kernels can share converted arrays during one score. A caller
+    may nevertheless update an existing frame in place before asking for a
+    fresh score. Clear the thread-local state at this public transaction
     boundary so the new call can never observe arrays from the previous frame
     contents; reuse inside the transaction remains unchanged.
     """
