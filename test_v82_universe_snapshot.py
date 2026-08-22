@@ -11,7 +11,7 @@ from universe_snapshot_v82 import record_universe_snapshot
 
 
 class UniverseSnapshotV82Tests(unittest.TestCase):
-    def test_mixed_scan_snapshot_contains_stocks_only(self) -> None:
+    def test_mixed_scan_snapshot_contains_stocks_and_etfs(self) -> None:
         frame = pd.DataFrame(
             {
                 "Ticker": ["000001.SZ", "600000.SH", "510300.SH"],
@@ -29,13 +29,16 @@ class UniverseSnapshotV82Tests(unittest.TestCase):
             assert path is not None
 
             snapshot = pd.read_csv(path, encoding="utf-8-sig")
-            self.assertEqual(set(snapshot["Ticker"]), {"000001.SZ", "600000.SH"})
+            self.assertEqual(
+                set(snapshot["Ticker"]),
+                {"000001.SZ", "600000.SH", "510300.SH"},
+            )
 
             etf_state, etf_reason = historical_universe.point_in_time_eligibility(
                 "510300.SH", "2026-08-20", snapshot_dir=directory
             )
-            self.assertIsNone(etf_state)
-            self.assertEqual(etf_reason, "no_point_in_time_snapshot")
+            self.assertTrue(etf_state)
+            self.assertEqual(etf_reason, "eligible")
 
 
 if __name__ == "__main__":

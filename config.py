@@ -1,9 +1,7 @@
-"""InstitutionScanner v87 decision/backtest-integrity configuration facade.
+"""InstitutionScanner v88 research-integrity extension configuration facade.
 
-v87 preserves every v82 setup/trigger/execution scoring weight.  It hardens the
-directional-research and execution contracts, purges outcome windows that cross
-backtest split boundaries, and aligns backtest evidence with net excess returns
-and overlap weights.  The raw three-component alpha formula is unchanged.
+v88 builds on v87 directional execution while making missing setup evidence
+fail closed and enforcing date-balanced, point-in-time backtest governance.
 """
 
 from __future__ import annotations
@@ -25,11 +23,13 @@ BACKTEST_FAST_CHUNK_SIZE: int = _RUNTIME.backtest_fast_chunk_size
 BACKTEST_INCREMENTAL_TAIL_BARS: int = _RUNTIME.backtest_incremental_tail_bars
 
 SCORING_VERSION: str = (
+    "2026-08-21-v88-missing-evidence-no-renormalization-"
     "2026-08-21-v82-single-recency-ranking-"
     "2026-08-17-v52-setup-backed-breakout-"
     + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-08-21-v88-purged-date-balanced-point-in-time-research-"
     "2026-08-21-v87-directional-execution-backtest-integrity-"
     "2026-08-21-v86-cache-safe-vectorized-policy-alignment-"
     "2026-08-21-v82-ranking-integrity-audit-"
@@ -73,6 +73,7 @@ DECISION_INTEGRITY_VERSION: str = (
     + _v51.DECISION_INTEGRITY_VERSION
 )
 OUTPUT_CONTRACT_VERSION: str = (
+    "2026-08-21-v88-research-integrity-audit-provenance-"
     "2026-08-21-v87-execution-economics-backtest-evidence-"
     "2026-08-21-v82-ranking-audit-provenance-"
     "2026-08-19-v76-whole-backtest-result-set-"
@@ -100,6 +101,7 @@ MARKET_DATA_VERSION: str = (
     + _v51.MARKET_DATA_VERSION
 )
 BACKTEST_PROVENANCE_VERSION: str = (
+    "2026-08-21-v88-purged-overlap-point-in-time-calibration-"
     "2026-08-21-v87-purged-weighted-net-excess-"
     "2026-08-21-v82-single-recency-ranking-"
     "2026-08-20-v80-vectorized-fastscore-execution-cache-"
@@ -205,13 +207,13 @@ BACKTEST_WORKSTATION_TUNING_VERSION: str = (
 )
 
 BACKTEST_RANKING_INTEGRITY_VERSION: str = (
-    "2026-08-21-v82-single-recency-ranking-v1"
+    "2026-08-21-v88-verified-point-in-time-ranking-v1"
 )
 FULL_UNIVERSE_AUDIT_VERSION: str = (
     "2026-08-21-v82-full-universe-perturbation-v1"
 )
 UNIVERSE_SNAPSHOT_VERSION: str = (
-    "2026-08-21-v82-prospective-universe-snapshot-v1"
+    "2026-08-21-v88-stock-etf-universe-snapshot-v1"
 )
 
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"

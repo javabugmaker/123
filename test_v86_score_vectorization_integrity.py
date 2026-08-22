@@ -202,6 +202,19 @@ class ResearchPolicyVectorizationTests(unittest.TestCase):
                     "PassedFilters": False,
                 },
                 {
+                    "Ticker": "511850.SH",
+                    "Name": "招商财富宝ETF",
+                    "Industry": "",
+                    "Sector": "",
+                    "AssetType": "etf",
+                    "IsETF": True,
+                    "ModelClassification": "财富宝",
+                    "HardGatePassed": True,
+                    "UniverseEligible": True,
+                    "HardGateFailedNames": "",
+                    "PassedFilters": False,
+                },
+                {
                     "Ticker": "159001.SZ",
                     "Name": "现金流ETF",
                     "Industry": "因子",
@@ -254,7 +267,7 @@ class ResearchPolicyVectorizationTests(unittest.TestCase):
                     "PassedFilters": False,
                 },
             ],
-            index=[4, 4, 9, 12, 12],
+            index=[4, 4, 4, 9, 12, 12],
         )
         with pd.option_context("mode.copy_on_write", True):
             expected = _scalar_research_policy(frame)

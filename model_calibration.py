@@ -146,6 +146,18 @@ def _prepare_samples(frame: pd.DataFrame) -> pd.DataFrame:
     result["score"] = _numeric(result, "score")
     result["setup_score"] = _numeric(result, "setup_score")
     result["sample_weight"] = _numeric(result, "sample_weight").fillna(1.0).clip(0.0, 1.0)
+    entry_dates = result.get(
+        "entry_date", pd.Series(pd.NaT, index=result.index, dtype="datetime64[ns]")
+    )
+    result["entry_date"] = pd.to_datetime(entry_dates, errors="coerce")
+    date_key = result["entry_date"].dt.normalize()
+    date_weight = result["sample_weight"].groupby(date_key).transform("sum")
+    result["calibration_weight"] = (
+        result["sample_weight"]
+        .div(date_weight.clip(lower=1.0))
+        .where(date_key.notna(), 0.0)
+        .fillna(0.0)
+    )
     result["net_excess20"] = _numeric(result, "net_return20") - _numeric(result, "benchmark_return20")
     result["net_excess60"] = _numeric(result, "net_return60") - _numeric(result, "benchmark_return60")
     result["score_bucket"] = pd.cut(
@@ -162,7 +174,6 @@ def _prepare_samples(frame: pd.DataFrame) -> pd.DataFrame:
         right=False,
         include_lowest=True,
     ).astype("object")
-    result["entry_date"] = pd.to_datetime(result.get("entry_date"), errors="coerce")
     result["exit60_date"] = pd.to_datetime(
         result.get("exit60_date", pd.Series(pd.NaT, index=result.index)),
         errors="coerce",
@@ -219,7 +230,11 @@ def build_global_calibration(
         else:
             groups = [("global", sample)]
         for key_values, group in groups:
-            weights = group["sample_weight"]
+            # Overlap is first discounted within a ticker, then each signal date
+            # receives at most one unit of influence across the full cross-section.
+            # This prevents a broad market event with hundreds of correlated
+            # candidates from masquerading as hundreds of independent trials.
+            weights = group["calibration_weight"]
             effective = float(weights.sum())
             if len(group) < max(3, min_samples // 3) or effective < max(3.0, min_samples / 4.0):
                 continue
@@ -233,6 +248,10 @@ def build_global_calibration(
                 "level": level,
                 "samples": len(group),
                 "effective_samples": round(effective, 4),
+                "overlap_effective_samples": round(
+                    float(group["sample_weight"].sum()), 4
+                ),
+                "independent_entry_dates": int(group["entry_date"].nunique()),
                 "mean_net_excess20": round(float(mean20), 4) if np.isfinite(mean20) else np.nan,
                 "mean_net_excess60": round(float(mean60), 4) if np.isfinite(mean60) else np.nan,
                 "win_rate_net_excess20": round(float(win20), 4) if np.isfinite(win20) else np.nan,
@@ -508,8 +527,8 @@ def calibrate_component_weights(frame: pd.DataFrame) -> ComponentCalibration:
     sample = sample.dropna(subset=[*required, "net_excess20"])
     validation = sample.loc[sample.get("split", "").astype(str).eq("validation")]
     test = sample.loc[sample.get("split", "").astype(str).eq("test")]
-    validation_effective = float(validation["sample_weight"].sum())
-    test_effective = float(test["sample_weight"].sum())
+    validation_effective = float(validation["calibration_weight"].sum())
+    test_effective = float(test["calibration_weight"].sum())
     if len(validation) < 30 or validation_effective < 30.0:
         return ComponentCalibration(
             validation_samples=len(validation),
@@ -521,7 +540,7 @@ def calibrate_component_weights(frame: pd.DataFrame) -> ComponentCalibration:
     default_validation = _spearman(
         _component_score(validation, DEFAULT_COMPONENT_WEIGHTS),
         validation["net_excess20"],
-        validation["sample_weight"],
+        validation["calibration_weight"],
     )
     best_weights = DEFAULT_COMPONENT_WEIGHTS
     best_ic = default_validation
@@ -534,7 +553,7 @@ def calibrate_component_weights(frame: pd.DataFrame) -> ComponentCalibration:
             ic = _spearman(
                 _component_score(validation, weights),
                 validation["net_excess20"],
-                validation["sample_weight"],
+                validation["calibration_weight"],
             )
             # Require a measurable validation improvement; ties keep defaults.
             if ic > best_ic + 1e-9:
@@ -547,7 +566,7 @@ def calibrate_component_weights(frame: pd.DataFrame) -> ComponentCalibration:
         _spearman(
             _component_score(test, selected),
             test["net_excess20"],
-            test["sample_weight"],
+            test["calibration_weight"],
         )
         if len(test) >= 3
         else 0.0
@@ -556,7 +575,7 @@ def calibrate_component_weights(frame: pd.DataFrame) -> ComponentCalibration:
         _spearman(
             _component_score(test, DEFAULT_COMPONENT_WEIGHTS),
             test["net_excess20"],
-            test["sample_weight"],
+            test["calibration_weight"],
         )
         if len(test) >= 3
         else 0.0
@@ -586,7 +605,10 @@ def walk_forward_stats(
     """Expanding-window yearly OOS evaluation of global calibration evidence."""
     if frame is None or frame.empty:
         return []
-    sample = _prepare_samples(frame).dropna(subset=["entry_date", "net_excess20", "score"])
+    sample = _prepare_samples(frame)
+    sample = sample.dropna(
+        subset=["entry_date", "exit60_date", "net_excess20", "score"]
+    )
     if sample.empty:
         return []
     years = sorted(int(year) for year in sample["entry_date"].dt.year.dropna().unique())
@@ -594,19 +616,20 @@ def walk_forward_stats(
     for year in years:
         start = pd.Timestamp(year=year, month=1, day=1)
         end = pd.Timestamp(year=year + 1, month=1, day=1)
+        # A fold may only use labels whose longest outcome is fully known
+        # before its boundary.  Entry-date-only slicing leaked late-December
+        # outcomes into the following year's evaluation.
         train = sample.loc[
             sample["entry_date"].lt(start)
-            & sample["exit60_date"].notna()
             & sample["exit60_date"].lt(start)
         ]
         test = sample.loc[
             sample["entry_date"].ge(start)
             & sample["entry_date"].lt(end)
-            & sample["exit60_date"].notna()
             & sample["exit60_date"].lt(end)
         ]
-        train_effective = float(train["sample_weight"].sum())
-        test_effective = float(test["sample_weight"].sum())
+        train_effective = float(train["calibration_weight"].sum())
+        test_effective = float(test["calibration_weight"].sum())
         if (
             len(train) < min_train_samples
             or len(test) < min_test_samples
@@ -620,70 +643,53 @@ def walk_forward_stats(
             calibration,
         )
         test_target = test["net_excess20"].reset_index(drop=True)
+        test_weight = test["calibration_weight"].reset_index(drop=True)
         predicted = predicted.reset_index(drop=True)
         confidence = confidence.reset_index(drop=True)
-        valid = predicted.notna() & test_target.notna() & confidence.gt(0)
-        if valid.sum() < min_test_samples:
+        valid = (
+            predicted.notna()
+            & test_target.notna()
+            & confidence.gt(0)
+            & test_weight.gt(0)
+        )
+        valid_effective = float(test_weight.loc[valid].sum())
+        if (
+            valid.sum() < min_test_samples
+            or valid_effective < float(min_test_samples)
+        ):
             continue
-        aligned_weights = test["sample_weight"].reset_index(drop=True)
         rank_ic = _spearman(
             predicted.loc[valid],
             test_target.loc[valid],
-            aligned_weights.loc[valid],
+            test_weight.loc[valid],
         )
         ranked = pd.DataFrame(
             {
                 "prediction": predicted.loc[valid],
                 "target": test_target.loc[valid],
-                "sample_weight": aligned_weights.loc[valid],
+                "weight": test_weight.loc[valid],
             }
         )
         ranked["bucket"] = pd.qcut(ranked["prediction"].rank(method="first"), q=min(5, len(ranked)), labels=False, duplicates="drop")
-        top = ranked.loc[ranked["bucket"].eq(ranked["bucket"].max()), "target"]
-        bottom = ranked.loc[ranked["bucket"].eq(ranked["bucket"].min()), "target"]
+        top = ranked.loc[ranked["bucket"].eq(ranked["bucket"].max())]
+        bottom = ranked.loc[ranked["bucket"].eq(ranked["bucket"].min())]
+        top_mean = _weighted_mean(top["target"], top["weight"])
+        bottom_mean = _weighted_mean(bottom["target"], bottom["weight"])
+        fold_mean = _weighted_mean(
+            test_target.loc[valid], test_weight.loc[valid]
+        )
         rows.append(
             {
                 "year": year,
                 "train_samples": len(train),
                 "test_samples": int(valid.sum()),
                 "train_effective_samples": round(train_effective, 4),
-                "test_effective_samples": round(
-                    float(ranked["sample_weight"].sum()), 4
-                ),
+                "test_effective_samples": round(valid_effective, 4),
                 "rank_ic": round(rank_ic, 6),
-                "top_bucket_net_excess20": round(
-                    _weighted_mean(
-                        top,
-                        ranked.loc[top.index, "sample_weight"],
-                    ),
-                    4,
-                )
-                if not top.empty
-                else np.nan,
-                "bottom_bucket_net_excess20": round(
-                    _weighted_mean(
-                        bottom,
-                        ranked.loc[bottom.index, "sample_weight"],
-                    ),
-                    4,
-                )
-                if not bottom.empty
-                else np.nan,
-                "top_bottom_spread20": round(
-                    _weighted_mean(top, ranked.loc[top.index, "sample_weight"])
-                    - _weighted_mean(
-                        bottom, ranked.loc[bottom.index, "sample_weight"]
-                    ),
-                    4,
-                )
-                if not top.empty and not bottom.empty
-                else np.nan,
-                "mean_net_excess20": round(
-                    _weighted_mean(
-                        test_target.loc[valid], aligned_weights.loc[valid]
-                    ),
-                    4,
-                ),
+                "top_bucket_net_excess20": round(float(top_mean), 4) if not top.empty else np.nan,
+                "bottom_bucket_net_excess20": round(float(bottom_mean), 4) if not bottom.empty else np.nan,
+                "top_bottom_spread20": round(float(top_mean - bottom_mean), 4) if not top.empty and not bottom.empty else np.nan,
+                "mean_net_excess20": round(float(fold_mean), 4),
             }
         )
     return rows

@@ -1102,20 +1102,12 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False) -> ScoreBreakdown:
         for score, adjustment, limit in zip(raw_scores, adjustments, limits)
     )
     trend, volume, accumulation, volatility, structure = adjusted_scores
-    available_weight = sum(
-        limit for is_available, limit in zip(available, limits) if is_available
-    )
-    total = (
-        sum(
-            score
-            for is_available, score in zip(available, adjusted_scores)
-            if is_available
-        )
-        / available_weight
-        * 100.0
-        if available_weight
-        else 0.0
-    )
+    # Each dimension already contributes points on a fixed 100-point scale.
+    # Renormalising by only the available maximum let missing evidence inflate
+    # a setup: removing one weak or unavailable dimension could increase the
+    # score.  Keep unavailable dimensions at zero so additional non-negative
+    # evidence can never lower the setup score.
+    total = sum(adjusted_scores)
 
     trap = value_trap_risk(df, is_etf=is_etf)
     breakout = breakout_score(df)

@@ -415,16 +415,10 @@ def _fast_score_matrix(
     structure = np.minimum(structure, 15.0)
     structure[~structure_available] = 0.0
 
-    limits = np.asarray([20.0, 25.0, 25.0, 15.0, 15.0], dtype=np.float64)
-    available_weight = (
-        trend_available * limits[0]
-        + volume_available * limits[1]
-        + accumulation_available * limits[2]
-        + volatility_available * limits[3]
-        + structure_available * limits[4]
-    )
+    # Component maxima already sum to 100.  Missing dimensions remain zero;
+    # they must not be renormalised into stronger evidence.
     component_sum = trend + volume_score + accumulation + volatility + structure
-    total = np.divide(component_sum, available_weight, out=np.zeros(n), where=available_weight > 0.0) * 100.0
+    total = component_sum
 
     # Value-trap risk.
     ret20 = (close / close_s.shift(20).to_numpy(dtype=np.float64) - 1.0) * 100.0
