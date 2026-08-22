@@ -139,6 +139,7 @@ class BacktestSummary:
     current_pool_selection_warning: str = "回测使用当前股票池，存在幸存者偏差"
     point_in_time_universe: dict[str, Any] = field(default_factory=dict)
     split_dates: dict[str, str | None] = field(default_factory=dict)
+    split_policy: str = "purged_by_complete_60d_outcome_window_v1"
     all_samples: int = 0
     purged_samples: int = 0
     commission: float = BACKTEST_STOCK_COMMISSION_RATE
@@ -355,7 +356,10 @@ def _weighted_profit_factor(values: pd.Series, weights: pd.Series) -> float:
     if loss > 0.0:
         return float(profit / loss)
     if profit > 0.0:
-        return float("inf")
+        # Ranking already saturates profit factor at 3.0. Returning infinity
+        # here used to be converted into NaN during row serialization, which
+        # incorrectly gave an all-winning history the neutral factor score.
+        return 3.0
     return float("nan")
 
 
