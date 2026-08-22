@@ -61,6 +61,7 @@ PIPELINE_VERSION: str = (
     "2026-08-19-v58-stale-data-fail-closed-"
     "2026-08-19-v57-unstable-calibration-governance-"
     "2026-08-19-v56-fresh-benchmark-audit-"
+    "2026-08-19-v55-free-eod-settlement-retry-"
     "2026-08-18-v54-execution-liquidity-readiness-"
     "2026-08-18-v53-provider-settlement-date-gate-"
     "2026-08-17-v52-price-limit-marketcap-contract-"
