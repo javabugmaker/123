@@ -1,12 +1,10 @@
-"""v88 analytics facade with point-in-time and ranking-integrity normalization.
+"""v89 analytics facade with executable-signal backtest semantics.
 
-All v80 workstation/backtest acceleration semantics remain intact. v82 fixes a
-post-backtest semantic drift: the legacy calibration path embeds signal recency
-inside ``InstitutionalScore`` and then the canonical lifecycle ranker applies
-recency again. The backtest transaction now removes that embedded decay only
-for its one canonical final ranking pass, so scan and post-backtest rankings use
-recency exactly once. A successful publication also refreshes the observational
-full-universe audit against the newly committed ``AllResults.csv``.
+All v88 point-in-time, publication and ranking-integrity semantics remain intact.
+A ``WAIT_PULLBACK`` row is a pending conditional order, not an instruction to
+buy the next session open. Until the historical engine models zone-touch fills,
+only immediately executable ``BUY_NOW`` and ``BREAKOUT_CONFIRM`` states may
+create return samples used to calibrate the live ranking.
 """
 
 from __future__ import annotations
@@ -49,6 +47,16 @@ _calibration_weight_cache.install()
 _backtest_fastpath.install()
 install_analytics_alignment(_core)
 install_single_recency_ranking_guard(_core)
+
+# A WAIT_PULLBACK signal means "place no trade until price returns to the entry
+# zone". The stable historical engine currently executes accepted signals at
+# the next session open, so admitting WAIT_PULLBACK would manufacture fills that
+# the live policy explicitly told the user not to take. Fail closed until a
+# point-in-time zone-touch fill engine exists. Both the exact evaluator and the
+# vectorised FAST prefilter consult this canonical runtime set before a sample is
+# emitted, preserving one execution meaning across modes.
+_BACKTEST_EXECUTABLE_SIGNALS = frozenset({"BUY_NOW", "BREAKOUT_CONFIRM"})
+_core._BACKTEST_ACTIONABLE_SIGNALS = _BACKTEST_EXECUTABLE_SIGNALS
 
 # signal_lifecycle_v51 intentionally aliases its module entry to the stable
 # lifecycle core. Preserve the historical private reference for callers that
@@ -328,6 +336,9 @@ _core._apply_backtest_provenance = _apply_backtest_provenance
 _core.calibration_stability_stats = calibration_stability_stats
 _core._refresh_published_ranking_audit = _refresh_published_ranking_audit
 _core.apply_backtest_ranking = apply_backtest_ranking
+_core.BACKTEST_SIGNAL_EXECUTION_VERSION = (
+    "2026-08-22-v89-immediate-executable-next-open-v1"
+)
 _core.BACKTEST_PUBLICATION_INTEGRITY_VERSION = (
     "2026-08-19-v73-journaled-backtest-publication-v2"
 )
