@@ -30,7 +30,18 @@ class V85GuiLayoutIntegrityTests(unittest.TestCase):
         )
 
     def test_no_custom_scrollable_sidebar_regression(self) -> None:
-        self.assertNotIn("CTkScrollableFrame", self.source)
+        scrollable_frame_calls = [
+            node
+            for node in ast.walk(self.tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "CTkScrollableFrame"
+        ]
+        self.assertEqual(
+            scrollable_frame_calls,
+            [],
+            "v85 must not recreate the broken custom scrollable sidebar shell",
+        )
         self.assertNotIn("_sidebar.pack_propagate(False)", self.source)
 
     def test_compact_header_has_explicit_height(self) -> None:
