@@ -90,7 +90,6 @@ _LEGACY_APPLY_BACKTEST_PROVENANCE = _core._apply_backtest_provenance
 _LEGACY_CALIBRATION_STABILITY_STATS = _core.calibration_stability_stats
 _LEGACY_BACKTEST_ONE_TICKER_CACHED = _core._backtest_one_ticker_cached
 _LEGACY_TICKER_BACKTEST_ROWS = _core._ticker_backtest_rows
-_LEGACY_INIT_BACKTEST_WORKER = _core._init_backtest_worker
 _LEGACY_SUMMARY_TO_DICT = _core.BacktestSummary.to_dict
 _LEGACY_APPLY_BACKTEST_RANKING = _core.apply_backtest_ranking
 _core._legacy_apply_backtest_ranking = _LEGACY_APPLY_BACKTEST_RANKING
@@ -105,8 +104,21 @@ _LAST_RESONANCE_ANALYSIS: dict[str, Any] = {
 }
 
 
+def _reset_resonance_analysis() -> None:
+    global _LAST_RESONANCE_ANALYSIS
+    with _RESONANCE_ANALYSIS_LOCK:
+        _LAST_RESONANCE_ANALYSIS = {
+            "version": RESONANCE_VERSION,
+            "status": "NOT_EVALUATED",
+            "by_count": [],
+            "by_band": [],
+            "by_transition": [],
+        }
+
+
 def _load_benchmark_frames(source: str) -> dict[str, pd.DataFrame]:
     """Refresh each benchmark first; use cache only as a resilient fallback."""
+    _reset_resonance_analysis()
     frames: dict[str, pd.DataFrame] = {}
     for name, ticker in _core.BENCHMARKS.items():
         frame: pd.DataFrame | None = None
@@ -142,12 +154,20 @@ def _attach_backtest_resonance(
     samples: list[dict[str, object]],
     frame: pd.DataFrame | None = None,
 ) -> list[dict[str, object]]:
-    """Attach five-factor state at signal close without changing the signal."""
+    """Attach five-factor state only to genuine dated historical samples."""
     if not samples:
         return samples
+    # Compatibility fixtures and fail-closed benchmark tests intentionally use
+    # synthetic rows without signal_date.  Diagnostics must never mutate those
+    # core return-contract sentinels.
+    if not any(str(item.get("signal_date") or "").strip() for item in samples):
+        return samples
+
     market_frame = frame
     if market_frame is None or market_frame.empty:
         market_frame = _core._load_cache(ticker, source)
+    if market_frame is None or market_frame.empty:
+        return samples
     try:
         return attach_resonance_to_samples(samples, market_frame)
     except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
@@ -172,11 +192,10 @@ def _backtest_one_ticker_cached(
     profile: _core.BacktestExecutionProfile | None = None,
     benchmark_name: str = "沪深300",
 ) -> tuple[list[dict[str, object]], bool]:
-    """Never reuse excess-return cache when the benchmark is absent now.
+    """Preserve v89 cache semantics while adding point-in-time diagnostics.
 
-    v90 also recomputes resonance from the current OHLCV cache even when the
-    historical return sample itself is a cache hit. Old caches therefore do not
-    need to be invalidated just to add diagnostic columns.
+    Resonance is recomputed from the current OHLCV cache even when the return
+    sample itself is a cache hit, so the return-cache schema stays unchanged.
     """
     if benchmark_frame is not None and not benchmark_frame.empty:
         samples, cache_hit = _LEGACY_BACKTEST_ONE_TICKER_CACHED(
@@ -252,9 +271,7 @@ def _ticker_backtest_rows(
             continue
         lookup[(str(ticker), str(signal))] = {
             "resonance_mean_count": round(float(valid.mean()), 4),
-            "resonance_strong_bull_share": round(
-                float(valid.ge(4.0).mean()), 4
-            ),
+            "resonance_strong_bull_share": round(float(valid.ge(4.0).mean()), 4),
             "resonance_rising_share": round(
                 float(group.loc[valid.index, "_resonance_rising"].mean()), 4
             ),
@@ -274,35 +291,6 @@ def _backtest_summary_to_dict(summary: _core.BacktestSummary) -> dict[str, Any]:
     with _RESONANCE_ANALYSIS_LOCK:
         result["resonance_analysis"] = dict(_LAST_RESONANCE_ANALYSIS)
     return result
-
-
-def _init_backtest_worker(
-    source: str,
-    benchmark: str,
-    commission: float,
-    stamp_duty: float,
-    slippage: float,
-    split_dates: tuple[pd.Timestamp | None, pd.Timestamp | None],
-    benchmark_signature: str,
-    profile: _core.BacktestExecutionProfile,
-) -> None:
-    """Initialize normal worker context and re-assert v90 facade hooks.
-
-    Windows uses spawned worker processes. Making this facade itself the pool
-    initializer ensures each child imports ``analytics`` and therefore sees the
-    same resonance attachment policy as the parent process.
-    """
-    _LEGACY_INIT_BACKTEST_WORKER(
-        source,
-        benchmark,
-        commission,
-        stamp_duty,
-        slippage,
-        split_dates,
-        benchmark_signature,
-        profile,
-    )
-    _core._backtest_one_ticker_cached = _backtest_one_ticker_cached
 
 
 def _apply_backtest_provenance(
@@ -477,7 +465,9 @@ def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> N
 _core._load_benchmark_frames = _load_benchmark_frames
 _core._backtest_one_ticker_cached = _backtest_one_ticker_cached
 _core._ticker_backtest_rows = _ticker_backtest_rows
-_core._init_backtest_worker = _init_backtest_worker
+# Keep the v51 spawn-safe initializer identity intact. It imports this public
+# analytics facade inside each Windows worker, so the v90 cached-sample wrapper
+# above is installed there without replacing the established process contract.
 _core.BacktestSummary.to_dict = _backtest_summary_to_dict
 _core._apply_backtest_provenance = _apply_backtest_provenance
 _core.calibration_stability_stats = calibration_stability_stats
