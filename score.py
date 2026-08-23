@@ -107,6 +107,10 @@ def trigger_event_score(df: pd.DataFrame) -> float:
 
 def score_ticker(df: pd.DataFrame, is_etf: bool = False):
     """Run one cache-safe scoring transaction, then replace TriggerScore."""
+    # Compatibility modules are still importable and a few historically install
+    # themselves at import time. Repair only if such an import displaced the
+    # canonical v95+ public bindings; the normal hot path is identity checks.
+    _score_runtime_v97.ensure()
     acceleration = sys.modules.get("score_acceleration_v79")
     clear_cache = getattr(acceleration, "clear_thread_score_cache", None)
     if callable(clear_cache):
