@@ -6,10 +6,9 @@ session. v96 additionally supports WAIT_PULLBACK conditional fills; benchmark
 alignment consumes each sample's actual fill date, so delayed zone-touch fills
 receive the same time basis as immediate entries.
 
-The spawn-safe installer also re-asserts the canonical v95/v96 scoring and
-execution stack after the v80 FAST engine is installed.  Parent and workers
-therefore share 504-bar scoring, nominal setup scales, smooth TriggerScore and
-conditional-fill semantics.
+The spawn-safe initializer re-asserts the canonical v95 scoring stack after the
+v80 FAST engine is installed. Conditional-fill execution is installed only in
+spawned production workers; direct scalar APIs retain immediate-only semantics.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 _EXECUTION_MODEL = (
-    "asset_fees_liquidity_immediate_open_waitpullback_zone5_benchmark_open_v3"
+    "asset_fees_liquidity_immediate_open_waitpullback_zone5_benchmark_open_v4"
 )
 
 
@@ -115,10 +114,14 @@ def aligned_backtest_worker_initializer(
     benchmark_signature: str,
     profile: Any,
 ) -> None:
-    """Spawn-safe ProcessPool initializer that installs current math in workers."""
+    """Spawn-safe ProcessPool initializer that installs production math."""
     import analytics as analytics_module
+    import conditional_fill_v96 as conditional_v96
 
     install_analytics_alignment(analytics_module)
+    # A spawned worker is dedicated to one production backtest process. Install
+    # conditional execution here, not during normal analytics import.
+    conditional_v96.install()
     benchmark_frame = analytics_module._load_cache(
         analytics_module.BENCHMARKS[benchmark], source
     )
@@ -151,7 +154,7 @@ def _persist_summary(module: Any, summary: Any) -> None:
 
 
 def _install_scoring_execution_stack() -> None:
-    """Install v80 acceleration followed by canonical v95/v96 semantics."""
+    """Install v80 acceleration followed by canonical v95 score semantics."""
     try:
         import backtest_profile_alignment_v95 as profile_v95
 
@@ -172,15 +175,6 @@ def _install_scoring_execution_stack() -> None:
         scoring_v95 = None
     if scoring_v95 is not None:
         scoring_v95.install()
-
-    # Conditional fill must wrap the already aligned scalar executor so both
-    # direct and cached paths use the actual fill date for benchmark alignment.
-    try:
-        import conditional_fill_v96 as conditional_v96
-    except ImportError:
-        conditional_v96 = None
-    if conditional_v96 is not None:
-        conditional_v96.install()
 
 
 def install_analytics_alignment(module: Any) -> None:
