@@ -10,11 +10,11 @@ from unittest import mock
 
 import numpy as np
 import pandas as pd
+import web_report_v85 as web
 
 import resonance_reporting_v90 as reporting
 import resonance_runtime_v91 as runtime
 import technical_resonance_v90 as resonance
-import web_report_v90 as web
 
 
 def _trend_frame(rows: int = 180) -> pd.DataFrame:
