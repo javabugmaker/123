@@ -12,11 +12,11 @@ unchanged, and publishes the entire resulting file set with the durable journal
 only when the command returns success. DAILY safely nests this inside its own
 outer staging directory.
 
-v91 installs parent-process resonance recovery before the historical engine is
-called. v93 additionally activates the production calibration lane: verified
-point-in-time universe samples retain full evidence weight, missing-snapshot
-samples can enter only through the explicitly discounted provisional lane, and
-known historical exclusions remain blocked.
+v91 installs parent-process resonance recovery. v93/v94 activate production
+historical-universe evidence with a discounted missing-snapshot lane. v94 also
+separates PIT evidence quality from date-overlap weighting and forbids broad
+asset/global peer priors from leaking executable-signal performance into
+WAIT/HOLD/AVOID ranking states.
 """
 
 from __future__ import annotations
@@ -29,8 +29,10 @@ from pathlib import Path
 from typing import Any
 
 import analytics as _analytics
+import backtest_math_integrity_v94 as _math_integrity
 import backtest_production_activation_v93 as _production_activation
 import main_core as _main
+import model_calibration as _model_calibration
 import report as _report
 import resonance_runtime_v91 as _resonance_runtime
 from resonance_reporting_v90 import materialize_resonance_outputs
@@ -38,6 +40,8 @@ from web_report_v81 import maybe_publish_canonical_report
 
 _resonance_runtime.install()
 _production_activation.install(_analytics, _main)
+_math_integrity.install(_analytics, _model_calibration)
+_main.apply_backtest_ranking = _analytics.apply_backtest_ranking
 
 _LEGACY_CMD_BACKTEST = _main.cmd_backtest
 _COMMAND_LOCK = threading.Lock()
@@ -163,13 +167,18 @@ def install() -> None:
         return
     _resonance_runtime.install()
     _production_activation.install(_analytics, _main)
+    _math_integrity.install(_analytics, _model_calibration)
+    _main.apply_backtest_ranking = _analytics.apply_backtest_ranking
     _main._legacy_cmd_backtest = _LEGACY_CMD_BACKTEST
     _main.cmd_backtest = cmd_backtest
     _main.BACKTEST_COMMAND_INTEGRITY_VERSION = (
-        "2026-08-23-v93-production-backtest-activation-v1"
+        "2026-08-23-v94-production-backtest-math-integrity-v1"
     )
     _main.PRODUCTION_BACKTEST_ACTIVATION_VERSION = (
         _production_activation.PRODUCTION_BACKTEST_ACTIVATION_VERSION
+    )
+    _main.PRODUCTION_BACKTEST_MATH_VERSION = (
+        _math_integrity.PRODUCTION_BACKTEST_MATH_VERSION
     )
     _INSTALLED = True
 
