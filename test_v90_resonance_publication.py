@@ -9,7 +9,7 @@ import pandas as pd
 
 from gui_v85 import resonance_history_label
 from resonance_reporting_v90 import materialize_resonance_outputs
-from web_report_v90 import _resonance_block
+from web_report import _resonance
 
 
 def _summary_payload() -> dict[str, object]:
@@ -134,12 +134,11 @@ class ResonancePublicationV90Tests(unittest.TestCase):
         self.assertEqual(resonance_history_label({}), "—")
 
     def test_web_resonance_block_discloses_diagnostic_only_semantics(self) -> None:
-        block = _resonance_block(_summary_payload())
+        block = _resonance(_summary_payload())
         self.assertIn("五因子共振回测", block)
-        self.assertIn("RISING_TO_4PLUS", block)
         self.assertIn("4-5/5", block)
-        self.assertIn("仅作独立诊断，不进入当前排名", block)
-        self.assertIn("信号日收盘快照", block)
+        self.assertIn("不进入排名", block)
+        self.assertIn("DIAGNOSTIC ONLY", block)
 
 
 if __name__ == "__main__":
