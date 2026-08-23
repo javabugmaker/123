@@ -9,9 +9,11 @@ logs, raw samples, or ranking internals are published.
 from __future__ import annotations
 
 import csv
+import json
 import logging
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import web_report_v85 as _v85
 from web_report_v85 import *  # noqa: F403
@@ -24,6 +26,7 @@ PROJECT_ROOT = _v85.PROJECT_ROOT
 WEB_PUBLISH_ENV = _v85.WEB_PUBLISH_ENV
 GH_PAGES_BRANCH = _v85.GH_PAGES_BRANCH
 
+_archive_html = _v85._archive_html
 _published_source_dir = _v85._published_source_dir
 is_canonical_output_dir = _v85.is_canonical_output_dir
 github_pages_url_from_remote = _v85.github_pages_url_from_remote
@@ -38,6 +41,14 @@ _RESONANCE_CSS = """
 @media(max-width:900px){.resonance-v90 .res-grid{grid-template-columns:1fr}}
 </style>
 """
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _number(value: object) -> float | None:
@@ -81,9 +92,12 @@ def _group_table(groups: object) -> str:
             f"<td><strong>{_v85._safe(raw.get('group', '—'))}</strong></td>"
             f"<td class=\"number\">{_v85._safe(raw.get('samples', 0))}</td>"
             f"<td class=\"number\">{_v85._safe(_pct_value(raw.get('net_excess_win_rate_20d'), fraction=True))}</td>"
-            f"<td class=\"number {_metric_class(avg20)}\">{_v85._safe(_pct_value(avg20))}</td>"
-            f"<td class=\"number {_metric_class(avg60)}\">{_v85._safe(_pct_value(avg60))}</td>"
-            f"<td class=\"number {_metric_class(drawdown)}\">{_v85._safe(_pct_value(drawdown))}</td>"
+            f"<td class=\"number {_metric_class(avg20)}\">"
+            f"{_v85._safe(_pct_value(avg20))}</td>"
+            f"<td class=\"number {_metric_class(avg60)}\">"
+            f"{_v85._safe(_pct_value(avg60))}</td>"
+            f"<td class=\"number {_metric_class(drawdown)}\">"
+            f"{_v85._safe(_pct_value(drawdown))}</td>"
             "</tr>"
         )
     return (
@@ -144,9 +158,11 @@ def build_web_report(
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     site_dir: Path = DEFAULT_SITE_DIR,
 ) -> WebReportResult:
-    result = _v85.build_web_report(output_dir=Path(output_dir), site_dir=Path(site_dir))
+    result = _v85.build_web_report(
+        output_dir=Path(output_dir), site_dir=Path(site_dir)
+    )
     source_dir = _published_source_dir(Path(output_dir))
-    backtest = _v85._read_json(source_dir / "BacktestSummary.json") or _v85._read_json(
+    backtest = _read_json(source_dir / "BacktestSummary.json") or _read_json(
         Path(output_dir) / "BacktestSummary.json"
     )
     for path in (result.index_path, result.archive_path):
@@ -163,7 +179,9 @@ def build_and_publish_web_report(
 ) -> WebReportResult:
     log = logger or logging.getLogger("institution_scanner")
     built = build_web_report(output_dir=output_dir, site_dir=site_dir)
-    log.info("WEB v90 research briefing generated: %s (%s).", built.archive_path, reason)
+    log.info(
+        "WEB v90 research briefing generated: %s (%s).", built.archive_path, reason
+    )
     if not _v85._truthy_env(WEB_PUBLISH_ENV, True):
         log.info("WEB publication disabled by %s.", WEB_PUBLISH_ENV)
         return built
@@ -174,7 +192,10 @@ def build_and_publish_web_report(
             report_date=built.report_date,
         )
     except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-        log.warning("WEB report publication skipped/failed without affecting pipeline: %s", exc)
+        log.warning(
+            "WEB report publication skipped/failed without affecting pipeline: %s",
+            exc,
+        )
         return WebReportResult(
             report_date=built.report_date,
             index_path=built.index_path,
