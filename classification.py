@@ -10,6 +10,7 @@ ETF_THEME_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("医药医疗", ("创新药", "医疗", "医药", "生物科技", "生物医药", "医疗器械", "医疗设备", "药ETF", "疫苗")),
     ("半导体芯片", ("半导体", "芯片", "集成电路")),
     ("人工智能", ("人工智能", "AI", "算力", "数据中心")),
+    ("数字货币", ("数字货币", "加密货币")),
     ("机器人", ("机器人", "人形机器人")),
     ("黄金", ("黄金", "上海金", "金ETF", "金矿")),
     ("有色金属", ("有色", "铜", "铝", "稀土", "锂")),
@@ -26,7 +27,19 @@ ETF_THEME_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("现金流因子", ("自由现金流", "全指现金流", "中证现金流", "现金流ETF")),
     (
         "货币现金管理",
-        ("快钱", "天天金", "添益", "财富宝", "货币ETF", "现金管理"),
+        (
+            "快钱",
+            "天天金",
+            "添益",
+            "财富宝",
+            "银华日利",
+            "收益宝",
+            "保证金",
+            "招商快线",
+            "场内货币",
+            "货币ETF",
+            "现金管理",
+        ),
     ),
 )
 
@@ -49,6 +62,15 @@ ETF_RESEARCH_EXCLUDED_KEYWORDS: tuple[str, ...] = (
     "天天金",
     "添益",
     "财富宝",
+    "银华日利",
+    "收益宝",
+    "保证金",
+    "招商快线",
+    "场内货币",
+)
+ETF_RESEARCH_DIRECTIONAL_CURRENCY_KEYWORDS: tuple[str, ...] = (
+    "数字货币",
+    "加密货币",
 )
 
 
@@ -81,6 +103,7 @@ THEME_CLUSTER_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("医药医疗", ("化学制药", "中药", "生物制品", "医疗器械", "医疗服务", "医药", "医疗", "创新药", "生物科技", "疫苗", "药ETF")),
     ("半导体电子", ("半导体", "芯片", "集成电路", "消费电子", "电子元件", "电子")),
     ("AI算力", ("人工智能", "算力", "数据中心", "服务器", "光模块")),
+    ("数字货币", ("数字货币", "加密货币")),
     ("新能源", ("新能源", "光伏", "风电", "储能", "电池", "锂电")),
     ("资源周期", ("有色", "铜", "铝", "黄金", "煤炭", "钢铁", "化工", "稀土", "锂")),
     ("金融", ("证券", "券商", "银行", "保险")),
@@ -94,7 +117,19 @@ THEME_CLUSTER_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("现金流因子", ("自由现金流", "全指现金流", "中证现金流", "现金流ETF")),
     (
         "货币现金管理",
-        ("快钱", "天天金", "添益", "财富宝", "货币ETF", "现金管理"),
+        (
+            "快钱",
+            "天天金",
+            "添益",
+            "财富宝",
+            "银华日利",
+            "收益宝",
+            "保证金",
+            "招商快线",
+            "场内货币",
+            "货币ETF",
+            "现金管理",
+        ),
     ),
 )
 
@@ -229,6 +264,11 @@ def etf_research_eligibility(
     if resolved in ETF_RESEARCH_EXCLUDED_LABELS:
         return False, f"ETF分类排除：{resolved}"
     for keyword in ETF_RESEARCH_EXCLUDED_KEYWORDS:
+        if keyword == "货币ETF" and any(
+            directional.upper() in text
+            for directional in ETF_RESEARCH_DIRECTIONAL_CURRENCY_KEYWORDS
+        ):
+            continue
         if keyword.upper() in text:
             return False, f"ETF现金管理产品排除：{keyword}"
     return True, ""
