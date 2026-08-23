@@ -28,7 +28,7 @@ import model_calibration as _model_calibration
 import report as _report
 import resonance_runtime_v91 as _resonance_runtime
 from resonance_reporting_v90 import materialize_resonance_outputs
-from web_report_v81 import maybe_publish_canonical_report
+from web_report import maybe_publish_canonical_report
 
 _resonance_runtime.install()
 _production_activation.install(_analytics, _main)
