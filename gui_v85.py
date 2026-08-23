@@ -1,20 +1,16 @@
-"""v85 A-share research briefing desktop GUI.
+"""v90 A-share research briefing desktop GUI.
 
-v85 keeps the editorial briefing identity, date header and compact research
-language, but deliberately reuses the proven v84/DecisionScannerGUI geometry
-shell.  The first v85 shell recreated every container with CustomTkinter frames
-and accidentally relied on Tk geometry propagation semantics that CTkFrame does
-not guarantee; several default-height frames therefore expanded to roughly
-200px and the CTkScrollableFrame sidebar could collapse its child layout.
-
-This module is presentation-only.  Scanner, ranking, backtest, publication,
-filters, details and execution semantics remain inherited from the stable GUI
-stack.
+The v85 editorial shell remains intact.  v90 adds a compact, diagnostic-only
+five-factor resonance view sourced from the held-out backtest outputs.  It does
+not change scanner scores, ranking eligibility, entry signals, or execution
+semantics; it only makes the MACD/KDJ/RSI/OBV/BOLL experiment visible in the
+same workstation the user already operates.
 """
 
 from __future__ import annotations
 
 from collections import Counter
+from typing import Mapping
 
 import customtkinter as ctk
 
@@ -30,23 +26,70 @@ from v85_terminal_config import (
     TYPOGRAPHY,
 )
 
-GUI_VERSION = TERMINAL_VERSION + "-stable-layout-v2"
+GUI_VERSION = "2026-08-23-v90-five-factor-resonance-gui-v1"
+RESONANCE_HISTORY_COLUMN = "ResonanceHistory"
+
+
+def _finite_number(value: object) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in {float("inf"), float("-inf")}:
+        return None
+    return number
+
+
+def resonance_history_label(data: Mapping[str, object]) -> str:
+    """Return one compact label for held-out five-factor backtest evidence."""
+    mean_count = _finite_number(data.get("BacktestResonanceMeanCount"))
+    strong_share = _finite_number(data.get("BacktestResonanceStrongBullShare"))
+    rising_share = _finite_number(data.get("BacktestResonanceRisingShare"))
+    if mean_count is None:
+        return "—"
+    parts = [f"{mean_count:.1f}/5"]
+    if strong_share is not None:
+        parts.append(f"强{strong_share:.0%}")
+    if rising_share is not None:
+        parts.append(f"↑{rising_share:.0%}")
+    return " · ".join(parts)
+
+
+def _v90_display_columns() -> tuple[str, ...]:
+    columns = list(_v84.V84_DISPLAY_COLUMNS)
+    if RESONANCE_HISTORY_COLUMN not in columns:
+        anchor = "SignalStatus"
+        position = columns.index(anchor) if anchor in columns else len(columns)
+        columns.insert(position, RESONANCE_HISTORY_COLUMN)
+    return tuple(columns)
 
 
 class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
-    """v85 briefing presentation on top of the stable v84 workstation shell."""
+    """v90 briefing presentation on top of the stable v84 workstation shell."""
 
     def __init__(self, root) -> None:
         self.data_asof = _core.tk.StringVar(master=root, value="等待数据")
         self.header_note = _core.tk.StringVar(
             master=root,
-            value="研究排名与交易执行分层 · 双击标的查看完整证据",
+            value="研究排名与交易执行分层 · 五因子共振仅作回测验证 · 双击查看证据",
         )
         super().__init__(root)
 
     def _build_ui_configure_styles(self) -> None:
-        """Retain v84 geometry while applying the v85 editorial palette."""
+        """Retain v84 geometry while applying v90 display-only diagnostics."""
         _v84.ResearchTerminalGUI._build_ui_configure_styles(self)
+        _core.DISPLAY_COLUMNS = _v90_display_columns()
+        _core.COLUMN_NAMES.update(
+            {
+                RESONANCE_HISTORY_COLUMN: "五因子回测",
+                "BacktestResonanceMeanCount": "五因子平均票数",
+                "BacktestResonanceStrongBullShare": "4/5+强共振占比",
+                "BacktestResonanceRisingShare": "3日票数上升占比",
+                "BacktestResonanceVersion": "五因子共振版本",
+            }
+        )
+        _core.COLUMN_WIDTHS[RESONANCE_HISTORY_COLUMN] = 126
+
         ttk = _core.ttk
         sans = str(TYPOGRAPHY["sans"])
         mono = str(TYPOGRAPHY["mono"])
@@ -79,12 +122,12 @@ class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
         )
 
     def _build_ui_header(self) -> None:
-        """Compact v85 briefing header; all lower geometry remains v84 stable."""
+        """Compact v90 briefing header; all lower geometry remains v84 stable."""
         tk = _core.tk
         sans = str(TYPOGRAPHY["sans"])
         mono = str(TYPOGRAPHY["mono"])
         minimum = tuple(LAYOUT["minimum"])
-        self.root.title("InstitutionScanner · A股研究简报")
+        self.root.title("InstitutionScanner · A股研究简报 · v90")
         self.root.geometry(str(LAYOUT["window"]))
         self.root.minsize(int(minimum[0]), int(minimum[1]))
 
@@ -148,7 +191,7 @@ class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
         rule.pack(fill=tk.X, padx=18, pady=(0, 7))
 
     def _build_ui_controls(self) -> None:
-        """Use v84's proven horizontal control bar and apply v85 emphasis."""
+        """Use v84's proven horizontal control bar and apply v90 emphasis."""
         _v84.ResearchTerminalGUI._build_ui_controls(self)
         self.daily_button.configure(
             fg_color=COLORS["red"],
@@ -197,6 +240,42 @@ class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
             if index < len(row) and str(row[index]).strip()
         )
         self.data_asof.set(values.most_common(1)[0][0] if values else "等待数据")
+
+    def _ensure_derived_columns(self) -> None:
+        super()._ensure_derived_columns()
+        if not self._csv_headers:
+            return
+        if RESONANCE_HISTORY_COLUMN not in self._csv_headers:
+            self._csv_headers.append(RESONANCE_HISTORY_COLUMN)
+            for row in self._csv_rows:
+                row.append("")
+        indexes = {header: index for index, header in enumerate(self._csv_headers)}
+        target = indexes[RESONANCE_HISTORY_COLUMN]
+        for row in self._csv_rows:
+            if len(row) < len(self._csv_headers):
+                row.extend([""] * (len(self._csv_headers) - len(row)))
+            data = {
+                column: row[index]
+                for column, index in indexes.items()
+                if index < len(row)
+            }
+            row[target] = resonance_history_label(data)
+        self._csv_indexes = indexes
+        self._csv_search_text = [
+            " ".join(map(self._cell_text, row)).casefold() for row in self._csv_rows
+        ]
+
+    def _update_decision_card(self, _event=None) -> None:
+        super()._update_decision_card(_event)
+        data = self._selected_detail()
+        label = resonance_history_label(data)
+        if label == "—":
+            return
+        current = str(self.detail_backtest.get() or "").strip()
+        suffix = f"历史五因子 {label}"
+        self.detail_backtest.set(
+            f"{current} · {suffix}" if current and current != "-" else suffix
+        )
 
     def load_csv(self, filename: str, preserve_new_signal: bool = False) -> bool:
         loaded = super().load_csv(filename, preserve_new_signal=preserve_new_signal)
