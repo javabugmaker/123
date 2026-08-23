@@ -2,7 +2,7 @@
 
 The stable implementation remains in :mod:`analytics_core`, while this module
 composes acceleration, score, FAST/EXACT consistency, point-in-time diagnostics
-and transactional publication exactly once.  Historical version modules remain
+and transactional publication exactly once. Historical version modules remain
 import-compatible kernels; import order is no longer allowed to define model
 semantics.
 """
@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 import analytics_acceleration_v77 as _analytics_acceleration
+import analytics_compat_v97 as _analytics_compat
 import analytics_core as _core
 import backtest_acceleration_v77 as _backtest_acceleration
 import backtest_fastpath_v78 as _backtest_fastpath
@@ -496,5 +497,6 @@ import model_calibration as _model_calibration  # noqa: E402
 
 _math_integrity.install(_core, _model_calibration)
 _calibration_math.install(_core)
+_analytics_compat.install()
 
 sys.modules[__name__] = _core
