@@ -147,8 +147,6 @@ class ScoreKernelEquivalenceTests(unittest.TestCase):
             self.assertAlmostEqual(actual, expected, places=10)
 
     def test_volatility_state_matches_stable_implementation(self) -> None:
-        import volatility_state
-
         for frame in (_enriched_frame(), _enriched_frame(with_holes=True)):
             expected = accelerated._LEGACY_VOLATILITY_STATE(frame)
             accelerated.clear_thread_score_cache()
