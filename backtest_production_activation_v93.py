@@ -1,4 +1,4 @@
-"""Production backtest activation v93/v94.
+"""Production backtest activation v93/v97.
 
 Historical point-in-time universe snapshots remain the preferred calibration
 evidence. When an old signal predates the locally recorded universe snapshots,
@@ -7,9 +7,10 @@ lane with a reduced sample weight. Samples that are explicitly known to have
 been outside the historical universe remain excluded.
 
 The strict ``analytics_core._verified_point_in_time_frame`` helper remains a
-stable research-integrity API.  Provisional admission is installed only for the
-duration of a production backtest transaction, so direct audit callers continue
-to mean "verified only" and concurrent mutation is serialized.
+stable research-integrity API. Provisional admission and WAIT_PULLBACK
+conditional execution are installed only for the duration of a production
+backtest transaction. Direct audit/scalar callers therefore keep their stable
+contracts, while spawned workers install conditional execution independently.
 """
 
 from __future__ import annotations
@@ -20,9 +21,10 @@ from typing import Any
 import pandas as pd
 
 import analytics_core as _core
+import conditional_fill_v96 as _conditional_fill
 
 PRODUCTION_BACKTEST_ACTIVATION_VERSION = (
-    "2026-08-23-v94-provisional-universe-evidence-transaction-v3"
+    "2026-08-23-v97-provisional-pit-conditional-fill-transaction-v4"
 )
 PROVISIONAL_SAMPLE_WEIGHT_SCALE = 0.25
 _MISSING_UNIVERSE_REASONS = frozenset(
@@ -84,12 +86,7 @@ def _run_state_snapshot() -> dict[str, int]:
 
 
 def _production_point_in_time_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    """Return verified evidence plus conservatively weighted missing-PIT rows.
-
-    Explicit historical exclusions are never admitted. Only rows whose
-    membership could not be observed because the local PIT snapshot is missing
-    (or begins after the signal) may enter the provisional lane.
-    """
+    """Return verified evidence plus conservatively weighted missing-PIT rows."""
     if frame.empty:
         _record_run_state(
             verified_model_samples=0,
@@ -179,9 +176,7 @@ def _production_point_in_time_frame(frame: pd.DataFrame) -> pd.DataFrame:
         return provisional.sort_index(kind="mergesort")
     if provisional.empty:
         return verified.sort_index(kind="mergesort")
-    return pd.concat([verified, provisional], axis=0).sort_index(
-        kind="mergesort"
-    )
+    return pd.concat([verified, provisional], axis=0).sort_index(kind="mergesort")
 
 
 def _decorate_summary(summary: Any, state: dict[str, int]) -> Any:
@@ -201,6 +196,11 @@ def _decorate_summary(summary: Any, state: dict[str, int]) -> Any:
         float(PROVISIONAL_SAMPLE_WEIGHT_SCALE),
     )
     setattr(summary, "historical_universe_excluded_samples", excluded)
+    setattr(
+        summary,
+        "conditional_fill_version",
+        _conditional_fill.CONDITIONAL_FILL_VERSION,
+    )
 
     if provisional <= 0:
         return summary
@@ -233,7 +233,7 @@ def _decorate_summary(summary: Any, state: dict[str, int]) -> Any:
 
 
 def install(analytics_module: Any, main_module: Any) -> None:
-    """Install the production calibration lane into analytics and main runtime."""
+    """Install the production calibration/execution lane into runtime."""
     global _INSTALLED, _ORIGINAL_RUN_HISTORICAL_BACKTEST
     if _INSTALLED:
         main_module.run_historical_backtest = analytics_module.run_historical_backtest
@@ -242,21 +242,21 @@ def install(analytics_module: Any, main_module: Any) -> None:
     _ORIGINAL_RUN_HISTORICAL_BACKTEST = analytics_module.run_historical_backtest
 
     def run_historical_backtest(*args: Any, **kwargs: Any) -> Any:
-        # Keep the strict helper globally observable.  The provisional policy is
-        # a production-run context, not a redefinition of "verified".
         with _LOCK:
             _reset_run_state()
-            previous = _core._verified_point_in_time_frame
+            previous_verified = _core._verified_point_in_time_frame
             _core._verified_point_in_time_frame = _production_point_in_time_frame
+            _conditional_fill.install()
             try:
                 summary = _ORIGINAL_RUN_HISTORICAL_BACKTEST(*args, **kwargs)
             finally:
-                _core._verified_point_in_time_frame = previous
+                _conditional_fill.uninstall()
+                _core._verified_point_in_time_frame = previous_verified
             return _decorate_summary(summary, _run_state_snapshot())
 
     run_historical_backtest.__name__ = "run_historical_backtest"
     run_historical_backtest.__doc__ = (
-        "Run canonical historical backtest with v94 provisional PIT calibration."
+        "Run canonical historical backtest with provisional PIT and conditional fill."
     )
     run_historical_backtest.__module__ = getattr(
         _ORIGINAL_RUN_HISTORICAL_BACKTEST, "__module__", "analytics"
