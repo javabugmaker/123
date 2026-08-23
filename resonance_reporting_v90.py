@@ -61,8 +61,14 @@ def _metric_frame(
         }
         has_metric = False
         for source, target in _SUMMARY_TO_OUTPUT.items():
-            value = pd.to_numeric(pd.Series([raw.get(source, np.nan)]), errors="coerce").iloc[0]
-            record[target] = float(value) if pd.notna(value) and np.isfinite(float(value)) else np.nan
+            value = pd.to_numeric(
+                pd.Series([raw.get(source, np.nan)]), errors="coerce"
+            ).iloc[0]
+            record[target] = (
+                float(value)
+                if pd.notna(value) and np.isfinite(float(value))
+                else np.nan
+            )
             has_metric = has_metric or pd.notna(record[target])
         if has_metric:
             records.append(record)
@@ -76,7 +82,11 @@ def _metric_frame(
     current_signal = (
         results[["Ticker", "EntrySignal"]]
         .assign(
-            Ticker=lambda frame: frame["Ticker"].fillna("").astype(str).str.strip().str.upper(),
+            Ticker=lambda frame: frame["Ticker"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.upper(),
             EntrySignal=lambda frame: frame["EntrySignal"].map(_signal_text),
         )
         .drop_duplicates("Ticker", keep="first")
@@ -144,9 +154,15 @@ def _diagnostic_rows(summary: dict[str, Any]) -> list[dict[str, object]]:
                     "Group": str(raw.get("group", "") or ""),
                     "Samples": raw.get("samples", 0),
                     "EffectiveSamples": raw.get("effective_samples", 0.0),
-                    "NetExcessWinRate20D": raw.get("net_excess_win_rate_20d", np.nan),
-                    "AverageNetExcess20D": raw.get("average_net_excess_20d", np.nan),
-                    "AverageNetExcess60D": raw.get("average_net_excess_60d", np.nan),
+                    "NetExcessWinRate20D": raw.get(
+                        "net_excess_win_rate_20d", np.nan
+                    ),
+                    "AverageNetExcess20D": raw.get(
+                        "average_net_excess_20d", np.nan
+                    ),
+                    "AverageNetExcess60D": raw.get(
+                        "average_net_excess_60d", np.nan
+                    ),
                     "MaxDrawdown60D": raw.get("max_drawdown_60d", np.nan),
                     "ResonanceVersion": version,
                     "OutputVersion": RESONANCE_OUTPUT_VERSION,
@@ -186,7 +202,9 @@ def materialize_resonance_outputs(
             results = results.drop(columns=column)
 
     if not metrics.empty:
-        results["Ticker"] = results["Ticker"].fillna("").astype(str).str.strip().str.upper()
+        results["Ticker"] = (
+            results["Ticker"].fillna("").astype(str).str.strip().str.upper()
+        )
         results["EntrySignal"] = results["EntrySignal"].map(_signal_text)
         results = results.merge(
             metrics,
@@ -242,9 +260,9 @@ def materialize_resonance_outputs(
 
     return {
         "status": "MATERIALIZED",
-        "rows": int(len(results)),
-        "ticker_metrics": int(len(metrics)),
-        "diagnostic_groups": int(len(diagnostic_rows)),
+        "rows": len(results),
+        "ticker_metrics": len(metrics),
+        "diagnostic_groups": len(diagnostic_rows),
         "candidate_exports": refresh_status,
         "version": version,
         "output_version": RESONANCE_OUTPUT_VERSION,
