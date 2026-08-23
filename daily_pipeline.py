@@ -20,7 +20,7 @@ import config as _config
 import daily_pipeline_core as _core
 import daily_recovery_v74 as _daily_recovery
 from trading_calendar import is_trading_day
-from web_report_v81 import maybe_publish_canonical_report
+from web_report import maybe_publish_canonical_report
 
 _daily_recovery.install()
 
