@@ -72,12 +72,22 @@ def _indicator_coverage(frame: pd.DataFrame) -> np.ndarray:
     hv60 = _numeric(frame, "HV60").to_numpy(dtype=np.float64)
 
     trend_pair = np.isfinite(close) & np.isfinite(ma200)
-    trend = (positions >= 251) & trend_pair & (_rolling_count(trend_pair, 252) >= 60)
+    trend = (
+        (positions >= 251)
+        & trend_pair
+        & (_rolling_count(trend_pair, 252) >= 60)
+    )
 
     volume_pair = np.isfinite(vol20) & np.isfinite(vol120)
     z_finite = np.isfinite(z)
     volume = (positions >= 119) & (
-        (volume_pair & (_rolling_count(volume_pair, 252) >= int(_score.VOLUME_ACCUM_MIN_DAYS)))
+        (
+            volume_pair
+            & (
+                _rolling_count(volume_pair, 252)
+                >= int(_score.VOLUME_ACCUM_MIN_DAYS)
+            )
+        )
         | (z_finite & (_rolling_count(z_finite, 252) >= 10))
     )
 
@@ -87,7 +97,13 @@ def _indicator_coverage(frame: pd.DataFrame) -> np.ndarray:
     mfi_finite = np.isfinite(mfi)
     accumulation = (positions >= 59) & (
         (obv_finite & (_rolling_count(obv_finite, 252) >= 40))
-        | (ad_pair & (_rolling_count(ad_pair, 252) >= int(_score.AD_SLOPE_LOOKBACK)))
+        | (
+            ad_pair
+            & (
+                _rolling_count(ad_pair, 252)
+                >= int(_score.AD_SLOPE_LOOKBACK)
+            )
+        )
         | (cmf_finite & (_rolling_count(cmf_finite, 252) >= 20))
         | mfi_finite
     )
@@ -125,7 +141,9 @@ def _indicator_coverage(frame: pd.DataFrame) -> np.ndarray:
     return count.astype(np.float64) / 5.0
 
 
-def canonical_trigger_score_matrix(frame: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+def canonical_trigger_score_matrix(
+    frame: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray]:
     """Return canonical raw and coverage-adjusted TriggerScore for every row."""
     n = len(frame)
     close_s = _numeric(frame, "Close")
@@ -221,7 +239,7 @@ def _fast_score_matrix(frame: pd.DataFrame, *, is_etf: bool):
 
     _raw_trigger, trigger_score = canonical_trigger_score_matrix(frame)
     coverage = _indicator_coverage(frame)
-    setup_weight, trigger_weight, execution_weight = _analytics._model_component_weights()
+    setup_weight, trigger_weight, execution_weight = _score._model_component_weights()
     final_score = np.clip(
         matrix.base_score * float(setup_weight)
         + trigger_score * float(trigger_weight)
