@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pandas as pd
 
@@ -70,57 +73,74 @@ def _summary_payload() -> dict[str, object]:
     }
 
 
-def test_materialize_resonance_outputs_joins_current_signal_and_writes_diagnostics(
-    tmp_path,
-) -> None:
-    pd.DataFrame(
-        [
-            {"Ticker": "000001.SZ", "EntrySignal": "BUY_NOW", "RankingScore": 71.2},
-            {"Ticker": "000002.SZ", "EntrySignal": "BREAKOUT_CONFIRM", "RankingScore": 68.1},
-        ]
-    ).to_csv(tmp_path / "AllResults.csv", index=False, encoding="utf-8-sig")
-    (tmp_path / "BacktestSummary.json").write_text(
-        json.dumps(_summary_payload(), ensure_ascii=False),
-        encoding="utf-8",
-    )
+class ResonancePublicationV90Tests(unittest.TestCase):
+    def test_materialize_resonance_outputs_joins_current_signal_and_writes_diagnostics(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pd.DataFrame(
+                [
+                    {
+                        "Ticker": "000001.SZ",
+                        "EntrySignal": "BUY_NOW",
+                        "RankingScore": 71.2,
+                    },
+                    {
+                        "Ticker": "000002.SZ",
+                        "EntrySignal": "BREAKOUT_CONFIRM",
+                        "RankingScore": 68.1,
+                    },
+                ]
+            ).to_csv(root / "AllResults.csv", index=False, encoding="utf-8-sig")
+            (root / "BacktestSummary.json").write_text(
+                json.dumps(_summary_payload(), ensure_ascii=False),
+                encoding="utf-8",
+            )
 
-    result = materialize_resonance_outputs(
-        tmp_path,
-        refresh_candidate_exports=False,
-    )
+            result = materialize_resonance_outputs(
+                root,
+                refresh_candidate_exports=False,
+            )
 
-    assert result["status"] == "MATERIALIZED"
-    frame = pd.read_csv(tmp_path / "AllResults.csv", encoding="utf-8-sig")
-    first = frame.loc[frame["Ticker"].astype(str).str.zfill(6).eq("000001")].iloc[0]
-    second = frame.loc[frame["Ticker"].astype(str).str.zfill(6).eq("000002")].iloc[0]
-    assert first["BacktestResonanceMeanCount"] == 4.2
-    assert first["BacktestResonanceStrongBullShare"] == 0.75
-    assert second["BacktestResonanceMeanCount"] == 2.4
-    assert second["EntrySignal"] == "BREAKOUT_CONFIRM"
-    assert (tmp_path / "FiveFactorResonance.csv").is_file()
-    assert (tmp_path / "FiveFactorResonanceByTicker.csv").is_file()
+            self.assertEqual(result["status"], "MATERIALIZED")
+            frame = pd.read_csv(root / "AllResults.csv", encoding="utf-8-sig")
+            first = frame.loc[frame["Ticker"].eq("000001.SZ")].iloc[0]
+            second = frame.loc[frame["Ticker"].eq("000002.SZ")].iloc[0]
+            self.assertEqual(first["BacktestResonanceMeanCount"], 4.2)
+            self.assertEqual(first["BacktestResonanceStrongBullShare"], 0.75)
+            self.assertEqual(second["BacktestResonanceMeanCount"], 2.4)
+            self.assertEqual(second["EntrySignal"], "BREAKOUT_CONFIRM")
+            self.assertTrue((root / "FiveFactorResonance.csv").is_file())
+            self.assertTrue((root / "FiveFactorResonanceByTicker.csv").is_file())
 
-    groups = pd.read_csv(tmp_path / "FiveFactorResonance.csv", encoding="utf-8-sig")
-    assert {"BAND", "TRANSITION", "COUNT"}.issubset(set(groups["Dimension"]))
-    assert "RISING_TO_4PLUS" in set(groups["Group"])
+            groups = pd.read_csv(
+                root / "FiveFactorResonance.csv", encoding="utf-8-sig"
+            )
+            self.assertTrue(
+                {"BAND", "TRANSITION", "COUNT"}.issubset(set(groups["Dimension"]))
+            )
+            self.assertIn("RISING_TO_4PLUS", set(groups["Group"]))
+
+    def test_gui_resonance_label_is_compact_and_explicit(self) -> None:
+        label = resonance_history_label(
+            {
+                "BacktestResonanceMeanCount": "4.125",
+                "BacktestResonanceStrongBullShare": "0.625",
+                "BacktestResonanceRisingShare": "0.375",
+            }
+        )
+        self.assertEqual(label, "4.1/5 · 强62% · ↑38%")
+        self.assertEqual(resonance_history_label({}), "—")
+
+    def test_web_resonance_block_discloses_diagnostic_only_semantics(self) -> None:
+        block = _resonance_block(_summary_payload())
+        self.assertIn("五因子共振回测", block)
+        self.assertIn("RISING_TO_4PLUS", block)
+        self.assertIn("4-5/5", block)
+        self.assertIn("仅作独立诊断，不进入当前排名", block)
+        self.assertIn("信号日收盘快照", block)
 
 
-def test_gui_resonance_label_is_compact_and_explicit() -> None:
-    label = resonance_history_label(
-        {
-            "BacktestResonanceMeanCount": "4.125",
-            "BacktestResonanceStrongBullShare": "0.625",
-            "BacktestResonanceRisingShare": "0.375",
-        }
-    )
-    assert label == "4.1/5 · 强62% · ↑38%"
-    assert resonance_history_label({}) == "—"
-
-
-def test_web_resonance_block_discloses_diagnostic_only_semantics() -> None:
-    block = _resonance_block(_summary_payload())
-    assert "五因子共振回测" in block
-    assert "RISING_TO_4PLUS" in block
-    assert "4-5/5" in block
-    assert "仅作独立诊断，不进入当前排名" in block
-    assert "信号日收盘快照" in block
+if __name__ == "__main__":
+    unittest.main()
