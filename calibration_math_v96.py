@@ -1,19 +1,18 @@
-"""v96 production calibration mathematics.
+"""v96/v97 production calibration mathematics.
 
-This layer fixes three sources of unintended non-stationarity / double shrink:
+The production layer removes three sources of unintended non-stationarity:
 
-1. Objective evidence is mapped through a fixed economic scale instead of a
-   percentile rank of whichever tickers happened to be present in the current
-   backtest run.
-2. Reliability determines *evidence weight once*.  The evidence score itself is
-   not first shrunk toward neutral and then blended by another reliability-
-   proportional weight (the former effective R^2 behaviour).
-3. FailureSignalFactor remains an audit diagnostic.  Net-excess loss, downside,
-   profit factor and drawdown already enter the backtest component, so applying
-   a second directional-loss multiplier would count the same bad history twice.
+1. Objective evidence uses fixed economic bounds rather than a percentile of
+   whichever tickers happened to be in the current run.
+2. Reliability determines evidence weight once; the evidence score is not first
+   shrunk toward neutral and then blended by a second reliability factor.
+3. FailureSignalFactor remains an audit diagnostic because downside/net excess,
+   profit factor and drawdown already encode historical failure.
 
-Peer-calibration confidence uses the walk-forward stable-fold share once.  The
-v57/v90 compatibility wrapper had squared that share for UNSTABLE histories.
+v97 also makes post-processing idempotent across CLI/GUI/direct analytics entry
+points. Previous derived columns are stripped, the immutable pre-backtest
+InstitutionalScore anchor is restored, and accidental merge suffixes are
+canonicalized before the stable inner pass is re-run.
 """
 
 from __future__ import annotations
@@ -27,19 +26,40 @@ import analytics_core as _core
 import model_calibration as _model_calibration
 
 CALIBRATION_MATH_VERSION = (
-    "2026-08-23-v96-fixed-objective-single-reliability-failure-diagnostic-v1"
+    "2026-08-23-v97-fixed-objective-single-reliability-idempotent-v2"
 )
 
 _INSTALLED = False
 _ORIGINAL_LEGACY_APPLY: Any = None
+_V96_DERIVED_COLUMNS = frozenset(
+    {
+        "BacktestObjectiveScoreFixed",
+        "BacktestObjectiveScaleVersion",
+        "BacktestEvidenceScoreRaw",
+        "BacktestLocalEvidenceWeight",
+        "BacktestPeerEvidenceWeight",
+        "FailureSignalDiagnosticFactor",
+        "FailurePenaltyApplied",
+        "CalibrationMathVersion",
+        # Final ranking outputs are deterministic functions of the restored
+        # InstitutionalScore and must never become inputs to the next run.
+        "AssetPercentile",
+        "CrossAssetAdjustment",
+        "CrossAssetScore",
+        "InstitutionalPercentile",
+        "InstitutionalRank",
+        "InstitutionalTier",
+        "InstitutionalTierReason",
+        "RankingScore",
+        "OverallRank",
+        "RankingEligibility",
+        "RankingReason",
+    }
+)
 
 
 def fixed_objective_score(values: pd.Series, objective: str) -> pd.Series:
-    """Map objective values to a stable 0..100 economic scale.
-
-    These bounds are the same robust ranges already used elsewhere by the
-    backtest score and are independent of the size/composition of the run.
-    """
+    """Map objective values to a stable 0..100 economic scale."""
     numeric = pd.to_numeric(values, errors="coerce").replace(
         [np.inf, -np.inf], np.nan
     )
@@ -53,11 +73,9 @@ def fixed_objective_score(values: pd.Series, objective: str) -> pd.Series:
             dtype=float,
         ).clip(0.0, 100.0)
     if "60" in name:
-        # Consistent with the 60-day excess-return bounds in ticker scoring.
         return ((numeric.clip(-25.0, 35.0) + 25.0) / 60.0 * 100.0).clip(
             0.0, 100.0
         )
-    # 20-day return/excess objectives use the established +/-15% robust range.
     return ((numeric.clip(-15.0, 15.0) + 15.0) / 30.0 * 100.0).clip(
         0.0, 100.0
     )
@@ -87,17 +105,6 @@ def single_shrink_stability_stats(
     return governed
 
 
-def _bool_series(frame: pd.DataFrame, column: str) -> pd.Series:
-    values = frame.get(column, pd.Series(False, index=frame.index))
-    return (
-        values.fillna(False)
-        .astype(str)
-        .str.strip()
-        .str.lower()
-        .isin({"true", "1", "yes", "y", "是"})
-    )
-
-
 def _numeric(frame: pd.DataFrame, column: str, default: float = np.nan) -> pd.Series:
     values = frame.get(column, pd.Series(default, index=frame.index))
     return pd.to_numeric(values, errors="coerce").replace(
@@ -105,13 +112,60 @@ def _numeric(frame: pd.DataFrame, column: str, default: float = np.nan) -> pd.Se
     )
 
 
-def _rewrite_calibration_math(summary: Any) -> None:
-    """Rewrite only the evidence-combination layer after stable postprocess.
+def _canonicalize_merge_suffixes(frame: pd.DataFrame) -> pd.DataFrame:
+    """Collapse pandas merge suffixes in bulk, preferring the newest (_y) data."""
+    result = frame.copy()
+    bases = {
+        column[:-2]
+        for column in result.columns
+        if column.endswith("_x") or column.endswith("_y")
+    }
+    for base in bases:
+        left = f"{base}_x"
+        right = f"{base}_y"
+        if base in result.columns:
+            result = result.drop(
+                columns=[column for column in (left, right) if column in result.columns]
+            )
+            continue
+        right_values = result[right] if right in result.columns else None
+        left_values = result[left] if left in result.columns else None
+        if right_values is not None and left_values is not None:
+            result[base] = right_values.combine_first(left_values)
+        elif right_values is not None:
+            result[base] = right_values
+        elif left_values is not None:
+            result[base] = left_values
+        result = result.drop(
+            columns=[column for column in (left, right) if column in result.columns]
+        )
+    return result
 
-    The public analytics wrapper has already staged the complete result set.
-    This function runs inside that transaction and then re-finalises the full
-    universe, so publication remains atomic.
-    """
+
+def _sanitize_previous_output() -> None:
+    """Restore the immutable pre-backtest surface before a repeated pass."""
+    path = _core.OUTPUT_DIR / "AllResults.csv"
+    if not path.exists():
+        return
+    frame = pd.read_csv(path, encoding="utf-8-sig", low_memory=False)
+    if frame.empty:
+        return
+    frame = _canonicalize_merge_suffixes(frame)
+    anchor = _numeric(frame, "PreBacktestInstitutionalScore")
+    current = _numeric(frame, "InstitutionalScore")
+    if anchor.notna().any():
+        frame["InstitutionalScore"] = anchor.where(anchor.notna(), current)
+    frame = frame.drop(
+        columns=[column for column in _V96_DERIVED_COLUMNS if column in frame.columns],
+        errors="ignore",
+    )
+    from report import _atomic_write_csv
+
+    _atomic_write_csv(frame, path)
+
+
+def _rewrite_calibration_math(summary: Any) -> None:
+    """Rewrite only the evidence-combination layer after stable postprocess."""
     if not hasattr(summary, "objective"):
         return
     path = _core.OUTPUT_DIR / "AllResults.csv"
@@ -121,10 +175,11 @@ def _rewrite_calibration_math(summary: Any) -> None:
     frame = pd.read_csv(path, encoding="utf-8-sig", low_memory=False).copy()
     if frame.empty or "BacktestScore" not in frame.columns:
         return
+    frame = _canonicalize_merge_suffixes(frame)
 
-    objective_raw = _numeric(frame, "BacktestRawObjectiveValue")
-    legacy_objective = _numeric(frame, "BacktestObjectiveValue")
-    objective_raw = objective_raw.where(objective_raw.notna(), legacy_objective)
+    # BacktestObjectiveValue is the actual per-ticker economic objective emitted
+    # by the historical engine. Do not reuse any legacy rank/projection column.
+    objective_raw = _numeric(frame, "BacktestObjectiveValue")
     objective_score = fixed_objective_score(objective_raw, str(summary.objective))
     objective_score = objective_score.fillna(float(_core.BACKTEST_NEUTRAL_SCORE))
     frame["BacktestObjectiveScoreFixed"] = objective_score.round(4)
@@ -172,8 +227,7 @@ def _rewrite_calibration_math(summary: Any) -> None:
         float(_core.BACKTEST_MIN_SAMPLES_FOR_RANKING)
     )
     local_weight = local_weight.where(local_available, 0.0)
-    peer_available = peer_confidence.gt(0.0)
-    peer_weight = peer_weight.where(peer_available, 0.0)
+    peer_weight = peer_weight.where(peer_confidence.gt(0.0), 0.0)
 
     evidence_total = local_weight + peer_weight
     evidence_score = pd.Series(
@@ -185,9 +239,6 @@ def _rewrite_calibration_math(summary: Any) -> None:
         + peer_score.loc[has_evidence] * peer_weight.loc[has_evidence]
     ) / evidence_total.loc[has_evidence]
 
-    # Local and peer estimates share much of the same history. Do not pretend
-    # they are independent by adding their weights; retain the strongest bounded
-    # evidence budget while blending their estimates inside that budget.
     effective_weight = pd.Series(
         np.maximum(
             local_weight.to_numpy(dtype=float),
@@ -195,7 +246,13 @@ def _rewrite_calibration_math(summary: Any) -> None:
         ),
         index=frame.index,
         dtype=float,
-    ).clip(0.0, max(float(_core.BACKTEST_NORMAL_WEIGHT), float(_core.GLOBAL_CALIBRATION_MAX_WEIGHT)))
+    ).clip(
+        0.0,
+        max(
+            float(_core.BACKTEST_NORMAL_WEIGHT),
+            float(_core.GLOBAL_CALIBRATION_MAX_WEIGHT),
+        ),
+    )
 
     final_score = _numeric(frame, "FinalScore")
     raw_score = final_score.where(final_score.notna(), _numeric(frame, "Score", 0.0))
@@ -217,11 +274,8 @@ def _rewrite_calibration_math(summary: Any) -> None:
     )
     frame["FailureSignalDiagnosticFactor"] = failure_factor.round(4)
     frame["FailurePenaltyApplied"] = False
-    # The diagnostic survives, but production score receives no second loss hit.
     frame["FailureAdjustedScore"] = composite.round(4)
 
-    # Preserve every non-backtest policy transformation from the stable engine.
-    # Only replace the old calibration ratio with the corrected one.
     reference = raw_score.replace(0.0, np.nan)
     old_ratio = (old_failure_adjusted / reference).replace(
         [np.inf, -np.inf], np.nan
@@ -248,13 +302,18 @@ def _rewrite_calibration_math(summary: Any) -> None:
 
 
 def install(analytics_module: Any) -> None:
-    """Install the v96 math beneath the public transactional ranking facade."""
+    """Install v97 math beneath the public transactional ranking facade."""
     global _INSTALLED, _ORIGINAL_LEGACY_APPLY
     if _INSTALLED:
+        analytics_module.calibration_stability_stats = single_shrink_stability_stats
         return
-    _ORIGINAL_LEGACY_APPLY = analytics_module._legacy_apply_backtest_ranking
+    original = getattr(analytics_module, "_legacy_apply_backtest_ranking", None)
+    if not callable(original):
+        return
+    _ORIGINAL_LEGACY_APPLY = original
 
     def legacy_apply_backtest_ranking(summary: Any, top_n: int = 50) -> None:
+        _sanitize_previous_output()
         _ORIGINAL_LEGACY_APPLY(summary, top_n=top_n)
         _rewrite_calibration_math(summary)
 
@@ -262,3 +321,10 @@ def install(analytics_module: Any) -> None:
     analytics_module.calibration_stability_stats = single_shrink_stability_stats
     analytics_module.CALIBRATION_MATH_VERSION = CALIBRATION_MATH_VERSION
     _INSTALLED = True
+
+
+# Test/research modules may import v96 directly after analytics has initialized
+# its stable inner hook. Production CLI also imports this module through the
+# backtest command facade. In either case the same public analytics core receives
+# the canonical stationary calibration implementation.
+install(_core)
