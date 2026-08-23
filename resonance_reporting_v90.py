@@ -1,10 +1,9 @@
-"""Materialize v90 five-factor resonance diagnostics into published outputs.
+"""Materialize vectorized five-factor resonance diagnostics into published outputs.
 
 The historical engine deliberately keeps resonance outside the production score.
-This module closes the presentation gap after a successful backtest: the held-out
-resonance diagnostics already stored in ``BacktestSummary.json`` are joined onto
-``AllResults`` and candidate exports without changing ranking, eligibility, or
-any calibrated score.
+This module joins held-out resonance diagnostics from ``BacktestSummary.json``
+onto canonical results after ranking, preserving ordering and eligibility.
+v91 removes row-wise metric parsing from the publication hot path.
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-RESONANCE_OUTPUT_VERSION = "2026-08-23-v90-resonance-output-v1"
+RESONANCE_OUTPUT_VERSION = "2026-08-23-v91-resonance-output-vectorized-v1"
 
 _SUMMARY_TO_OUTPUT = {
     "resonance_mean_count": "BacktestResonanceMeanCount",
@@ -39,64 +38,81 @@ def _signal_text(value: object) -> str:
     return text or "UNKNOWN"
 
 
+def _signal_series(series: pd.Series) -> pd.Series:
+    return (
+        series.fillna("UNKNOWN")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .replace("", "UNKNOWN")
+    )
+
+
 def _metric_frame(
     summary: dict[str, Any],
     results: pd.DataFrame,
 ) -> pd.DataFrame:
     raw_rows = summary.get("by_ticker", [])
-    if not isinstance(raw_rows, list):
+    if not isinstance(raw_rows, list) or not raw_rows:
         return pd.DataFrame()
-
-    records: list[dict[str, object]] = []
-    for raw in raw_rows:
-        if not isinstance(raw, dict):
-            continue
-        ticker = str(raw.get("ticker", "") or "").strip().upper()
-        if not ticker:
-            continue
-        record: dict[str, object] = {
-            "Ticker": ticker,
-            "EntrySignal": _signal_text(raw.get("entry_signal", "UNKNOWN")),
-            "_stage": str(raw.get("backtest_stage", "") or "").strip().upper(),
-        }
-        has_metric = False
-        for source, target in _SUMMARY_TO_OUTPUT.items():
-            value = pd.to_numeric(
-                pd.Series([raw.get(source, np.nan)]), errors="coerce"
-            ).iloc[0]
-            record[target] = (
-                float(value)
-                if pd.notna(value) and np.isfinite(float(value))
-                else np.nan
-            )
-            has_metric = has_metric or pd.notna(record[target])
-        if has_metric:
-            records.append(record)
-    if not records:
-        return pd.DataFrame()
-
-    metrics = pd.DataFrame.from_records(records)
     if "Ticker" not in results or "EntrySignal" not in results:
         return pd.DataFrame()
 
+    dictionaries = [row for row in raw_rows if isinstance(row, dict)]
+    if not dictionaries:
+        return pd.DataFrame()
+    metrics = pd.DataFrame.from_records(dictionaries)
+    if "ticker" not in metrics.columns:
+        return pd.DataFrame()
+
+    defaults: dict[str, object] = {
+        "entry_signal": "UNKNOWN",
+        "backtest_stage": "",
+    }
+    for column, value in defaults.items():
+        if column not in metrics.columns:
+            metrics[column] = value
+    for source in _SUMMARY_TO_OUTPUT:
+        if source not in metrics.columns:
+            metrics[source] = np.nan
+
+    metrics["Ticker"] = (
+        metrics["ticker"].fillna("").astype(str).str.strip().str.upper()
+    )
+    metrics["EntrySignal"] = _signal_series(metrics["entry_signal"])
+    metrics["_stage"] = (
+        metrics["backtest_stage"].fillna("").astype(str).str.strip().str.upper()
+    )
+
+    source_columns = list(_SUMMARY_TO_OUTPUT)
+    numeric = metrics[source_columns].apply(pd.to_numeric, errors="coerce")
+    numeric = numeric.replace([np.inf, -np.inf], np.nan).rename(
+        columns=_SUMMARY_TO_OUTPUT
+    )
+    metrics = pd.concat(
+        [metrics[["Ticker", "EntrySignal", "_stage"]], numeric],
+        axis=1,
+    )
+    metrics = metrics.loc[
+        metrics["Ticker"].ne("")
+        & metrics[list(_SUMMARY_TO_OUTPUT.values())].notna().any(axis=1)
+    ].copy()
+    if metrics.empty:
+        return pd.DataFrame()
+
+    current = results[["Ticker", "EntrySignal"]].copy()
+    current["Ticker"] = (
+        current["Ticker"].fillna("").astype(str).str.strip().str.upper()
+    )
+    current["EntrySignal"] = _signal_series(current["EntrySignal"])
     current_signal = (
-        results[["Ticker", "EntrySignal"]]
-        .assign(
-            Ticker=lambda frame: frame["Ticker"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.upper(),
-            EntrySignal=lambda frame: frame["EntrySignal"].map(_signal_text),
-        )
-        .drop_duplicates("Ticker", keep="first")
+        current.drop_duplicates("Ticker", keep="first")
         .set_index("Ticker")["EntrySignal"]
-        .to_dict()
     )
     unknown = metrics["EntrySignal"].eq("UNKNOWN")
-    metrics.loc[unknown, "EntrySignal"] = metrics.loc[unknown, "Ticker"].map(
-        current_signal
-    ).fillna("UNKNOWN")
+    if unknown.any():
+        replacement = metrics.loc[unknown, "Ticker"].map(current_signal)
+        metrics.loc[unknown, "EntrySignal"] = replacement.fillna("UNKNOWN")
 
     stage_priority = {
         "EXACT_REFINEMENT": 0,
@@ -105,12 +121,11 @@ def _metric_frame(
         "FAST": 3,
     }
     metrics["_priority"] = metrics["_stage"].map(stage_priority).fillna(9)
-    metrics = (
+    return (
         metrics.sort_values("_priority", kind="mergesort")
         .drop_duplicates(["Ticker", "EntrySignal"], keep="first")
         .drop(columns=["_stage", "_priority"])
     )
-    return metrics
 
 
 def _atomic_write_csv(frame: pd.DataFrame, path: Path) -> None:
@@ -176,12 +191,7 @@ def materialize_resonance_outputs(
     *,
     refresh_candidate_exports: bool = True,
 ) -> dict[str, object]:
-    """Join resonance diagnostics onto stable outputs after a successful backtest.
-
-    This function is intentionally post-ranking.  It never changes any score or
-    ordering field; it only appends diagnostic columns and refreshes derivative
-    candidate files so the GUI and public research briefing can display them.
-    """
+    """Join resonance diagnostics onto stable outputs after a successful backtest."""
     root = Path(output_dir)
     summary_path = root / "BacktestSummary.json"
     results_path = root / "AllResults.csv"
@@ -197,15 +207,19 @@ def materialize_resonance_outputs(
         return {"status": "SKIPPED", "reason": "missing-join-keys"}
 
     metrics = _metric_frame(summary, results)
-    for column in (*_SUMMARY_TO_OUTPUT.values(), "BacktestResonanceVersion"):
-        if column in results.columns:
-            results = results.drop(columns=column)
+    drop_columns = [
+        column
+        for column in (*_SUMMARY_TO_OUTPUT.values(), "BacktestResonanceVersion")
+        if column in results.columns
+    ]
+    if drop_columns:
+        results = results.drop(columns=drop_columns)
 
     if not metrics.empty:
         results["Ticker"] = (
             results["Ticker"].fillna("").astype(str).str.strip().str.upper()
         )
-        results["EntrySignal"] = results["EntrySignal"].map(_signal_text)
+        results["EntrySignal"] = _signal_series(results["EntrySignal"])
         results = results.merge(
             metrics,
             on=["Ticker", "EntrySignal"],
@@ -227,8 +241,6 @@ def materialize_resonance_outputs(
         try:
             _atomic_write_parquet(results, parquet_path)
         except (OSError, ImportError, ValueError, TypeError):
-            # CSV is the canonical interoperability surface; parquet remains a
-            # best-effort acceleration artifact on systems without pyarrow.
             pass
 
     by_ticker_path = root / "FiveFactorResonanceByTicker.csv"
