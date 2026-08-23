@@ -5,14 +5,16 @@ positive terms of Volume and Accumulation can reach only 22 and 23 points.
 v95 maps those dimensions to their documented 25-point ranges and removes HVN
 proximity from alpha scoring.
 
-v97 makes the installer deliberately re-entrant. Older acceleration facades are
-also re-entrant and can rebind ``score_core.score_volume`` / ``score_accumulation``
-after this module first loads. Every install call therefore re-asserts the
-canonical scale while capturing the unscaled reference functions only once.
+v97 makes the overlay resilient to re-entrant acceleration installers. The v79
+kernel module may legitimately re-install itself in workers/tests; its raw
+kernels remain the optimized reference implementation, but every later install
+is composed with this newer score-scale overlay so public scoring semantics
+cannot silently fall back to the pre-v95 scale.
 """
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import numpy as np
@@ -21,7 +23,7 @@ import pandas as pd
 import score_core as _core
 
 SCORE_SCALE_MIGRATION_VERSION = (
-    "2026-08-23-v97-volume-accumulation-full-scale-hvn-diagnostic-reentrant-v2"
+    "2026-08-23-v97-volume-accumulation-full-scale-hvn-diagnostic-reentrant-v3"
 )
 VOLUME_RAW_MAX = 22.0
 ACCUMULATION_RAW_MAX = 23.0
@@ -33,6 +35,7 @@ ACCUMULATION_SCALE = ACCUMULATION_NOMINAL_MAX / ACCUMULATION_RAW_MAX
 _INSTALLED = False
 _ORIGINAL_SCORE_VOLUME: Any = None
 _ORIGINAL_SCORE_ACCUMULATION: Any = None
+_ACCELERATION_HOOK_MARKER = "_V95_SCORE_SCALE_OVERLAY_HOOKED"
 
 
 def _scale_dimension(value: float, raw_max: float, nominal_max: float) -> float:
@@ -112,12 +115,33 @@ def score_structure(df: pd.DataFrame) -> float:
     return float(min(score, 15.0))
 
 
+def _reassert_bindings() -> None:
+    _core.score_volume = score_volume
+    _core.score_accumulation = score_accumulation
+    _core.score_structure = score_structure
+    _core.SCORE_SCALE_MIGRATION_VERSION = SCORE_SCALE_MIGRATION_VERSION
+
+
+def _compose_acceleration_installer() -> None:
+    acceleration = sys.modules.get("score_acceleration_v79")
+    if acceleration is None or bool(getattr(acceleration, _ACCELERATION_HOOK_MARKER, False)):
+        return
+    original_install = getattr(acceleration, "install", None)
+    if not callable(original_install):
+        return
+
+    def install_with_canonical_overlay() -> None:
+        original_install()
+        _reassert_bindings()
+
+    acceleration.install = install_with_canonical_overlay
+    setattr(acceleration, _ACCELERATION_HOOK_MARKER, True)
+
+
 def install() -> None:
-    """Capture unscaled kernels once and always re-assert canonical bindings."""
+    """Capture raw optimized kernels once and always re-assert v95 semantics."""
     global _INSTALLED, _ORIGINAL_SCORE_VOLUME, _ORIGINAL_SCORE_ACCUMULATION
 
-    # Capture only kernels that are not this module's own wrappers. On the first
-    # call these are normally the latest v79 accelerated exact-formula kernels.
     if _ORIGINAL_SCORE_VOLUME is None and _core.score_volume is not score_volume:
         _ORIGINAL_SCORE_VOLUME = _core.score_volume
     if (
@@ -126,8 +150,6 @@ def install() -> None:
     ):
         _ORIGINAL_SCORE_ACCUMULATION = _core.score_accumulation
 
-    _core.score_volume = score_volume
-    _core.score_accumulation = score_accumulation
-    _core.score_structure = score_structure
-    _core.SCORE_SCALE_MIGRATION_VERSION = SCORE_SCALE_MIGRATION_VERSION
+    _reassert_bindings()
+    _compose_acceleration_installer()
     _INSTALLED = True
