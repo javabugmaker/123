@@ -31,7 +31,7 @@ from pipeline_contracts import enforce_enrichment_contract  # noqa: E402
 from publication_guard_v65 import enforce_cache_first_market_contract  # noqa: E402
 from scan_service_core import *  # noqa: E402,F403
 from universe_snapshot_v82 import record_universe_snapshot_file  # noqa: E402
-from web_report_v81 import maybe_publish_canonical_report  # noqa: E402
+from web_report import maybe_publish_canonical_report  # noqa: E402
 
 _legacy_execute_scan = _core.execute_scan
 _core._legacy_execute_scan = _legacy_execute_scan
