@@ -1,10 +1,10 @@
-"""Manual retry entry point for the current GitHub Pages research briefing."""
+"""Manual retry entry point for the canonical GitHub Pages research briefing."""
 
 from __future__ import annotations
 
 import logging
 
-from web_report_v81 import build_and_publish_web_report
+from web_report import build_and_publish_web_report
 
 
 def main() -> int:
