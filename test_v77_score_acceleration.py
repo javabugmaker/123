@@ -30,8 +30,8 @@ def _legacy_volume_score(df: pd.DataFrame) -> float:
     score = 0.0
     if "VolMA20" in df.columns and "VolMA120" in df.columns:
         vol_ma20 = df["VolMA20"].replace([np.inf, -np.inf], np.nan)
-        vol_ma120 = df["VolMA120"].replace(0, np.nan)
-        ratio_series = (vol_ma20 / vol_ma120).dropna()
+        vol_ma120 = df["VolMA120"].replace([np.inf, -np.inf], np.nan)
+        ratio_series = (vol_ma20 / vol_ma120.replace(0, np.nan)).dropna()
         if len(ratio_series) >= score_core.VOLUME_ACCUM_MIN_DAYS:
             consecutive = 0
             for value in ratio_series.iloc[::-1]:
