@@ -1,12 +1,14 @@
-"""v80 backtest worker acceleration bundle.
+"""v98 backtest worker acceleration bundle.
 
 Each ProcessPool worker reuses one benchmark DataFrame for hundreds/thousands of
 tickers. v77/v78 keep exact market-history validation, incremental maturity
 rewind and historical-universe memoization. v80 adds O(1) benchmark alignment,
 vectorised tradeability/exit resolution, precomputed sample execution state,
 one-hash warm cache validation and vectorised-workload process/chunk tuning.
-All layers are installed through ``import analytics`` so Windows spawned workers
-receive the same runtime as the parent process.
+v98 completes the normal numeric execution path with batched drawdown/outcome
+math, fixes the dense FAST 504-bar trend lookback and vectorises conditional
+WAIT_PULLBACK resolution. All layers are installed through ``import analytics``
+so Windows spawned workers receive the same runtime as the parent process.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import backtest_cache_acceleration_v80 as _backtest_cache_v80
 import backtest_incremental_v78 as _incremental
 import backtest_sample_acceleration_v80 as _sample_v80
 import backtest_sample_guard_v80 as _sample_guard_v80
+import backtest_vectorization_v98 as _vectorization_v98
 import backtest_worker_tuning_v78 as _worker_tuning_v78
 import backtest_worker_tuning_v80 as _worker_tuning_v80
 import cache_acceleration_v77 as _cache_acceleration
@@ -31,7 +34,7 @@ import tradeability_acceleration_v80 as _tradeability_v80
 
 # FAST scoring lives under analytics_core but component weights are canonically
 # owned by score_core. Expose the stable guarded loader to spawned workers rather
-# than duplicating or hard-coding calibration weights in the v80 matrix engine.
+# than duplicating or hard-coding calibration weights in the matrix engine.
 setattr(_core, "_model_component_weights", _score._model_component_weights)
 
 _cache_acceleration.install()
@@ -44,6 +47,7 @@ _tradeability_v80.install()
 _sample_v80.install()
 _sample_guard_v80.install()
 _alignment_v80.install()
+_vectorization_v98.install()
 
 _LEGACY_MARKET_CACHE_STATE = _core.market_cache_state
 _LEGACY_MARKET_PREFIX_MATCHES = _core.market_prefix_matches
@@ -115,11 +119,14 @@ def install() -> None:
     _sample_v80.install()
     _sample_guard_v80.install()
     _alignment_v80.install()
-    _core.market_cache_state = market_cache_state
-    _core.market_prefix_matches = market_prefix_matches
     # v78 incremental installs before the v80 cache layer. Re-assert v80 last
     # so warm-cache hits use the one-fingerprint path in every spawned worker.
     _backtest_cache_v80.install()
+    # v98 must be the final scalar execution owner, but it intentionally does
+    # not overwrite scoring_consistency's later FAST wrapper on repeated calls.
+    _vectorization_v98.install()
+    _core.market_cache_state = market_cache_state
+    _core.market_prefix_matches = market_prefix_matches
     _INSTALLED = True
 
 
