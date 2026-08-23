@@ -1,13 +1,15 @@
 """Backtest execution hardening for benchmark time-basis alignment.
 
-Production signals enter on the next session's stock open. Benchmark returns
-must therefore start from the benchmark open on that same session rather than
-from its close. The installer wraps the analytics engine without duplicating
-its signal-generation and execution logic, including Windows spawned workers.
+Production immediate signals enter on the next session's stock open. Benchmark
+returns therefore start from the benchmark open on the same effective entry
+session. v96 additionally supports WAIT_PULLBACK conditional fills; benchmark
+alignment consumes each sample's actual fill date, so delayed zone-touch fills
+receive the same time basis as immediate entries.
 
-v94 additionally re-asserts the canonical vectorised TriggerScore wrapper after
-the v80 FAST engine is installed, so spawned workers and the parent process use
-the same smooth breakout-price math as live/EXACT scoring.
+The spawn-safe installer also re-asserts the canonical v95/v96 scoring and
+execution stack after the v80 FAST engine is installed.  Parent and workers
+therefore share 504-bar scoring, nominal setup scales, smooth TriggerScore and
+conditional-fill semantics.
 """
 
 from __future__ import annotations
@@ -20,7 +22,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-_EXECUTION_MODEL = "asset_fees_liquidity_t1_limit_exit_benchmark_open_v2"
+_EXECUTION_MODEL = (
+    "asset_fees_liquidity_immediate_open_waitpullback_zone5_benchmark_open_v3"
+)
 
 
 def _normalized_index(frame: pd.DataFrame) -> pd.DatetimeIndex:
@@ -58,7 +62,7 @@ def align_benchmark_returns(
     samples: list[dict[str, Any]],
     benchmark_frame: pd.DataFrame | None,
 ) -> list[dict[str, Any]]:
-    """Recompute benchmark legs from entry-session OPEN to exit-session CLOSE."""
+    """Recompute benchmark legs from effective-entry OPEN to exit CLOSE."""
     if not samples:
         return samples
     aligned: list[dict[str, Any]] = []
@@ -141,31 +145,48 @@ def _persist_summary(module: Any, summary: Any) -> None:
         )
         os.replace(temporary, path)
     except (OSError, TypeError, ValueError):
-        module.logger.debug("Unable to persist v51 backtest provenance", exc_info=True)
+        module.logger.debug("Unable to persist backtest provenance", exc_info=True)
     finally:
         temporary.unlink(missing_ok=True)
 
 
-def _install_fast_scoring_stack() -> None:
-    """Install v80 vectorization followed by the v94 canonical math wrapper."""
+def _install_scoring_execution_stack() -> None:
+    """Install v80 acceleration followed by canonical v95/v96 semantics."""
+    try:
+        import backtest_profile_alignment_v95 as profile_v95
+
+        profile_v95.install()
+    except ImportError:
+        pass
+
     try:
         import backtest_fastscore_v80 as fastscore_v80
     except ImportError:
-        return
-    fastscore_v80.install()
+        fastscore_v80 = None
+    if fastscore_v80 is not None:
+        fastscore_v80.install()
+
     try:
-        import scoring_consistency_v94 as scoring_v94
+        import scoring_consistency_v94 as scoring_v95
     except ImportError:
-        return
-    scoring_v94.install()
+        scoring_v95 = None
+    if scoring_v95 is not None:
+        scoring_v95.install()
+
+    # Conditional fill must wrap the already aligned scalar executor so both
+    # direct and cached paths use the actual fill date for benchmark alignment.
+    try:
+        import conditional_fill_v96 as conditional_v96
+    except ImportError:
+        conditional_v96 = None
+    if conditional_v96 is not None:
+        conditional_v96.install()
 
 
 def install_analytics_alignment(module: Any) -> None:
     """Install benchmark-open alignment exactly once on an analytics module."""
     if bool(getattr(module, "_V51_BENCHMARK_ALIGNMENT_INSTALLED", False)):
-        # The alignment wrapper may already exist while a later acceleration
-        # layer is being re-asserted during spawned-worker import.
-        _install_fast_scoring_stack()
+        _install_scoring_execution_stack()
         return
 
     original_one = module._backtest_one_ticker
@@ -198,7 +219,7 @@ def install_analytics_alignment(module: Any) -> None:
     module._init_backtest_worker = aligned_backtest_worker_initializer
     module.run_historical_backtest = aligned_run
     module.BACKTEST_BENCHMARK_ENTRY_BASIS = "OPEN"
+    module.BACKTEST_EXECUTION_MODEL = _EXECUTION_MODEL
     module._V51_BENCHMARK_ALIGNMENT_INSTALLED = True
 
-    # v80 wraps the v78 FAST evaluator; v94 then canonicalises TriggerScore.
-    _install_fast_scoring_stack()
+    _install_scoring_execution_stack()
