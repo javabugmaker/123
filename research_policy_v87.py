@@ -1,9 +1,9 @@
 """Vectorized directional-research product policy.
 
 The canonical name/theme exclusions remain auditable, while a conservative
-two-factor behaviour check catches unlabelled cash-equivalent ETFs.  Ordinary
-equity-factor ETFs are not excluded merely because their names contain the word
-``现金``.
+two-factor behaviour check catches unlabelled cash-equivalent ETFs. Ordinary
+equity-factor and directional currency-theme ETFs are not excluded merely
+because their names contain a cash-management substring.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 
 from classification import (
+    ETF_RESEARCH_DIRECTIONAL_CURRENCY_KEYWORDS,
     ETF_RESEARCH_EXCLUDED_KEYWORDS,
     ETF_RESEARCH_EXCLUDED_LABELS,
     etf_theme_key,
@@ -68,7 +69,7 @@ def vectorized_etf_research_policy(
     """Return position-aligned eligibility and exclusion reasons.
 
     Behavioural exclusion requires *both* exceptionally low ATR and an almost
-    flat 20-day return.  Missing diagnostics never manufacture an exclusion;
+    flat 20-day return. Missing diagnostics never manufacture an exclusion;
     the explicit name/theme policy still applies independently.
     """
     row_count = len(frame)
@@ -128,18 +129,26 @@ def vectorized_etf_research_policy(
             resolved.to_numpy(dtype=object, copy=False)[exact_exclusion].astype(str),
         )
 
+    directional_currency = np.zeros(len(etf_frame), dtype=bool)
+    for directional in ETF_RESEARCH_DIRECTIONAL_CURRENCY_KEYWORDS:
+        directional_currency |= combined.str.contains(
+            str(directional).upper(), regex=False, na=False
+        ).to_numpy(dtype=bool)
+
     unmatched = ~exact_exclusion
     for keyword in ETF_RESEARCH_EXCLUDED_KEYWORDS:
         keyword_match = unmatched & combined.str.contains(
             str(keyword).upper(), regex=False, na=False
         ).to_numpy(dtype=bool)
+        if keyword == "货币ETF":
+            keyword_match &= ~directional_currency
         if np.any(keyword_match):
             excluded = etf_positions[keyword_match]
             eligible[excluded] = False
             reasons[excluded] = f"ETF现金管理产品排除：{keyword}"
             unmatched &= ~keyword_match
 
-    # Use whichever current-schema return field is available.  Report rows use
+    # Use whichever current-schema return field is available. Report rows use
     # RecentReturn20D; lifecycle-enriched rows also expose Return20D.
     close = _numeric(etf_frame, "Close")
     atr14 = _numeric(etf_frame, "ATR14")
