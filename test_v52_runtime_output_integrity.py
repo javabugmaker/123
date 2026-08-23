@@ -91,91 +91,119 @@ class V52RuntimeOutputIntegrityTests(unittest.TestCase):
             self._restore_metadata(symbol, previous)
 
     def test_star_etf_and_explicit_ratio_metadata_are_supported(self) -> None:
-        symbol = "588000.SH"
-        previous = self._with_metadata(
-            symbol,
+        star = "588000.SH"
+        previous_star = self._with_metadata(
+            star,
+            {"symbol": star, "name": "科创50ETF", "ext": {}},
+        )
+        try:
+            self.assertAlmostEqual(daily_limit_pct(star, is_etf=True), 0.20)
+            self.assertEqual(
+                price_limit_source(star, is_etf=True),
+                "star_etf_20pct_rule",
+            )
+        finally:
+            self._restore_metadata(star, previous_star)
+
+        explicit = "510050.SH"
+        previous_explicit = self._with_metadata(
+            explicit,
             {
-                "symbol": symbol,
-                "name": "科创50ETF",
-                "ext": {"price_limit_ratio": 0.20},
+                "symbol": explicit,
+                "name": "上证50ETF",
+                "ext": {"price_limit_pct": 20},
             },
         )
         try:
-            self.assertAlmostEqual(daily_limit_pct(symbol, is_etf=True), 0.20)
-            self.assertEqual(price_limit_source(symbol, is_etf=True), "metadata_ratio")
+            self.assertAlmostEqual(daily_limit_pct(explicit, is_etf=True), 0.20)
+            self.assertEqual(
+                price_limit_source(explicit, is_etf=True),
+                "explicit_ratio_metadata",
+            )
+        finally:
+            self._restore_metadata(explicit, previous_explicit)
+
+    def test_chinext_backtest_rule_is_date_aware(self) -> None:
+        symbol = "300001.SZ"
+        previous = self._with_metadata(
+            symbol,
+            {"symbol": symbol, "name": "测试创业板", "ext": {}},
+        )
+        try:
+            self.assertAlmostEqual(
+                daily_limit_pct(symbol, trade_date="2020-08-21"), 0.10
+            )
+            self.assertAlmostEqual(
+                daily_limit_pct(symbol, trade_date="2020-08-24"), 0.20
+            )
         finally:
             self._restore_metadata(symbol, previous)
 
-    def test_chinext_backtest_rule_is_date_aware(self) -> None:
-        self.assertAlmostEqual(
-            daily_limit_pct("300001.SZ", trade_date="2020-08-21"), 0.10
+    @staticmethod
+    def _override_frame(*, setup: bool, signal_count: int) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "EntrySignal": "BREAKOUT_CONFIRM",
+                    "PassedFilters": False,
+                    "UniverseEligible": True,
+                    "BreakoutVolumeConfirmed": True,
+                    "BreakoutFlowConfirmed": True,
+                    "BreakoutVolumeRatio": 2.0,
+                    "SignalCount": signal_count,
+                    "VolAccum": setup,
+                    "OBV_Div": False,
+                    "Consolidation": False,
+                    "VolContract": False,
+                    "SignalStatus": "NEW",
+                    "SignalTrend": "新出现",
+                    "Score": 30.0,
+                }
+            ]
         )
-        self.assertAlmostEqual(
-            daily_limit_pct("300001.SZ", trade_date="2020-08-24"), 0.20
-        )
+
+    def test_breakout_override_rejects_event_only_confirmation(self) -> None:
+        frame = self._override_frame(setup=False, signal_count=2)
+        mask = signal_lifecycle.strict_filter_override_mask(frame)
+        self.assertFalse(bool(mask.iloc[0]))
+        self.assertFalse(bool(signal_lifecycle._is_active(frame).iloc[0]))
+
+    def test_breakout_override_keeps_one_setup_clue_plus_three_signals(self) -> None:
+        frame = self._override_frame(setup=True, signal_count=3)
+        mask = signal_lifecycle.strict_filter_override_mask(frame)
+        self.assertTrue(bool(mask.iloc[0]))
+        self.assertTrue(bool(signal_lifecycle._is_active(frame).iloc[0]))
 
     def test_etf_market_cap_provenance_is_explicitly_not_applicable(self) -> None:
         result = ScanResult(
-            ticker="510300.SH",
-            name="沪深300ETF",
+            ticker="159697.SZ",
+            name="石油ETF鹏华",
             is_etf=True,
-            market_cap=None,
-            market_cap_available=False,
-            market_cap_unit_inferred=False,
-            market_cap_unit_assumption="not_applicable",
-            market_cap_raw_total_shares=None,
-            market_cap_normalized_total_shares=None,
-            market_cap_sanity_passed=True,
+            asset_type="etf",
+            filter_details={
+                "market_cap": None,
+                "market_cap_available": False,
+                "market_cap_unit_inferred": False,
+                "market_cap_unit_assumption": "individual_shares",
+                "market_cap_raw_total_shares": 123_000_000.0,
+                "market_cap_normalized_total_shares": 123_000_000.0,
+                "market_cap_sanity_passed": True,
+                "price_limit_pct": 0.05,
+            },
         )
-        row = result.to_dict()
-        self.assertFalse(row["MarketCapAvailable"])
-        self.assertFalse(row["MarketCapUnitInferred"])
+        with patch.object(
+            report, "finalize_signal_ranking", side_effect=lambda frame: frame
+        ):
+            row = report._results_to_dataframe([result]).iloc[0]
+
+        self.assertFalse(bool(row["MarketCapApplicable"]))
+        self.assertFalse(bool(row["MarketCapAvailable"]))
         self.assertEqual(row["MarketCapUnitAssumption"], "not_applicable")
-        self.assertFalse(row["MarketCapApplicable"])
-
-    def test_breakout_override_keeps_one_setup_clue_plus_three_signals(self) -> None:
-        result = ScanResult(
-            ticker="600000.SH",
-            breakout_score=90.0,
-            entry_signal="BREAKOUT_CONFIRM",
-            signal_count=4,
-            passed_filters=True,
-            filter_schema_evaluated=True,
-            min_price_passed=True,
-            min_volume_passed=True,
-            min_market_cap_passed=True,
-            sufficient_history_passed=True,
-            obv_div=True,
-            cmf_pos=True,
-            ad_slope_pos=True,
-            vol_contract=True,
-        )
-        with patch.object(report, "OUTPUT_DIR"):
-            ranked = report._apply_actionability_policy([result])
-        self.assertTrue(ranked[0].passed_filters)
-
-    def test_breakout_override_rejects_event_only_confirmation(self) -> None:
-        result = ScanResult(
-            ticker="600001.SH",
-            breakout_score=90.0,
-            entry_signal="BREAKOUT_CONFIRM",
-            signal_count=3,
-            passed_filters=True,
-            filter_schema_evaluated=True,
-            min_price_passed=True,
-            min_volume_passed=True,
-            min_market_cap_passed=True,
-            sufficient_history_passed=True,
-            cmf_pos=True,
-            ad_slope_pos=True,
-            vol_contract=False,
-            obv_div=False,
-            consolidation=False,
-            vol_accum=False,
-        )
-        with patch.object(report, "OUTPUT_DIR"):
-            ranked = report._apply_actionability_policy([result])
-        self.assertFalse(ranked[0].passed_filters)
+        self.assertTrue(pd.isna(row["MarketCapRawTotalShares"]))
+        self.assertTrue(pd.isna(row["MarketCapNormalizedTotalShares"]))
+        self.assertFalse(bool(row["MarketCapSanityPassed"]))
+        self.assertAlmostEqual(float(row["PriceLimitPct"]), 0.10)
+        self.assertEqual(row["PriceLimitSource"], "standard_10pct_rule")
 
 
 if __name__ == "__main__":
