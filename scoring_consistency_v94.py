@@ -1,14 +1,17 @@
 """v94/v97 canonical FAST/EXACT scoring consistency.
 
-v94 removed the old FAST TriggerScore resistance cliff. v95 migrated Volume and
-Accumulation onto their nominal 25-point scales, moved HVN to diagnostics and
-expanded the historical setup context to 504 bars.
+The v80 vectorised matrix owns the dense setup calculation. This layer now has
+only two responsibilities that differ from that historical kernel:
 
-v97 fixes an import-order hole: re-entrant v79 acceleration can rebind scalar
-Volume/Accumulation kernels after the scale facade first loads. This module is
-installed after v80/v79 bootstrapping and therefore re-asserts the canonical
-scalar scale before wrapping the vectorised FAST matrix. FAST and EXACT then
-share one formula boundary instead of silently running different score scales.
+* replace the old discontinuous FAST TriggerScore with the canonical smooth
+  breakout-price evidence;
+* extend the trend drawdown context from the v80 252-bar peak to the canonical
+  504-bar scoring window.
+
+Volume/Accumulation scale migration is deliberately *not* reconstructed here.
+Doing so duplicated score-policy work across layers and, after the canonical
+runtime composition became re-entrant, double-counted the setup uplift. Keeping
+one owner for each transformation removes that import-order-sensitive drift.
 """
 
 from __future__ import annotations
@@ -21,11 +24,10 @@ import pandas as pd
 import analytics_core as _analytics
 import backtest_fastscore_v80 as _fast
 import score_core as _score
-import score_scale_migration_v95 as _scale
 from execution_integrity_v87 import smooth_breakout_price_component
 
 SCORING_CONSISTENCY_VERSION = (
-    "2026-08-23-v97-fast-exact-504-full-scale-reentrant-equivalence-v3"
+    "2026-08-23-v97-fast-exact-single-owner-consistency-v4"
 )
 
 _INSTALLED = False
@@ -48,15 +50,6 @@ def _rolling_count(mask: np.ndarray, window: int) -> np.ndarray:
     ends = np.arange(1, len(values) + 1, dtype=np.int64)
     starts = np.maximum(0, ends - int(window))
     return prefix[ends] - prefix[starts]
-
-
-def _trailing_run(mask: np.ndarray) -> np.ndarray:
-    positions = np.arange(len(mask), dtype=np.int64)
-    last_failure = np.where(mask, -1, positions)
-    np.maximum.accumulate(last_failure, out=last_failure)
-    run = positions - last_failure
-    run[~mask] = 0
-    return run
 
 
 def _indicator_coverage(frame: pd.DataFrame) -> np.ndarray:
@@ -232,177 +225,6 @@ def canonical_trigger_score_matrix(
     return raw, adjusted
 
 
-def _legacy_volume_score_matrix(frame: pd.DataFrame) -> np.ndarray:
-    """Vectorised unscaled VolumeScore used only for deterministic scale delta."""
-    n = len(frame)
-    vol20 = _numeric(frame, "VolMA20").to_numpy(dtype=np.float64)
-    vol120 = _numeric(frame, "VolMA120").to_numpy(dtype=np.float64)
-    z = _numeric(frame, "VolZScore").to_numpy(dtype=np.float64)
-
-    ratio = np.divide(
-        vol20,
-        vol120,
-        out=np.full(n, np.nan, dtype=np.float64),
-        where=np.isfinite(vol20) & np.isfinite(vol120) & (vol120 != 0.0),
-    )
-    ratio_finite = np.isfinite(ratio)
-    qualifying = ratio_finite & (ratio >= float(_score.VOLUME_ACCUM_RATIO))
-    consecutive = _trailing_run(qualifying)
-    enough_ratio = _rolling_count(ratio_finite, 504) >= int(
-        _score.VOLUME_ACCUM_MIN_DAYS
-    )
-    active_run = enough_ratio & (
-        consecutive >= int(_score.VOLUME_ACCUM_MIN_DAYS)
-    )
-    result = np.where(
-        active_run,
-        4.0
-        + np.clip(
-            (consecutive.astype(np.float64) - float(_score.VOLUME_ACCUM_MIN_DAYS))
-            / 80.0,
-            0.0,
-            1.0,
-        )
-        * 6.0,
-        0.0,
-    )
-    result += np.where(
-        enough_ratio & ratio_finite,
-        np.clip((ratio - float(_score.VOLUME_ACCUM_RATIO)) / 0.8, 0.0, 1.0)
-        * 3.0,
-        0.0,
-    )
-    ratio_old = pd.Series(ratio, index=frame.index).shift(19).to_numpy(
-        dtype=np.float64
-    )
-    result += np.where(
-        (_rolling_count(ratio_finite, 504) >= 20) & np.isfinite(ratio_old),
-        np.clip((ratio - ratio_old) / 0.5, 0.0, 1.0) * 4.0,
-        0.0,
-    )
-
-    z_finite = np.isfinite(z)
-    z_count30 = _rolling_count(z_finite, 30)
-    z_positive30 = (
-        pd.Series(
-            np.where(z_finite & (z > 0.0), 1.0, 0.0), index=frame.index
-        )
-        .rolling(30, min_periods=1)
-        .sum()
-        .to_numpy(dtype=np.float64)
-    )
-    result += np.where(
-        z_count30 >= 10,
-        (z_positive30 / np.maximum(z_count30, 1)) * 3.0
-        + np.clip(z / 2.0, 0.0, 1.0) * 2.0,
-        0.0,
-    )
-    available = (np.arange(n) >= 119) & (
-        (enough_ratio & ratio_finite) | (z_finite & (z_count30 >= 10))
-    )
-    result = np.clip(result, 0.0, _scale.VOLUME_RAW_MAX)
-    result[~available] = 0.0
-    return result
-
-
-def _legacy_accumulation_score_matrix(frame: pd.DataFrame) -> np.ndarray:
-    """Vectorised unscaled AccumulationScore for deterministic scale delta."""
-    n = len(frame)
-    close_s = _numeric(frame, "Close")
-    obv_s = _numeric(frame, "OBV")
-    ad_s = _numeric(frame, "AD")
-    ad_slope_s = _numeric(frame, "AD_Slope")
-    cmf_s = _numeric(frame, "CMF")
-    mfi_s = _numeric(frame, "MFI")
-
-    close = close_s.to_numpy(dtype=np.float64)
-    obv = obv_s.to_numpy(dtype=np.float64)
-    ad = ad_s.to_numpy(dtype=np.float64)
-    ad_slope = ad_slope_s.to_numpy(dtype=np.float64)
-    cmf = cmf_s.to_numpy(dtype=np.float64)
-    mfi = mfi_s.to_numpy(dtype=np.float64)
-    result = np.zeros(n, dtype=np.float64)
-
-    first_price_low = (
-        close_s.shift(30).rolling(30, min_periods=30).min().to_numpy(dtype=np.float64)
-    )
-    second_price_low = close_s.rolling(30, min_periods=30).min().to_numpy(
-        dtype=np.float64
-    )
-    first_obv_low = (
-        obv_s.shift(30).rolling(30, min_periods=30).min().to_numpy(dtype=np.float64)
-    )
-    second_obv_low = obv_s.rolling(30, min_periods=30).min().to_numpy(
-        dtype=np.float64
-    )
-    near_low = (second_price_low > 0.0) & (
-        (close - second_price_low) / second_price_low <= 0.05
-    )
-    price_retest = second_price_low <= first_price_low * 1.02
-    obv_divergence = (second_obv_low > first_obv_low) & (obv >= second_obv_low)
-    result += np.where(
-        near_low & price_retest & obv_divergence,
-        8.0,
-        np.where(obv_divergence, 3.0, 0.0),
-    )
-
-    lookback = int(_score.AD_SLOPE_LOOKBACK)
-    ad_scale = (
-        ad_s.abs()
-        .rolling(lookback, min_periods=lookback)
-        .median()
-        .to_numpy(dtype=np.float64)
-    )
-    ad_scale = np.maximum(ad_scale, 1.0)
-    result += np.where(
-        np.isfinite(ad_slope) & np.isfinite(ad_scale),
-        np.clip(ad_slope / (ad_scale * 0.03), 0.0, 1.0) * 5.0,
-        0.0,
-    )
-    ad_max120 = ad_s.rolling(120, min_periods=1).max().to_numpy(dtype=np.float64)
-    result += np.where(
-        np.isfinite(ad) & np.isfinite(ad_max120) & (ad >= ad_max120 * 0.95),
-        1.0,
-        0.0,
-    )
-
-    cmf_finite = np.isfinite(cmf)
-    cmf_ready = _rolling_count(cmf_finite, 504) >= 20
-    cmf_old = cmf_s.shift(19).to_numpy(dtype=np.float64)
-    result += np.where(
-        cmf_ready,
-        np.clip(cmf / 0.15, 0.0, 1.0) * 4.0,
-        0.0,
-    )
-    result += np.where(
-        cmf_ready & np.isfinite(cmf_old),
-        np.clip((cmf - cmf_old) / 0.10, 0.0, 1.0) * 2.0,
-        0.0,
-    )
-    result += np.where(
-        np.isfinite(mfi),
-        np.where(
-            (mfi >= 40.0) & (mfi <= 70.0),
-            3.0,
-            np.where((mfi >= 30.0) & (mfi <= 80.0), 1.5, 0.0),
-        ),
-        0.0,
-    )
-
-    obv_finite = np.isfinite(obv)
-    ad_pair = np.isfinite(ad) & np.isfinite(ad_slope)
-    mfi_finite = np.isfinite(mfi)
-    available = (np.arange(n) >= 59) & (
-        (obv_finite & (_rolling_count(obv_finite, 504) >= 40))
-        | (ad_pair & (_rolling_count(ad_pair, 504) >= lookback))
-        | (cmf_finite & cmf_ready)
-        | mfi_finite
-    )
-    result = np.clip(result, 0.0, _scale.ACCUMULATION_RAW_MAX)
-    result[~available] = 0.0
-    return result
-
-
 def _trend_504_delta(frame: pd.DataFrame) -> np.ndarray:
     """Return setup-point change from v80 252-row peak to 504-row context."""
     close = _numeric(frame, "Close")
@@ -444,15 +266,13 @@ def _canonical_base_score(
     legacy_base: np.ndarray,
     coverage: np.ndarray,
 ) -> np.ndarray:
-    legacy_volume = _legacy_volume_score_matrix(frame)
-    legacy_accum = _legacy_accumulation_score_matrix(frame)
-    setup_delta = (
-        legacy_volume * (float(_scale.VOLUME_SCALE) - 1.0)
-        + legacy_accum * (float(_scale.ACCUMULATION_SCALE) - 1.0)
-        + _trend_504_delta(frame)
-    )
+    """Apply only the 504-bar trend correction owned by this bridge."""
     setup_coverage = 0.55 + 0.45 * coverage
-    return np.clip(legacy_base + setup_delta * setup_coverage, 0.0, 100.0)
+    return np.clip(
+        legacy_base + _trend_504_delta(frame) * setup_coverage,
+        0.0,
+        100.0,
+    )
 
 
 def _fast_score_matrix(frame: pd.DataFrame, *, is_etf: bool):
@@ -485,10 +305,6 @@ def _fast_score_matrix(frame: pd.DataFrame, *, is_etf: bool):
 
 def install() -> None:
     global _INSTALLED, _ORIGINAL_FAST_SCORE_MATRIX
-
-    # v79 can be re-installed by analytics/worker bootstraps. Re-assert v95
-    # scalar bindings every time this consistency layer is requested.
-    _scale.install()
     if not _INSTALLED:
         _ORIGINAL_FAST_SCORE_MATRIX = _fast._fast_score_matrix
         _fast._fast_score_matrix = _fast_score_matrix
