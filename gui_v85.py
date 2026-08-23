@@ -1,10 +1,14 @@
-"""v90 A-share research briefing desktop GUI.
+"""v92 A-share research briefing desktop GUI.
 
-The v85 editorial shell remains intact.  v90 adds a compact, diagnostic-only
-five-factor resonance view sourced from the held-out backtest outputs.  It does
-not change scanner scores, ranking eligibility, entry signals, or execution
-semantics; it only makes the MACD/KDJ/RSI/OBV/BOLL experiment visible in the
-same workstation the user already operates.
+The v85 editorial shell remains intact. v90 added a compact, diagnostic-only
+five-factor resonance view sourced from held-out backtest outputs. v92 makes the
+production backtest calibration chain visible next to that diagnostic layer so
+operators can verify whether historical evidence actually changed the score.
+
+Production ranking semantics are unchanged: the standard BacktestScore /
+BacktestAdjustedScore / BacktestEffectiveWeight / CompositeScore chain is only
+surfaced here. Five-factor resonance remains diagnostic-only and does not alter
+ranking eligibility, entry signals, or execution decisions.
 """
 
 from __future__ import annotations
@@ -25,7 +29,8 @@ from v85_terminal_config import (
     TYPOGRAPHY,
 )
 
-GUI_VERSION = "2026-08-23-v90-five-factor-resonance-gui-v1"
+GUI_VERSION = "2026-08-23-v92-backtest-calibration-visibility-v1"
+BACKTEST_CALIBRATION_COLUMN = "BacktestCalibration"
 RESONANCE_HISTORY_COLUMN = "ResonanceHistory"
 
 
@@ -54,8 +59,67 @@ def resonance_history_label(data: Mapping[str, object]) -> str:
     return " · ".join(parts)
 
 
-def _v90_display_columns() -> tuple[str, ...]:
+def backtest_calibration_label(data: Mapping[str, object]) -> str:
+    """Compact production backtest score, blend weight and direct score delta."""
+    score = _finite_number(data.get("BacktestScore"))
+    weight = _finite_number(data.get("BacktestEffectiveWeight"))
+    composite = _finite_number(data.get("CompositeScore"))
+    raw = _finite_number(data.get("FinalScore"))
+    if raw is None:
+        raw = _finite_number(data.get("Score"))
+    if score is None and composite is None:
+        return "—"
+    parts: list[str] = []
+    if score is not None:
+        parts.append(f"S{score:.1f}")
+    if weight is not None:
+        parts.append(f"W{weight:.0%}")
+    if composite is not None and raw is not None:
+        parts.append(f"Δ{composite - raw:+.1f}")
+    return " · ".join(parts) or "—"
+
+
+def backtest_detail_label(data: Mapping[str, object]) -> str:
+    """Explain the complete production calibration chain for one selected row."""
+    score = _finite_number(data.get("BacktestScore"))
+    adjusted = _finite_number(data.get("BacktestAdjustedScore"))
+    weight = _finite_number(data.get("BacktestEffectiveWeight"))
+    composite = _finite_number(data.get("CompositeScore"))
+    raw = _finite_number(data.get("FinalScore"))
+    if raw is None:
+        raw = _finite_number(data.get("Score"))
+    samples = _finite_number(data.get("BacktestSamples"))
+    effective = _finite_number(data.get("BacktestEffectiveSamples"))
+    confidence = str(data.get("BacktestConfidenceTier", "") or "").strip()
+    if score is None and adjusted is None and composite is None:
+        return "—"
+    parts: list[str] = []
+    if score is not None:
+        parts.append(f"回测分 {score:.1f}")
+    if adjusted is not None:
+        parts.append(f"校准分 {adjusted:.1f}")
+    if weight is not None:
+        parts.append(f"权重 {weight:.0%}")
+    if composite is not None:
+        parts.append(f"回测后 {composite:.1f}")
+    if composite is not None and raw is not None:
+        parts.append(f"Δ{composite - raw:+.1f}")
+    if samples is not None:
+        sample_text = f"n={round(samples)}"
+        if effective is not None:
+            sample_text += f"/eff={effective:.1f}"
+        parts.append(sample_text)
+    if confidence:
+        parts.append(confidence)
+    return " · ".join(parts) or "—"
+
+
+def _v92_display_columns() -> tuple[str, ...]:
     columns = list(_v84.V84_DISPLAY_COLUMNS)
+    if BACKTEST_CALIBRATION_COLUMN not in columns:
+        anchor = "AlphaScore"
+        position = columns.index(anchor) + 1 if anchor in columns else len(columns)
+        columns.insert(position, BACKTEST_CALIBRATION_COLUMN)
     if RESONANCE_HISTORY_COLUMN not in columns:
         anchor = "SignalStatus"
         position = columns.index(anchor) if anchor in columns else len(columns)
@@ -64,22 +128,30 @@ def _v90_display_columns() -> tuple[str, ...]:
 
 
 class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
-    """v90 briefing presentation on top of the stable v84 workstation shell."""
+    """v92 briefing presentation on top of the stable v84 workstation shell."""
 
     def __init__(self, root) -> None:
         self.data_asof = _core.tk.StringVar(master=root, value="等待数据")
         self.header_note = _core.tk.StringVar(
             master=root,
-            value="研究排名与交易执行分层 · 五因子共振仅作回测验证 · 双击查看证据",
+            value="研究排名与交易执行分层 · 生产回测校准可审计 · 五因子共振仅作诊断",
         )
         super().__init__(root)
 
     def _build_ui_configure_styles(self) -> None:
-        """Retain v84 geometry while applying v90 display-only diagnostics."""
+        """Retain v84 geometry while applying v92 audit diagnostics."""
         _v84.ResearchTerminalGUI._build_ui_configure_styles(self)
-        _core.DISPLAY_COLUMNS = _v90_display_columns()
+        _core.DISPLAY_COLUMNS = _v92_display_columns()
         _core.COLUMN_NAMES.update(
             {
+                BACKTEST_CALIBRATION_COLUMN: "回测校准",
+                "BacktestScore": "回测评分",
+                "BacktestAdjustedScore": "回测校准分",
+                "BacktestEffectiveWeight": "回测有效权重",
+                "CompositeScore": "回测后综合分",
+                "BacktestSamples": "回测样本",
+                "BacktestEffectiveSamples": "有效样本",
+                "BacktestConfidenceTier": "回测可信度",
                 RESONANCE_HISTORY_COLUMN: "五因子回测",
                 "BacktestResonanceMeanCount": "五因子平均票数",
                 "BacktestResonanceStrongBullShare": "4/5+强共振占比",
@@ -87,6 +159,7 @@ class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
                 "BacktestResonanceVersion": "五因子共振版本",
             }
         )
+        _core.COLUMN_WIDTHS[BACKTEST_CALIBRATION_COLUMN] = 150
         _core.COLUMN_WIDTHS[RESONANCE_HISTORY_COLUMN] = 126
 
         ttk = _core.ttk
@@ -121,12 +194,12 @@ class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
         )
 
     def _build_ui_header(self) -> None:
-        """Compact v90 briefing header; all lower geometry remains v84 stable."""
+        """Compact v92 briefing header; all lower geometry remains v84 stable."""
         tk = _core.tk
         sans = str(TYPOGRAPHY["sans"])
         mono = str(TYPOGRAPHY["mono"])
         minimum = tuple(LAYOUT["minimum"])
-        self.root.title("InstitutionScanner · A股研究简报 · v90")
+        self.root.title("InstitutionScanner · A股研究简报 · v92")
         self.root.geometry(str(LAYOUT["window"]))
         self.root.minsize(int(minimum[0]), int(minimum[1]))
 
@@ -196,7 +269,7 @@ class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
         rule.pack(fill=tk.X, padx=18, pady=(0, 7))
 
     def _build_ui_controls(self) -> None:
-        """Use v84's proven horizontal control bar and apply v90 emphasis."""
+        """Use v84's proven horizontal control bar and apply v92 emphasis."""
         _v84.ResearchTerminalGUI._build_ui_controls(self)
         self.daily_button.configure(
             fg_color=COLORS["red"],
@@ -250,12 +323,14 @@ class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
         super()._ensure_derived_columns()
         if not self._csv_headers:
             return
-        if RESONANCE_HISTORY_COLUMN not in self._csv_headers:
-            self._csv_headers.append(RESONANCE_HISTORY_COLUMN)
-            for row in self._csv_rows:
-                row.append("")
+        for column in (BACKTEST_CALIBRATION_COLUMN, RESONANCE_HISTORY_COLUMN):
+            if column not in self._csv_headers:
+                self._csv_headers.append(column)
+                for row in self._csv_rows:
+                    row.append("")
         indexes = {header: index for index, header in enumerate(self._csv_headers)}
-        target = indexes[RESONANCE_HISTORY_COLUMN]
+        backtest_target = indexes[BACKTEST_CALIBRATION_COLUMN]
+        resonance_target = indexes[RESONANCE_HISTORY_COLUMN]
         for row in self._csv_rows:
             if len(row) < len(self._csv_headers):
                 row.extend([""] * (len(self._csv_headers) - len(row)))
@@ -264,7 +339,8 @@ class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
                 for column, index in indexes.items()
                 if index < len(row)
             }
-            row[target] = resonance_history_label(data)
+            row[backtest_target] = backtest_calibration_label(data)
+            row[resonance_target] = resonance_history_label(data)
         self._csv_indexes = indexes
         self._csv_search_text = [
             " ".join(map(self._cell_text, row)).casefold() for row in self._csv_rows
@@ -273,11 +349,17 @@ class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
     def _update_decision_card(self, _event=None) -> None:
         super()._update_decision_card(_event)
         data = self._selected_detail()
-        label = resonance_history_label(data)
-        if label == "—":
-            return
         current = str(self.detail_backtest.get() or "").strip()
-        suffix = f"历史五因子 {label}"
+        additions: list[str] = []
+        production = backtest_detail_label(data)
+        if production != "—":
+            additions.append(f"生产回测 {production}")
+        resonance = resonance_history_label(data)
+        if resonance != "—":
+            additions.append(f"五因子诊断 {resonance}")
+        if not additions:
+            return
+        suffix = " · ".join(additions)
         self.detail_backtest.set(
             f"{current} · {suffix}" if current and current != "-" else suffix
         )

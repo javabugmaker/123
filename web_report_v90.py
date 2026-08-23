@@ -1,13 +1,17 @@
-"""v91 public briefing adapter for five-factor resonance diagnostics.
+"""v92 public briefing adapter for backtest calibration and resonance diagnostics.
 
 The existing v85 report owns the public allowlist, charts and interaction model.
-v91 post-processes that validated document with one aggregate backtest section
-and keeps the web publication boundary strictly fail-soft: a presentation-layer
+v92 post-processes that validated document with two explicitly separated layers:
+production backtest calibration (which participates in ranking) and five-factor
+resonance diagnostics (which remain experimental and ranking-neutral).
+
+The web publication boundary remains strictly fail-soft: a presentation-layer
 fault must never roll back an otherwise valid DAILY result transaction.
 """
 
 from __future__ import annotations
 
+import csv
 import html
 import json
 import logging
@@ -18,7 +22,7 @@ from typing import Any
 import web_report_v85 as _v85
 from web_report_v85 import *  # noqa: F403
 
-WEB_REPORT_VERSION = "2026-08-23-v91-runtime-hardening-web-v1"
+WEB_REPORT_VERSION = "2026-08-23-v92-backtest-calibration-visibility-v1"
 WebReportResult = _v85.WebReportResult
 DEFAULT_OUTPUT_DIR = _v85.DEFAULT_OUTPUT_DIR
 DEFAULT_SITE_DIR = _v85.DEFAULT_SITE_DIR
@@ -34,10 +38,11 @@ publish_site = _v85.publish_site
 
 _RESONANCE_CSS = """
 <style id="five-factor-resonance-style">
-.resonance-v90 .res-meta{display:flex;gap:10px;flex-wrap:wrap;padding:10px 13px;border-bottom:1px solid var(--line);background:#fafafa;color:var(--muted);font-size:10px}
+.resonance-v90 .res-meta,.production-backtest-v92 .res-meta{display:flex;gap:10px;flex-wrap:wrap;padding:10px 13px;border-bottom:1px solid var(--line);background:#fafafa;color:var(--muted);font-size:10px}
 .resonance-v90 .res-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line)}
-.resonance-v90 .res-panel{background:#fff;min-width:0}.resonance-v90 .res-panel h3{margin:0;padding:9px 11px;border-bottom:1px solid var(--line);font:700 10px ui-monospace,Consolas,monospace;letter-spacing:.6px}
-.resonance-v90 table{font-size:10px}.resonance-v90 th{font-size:8px}.resonance-v90 td{padding:7px 8px}.resonance-v90 .positive-number{color:var(--red-dark);font-weight:700}.resonance-v90 .negative-number{color:var(--green);font-weight:700}
+.resonance-v90 .res-panel,.production-backtest-v92 .res-panel{background:#fff;min-width:0}.resonance-v90 .res-panel h3{margin:0;padding:9px 11px;border-bottom:1px solid var(--line);font:700 10px ui-monospace,Consolas,monospace;letter-spacing:.6px}
+.resonance-v90 table,.production-backtest-v92 table{font-size:10px}.resonance-v90 th,.production-backtest-v92 th{font-size:8px}.resonance-v90 td,.production-backtest-v92 td{padding:7px 8px}.resonance-v90 .positive-number,.production-backtest-v92 .positive-number{color:var(--red-dark);font-weight:700}.resonance-v90 .negative-number,.production-backtest-v92 .negative-number{color:var(--green);font-weight:700}
+.production-backtest-v92 .score-up{color:var(--red-dark);font-weight:700}.production-backtest-v92 .score-down{color:var(--green);font-weight:700}.production-backtest-v92 .score-flat{color:var(--muted)}
 @media(max-width:900px){.resonance-v90 .res-grid{grid-template-columns:1fr}}
 </style>
 """
@@ -51,18 +56,31 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _read_csv_rows(path: Path) -> list[dict[str, str]]:
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            return [dict(row) for row in csv.DictReader(handle)]
+    except (OSError, UnicodeError, csv.Error):
+        return []
+
+
+def _backtest_candidate_rows(source_dir: Path, output_dir: Path) -> list[dict[str, str]]:
+    roots = (source_dir,) if source_dir.resolve() == output_dir.resolve() else (source_dir, output_dir)
+    for root in roots:
+        for name in ("Top50Mixed.csv", "Top50Stocks.csv", "DecisionResults.csv", "AllResults.csv"):
+            rows = _read_csv_rows(root / name)
+            if rows:
+                return rows
+    return []
+
+
 def _safe(value: object) -> str:
     """Escape diagnostic text without relying on private compatibility helpers."""
     return html.escape("" if value is None else str(value), quote=True)
 
 
 def _truthy_env(name: str, default: bool = True) -> bool:
-    """Read one boolean environment flag locally.
-
-    v85 deliberately does not re-export every private v84 helper. Keeping this
-    tiny compatibility rule here prevents another adapter-to-private-helper
-    dependency from reaching the DAILY transaction boundary.
-    """
+    """Read one boolean environment flag locally."""
     raw = os.environ.get(name)
     if raw is None:
         return default
@@ -93,6 +111,95 @@ def _metric_class(value: object) -> str:
     if number is None or number == 0:
         return ""
     return "positive-number" if number > 0 else "negative-number"
+
+
+def _score(value: object) -> str:
+    number = _number(value)
+    return "—" if number is None else f"{number:.1f}"
+
+
+def _weight(value: object) -> str:
+    number = _number(value)
+    return "—" if number is None else f"{number:.0%}"
+
+
+def _delta(row: dict[str, str]) -> float | None:
+    composite = _number(row.get("CompositeScore"))
+    raw = _number(row.get("FinalScore"))
+    if raw is None:
+        raw = _number(row.get("Score"))
+    if composite is None or raw is None:
+        return None
+    return composite - raw
+
+
+def _delta_text(value: float | None) -> tuple[str, str]:
+    if value is None:
+        return "—", "score-flat"
+    if value > 0.05:
+        return f"{value:+.1f}", "score-up"
+    if value < -0.05:
+        return f"{value:+.1f}", "score-down"
+    return f"{value:+.1f}", "score-flat"
+
+
+def _production_backtest_table(rows: list[dict[str, str]]) -> str:
+    eligible = [
+        row for row in rows
+        if _number(row.get("BacktestScore")) is not None
+        or _number(row.get("CompositeScore")) is not None
+    ]
+    if not eligible:
+        return (
+            '<div class="res-meta">当前已发布结果尚未包含个股回测校准字段。'
+            '如果回测仍在运行，排名与这些字段会在回测完成并原子发布后一起刷新。</div>'
+        )
+    body: list[str] = []
+    for row in eligible[:30]:
+        delta, delta_class = _delta_text(_delta(row))
+        samples = _number(row.get("BacktestSamples"))
+        effective = _number(row.get("BacktestEffectiveSamples"))
+        sample_text = "—" if samples is None else str(round(samples))
+        if effective is not None:
+            sample_text += f" / {effective:.1f}"
+        rank = (
+            row.get("ResearchRank", "")
+            or row.get("OverallRank", "")
+            or row.get("TradeRank", "")
+            or "—"
+        )
+        body.append(
+            "<tr>"
+            f'<td class="number">{_safe(rank)}</td>'
+            f"<td><strong>{_safe(row.get('Ticker', '—'))}</strong><br><small>{_safe(row.get('Name', ''))}</small></td>"
+            f'<td class="number">{_safe(_score(row.get("BacktestScore")))}</td>'
+            f'<td class="number">{_safe(_score(row.get("BacktestAdjustedScore")))}</td>'
+            f'<td class="number">{_safe(_weight(row.get("BacktestEffectiveWeight")))}</td>'
+            f'<td class="number">{_safe(_score(row.get("CompositeScore")))}</td>'
+            f'<td class="number {delta_class}">{_safe(delta)}</td>'
+            f'<td class="number">{_safe(sample_text)}</td>'
+            f"<td>{_safe(row.get('BacktestConfidenceTier', '') or '—')}</td>"
+            "</tr>"
+        )
+    return (
+        '<div class="table-wrap"><table><thead><tr>'
+        '<th>当前排名</th><th>标的</th><th>回测分</th><th>校准分</th><th>有效权重</th>'
+        '<th>回测后综合分</th><th>直接Δ</th><th>样本 / 有效</th><th>可信度</th>'
+        '</tr></thead><tbody>' + "".join(body) + "</tbody></table></div>"
+    )
+
+
+def _production_backtest_block(rows: list[dict[str, str]], backtest: dict[str, object]) -> str:
+    requested = backtest.get("ranking_eligible_ticker_count", 0)
+    mode = str(backtest.get("mode", "") or "—")
+    objective = str(backtest.get("objective", "") or "—")
+    return f"""
+<section id="production-backtest-calibration" class="section card production-backtest-v92">
+  <div class="section-head"><h2>PRODUCTION BACKTEST CALIBRATION / 个股回测校准</h2><p>这条链路参与生产评分；回测完成后统一重算并发布，不在运行中增量改排名</p></div>
+  <div class="res-meta"><span>模式 {_safe(mode)}</span><span>·</span><span>目标 {_safe(objective)}</span><span>·</span><span>可用于排名的标的 {_safe(requested)}</span><span>· 回测分→可靠性收缩→有效权重→CompositeScore</span></div>
+  {_production_backtest_table(rows)}
+</section>
+"""
 
 
 def _group_table(groups: object) -> str:
@@ -147,21 +254,25 @@ def _resonance_block(backtest: dict[str, object]) -> str:
 """
 
 
-def _inject_resonance(path: Path, backtest: dict[str, object]) -> None:
+def _inject_backtest_sections(
+    path: Path,
+    backtest: dict[str, object],
+    rows: list[dict[str, str]],
+) -> None:
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return
-    if 'id="five-factor-resonance"' in text:
+    if 'id="production-backtest-calibration"' in text:
         return
-    block = _resonance_block(backtest)
+    blocks = _production_backtest_block(rows, backtest) + _resonance_block(backtest)
     if "</head>" in text and 'id="five-factor-resonance-style"' not in text:
         text = text.replace("</head>", _RESONANCE_CSS + "</head>", 1)
     anchor = '<div class="foot">'
     if anchor in text:
-        text = text.replace(anchor, block + anchor, 1)
+        text = text.replace(anchor, blocks + anchor, 1)
     else:
-        text = text.replace("</main>", block + "</main>", 1)
+        text = text.replace("</main>", blocks + "</main>", 1)
     text = text.replace(_v85.WEB_REPORT_VERSION, WEB_REPORT_VERSION)
     try:
         path.write_text(text, encoding="utf-8")
@@ -180,8 +291,9 @@ def build_web_report(
     backtest = _read_json(source_dir / "BacktestSummary.json") or _read_json(
         Path(output_dir) / "BacktestSummary.json"
     )
+    rows = _backtest_candidate_rows(source_dir, Path(output_dir))
     for path in (result.index_path, result.archive_path):
-        _inject_resonance(path, backtest)
+        _inject_backtest_sections(path, backtest, rows)
     return result
 
 
@@ -195,7 +307,7 @@ def build_and_publish_web_report(
     log = logger or logging.getLogger("institution_scanner")
     built = build_web_report(output_dir=output_dir, site_dir=site_dir)
     log.info(
-        "WEB v91 research briefing generated: %s (%s).", built.archive_path, reason
+        "WEB v92 research briefing generated: %s (%s).", built.archive_path, reason
     )
     if not _truthy_env(WEB_PUBLISH_ENV, True):
         log.info("WEB publication disabled by %s.", WEB_PUBLISH_ENV)
@@ -207,8 +319,6 @@ def build_and_publish_web_report(
             report_date=built.report_date,
         )
     except Exception as exc:
-        # Publishing is a presentation side effect. Never let an unexpected
-        # adapter/Git/subprocess fault invalidate already-verified scan results.
         log.warning(
             "WEB report publication skipped/failed without affecting pipeline: %s",
             exc,
@@ -219,7 +329,7 @@ def build_and_publish_web_report(
             archive_path=built.archive_path,
             publish_message=str(exc),
         )
-    log.info("WEB v91 research briefing published: %s", published.page_url)
+    log.info("WEB v92 research briefing published: %s", published.page_url)
     return published
 
 
@@ -238,12 +348,9 @@ def maybe_publish_canonical_report(
             reason=reason,
         )
     except Exception as exc:
-        # The web report is explicitly non-critical. Catch ordinary runtime
-        # exceptions here (but not BaseException) so a UI/report regression can
-        # never roll back the canonical DAILY publication transaction.
         log = logger or logging.getLogger("institution_scanner")
         log.warning(
-            "WEB v91 research briefing generation skipped/failed without affecting pipeline: %s",
+            "WEB v92 research briefing generation skipped/failed without affecting pipeline: %s",
             exc,
         )
         return None
