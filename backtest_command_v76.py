@@ -1,21 +1,20 @@
-"""v76 whole-command transaction for standalone backtests.
+"""Whole-command transaction for standalone backtests.
 
 ``analytics.apply_backtest_ranking`` already stages ranking outputs, but the
 standalone CLI/GUI backtest also writes ``ScoreCalibration.json`` and an initial
-then-final ``BacktestSummary.json`` around that ranking step.  Without an outer
+then-final ``BacktestSummary.json`` around that ranking step. Without an outer
 command transaction those metadata files can belong to a newer run than the
 canonical AllResults files when postprocessing fails.
 
 This facade redirects the main/analytics/report output roots to one temporary
 command stage, seeds the current AllResults inputs, runs the existing backtest
-unchanged, and publishes the entire resulting file set with the v75 durable
-journal only when the command returns success. DAILY safely nests this inside
-its own outer staging directory.
+unchanged, and publishes the entire resulting file set with the durable journal
+only when the command returns success. DAILY safely nests this inside its own
+outer staging directory.
 
-v90 keeps the production ranking untouched and materializes the independent
-MACD/KDJ/RSI/OBV/BOLL diagnostics inside the same transaction.  GUI, candidate
-CSVs and the public briefing therefore see one consistent resonance snapshot
-instead of a new BacktestSummary paired with stale candidate files.
+v91 installs parent-process resonance recovery before the historical engine is
+called. This makes diagnostics independent of Windows worker monkey-patch order,
+while keeping production ranking and execution semantics unchanged.
 """
 
 from __future__ import annotations
@@ -30,8 +29,11 @@ from typing import Any
 import analytics as _analytics
 import main_core as _main
 import report as _report
+import resonance_runtime_v91 as _resonance_runtime
 from resonance_reporting_v90 import materialize_resonance_outputs
 from web_report_v81 import maybe_publish_canonical_report
+
+_resonance_runtime.install()
 
 _LEGACY_CMD_BACKTEST = _main.cmd_backtest
 _COMMAND_LOCK = threading.Lock()
@@ -67,12 +69,22 @@ def _materialize_resonance_stage(stage: Path) -> None:
         return
     status = str(payload.get("status", "") or "")
     if status == "MATERIALIZED":
+        ticker_metrics = int(payload.get("ticker_metrics", 0) or 0)
+        groups = int(payload.get("diagnostic_groups", 0) or 0)
         logger.info(
-            "Five-factor resonance diagnostics materialized: ticker_metrics=%s, groups=%s, candidate_exports=%s.",
-            payload.get("ticker_metrics", 0),
-            payload.get("diagnostic_groups", 0),
+            "Five-factor resonance diagnostics materialized: ticker_metrics=%s, "
+            "groups=%s, candidate_exports=%s.",
+            ticker_metrics,
+            groups,
             payload.get("candidate_exports", "UNKNOWN"),
         )
+        if ticker_metrics == 0 or groups == 0:
+            logger.warning(
+                "Five-factor resonance diagnostics are empty after a successful "
+                "backtest. v91 parent recovery was installed, so this now means "
+                "the held-out samples themselves lack full five-factor history "
+                "rather than a worker-installation gap."
+            )
     elif status:
         logger.info(
             "Five-factor resonance diagnostics not materialized: %s (%s).",
@@ -120,11 +132,6 @@ def cmd_backtest(args: Any) -> int:
         try:
             files = [path for path in stage.rglob("*") if path.is_file()]
             if not files:
-                # The stable CLI has long supported injected runner/ranking
-                # engines for compatibility tests and embedders.  Such an
-                # injected no-op may intentionally return success without a
-                # publication artifact.  The installed production runtime must
-                # still fail closed if it ever reports success with no files.
                 if not canonical_runtime:
                     return 0
                 raise RuntimeError(
@@ -150,10 +157,11 @@ def install() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
+    _resonance_runtime.install()
     _main._legacy_cmd_backtest = _LEGACY_CMD_BACKTEST
     _main.cmd_backtest = cmd_backtest
     _main.BACKTEST_COMMAND_INTEGRITY_VERSION = (
-        "2026-08-23-v90-whole-command-resonance-publication-v1"
+        "2026-08-23-v91-vectorized-resonance-runtime-v1"
     )
     _INSTALLED = True
 
