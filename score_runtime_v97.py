@@ -23,7 +23,7 @@ import score_scale_migration_v95 as _scale
 import score_weight_cache_v79 as _weight_cache
 
 SCORE_RUNTIME_COMPOSITION_VERSION = (
-    "2026-08-23-v97-canonical-score-runtime-composition-v2"
+    "2026-08-23-v97-canonical-score-runtime-composition-v3"
 )
 
 
@@ -43,7 +43,7 @@ def ensure() -> None:
         or _core.score_volume is not _scale.score_volume
         or _core.score_accumulation is not _scale.score_accumulation
         or _core.score_structure is not _scale.score_structure
-        or _core.entry_point is not _endpoint.entry_point
+        or _core.entry_point is not _raw_score.entry_point
     ):
         install()
 
