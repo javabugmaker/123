@@ -14,7 +14,7 @@ import pandas as pd
 import resonance_reporting_v90 as reporting
 import resonance_runtime_v91 as runtime
 import technical_resonance_v90 as resonance
-import web_report_v85 as web
+import web_report as web
 
 
 def _trend_frame(rows: int = 180) -> pd.DataFrame:
@@ -141,13 +141,13 @@ class V91VectorizedRuntimeTests(unittest.TestCase):
         self.assertIs(result, built)
         publish.assert_not_called()
 
-    def test_web_adapter_fault_is_fail_soft_for_daily_publication(self) -> None:
+    def test_web_generation_fault_is_fail_soft_for_daily_publication(self) -> None:
         with (
             mock.patch.object(web, "is_canonical_output_dir", return_value=True),
             mock.patch.object(
                 web,
                 "build_and_publish_web_report",
-                side_effect=AttributeError("compatibility helper missing"),
+                side_effect=RuntimeError("page generation failed"),
             ),
         ):
             result = web.maybe_publish_canonical_report(
