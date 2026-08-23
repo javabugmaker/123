@@ -8,10 +8,12 @@ run.
 This module is also the final owner of ``run_historical_backtest`` in the
 canonical runtime. Legacy research/test integrations may patch
 ``_backtest_one_ticker`` with a positional-only callable; modern production
-executors accept the profile-aware keyword contract. Detect that difference at
-this final transaction boundary and temporarily route cached execution through a
-minimal positional adapter. This removes the need for another analytics facade
-and makes compatibility independent of import order.
+executors accept the profile-aware keyword contract. At this final transaction
+boundary, a legacy callable is temporarily exposed through a modern-signature
+adapter. Any downstream cache/profile layer may therefore pass its normal
+keywords while the legacy callback still receives exactly the historical seven
+positional arguments. This removes compatibility dependence on cached-wrapper
+installation order.
 """
 
 from __future__ import annotations
@@ -43,28 +45,30 @@ def _supports_profile_contract(callable_obj: Any) -> bool:
     )
 
 
-def _legacy_cached_adapter(
-    ticker: str,
-    source: str,
-    benchmark_frame: Any,
-    commission: float,
-    stamp_duty: float,
-    slippage: float,
-    split_dates: Any,
-    benchmark_signature: str = "",
-    **_kwargs: Any,
-) -> tuple[list[dict[str, Any]], bool]:
-    del benchmark_signature
-    samples = _core._backtest_one_ticker(
-        ticker,
-        source,
-        benchmark_frame,
-        commission,
-        stamp_duty,
-        slippage,
-        split_dates,
-    )
-    return list(samples or []), False
+def _modern_executor_adapter(legacy_executor: Any):
+    """Expose one positional-only callback through the production signature."""
+
+    def adapted(
+        ticker: str,
+        source: str,
+        benchmark_frame: Any,
+        commission: float,
+        stamp_duty: float,
+        slippage: float,
+        split_dates: Any,
+        **_kwargs: Any,
+    ):
+        return legacy_executor(
+            ticker,
+            source,
+            benchmark_frame,
+            commission,
+            stamp_duty,
+            slippage,
+            split_dates,
+        )
+
+    return adapted
 
 
 def run_historical_backtest(*args: Any, **kwargs: Any):
@@ -74,12 +78,12 @@ def run_historical_backtest(*args: Any, **kwargs: Any):
             return _LEGACY_RUN_HISTORICAL_BACKTEST(*args, **kwargs)
 
         with _LEGACY_EXECUTOR_LOCK:
-            previous_cached = _core._backtest_one_ticker_cached
-            _core._backtest_one_ticker_cached = _legacy_cached_adapter
+            previous_executor = _core._backtest_one_ticker
+            _core._backtest_one_ticker = _modern_executor_adapter(executor)
             try:
                 return _LEGACY_RUN_HISTORICAL_BACKTEST(*args, **kwargs)
             finally:
-                _core._backtest_one_ticker_cached = previous_cached
+                _core._backtest_one_ticker = previous_executor
     finally:
         _score.invalidate_model_weight_cache()
 
