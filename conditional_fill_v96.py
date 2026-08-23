@@ -1,6 +1,6 @@
 """v96 conditional historical execution for WAIT_PULLBACK.
 
-WAIT_PULLBACK is not a next-session market order.  v96 evaluates it as a
+WAIT_PULLBACK is not a next-session market order. v96 evaluates it as a
 point-in-time conditional limit setup:
 
 * lock the EntryZone on the signal date;
@@ -14,8 +14,9 @@ point-in-time conditional limit setup:
 * anchor costs, exits, drawdown, benchmark and outcome horizons to the actual
   fill date; no touch means no trade sample.
 
-Immediate BUY_NOW/BREAKOUT_CONFIRM samples are generated independently so a
-pending pullback cannot consume their cooldown budget.
+The module is deliberately installable/uninstallable. Production backtest
+transactions install it while direct scalar research APIs keep the historical
+immediate-signal contract. Spawned workers install it in their isolated process.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ import analytics_core as _core
 from backtest_alignment import align_benchmark_returns
 
 CONDITIONAL_FILL_VERSION = (
-    "2026-08-23-v96-wait-pullback-zone-touch-5d-actual-fill-v1"
+    "2026-08-23-v97-wait-pullback-zone-touch-5d-transaction-v2"
 )
 WAIT_PULLBACK_VALIDITY_TRADING_DAYS = 5
 _IMMEDIATE_SIGNALS = frozenset({"BUY_NOW", "BREAKOUT_CONFIRM"})
@@ -93,41 +94,58 @@ def _conditional_fill(
     *,
     is_etf: bool,
 ) -> tuple[int, float, int, str] | None:
-    """Resolve a conservative daily-bar zone-touch fill."""
-    last = min(
-        len(enriched) - 1,
-        int(signal_index) + int(WAIT_PULLBACK_VALIDITY_TRADING_DAYS),
+    """Resolve a conservative daily-bar zone-touch fill.
+
+    OHLC eligibility is prefiltered as NumPy arrays. Only the at-most-five bars
+    that can change the order state reach the scalar tradeability resolver.
+    """
+    start = int(signal_index) + 1
+    stop = min(
+        len(enriched),
+        int(signal_index) + int(WAIT_PULLBACK_VALIDITY_TRADING_DAYS) + 1,
     )
-    for fill_index in range(int(signal_index) + 1, last + 1):
-        row = enriched.iloc[int(fill_index)]
-        open_price = _finite(row.get("Open"))
-        high_price = _finite(row.get("High"))
-        low_price = _finite(row.get("Low"))
-        if (
-            not np.isfinite(open_price)
-            or not np.isfinite(high_price)
-            or not np.isfinite(low_price)
-            or open_price <= 0.0
-            or high_price <= 0.0
-            or low_price <= 0.0
-        ):
-            continue
+    if start >= stop:
+        return None
+
+    window = enriched.iloc[start:stop]
+    open_values = pd.to_numeric(window.get("Open"), errors="coerce").to_numpy(
+        dtype=float
+    )
+    high_values = pd.to_numeric(window.get("High"), errors="coerce").to_numpy(
+        dtype=float
+    )
+    low_values = pd.to_numeric(window.get("Low"), errors="coerce").to_numpy(
+        dtype=float
+    )
+    valid = (
+        np.isfinite(open_values)
+        & np.isfinite(high_values)
+        & np.isfinite(low_values)
+        & (open_values > 0.0)
+        & (high_values > 0.0)
+        & (low_values > 0.0)
+    )
+    gap_below = valid & (open_values < float(zone_low))
+    touches = valid & (low_values <= float(zone_high)) & (high_values >= float(zone_low))
+    event_offsets = np.flatnonzero(gap_below | touches)
+
+    for offset in event_offsets:
+        fill_index = start + int(offset)
         tradeable, _reason = _core.is_entry_tradeable(
-            ticker, enriched, int(fill_index), is_etf=is_etf
+            ticker, enriched, fill_index, is_etf=is_etf
         )
         if not tradeable:
             continue
 
-        # A gap through support is a failed setup, not a cheaper desired fill.
-        if open_price < zone_low:
+        open_price = float(open_values[offset])
+        low_price = float(low_values[offset])
+        if bool(gap_below[offset]):
             return None
-        if low_price > zone_high or high_price < zone_low:
-            continue
-        if zone_low <= open_price <= zone_high:
+        if float(zone_low) <= open_price <= float(zone_high):
             fill_price = open_price
             basis = "OPEN_INSIDE_ZONE"
-        elif open_price > zone_high and low_price <= zone_high:
-            fill_price = zone_high
+        elif open_price > float(zone_high) and low_price <= float(zone_high):
+            fill_price = float(zone_high)
             basis = "LIMIT_AT_ZONE_HIGH"
         else:
             continue
@@ -136,8 +154,8 @@ def _conditional_fill(
         if fill_price <= 0.0:
             continue
         return (
-            int(fill_index),
-            float(fill_price),
+            fill_index,
+            fill_price,
             int(fill_index - signal_index),
             basis,
         )
@@ -188,7 +206,6 @@ def _rewrite_wait_sample(
     if entry_index + outcome_horizon >= len(enriched):
         return None
 
-    opens = pd.to_numeric(enriched.get("Open"), errors="coerce").to_numpy(dtype=float)
     closes = pd.to_numeric(enriched.get("Close"), errors="coerce").to_numpy(dtype=float)
     highs = pd.to_numeric(enriched.get("High"), errors="coerce").to_numpy(dtype=float)
     lows = pd.to_numeric(enriched.get("Low"), errors="coerce").to_numpy(dtype=float)
@@ -296,18 +313,21 @@ def _rewrite_wait_sample(
             ),
         }
     )
-    # Benchmark returns must begin on the *actual* fill session, not T+1.
     return align_benchmark_returns([result], benchmark_frame)[0]
 
 
-def _load_enriched(ticker: str, source: str) -> pd.DataFrame | None:
-    frame = _core._load_cache(ticker, source)
-    if frame is None or len(frame) < 300:
+def _load_enriched(
+    ticker: str,
+    source: str,
+    frame: pd.DataFrame | None = None,
+) -> pd.DataFrame | None:
+    market = frame if frame is not None else _core._load_cache(ticker, source)
+    if market is None or len(market) < 300:
         return None
     raw_path = _core._cache_path(ticker, source)
     enriched, _hit = _core.load_or_compute_indicators(
         ticker,
-        frame,
+        market,
         _core.compute_all_indicators,
         source_path=raw_path if Path(raw_path).exists() else None,
         enabled=_core.INDICATOR_CACHE_ENABLED,
@@ -331,11 +351,15 @@ def _backtest_one_ticker(
 ) -> list[dict[str, Any]]:
     """Generate immediate samples plus independently scheduled conditional fills."""
     active_profile = profile or _core._resolve_backtest_profile("exact", 1)
+    original = _ORIGINAL_BACKTEST_ONE_TICKER
+    if original is None:
+        return []
+
     with _EXECUTION_LOCK:
         previous_signals = _core._BACKTEST_ACTIONABLE_SIGNALS
         try:
             _core._BACKTEST_ACTIONABLE_SIGNALS = _IMMEDIATE_SIGNALS
-            immediate = _ORIGINAL_BACKTEST_ONE_TICKER(
+            immediate = original(
                 ticker,
                 source,
                 benchmark_frame,
@@ -349,7 +373,7 @@ def _backtest_one_ticker(
                 frame=frame,
             )
             _core._BACKTEST_ACTIONABLE_SIGNALS = _WAIT_ONLY
-            pending = _ORIGINAL_BACKTEST_ONE_TICKER(
+            pending = original(
                 ticker,
                 source,
                 benchmark_frame,
@@ -365,35 +389,37 @@ def _backtest_one_ticker(
         finally:
             _core._BACKTEST_ACTIONABLE_SIGNALS = previous_signals
 
-    enriched = _load_enriched(ticker, source)
+    enriched = _load_enriched(ticker, source, frame=frame)
     if enriched is None or not pending:
         for item in immediate:
             item.setdefault("entry_fill_type", "IMMEDIATE_NEXT_OPEN")
             item.setdefault("entry_fill_delay_days", 1)
+            item.setdefault("conditional_fill_version", CONDITIONAL_FILL_VERSION)
         return immediate
 
     is_etf = _core.is_etf_ticker(str(ticker))
-    date_positions = {
-        pd.Timestamp(value).strftime("%Y-%m-%d"): index
-        for index, value in enumerate(pd.DatetimeIndex(enriched.index))
-    }
-    conditional: list[dict[str, Any]] = []
-    for source_sample in pending:
-        rewritten = _rewrite_wait_sample(
-            source_sample,
-            ticker=ticker,
-            enriched=enriched,
-            benchmark_frame=benchmark_frame,
-            commission=commission,
-            stamp_duty=stamp_duty,
-            slippage=slippage,
-            split_dates=split_dates,
-            profile=active_profile,
-            is_etf=is_etf,
-            date_positions=date_positions,
+    normalized_dates = pd.DatetimeIndex(enriched.index).strftime("%Y-%m-%d")
+    date_positions = dict(zip(normalized_dates, range(len(normalized_dates)), strict=False))
+    conditional = [
+        rewritten
+        for source_sample in pending
+        if (
+            rewritten := _rewrite_wait_sample(
+                source_sample,
+                ticker=ticker,
+                enriched=enriched,
+                benchmark_frame=benchmark_frame,
+                commission=commission,
+                stamp_duty=stamp_duty,
+                slippage=slippage,
+                split_dates=split_dates,
+                profile=active_profile,
+                is_etf=is_etf,
+                date_positions=date_positions,
+            )
         )
-        if rewritten is not None:
-            conditional.append(rewritten)
+        is not None
+    ]
 
     for item in immediate:
         item.setdefault("entry_fill_type", "IMMEDIATE_NEXT_OPEN")
@@ -405,12 +431,26 @@ def _backtest_one_ticker(
 
 
 def install() -> None:
+    """Install conditional execution in the current process."""
     global _INSTALLED, _ORIGINAL_BACKTEST_ONE_TICKER
-    if _INSTALLED:
-        return
-    _ORIGINAL_BACKTEST_ONE_TICKER = _core._backtest_one_ticker
-    _core._backtest_one_ticker = _backtest_one_ticker
-    _core.BACKTEST_SIGNAL_EXECUTION_VERSION = CONDITIONAL_FILL_VERSION
-    _core.CONDITIONAL_FILL_VERSION = CONDITIONAL_FILL_VERSION
-    _core.WAIT_PULLBACK_VALIDITY_TRADING_DAYS = WAIT_PULLBACK_VALIDITY_TRADING_DAYS
-    _INSTALLED = True
+    with _EXECUTION_LOCK:
+        if _INSTALLED:
+            return
+        _ORIGINAL_BACKTEST_ONE_TICKER = _core._backtest_one_ticker
+        _core._backtest_one_ticker = _backtest_one_ticker
+        _core.BACKTEST_SIGNAL_EXECUTION_VERSION = CONDITIONAL_FILL_VERSION
+        _core.CONDITIONAL_FILL_VERSION = CONDITIONAL_FILL_VERSION
+        _core.WAIT_PULLBACK_VALIDITY_TRADING_DAYS = WAIT_PULLBACK_VALIDITY_TRADING_DAYS
+        _INSTALLED = True
+
+
+def uninstall() -> None:
+    """Restore the immediate-only scalar executor after a parent transaction."""
+    global _INSTALLED, _ORIGINAL_BACKTEST_ONE_TICKER
+    with _EXECUTION_LOCK:
+        if not _INSTALLED:
+            return
+        if _core._backtest_one_ticker is _backtest_one_ticker:
+            _core._backtest_one_ticker = _ORIGINAL_BACKTEST_ONE_TICKER
+        _ORIGINAL_BACKTEST_ONE_TICKER = None
+        _INSTALLED = False
