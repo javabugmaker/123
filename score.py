@@ -143,8 +143,8 @@ _core.score_ticker = score_ticker
 
 import score_acceleration_v79 as _score_acceleration_v79  # noqa: E402
 import score_endpoint_acceleration_v79 as _score_endpoint_acceleration_v79  # noqa: E402
-import score_weight_cache_v79 as _score_weight_cache_v79  # noqa: E402
 import score_scale_migration_v95 as _score_scale_migration_v95  # noqa: E402
+import score_weight_cache_v79 as _score_weight_cache_v79  # noqa: E402
 
 _score_acceleration_v79.install()
 _score_endpoint_acceleration_v79.install()
