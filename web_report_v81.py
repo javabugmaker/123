@@ -17,7 +17,7 @@ from pathlib import Path
 import web_report_v90 as _v85
 from web_report_v90 import *  # noqa: F403
 
-_archive_html = _v85._archive_html
+_archive_html = _v85._v85._archive_html
 _published_source_dir = _v85._published_source_dir
 build_and_publish_web_report = _v85.build_and_publish_web_report
 
