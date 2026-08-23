@@ -4,7 +4,7 @@
 keeps style labels descriptive, keeps TriggerScore orthogonal to setup trend,
 uses one volatility-contraction definition for filters/scoring, shares the
 continuous breakout-price evidence used by the execution integrity gate, and
-installs the v95 score-scale / threshold migrations.
+installs the canonical v95+ score runtime composition.
 """
 
 from __future__ import annotations
@@ -141,15 +141,8 @@ _core.score_volatility = score_volatility
 _core.trigger_event_score = trigger_event_score
 _core.score_ticker = score_ticker
 
-import score_acceleration_v79 as _score_acceleration_v79  # noqa: E402
-import score_endpoint_acceleration_v79 as _score_endpoint_acceleration_v79  # noqa: E402
-import score_scale_migration_v95 as _score_scale_migration_v95  # noqa: E402
-import score_weight_cache_v79 as _score_weight_cache_v79  # noqa: E402
+import score_runtime_v97 as _score_runtime_v97  # noqa: E402
 
-_score_acceleration_v79.install()
-_score_endpoint_acceleration_v79.install()
-_score_weight_cache_v79.install()
-# Scale migration must be last because v79 rebinds stable component endpoints.
-_score_scale_migration_v95.install()
+_score_runtime_v97.install()
 
 sys.modules[__name__] = _core
