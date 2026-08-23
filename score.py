@@ -1,9 +1,10 @@
-"""v89 scoring policy facade.
+"""v95 scoring policy facade.
 
 ``score_core`` contains the stable feature/entry implementation. This facade
 keeps style labels descriptive, keeps TriggerScore orthogonal to setup trend,
-uses one volatility-contraction definition for filters/scoring, and shares the
-same continuous breakout-price evidence used by the execution integrity gate.
+uses one volatility-contraction definition for filters/scoring, shares the
+continuous breakout-price evidence used by the execution integrity gate, and
+installs the v95 nominal setup-dimension scale after all legacy accelerators.
 """
 
 from __future__ import annotations
@@ -147,9 +148,13 @@ _core.score_ticker = score_ticker
 import score_acceleration_v79 as _score_acceleration_v79  # noqa: E402
 import score_endpoint_acceleration_v79 as _score_endpoint_acceleration_v79  # noqa: E402
 import score_weight_cache_v79 as _score_weight_cache_v79  # noqa: E402
+import score_scale_migration_v95 as _score_scale_migration_v95  # noqa: E402
 
 _score_acceleration_v79.install()
 _score_endpoint_acceleration_v79.install()
 _score_weight_cache_v79.install()
+# Scale migration must be last because v79 rebinds the stable component
+# endpoints.  This keeps scalar/live/EXACT calls on the canonical v95 scale.
+_score_scale_migration_v95.install()
 
 sys.modules[__name__] = _core
