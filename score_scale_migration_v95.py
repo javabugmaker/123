@@ -1,14 +1,14 @@
-"""v95 canonical setup-score scale migration.
+"""v95/v97 canonical setup-score scale migration.
 
 The stable setup model nominally allocates 20/25/25/15/15 points, but the
 positive terms of Volume and Accumulation can reach only 22 and 23 points.
-That makes a documented 100-point setup scale top out near 95 before coverage.
+v95 maps those dimensions to their documented 25-point ranges and removes HVN
+proximity from alpha scoring.
 
-v95 maps those two raw dimensions onto their documented 25-point ranges with a
-strict linear transform.  It also removes HVN proximity from alpha scoring.
-Volume-profile/HVN state remains available as diagnostics, but no longer makes
-EXACT/live scores depend on a feature that the vectorised FAST engine does not
-materialise historically.
+v97 makes the installer deliberately re-entrant. Older acceleration facades are
+also re-entrant and can rebind ``score_core.score_volume`` / ``score_accumulation``
+after this module first loads. Every install call therefore re-asserts the
+canonical scale while capturing the unscaled reference functions only once.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import pandas as pd
 import score_core as _core
 
 SCORE_SCALE_MIGRATION_VERSION = (
-    "2026-08-23-v95-volume-accumulation-full-scale-hvn-diagnostic-v1"
+    "2026-08-23-v97-volume-accumulation-full-scale-hvn-diagnostic-reentrant-v2"
 )
 VOLUME_RAW_MAX = 22.0
 ACCUMULATION_RAW_MAX = 23.0
@@ -36,32 +36,33 @@ _ORIGINAL_SCORE_ACCUMULATION: Any = None
 
 
 def _scale_dimension(value: float, raw_max: float, nominal_max: float) -> float:
-    if not np.isfinite(float(value)):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
         return 0.0
-    return float(np.clip(float(value) * nominal_max / raw_max, 0.0, nominal_max))
+    if not np.isfinite(number):
+        return 0.0
+    return float(np.clip(number * nominal_max / raw_max, 0.0, nominal_max))
 
 
 def score_volume(df: pd.DataFrame) -> float:
-    """Map the legacy 0..22 positive-evidence range onto the nominal 0..25 range."""
+    """Map the legacy 0..22 positive-evidence range onto nominal 0..25."""
+    if _ORIGINAL_SCORE_VOLUME is None:
+        return 0.0
     raw = float(_ORIGINAL_SCORE_VOLUME(df))
     return _scale_dimension(raw, VOLUME_RAW_MAX, VOLUME_NOMINAL_MAX)
 
 
 def score_accumulation(df: pd.DataFrame) -> float:
-    """Map the legacy 0..23 positive-evidence range onto the nominal 0..25 range."""
+    """Map the legacy 0..23 positive-evidence range onto nominal 0..25."""
+    if _ORIGINAL_SCORE_ACCUMULATION is None:
+        return 0.0
     raw = float(_ORIGINAL_SCORE_ACCUMULATION(df))
     return _scale_dimension(raw, ACCUMULATION_RAW_MAX, ACCUMULATION_NOMINAL_MAX)
 
 
 def score_structure(df: pd.DataFrame) -> float:
-    """Canonical 15-point structure score with VP/HVN kept diagnostic-only.
-
-    This is the stable structure formula minus the optional 2-point
-    ``Above_HVN`` proximity term.  Removing that term makes live, EXACT and FAST
-    scoring invariant to whether the expensive historical volume profile was
-    materialised, while leaving the public VP/HVN columns untouched for audit
-    and research.
-    """
+    """Canonical 15-point structure score with VP/HVN diagnostic-only."""
     if len(df) < 252 or not all(
         column in df.columns for column in ("Close", "High", "Low")
     ):
@@ -99,7 +100,10 @@ def score_structure(df: pd.DataFrame) -> float:
     if "RegSlope" in df.columns:
         reg_slope = df["RegSlope"].iloc[-1]
         if _core._is_finite(reg_slope):
-            score += _core._clamp(1.0 - abs(float(reg_slope)) / 0.05, 0.0, 1.0) * 2.0
+            score += (
+                _core._clamp(1.0 - abs(float(reg_slope)) / 0.05, 0.0, 1.0)
+                * 2.0
+            )
             if "RegR2" in df.columns:
                 r2 = df["RegR2"].iloc[-1]
                 if _core._is_finite(r2):
@@ -109,11 +113,19 @@ def score_structure(df: pd.DataFrame) -> float:
 
 
 def install() -> None:
+    """Capture unscaled kernels once and always re-assert canonical bindings."""
     global _INSTALLED, _ORIGINAL_SCORE_VOLUME, _ORIGINAL_SCORE_ACCUMULATION
-    if _INSTALLED:
-        return
-    _ORIGINAL_SCORE_VOLUME = _core.score_volume
-    _ORIGINAL_SCORE_ACCUMULATION = _core.score_accumulation
+
+    # Capture only kernels that are not this module's own wrappers. On the first
+    # call these are normally the latest v79 accelerated exact-formula kernels.
+    if _ORIGINAL_SCORE_VOLUME is None and _core.score_volume is not score_volume:
+        _ORIGINAL_SCORE_VOLUME = _core.score_volume
+    if (
+        _ORIGINAL_SCORE_ACCUMULATION is None
+        and _core.score_accumulation is not score_accumulation
+    ):
+        _ORIGINAL_SCORE_ACCUMULATION = _core.score_accumulation
+
     _core.score_volume = score_volume
     _core.score_accumulation = score_accumulation
     _core.score_structure = score_structure
