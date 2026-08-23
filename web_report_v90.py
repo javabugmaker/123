@@ -9,6 +9,7 @@ logs, raw samples, or ranking internals are published.
 from __future__ import annotations
 
 import csv
+import html
 import json
 import logging
 import subprocess
@@ -51,6 +52,11 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _safe(value: object) -> str:
+    """Escape diagnostic text without relying on private v85 helpers."""
+    return html.escape("" if value is None else str(value), quote=True)
+
+
 def _number(value: object) -> float | None:
     try:
         result = float(value)
@@ -89,15 +95,15 @@ def _group_table(groups: object) -> str:
         drawdown = raw.get("max_drawdown_60d")
         body.append(
             "<tr>"
-            f"<td><strong>{_v85._safe(raw.get('group', '—'))}</strong></td>"
-            f"<td class=\"number\">{_v85._safe(raw.get('samples', 0))}</td>"
-            f"<td class=\"number\">{_v85._safe(_pct_value(raw.get('net_excess_win_rate_20d'), fraction=True))}</td>"
+            f"<td><strong>{_safe(raw.get('group', '—'))}</strong></td>"
+            f"<td class=\"number\">{_safe(raw.get('samples', 0))}</td>"
+            f"<td class=\"number\">{_safe(_pct_value(raw.get('net_excess_win_rate_20d'), fraction=True))}</td>"
             f"<td class=\"number {_metric_class(avg20)}\">"
-            f"{_v85._safe(_pct_value(avg20))}</td>"
+            f"{_safe(_pct_value(avg20))}</td>"
             f"<td class=\"number {_metric_class(avg60)}\">"
-            f"{_v85._safe(_pct_value(avg60))}</td>"
+            f"{_safe(_pct_value(avg60))}</td>"
             f"<td class=\"number {_metric_class(drawdown)}\">"
-            f"{_v85._safe(_pct_value(drawdown))}</td>"
+            f"{_safe(_pct_value(drawdown))}</td>"
             "</tr>"
         )
     return (
@@ -122,7 +128,7 @@ def _resonance_block(backtest: dict[str, object]) -> str:
     return f"""
 <section id="five-factor-resonance" class="section card resonance-v90">
   <div class="section-head"><h2>FIVE-FACTOR RESONANCE / 五因子共振回测</h2><p>MACD + KDJ + RSI + OBV + BOLL · 仅作独立诊断，不进入当前排名</p></div>
-  <div class="res-meta"><span>状态 {_v85._safe(status)}</span><span>·</span><span>完整样本 {_v85._safe(samples)}</span><span>·</span><span>{_v85._safe(version)}</span><span>· 信号日收盘快照，无次日数据前视</span></div>
+  <div class="res-meta"><span>状态 {_safe(status)}</span><span>·</span><span>完整样本 {_safe(samples)}</span><span>·</span><span>{_safe(version)}</span><span>· 信号日收盘快照，无次日数据前视</span></div>
   <div class="res-grid">
     <article class="res-panel"><h3>VOTE BAND / 票数分层</h3>{_group_table(by_band)}</article>
     <article class="res-panel"><h3>TRANSITION / 票数变化</h3>{_group_table(by_transition)}</article>
