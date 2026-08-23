@@ -1,21 +1,15 @@
-"""v90 analytics facade with executable-signal backtest semantics.
+"""Canonical analytics facade for the vectorised v95+ runtime.
 
-All v89 point-in-time, publication and ranking-integrity semantics remain intact.
-A ``WAIT_PULLBACK`` row is a pending conditional order, not an instruction to
-buy the next session open. Until the historical engine models zone-touch fills,
-only immediately executable ``BUY_NOW`` and ``BREAKOUT_CONFIRM`` states may
-create return samples used to calibrate the live ranking.
-
-v90 additionally attaches an *independent* five-factor technical-resonance
-snapshot (MACD/KDJ/RSI/OBV/BOLL) to each historical signal date. The resonance
-layer is diagnostic only: it does not change entry eligibility, component
-weights, FinalScore, RankingScore, or calibration. This lets repeated backtests
-measure whether 4/5 confirmation and rising vote counts add genuine OOS value
-before any production gate is changed.
+The stable implementation remains in :mod:`analytics_core`, while this module
+composes acceleration, score, FAST/EXACT consistency, point-in-time diagnostics
+and transactional publication exactly once.  Historical version modules remain
+import-compatible kernels; import order is no longer allowed to define model
+semantics.
 """
 
 from __future__ import annotations
 
+import inspect
 import shutil
 import sys
 import threading
@@ -30,10 +24,13 @@ import analytics_acceleration_v77 as _analytics_acceleration
 import analytics_core as _core
 import backtest_acceleration_v77 as _backtest_acceleration
 import backtest_fastpath_v78 as _backtest_fastpath
+import backtest_fastscore_v80 as _backtest_fastscore
+import backtest_profile_alignment_v95 as _profile_alignment
 import cache_acceleration_v77 as _cache_acceleration
 import calibration_weight_cache_v79 as _calibration_weight_cache
 import indicator_acceleration_v77 as _indicator_acceleration
-import score_acceleration_v79 as _score_acceleration_v79
+import score_runtime_v97 as _score_runtime
+import scoring_consistency_v94 as _scoring_consistency
 import universe_cache_acceleration_v78 as _universe_cache_acceleration
 from analytics_core import *  # noqa: F403
 from backtest_alignment import install_analytics_alignment
@@ -49,33 +46,34 @@ from technical_resonance_v90 import (
     summarize_resonance_samples,
 )
 
+# One deterministic bootstrap. Raw accelerators install first; canonical policy
+# overlays install last so workers, GUI and direct analytics share one runtime.
 _indicator_acceleration.install()
 _cache_acceleration.install()
 _universe_cache_acceleration.install()
 _backtest_acceleration.install()
 _analytics_acceleration.install()
-# analytics_acceleration_v77 installs its older score kernels; re-assert v79
-# afterwards so every spawned worker runs the newest exact-formula fast path.
-_score_acceleration_v79.install()
+_score_runtime.install()
 _calibration_weight_cache.install()
 _backtest_fastpath.install()
+_backtest_fastscore.install()
+_profile_alignment.install()
+_scoring_consistency.install()
 install_analytics_alignment(_core)
 install_single_recency_ranking_guard(_core)
 
-# A WAIT_PULLBACK signal means "place no trade until price returns to the entry
-# zone". The stable historical engine currently executes accepted signals at
-# the next session open, so admitting WAIT_PULLBACK would manufacture fills that
-# the live policy explicitly told the user not to take. Fail closed until a
-# point-in-time zone-touch fill engine exists. Both the exact evaluator and the
-# vectorised FAST prefilter consult this canonical runtime set before a sample is
-# emitted, preserving one execution meaning across modes.
+ANALYTICS_RUNTIME_COMPOSITION_VERSION = (
+    "2026-08-23-v97-canonical-vectorized-analytics-runtime-v1"
+)
+_core.ANALYTICS_RUNTIME_COMPOSITION_VERSION = ANALYTICS_RUNTIME_COMPOSITION_VERSION
+
+# Immediate next-open execution is intentionally limited to signals that are
+# already executable. WAIT_PULLBACK is admitted only by the production
+# conditional-fill transaction, which models a future zone touch explicitly.
 _BACKTEST_EXECUTABLE_SIGNALS = frozenset({"BUY_NOW", "BREAKOUT_CONFIRM"})
 _core._BACKTEST_ACTIONABLE_SIGNALS = _BACKTEST_EXECUTABLE_SIGNALS
 
-# signal_lifecycle_v51 intentionally aliases its module entry to the stable
-# lifecycle core. Preserve the historical private reference for callers that
-# imported it before later lifecycle facades were installed; this is an API
-# compatibility alias only and does not introduce another ranking pass.
+# Keep the old private lifecycle alias for compatibility only.
 _lifecycle_v51_compat = sys.modules.get("signal_lifecycle_v51")
 if _lifecycle_v51_compat is not None and not hasattr(
     _lifecycle_v51_compat, "_legacy_finalize_signal_ranking"
@@ -87,12 +85,12 @@ if _lifecycle_v51_compat is not None and not hasattr(
     )
 
 _LEGACY_APPLY_BACKTEST_PROVENANCE = _core._apply_backtest_provenance
-_LEGACY_CALIBRATION_STABILITY_STATS = _core.calibration_stability_stats
 _LEGACY_BACKTEST_ONE_TICKER_CACHED = _core._backtest_one_ticker_cached
 _LEGACY_TICKER_BACKTEST_ROWS = _core._ticker_backtest_rows
 _LEGACY_SUMMARY_TO_DICT = _core.BacktestSummary.to_dict
 _LEGACY_APPLY_BACKTEST_RANKING = _core.apply_backtest_ranking
 _core._legacy_apply_backtest_ranking = _LEGACY_APPLY_BACKTEST_RANKING
+
 _BACKTEST_PUBLICATION_LOCK = threading.Lock()
 _RESONANCE_ANALYSIS_LOCK = threading.Lock()
 _LAST_RESONANCE_ANALYSIS: dict[str, Any] = {
@@ -157,9 +155,6 @@ def _attach_backtest_resonance(
     """Attach five-factor state only to genuine dated historical samples."""
     if not samples:
         return samples
-    # Compatibility fixtures and fail-closed benchmark tests intentionally use
-    # synthetic rows without signal_date.  Diagnostics must never mutate those
-    # core return-contract sentinels.
     if not any(str(item.get("signal_date") or "").strip() for item in samples):
         return samples
 
@@ -179,6 +174,22 @@ def _attach_backtest_resonance(
         return samples
 
 
+def _supports_profile_contract(callable_obj: Any) -> bool:
+    """Detect legacy patched executors without executing/retrying side effects."""
+    probe = getattr(callable_obj, "side_effect", None)
+    if callable(probe):
+        callable_obj = probe
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return True
+    parameters = signature.parameters
+    return "profile" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
 def _backtest_one_ticker_cached(
     ticker: str,
     source: str,
@@ -192,11 +203,23 @@ def _backtest_one_ticker_cached(
     profile: _core.BacktestExecutionProfile | None = None,
     benchmark_name: str = "沪深300",
 ) -> tuple[list[dict[str, object]], bool]:
-    """Preserve v89 cache semantics while adding point-in-time diagnostics.
+    """Preserve cache semantics and add resonance without signature brittleness."""
+    executor = _core._backtest_one_ticker
+    if not _supports_profile_contract(executor):
+        # Compatibility lane for old research/test integrations that supplied a
+        # positional-only executor. Production executors all use the modern
+        # profile contract, so this branch has no effect on normal cache paths.
+        samples = executor(
+            ticker,
+            source,
+            benchmark_frame,
+            commission,
+            stamp_duty,
+            slippage,
+            split_dates,
+        )
+        return _attach_backtest_resonance(ticker, source, samples), False
 
-    Resonance is recomputed from the current OHLCV cache even when the return
-    sample itself is a cache hit, so the return-cache schema stays unchanged.
-    """
     if benchmark_frame is not None and not benchmark_frame.empty:
         samples, cache_hit = _LEGACY_BACKTEST_ONE_TICKER_CACHED(
             ticker,
@@ -220,7 +243,7 @@ def _backtest_one_ticker_cached(
         benchmark_name,
         ticker,
     )
-    samples = _core._backtest_one_ticker(
+    samples = executor(
         ticker,
         source,
         None,
@@ -237,7 +260,7 @@ def _backtest_one_ticker_cached(
 def _ticker_backtest_rows(
     sample_frame: pd.DataFrame, objective: str = "net_excess_return_20d"
 ) -> list[dict[str, Any]]:
-    """Preserve production calibration and append resonance diagnostics only."""
+    """Preserve calibration rows and attach resonance with one bulk merge."""
     rows = _LEGACY_TICKER_BACKTEST_ROWS(sample_frame, objective)
     analysis = summarize_resonance_samples(sample_frame)
     with _RESONANCE_ANALYSIS_LOCK:
@@ -257,32 +280,48 @@ def _ticker_backtest_rows(
     working["resonance_count"] = pd.to_numeric(
         working["resonance_count"], errors="coerce"
     )
-    delta3 = pd.to_numeric(
+    working["_resonance_rising"] = pd.to_numeric(
         working.get("resonance_delta_3d", pd.Series(np.nan, index=working.index)),
         errors="coerce",
-    )
-    working["_resonance_rising"] = delta3.gt(0.0)
-    lookup: dict[tuple[str, str], dict[str, float]] = {}
-    for (ticker, signal), group in working.groupby(
-        ["ticker", "entry_signal"], sort=False
-    ):
-        valid = group["resonance_count"].dropna()
-        if valid.empty:
-            continue
-        lookup[(str(ticker), str(signal))] = {
-            "resonance_mean_count": round(float(valid.mean()), 4),
-            "resonance_strong_bull_share": round(float(valid.ge(4.0).mean()), 4),
-            "resonance_rising_share": round(
-                float(group.loc[valid.index, "_resonance_rising"].mean()), 4
-            ),
-        }
-    for row in rows:
-        key = (
-            str(row.get("ticker", "")),
-            str(row.get("entry_signal", "UNKNOWN")).upper(),
+    ).gt(0.0)
+    valid = working["resonance_count"].notna()
+    if not valid.any():
+        return rows
+
+    resonance = working.loc[
+        valid, ["ticker", "entry_signal", "resonance_count", "_resonance_rising"]
+    ].copy()
+    resonance["_strong"] = resonance["resonance_count"].ge(4.0)
+    metrics = (
+        resonance.groupby(["ticker", "entry_signal"], sort=False, as_index=False)
+        .agg(
+            resonance_mean_count=("resonance_count", "mean"),
+            resonance_strong_bull_share=("_strong", "mean"),
+            resonance_rising_share=("_resonance_rising", "mean"),
         )
-        row.update(lookup.get(key, {}))
-    return rows
+    )
+    for column in (
+        "resonance_mean_count",
+        "resonance_strong_bull_share",
+        "resonance_rising_share",
+    ):
+        metrics[column] = metrics[column].round(4)
+
+    base = pd.DataFrame.from_records(rows)
+    base["ticker"] = base.get("ticker", pd.Series("", index=base.index)).astype(str)
+    base["entry_signal"] = (
+        base.get("entry_signal", pd.Series("UNKNOWN", index=base.index))
+        .fillna("UNKNOWN")
+        .astype(str)
+        .str.upper()
+    )
+    merged = base.merge(
+        metrics,
+        on=["ticker", "entry_signal"],
+        how="left",
+        validate="one_to_one",
+    )
+    return merged.to_dict(orient="records")
 
 
 def _backtest_summary_to_dict(summary: _core.BacktestSummary) -> dict[str, Any]:
@@ -310,47 +349,8 @@ def _apply_backtest_provenance(
     return result
 
 
-def calibration_stability_stats(
-    rows: list[dict[str, object]] | None,
-    *,
-    minimum_folds: int = 3,
-) -> dict[str, object]:
-    governed = dict(
-        _LEGACY_CALIBRATION_STABILITY_STATS(
-            rows,
-            minimum_folds=minimum_folds,
-        )
-    )
-    status = str(governed.get("status", "") or "").strip().upper()
-    try:
-        raw_multiplier = float(governed.get("confidence_multiplier", 1.0) or 0.0)
-    except (TypeError, ValueError):
-        raw_multiplier = 0.0
-    try:
-        stable_ratio = float(governed.get("stable_fold_ratio", raw_multiplier) or 0.0)
-    except (TypeError, ValueError):
-        stable_ratio = raw_multiplier
-    raw_multiplier = max(0.0, min(1.0, raw_multiplier))
-    stable_ratio = max(0.0, min(1.0, stable_ratio))
-
-    governed["raw_confidence_multiplier"] = round(raw_multiplier, 4)
-    if status == "UNSTABLE":
-        governed["confidence_multiplier"] = round(
-            raw_multiplier * stable_ratio,
-            4,
-        )
-        governed["confidence_governance"] = "unstable-stable-ratio-shrink-v1"
-    else:
-        governed["confidence_multiplier"] = round(raw_multiplier, 4)
-        governed["confidence_governance"] = "legacy-v1"
-    return governed
-
-
 def _transaction_stage_path(path: Path, destination: Path, stage: Path) -> Path:
     candidate = Path(path)
-    # refresh_candidate_exports may already be told to write directly into the
-    # transaction staging root. Do not remap such a path a second time or the
-    # final publication would land under .backtest_publication_txn/.../stage.
     try:
         candidate.relative_to(stage)
         candidate.parent.mkdir(parents=True, exist_ok=True)
@@ -385,13 +385,10 @@ def _refresh_published_ranking_audit(destination: Path) -> None:
 
 
 def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> None:
-    """Run stable backtest postprocess while publishing its result set atomically."""
+    """Run backtest postprocess in one coherent read/write staging root."""
     import report as report_module
 
     with _BACKTEST_PUBLICATION_LOCK:
-        # Resolve the transaction root through the same canonical path the
-        # stable implementation reads. This keeps normal pathlib roots and
-        # compatibility path-like wrappers on one concrete destination.
         destination = Path(_core.OUTPUT_DIR / "AllResults.csv").parent
         report_module.recover_publication_transactions(destination)
         transaction_root = destination / ".backtest_publication_txn" / uuid.uuid4().hex
@@ -399,6 +396,15 @@ def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> N
         backup = transaction_root / "backup"
         stage.mkdir(parents=True, exist_ok=True)
 
+        # The old transaction redirected writes only. Any nested postprocessor
+        # that re-read AllResults therefore saw the pre-transaction file. Seed
+        # the stage and point the canonical OUTPUT_DIR at it so every layer reads
+        # exactly the data that the previous layer wrote.
+        source_csv = destination / "AllResults.csv"
+        if source_csv.is_file():
+            shutil.copy2(source_csv, stage / "AllResults.csv")
+
+        original_output_dir = _core.OUTPUT_DIR
         original_csv = report_module._atomic_write_csv
         original_parquet = report_module._atomic_write_parquet
         original_refresh = report_module.refresh_candidate_exports
@@ -428,19 +434,18 @@ def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> N
                 **kwargs,
             )
 
+        _core.OUTPUT_DIR = stage
         report_module._atomic_write_csv = staged_csv
         report_module._atomic_write_parquet = staged_parquet
         report_module.refresh_candidate_exports = staged_refresh
         try:
-            # The legacy postprocess embeds recency in InstitutionalScore before
-            # it calls the canonical lifecycle ranker. ContextVar activation is
-            # local to this execution context; other callers keep normal rules.
             with single_recency_ranking_context():
                 _core._legacy_apply_backtest_ranking(summary, top_n=top_n)
         except BaseException:
             shutil.rmtree(transaction_root, ignore_errors=True)
             raise
         finally:
+            _core.OUTPUT_DIR = original_output_dir
             report_module._atomic_write_csv = original_csv
             report_module._atomic_write_parquet = original_parquet
             report_module.refresh_candidate_exports = original_refresh
@@ -465,12 +470,8 @@ def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> N
 _core._load_benchmark_frames = _load_benchmark_frames
 _core._backtest_one_ticker_cached = _backtest_one_ticker_cached
 _core._ticker_backtest_rows = _ticker_backtest_rows
-# Keep the v51 spawn-safe initializer identity intact. It imports this public
-# analytics facade inside each Windows worker, so the v90 cached-sample wrapper
-# above is installed there without replacing the established process contract.
 _core.BacktestSummary.to_dict = _backtest_summary_to_dict
 _core._apply_backtest_provenance = _apply_backtest_provenance
-_core.calibration_stability_stats = calibration_stability_stats
 _core._refresh_published_ranking_audit = _refresh_published_ranking_audit
 _core.apply_backtest_ranking = apply_backtest_ranking
 _core.BACKTEST_SIGNAL_EXECUTION_VERSION = (
@@ -478,12 +479,22 @@ _core.BACKTEST_SIGNAL_EXECUTION_VERSION = (
 )
 _core.BACKTEST_RESONANCE_DIAGNOSTIC_VERSION = RESONANCE_VERSION
 _core.BACKTEST_PUBLICATION_INTEGRITY_VERSION = (
-    "2026-08-19-v73-journaled-backtest-publication-v2"
+    "2026-08-23-v97-coherent-stage-read-write-publication-v3"
 )
 _core.BACKTEST_RANKING_INTEGRITY_VERSION = (
     "2026-08-21-v88-verified-point-in-time-ranking-"
     + BACKTEST_RECENCY_NORMALIZATION_VERSION
 )
-_core.PERFORMANCE_ENGINE_VERSION = "2026-08-20-v80-vectorized-backtest-workstation-v1"
+_core.PERFORMANCE_ENGINE_VERSION = "2026-08-23-v97-canonical-vectorized-runtime-v2"
+
+# Production ranking math belongs to analytics itself, not only to the CLI
+# command facade. The generic model_calibration API remains generic; only the
+# analytics resolver receives signal-semantic policy.
+import backtest_math_integrity_v94 as _math_integrity  # noqa: E402
+import calibration_math_v96 as _calibration_math  # noqa: E402
+import model_calibration as _model_calibration  # noqa: E402
+
+_math_integrity.install(_core, _model_calibration)
+_calibration_math.install(_core)
 
 sys.modules[__name__] = _core
