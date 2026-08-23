@@ -1,10 +1,17 @@
-"""v89 analytics facade with executable-signal backtest semantics.
+"""v90 analytics facade with executable-signal backtest semantics.
 
-All v88 point-in-time, publication and ranking-integrity semantics remain intact.
+All v89 point-in-time, publication and ranking-integrity semantics remain intact.
 A ``WAIT_PULLBACK`` row is a pending conditional order, not an instruction to
 buy the next session open. Until the historical engine models zone-touch fills,
 only immediately executable ``BUY_NOW`` and ``BREAKOUT_CONFIRM`` states may
 create return samples used to calibrate the live ranking.
+
+v90 additionally attaches an *independent* five-factor technical-resonance
+snapshot (MACD/KDJ/RSI/OBV/BOLL) to each historical signal date. The resonance
+layer is diagnostic only: it does not change entry eligibility, component
+weights, FinalScore, RankingScore, or calibration. This lets repeated backtests
+measure whether 4/5 confirmation and rising vote counts add genuine OOS value
+before any production gate is changed.
 """
 
 from __future__ import annotations
@@ -14,7 +21,9 @@ import sys
 import threading
 import uuid
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import pandas as pd
 
 import analytics_acceleration_v77 as _analytics_acceleration
@@ -34,6 +43,11 @@ from backtest_rank_integrity_v82 import (
     single_recency_ranking_context,
 )
 from model_audit import run_audit
+from technical_resonance_v90 import (
+    RESONANCE_VERSION,
+    attach_resonance_to_samples,
+    summarize_resonance_samples,
+)
 
 _indicator_acceleration.install()
 _cache_acceleration.install()
@@ -75,13 +89,36 @@ if _lifecycle_v51_compat is not None and not hasattr(
 _LEGACY_APPLY_BACKTEST_PROVENANCE = _core._apply_backtest_provenance
 _LEGACY_CALIBRATION_STABILITY_STATS = _core.calibration_stability_stats
 _LEGACY_BACKTEST_ONE_TICKER_CACHED = _core._backtest_one_ticker_cached
+_LEGACY_TICKER_BACKTEST_ROWS = _core._ticker_backtest_rows
+_LEGACY_SUMMARY_TO_DICT = _core.BacktestSummary.to_dict
 _LEGACY_APPLY_BACKTEST_RANKING = _core.apply_backtest_ranking
 _core._legacy_apply_backtest_ranking = _LEGACY_APPLY_BACKTEST_RANKING
 _BACKTEST_PUBLICATION_LOCK = threading.Lock()
+_RESONANCE_ANALYSIS_LOCK = threading.Lock()
+_LAST_RESONANCE_ANALYSIS: dict[str, Any] = {
+    "version": RESONANCE_VERSION,
+    "status": "NOT_EVALUATED",
+    "by_count": [],
+    "by_band": [],
+    "by_transition": [],
+}
+
+
+def _reset_resonance_analysis() -> None:
+    global _LAST_RESONANCE_ANALYSIS
+    with _RESONANCE_ANALYSIS_LOCK:
+        _LAST_RESONANCE_ANALYSIS = {
+            "version": RESONANCE_VERSION,
+            "status": "NOT_EVALUATED",
+            "by_count": [],
+            "by_band": [],
+            "by_transition": [],
+        }
 
 
 def _load_benchmark_frames(source: str) -> dict[str, pd.DataFrame]:
     """Refresh each benchmark first; use cache only as a resilient fallback."""
+    _reset_resonance_analysis()
     frames: dict[str, pd.DataFrame] = {}
     for name, ticker in _core.BENCHMARKS.items():
         frame: pd.DataFrame | None = None
@@ -111,6 +148,37 @@ def _load_benchmark_frames(source: str) -> dict[str, pd.DataFrame]:
     return frames
 
 
+def _attach_backtest_resonance(
+    ticker: str,
+    source: str,
+    samples: list[dict[str, object]],
+    frame: pd.DataFrame | None = None,
+) -> list[dict[str, object]]:
+    """Attach five-factor state only to genuine dated historical samples."""
+    if not samples:
+        return samples
+    # Compatibility fixtures and fail-closed benchmark tests intentionally use
+    # synthetic rows without signal_date.  Diagnostics must never mutate those
+    # core return-contract sentinels.
+    if not any(str(item.get("signal_date") or "").strip() for item in samples):
+        return samples
+
+    market_frame = frame
+    if market_frame is None or market_frame.empty:
+        market_frame = _core._load_cache(ticker, source)
+    if market_frame is None or market_frame.empty:
+        return samples
+    try:
+        return attach_resonance_to_samples(samples, market_frame)
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        _core.logger.warning(
+            "Five-factor resonance diagnostics unavailable for %s: %s",
+            ticker,
+            exc,
+        )
+        return samples
+
+
 def _backtest_one_ticker_cached(
     ticker: str,
     source: str,
@@ -124,9 +192,13 @@ def _backtest_one_ticker_cached(
     profile: _core.BacktestExecutionProfile | None = None,
     benchmark_name: str = "沪深300",
 ) -> tuple[list[dict[str, object]], bool]:
-    """Never reuse excess-return cache when the benchmark is absent now."""
+    """Preserve v89 cache semantics while adding point-in-time diagnostics.
+
+    Resonance is recomputed from the current OHLCV cache even when the return
+    sample itself is a cache hit, so the return-cache schema stays unchanged.
+    """
     if benchmark_frame is not None and not benchmark_frame.empty:
-        return _LEGACY_BACKTEST_ONE_TICKER_CACHED(
+        samples, cache_hit = _LEGACY_BACKTEST_ONE_TICKER_CACHED(
             ticker,
             source,
             benchmark_frame,
@@ -138,6 +210,7 @@ def _backtest_one_ticker_cached(
             profile=profile,
             benchmark_name=benchmark_name,
         )
+        return _attach_backtest_resonance(ticker, source, samples), cache_hit
 
     frame = _core._load_cache(ticker, source)
     active_profile = profile or _core._resolve_backtest_profile("exact", 1)
@@ -158,7 +231,66 @@ def _backtest_one_ticker_cached(
         profile=active_profile,
         frame=frame,
     )
-    return samples, False
+    return _attach_backtest_resonance(ticker, source, samples, frame=frame), False
+
+
+def _ticker_backtest_rows(
+    sample_frame: pd.DataFrame, objective: str = "net_excess_return_20d"
+) -> list[dict[str, Any]]:
+    """Preserve production calibration and append resonance diagnostics only."""
+    rows = _LEGACY_TICKER_BACKTEST_ROWS(sample_frame, objective)
+    analysis = summarize_resonance_samples(sample_frame)
+    with _RESONANCE_ANALYSIS_LOCK:
+        global _LAST_RESONANCE_ANALYSIS
+        _LAST_RESONANCE_ANALYSIS = analysis
+
+    if not rows or "resonance_count" not in sample_frame:
+        return rows
+
+    working = sample_frame.copy()
+    working["entry_signal"] = (
+        working.get("entry_signal", pd.Series("UNKNOWN", index=working.index))
+        .fillna("UNKNOWN")
+        .astype(str)
+        .str.upper()
+    )
+    working["resonance_count"] = pd.to_numeric(
+        working["resonance_count"], errors="coerce"
+    )
+    delta3 = pd.to_numeric(
+        working.get("resonance_delta_3d", pd.Series(np.nan, index=working.index)),
+        errors="coerce",
+    )
+    working["_resonance_rising"] = delta3.gt(0.0)
+    lookup: dict[tuple[str, str], dict[str, float]] = {}
+    for (ticker, signal), group in working.groupby(
+        ["ticker", "entry_signal"], sort=False
+    ):
+        valid = group["resonance_count"].dropna()
+        if valid.empty:
+            continue
+        lookup[(str(ticker), str(signal))] = {
+            "resonance_mean_count": round(float(valid.mean()), 4),
+            "resonance_strong_bull_share": round(float(valid.ge(4.0).mean()), 4),
+            "resonance_rising_share": round(
+                float(group.loc[valid.index, "_resonance_rising"].mean()), 4
+            ),
+        }
+    for row in rows:
+        key = (
+            str(row.get("ticker", "")),
+            str(row.get("entry_signal", "UNKNOWN")).upper(),
+        )
+        row.update(lookup.get(key, {}))
+    return rows
+
+
+def _backtest_summary_to_dict(summary: _core.BacktestSummary) -> dict[str, Any]:
+    """Expose the held-out resonance experiment in BacktestSummary.json."""
+    result = _LEGACY_SUMMARY_TO_DICT(summary)
+    with _RESONANCE_ANALYSIS_LOCK:
+        result["resonance_analysis"] = dict(_LAST_RESONANCE_ANALYSIS)
+    return result
 
 
 def _apply_backtest_provenance(
@@ -332,6 +464,11 @@ def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> N
 
 _core._load_benchmark_frames = _load_benchmark_frames
 _core._backtest_one_ticker_cached = _backtest_one_ticker_cached
+_core._ticker_backtest_rows = _ticker_backtest_rows
+# Keep the v51 spawn-safe initializer identity intact. It imports this public
+# analytics facade inside each Windows worker, so the v90 cached-sample wrapper
+# above is installed there without replacing the established process contract.
+_core.BacktestSummary.to_dict = _backtest_summary_to_dict
 _core._apply_backtest_provenance = _apply_backtest_provenance
 _core.calibration_stability_stats = calibration_stability_stats
 _core._refresh_published_ranking_audit = _refresh_published_ranking_audit
@@ -339,6 +476,7 @@ _core.apply_backtest_ranking = apply_backtest_ranking
 _core.BACKTEST_SIGNAL_EXECUTION_VERSION = (
     "2026-08-22-v89-immediate-executable-next-open-v1"
 )
+_core.BACKTEST_RESONANCE_DIAGNOSTIC_VERSION = RESONANCE_VERSION
 _core.BACKTEST_PUBLICATION_INTEGRITY_VERSION = (
     "2026-08-19-v73-journaled-backtest-publication-v2"
 )

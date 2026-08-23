@@ -11,10 +11,16 @@ command stage, seeds the current AllResults inputs, runs the existing backtest
 unchanged, and publishes the entire resulting file set with the v75 durable
 journal only when the command returns success. DAILY safely nests this inside
 its own outer staging directory.
+
+v90 keeps the production ranking untouched and materializes the independent
+MACD/KDJ/RSI/OBV/BOLL diagnostics inside the same transaction.  GUI, candidate
+CSVs and the public briefing therefore see one consistent resonance snapshot
+instead of a new BacktestSummary paired with stale candidate files.
 """
 
 from __future__ import annotations
 
+import logging
 import shutil
 import threading
 import uuid
@@ -24,11 +30,13 @@ from typing import Any
 import analytics as _analytics
 import main_core as _main
 import report as _report
+from resonance_reporting_v90 import materialize_resonance_outputs
 from web_report_v81 import maybe_publish_canonical_report
 
 _LEGACY_CMD_BACKTEST = _main.cmd_backtest
 _COMMAND_LOCK = threading.Lock()
 _INSTALLED = False
+logger = logging.getLogger("institution_scanner.backtest_command")
 
 
 def _seed_backtest_inputs(destination: Path, stage: Path) -> None:
@@ -48,6 +56,29 @@ def _canonical_backtest_runtime() -> bool:
         _main.run_historical_backtest is _analytics.run_historical_backtest
         and _main.apply_backtest_ranking is _analytics.apply_backtest_ranking
     )
+
+
+def _materialize_resonance_stage(stage: Path) -> None:
+    """Best-effort diagnostic publication; never alters backtest eligibility."""
+    try:
+        payload = materialize_resonance_outputs(stage)
+    except (OSError, ValueError, TypeError, KeyError, ImportError, RuntimeError) as exc:
+        logger.warning("Five-factor resonance output materialization skipped: %s", exc)
+        return
+    status = str(payload.get("status", "") or "")
+    if status == "MATERIALIZED":
+        logger.info(
+            "Five-factor resonance diagnostics materialized: ticker_metrics=%s, groups=%s, candidate_exports=%s.",
+            payload.get("ticker_metrics", 0),
+            payload.get("diagnostic_groups", 0),
+            payload.get("candidate_exports", "UNKNOWN"),
+        )
+    elif status:
+        logger.info(
+            "Five-factor resonance diagnostics not materialized: %s (%s).",
+            status,
+            payload.get("reason", "no reason"),
+        )
 
 
 def cmd_backtest(args: Any) -> int:
@@ -72,6 +103,8 @@ def cmd_backtest(args: Any) -> int:
             _analytics.OUTPUT_DIR = stage
             _report.OUTPUT_DIR = stage
             code = int(_LEGACY_CMD_BACKTEST(args))
+            if code == 0 and canonical_runtime:
+                _materialize_resonance_stage(stage)
         except BaseException:
             shutil.rmtree(transaction_root, ignore_errors=True)
             raise
@@ -120,7 +153,7 @@ def install() -> None:
     _main._legacy_cmd_backtest = _LEGACY_CMD_BACKTEST
     _main.cmd_backtest = cmd_backtest
     _main.BACKTEST_COMMAND_INTEGRITY_VERSION = (
-        "2026-08-19-v76-whole-command-transaction-v1"
+        "2026-08-23-v90-whole-command-resonance-publication-v1"
     )
     _INSTALLED = True
 
