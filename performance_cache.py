@@ -1,10 +1,11 @@
-"""v94 compute-cache integrity facade.
+"""v96 compute-cache integrity facade.
 
 v52 isolated the canonical share-volume namespace. v62 added deterministic full
-OHLCV fingerprints so older provider revisions invalidate derived caches. v69
-closed the same-length edge. v94 advances the backtest cache namespace because
-FAST historical TriggerScore semantics now match the live/EXACT smooth formula;
-pre-v94 cached historical scores must not be mixed with the new calibration.
+OHLCV fingerprints, v69 closed the same-length revision edge, and v94 advanced
+historical TriggerScore semantics. v95/v96 change both score scale/profile and
+trade execution: FAST/EXACT use the canonical 504-bar score context and
+WAIT_PULLBACK can fill only after a future EntryZone touch. Historical samples
+from earlier namespaces are therefore not comparable and must be rebuilt.
 """
 
 from __future__ import annotations
@@ -27,8 +28,8 @@ _LEGACY_MARKET_CACHE_STATE = _core.market_cache_state
 _LEGACY_MARKET_PREFIX_MATCHES = _core.market_prefix_matches
 
 MARKET_DATA_CACHE_NAMESPACE = "volume-shares-history-fingerprint-v2"
-INDICATOR_CACHE_VERSION = "v7"
-BACKTEST_CACHE_VERSION = "v11"
+INDICATOR_CACHE_VERSION = "v8"
+BACKTEST_CACHE_VERSION = "v13"
 INDICATOR_CACHE_DIR = _core.CACHE_DIR / (
     f"_indicators_{INDICATOR_CACHE_VERSION}_{MARKET_DATA_CACHE_NAMESPACE}"
 )
@@ -170,9 +171,6 @@ def load_or_compute_indicators(
                 )
                 return enriched, False
 
-    # The core path handles exact signature hits and appended histories. Its
-    # market_prefix_matches hook now performs a full-prefix content check before
-    # any incremental indicator/backtest reuse.
     return _LEGACY_LOAD_OR_COMPUTE_INDICATORS(
         ticker,
         frame,

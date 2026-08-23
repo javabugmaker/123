@@ -8,6 +8,10 @@ v80 evaluates the exact dense-history v51 score/entry formulas once for every
 row of a ticker, then the chronological candidate loop performs O(1) array
 lookups. Histories with unexpected indicator gaps fail closed to the v78
 per-candidate implementation. EXACT mode is untouched.
+
+The v95 nominal setup scale is owned here for the vectorised path: Volume's
+22-point positive range and Accumulation's 23-point positive range are mapped
+to their documented 25-point dimensions before BaseScore is assembled.
 """
 
 from __future__ import annotations
@@ -285,7 +289,7 @@ def _fast_score_matrix(
     trend = np.clip(trend, 0.0, 20.0)
     trend[~trend_available] = 0.0
 
-    # Volume score.
+    # Volume score. v95 maps the attainable 22-point raw range to nominal 25.
     volume_score = np.zeros(n, dtype=np.float64)
     ratio = np.divide(
         vol20,
@@ -328,10 +332,10 @@ def _fast_score_matrix(
         + _clip01(z / 2.0) * 2.0,
         0.0,
     )
-    volume_score = np.clip(volume_score, 0.0, 25.0)
+    volume_score = np.clip(volume_score * (25.0 / 22.0), 0.0, 25.0)
     volume_score[~volume_available] = 0.0
 
-    # Accumulation score.
+    # Accumulation score. v95 maps the attainable 23-point raw range to nominal 25.
     accumulation = np.zeros(n, dtype=np.float64)
     first_price_low = close_s.shift(30).rolling(30, min_periods=30).min().to_numpy(dtype=np.float64)
     second_price_low = close_s.rolling(30, min_periods=30).min().to_numpy(dtype=np.float64)
@@ -367,7 +371,7 @@ def _fast_score_matrix(
         np.where((mfi >= 40.0) & (mfi <= 70.0), 3.0, np.where((mfi >= 30.0) & (mfi <= 80.0), 1.5, 0.0)),
         0.0,
     )
-    accumulation = np.clip(accumulation, 0.0, 25.0)
+    accumulation = np.clip(accumulation * (25.0 / 23.0), 0.0, 25.0)
     accumulation[~accumulation_available] = 0.0
 
     # Shared volatility-contraction score. Coverage algebra reduces exactly to
@@ -415,7 +419,7 @@ def _fast_score_matrix(
     structure = np.minimum(structure, 15.0)
     structure[~structure_available] = 0.0
 
-    # Component maxima already sum to 100.  Missing dimensions remain zero;
+    # Component maxima already sum to 100. Missing dimensions remain zero;
     # they must not be renormalised into stronger evidence.
     component_sum = trend + volume_score + accumulation + volatility + structure
     total = component_sum

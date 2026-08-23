@@ -8,6 +8,8 @@ import pandas as pd
 import score_acceleration_v77 as accelerated
 import score_acceleration_v79 as latest
 import score_core
+import score_runtime_v97 as runtime
+import score_scale_migration_v95 as scale
 
 
 def _legacy_available(
@@ -96,13 +98,23 @@ class ScoreAccelerationTests(unittest.TestCase):
             places=12,
         )
 
-    def test_v77_kernel_contract_survives_newer_runtime_supersession(self) -> None:
-        # v77 remains independently equivalent, while v79 intentionally owns
-        # the live score hooks after all acceleration layers are installed.
+    def test_v77_kernel_contract_survives_canonical_runtime_composition(self) -> None:
+        # Historical accelerators remain independently equivalent implementation
+        # kernels. The public endpoint, however, belongs to the current v95+
+        # mathematical contract rather than whichever installer ran last.
         accelerated.install()
         latest.install()
-        self.assertIs(score_core._score_dimensions_available, latest._score_dimensions_available)
-        self.assertIs(score_core.score_volume, latest.score_volume)
+        runtime.install()
+        self.assertIs(
+            score_core._score_dimensions_available,
+            latest._score_dimensions_available,
+        )
+        self.assertIs(score_core.score_volume, scale.score_volume)
+        self.assertIs(scale._ORIGINAL_SCORE_VOLUME, latest.score_volume)
+        self.assertEqual(
+            score_core.SCORE_RUNTIME_COMPOSITION_VERSION,
+            runtime.SCORE_RUNTIME_COMPOSITION_VERSION,
+        )
 
 
 if __name__ == "__main__":

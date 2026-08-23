@@ -178,8 +178,6 @@ class CacheHistoryIntegrityTests(unittest.TestCase):
 
         self.assertTrue(second_hit)
         self.assertEqual(calls, 1)
-        # Parquet round-trips do not guarantee DatetimeIndex.freq metadata;
-        # content/index values are the cache contract, not the inferred frequency.
         pd.testing.assert_series_equal(
             first["SyntheticIndicator"],
             second["SyntheticIndicator"],
@@ -187,8 +185,8 @@ class CacheHistoryIntegrityTests(unittest.TestCase):
         )
 
     def test_cache_namespaces_advance_under_stronger_revision_contract(self) -> None:
-        self.assertEqual(performance_cache.INDICATOR_CACHE_VERSION, "v7")
-        self.assertEqual(performance_cache.BACKTEST_CACHE_VERSION, "v10")
+        self.assertEqual(performance_cache.INDICATOR_CACHE_VERSION, "v8")
+        self.assertEqual(performance_cache.BACKTEST_CACHE_VERSION, "v13")
         self.assertIn("history-fingerprint", performance_cache.MARKET_DATA_CACHE_NAMESPACE)
 
 

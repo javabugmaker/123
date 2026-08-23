@@ -1,14 +1,15 @@
-"""v94 canonical FAST/EXACT scoring consistency.
+"""v94/v97 canonical FAST/EXACT scoring consistency.
 
-The live/EXACT v89 score uses a smooth breakout-price transition around prior
-20-day resistance. The v80 whole-ticker FAST matrix still carried the old
-12->35 point discontinuity. This module wraps only the FAST matrix and
-recomputes TriggerScore/final score with the same vectorised smooth-step math
-used by production execution diagnostics.
+The v80 vectorised matrix owns dense setup-score calculation. This bridge owns
+only the policy that the historical v80 kernel predates: canonical smooth
+TriggerScore and the resulting final-score recomposition.
 
-Candidate scheduling remains intentionally faster/sparser in FAST mode; the
-score of an evaluated endpoint now shares the same trigger formula as the live
-and EXACT paths.
+Setup dimensions are deliberately not re-derived here. Reconstructing Volume,
+Accumulation or trend adjustments in a second matrix created competing owners
+for BaseScore and made import/runtime composition affect numeric output. The
+canonical 504-bar contract is supplied to the historical scorer by the backtest
+profile; any future setup-kernel migration belongs in the v80 implementation
+itself, with direct scalar-equivalence tests.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import score_core as _score
 from execution_integrity_v87 import smooth_breakout_price_component
 
 SCORING_CONSISTENCY_VERSION = (
-    "2026-08-23-v94-fast-exact-smooth-trigger-equivalence-v1"
+    "2026-08-23-v97-fast-exact-single-owner-consistency-v5"
 )
 
 _INSTALLED = False
@@ -50,7 +51,7 @@ def _rolling_count(mask: np.ndarray, window: int) -> np.ndarray:
 
 
 def _indicator_coverage(frame: pd.DataFrame) -> np.ndarray:
-    """Vectorised copy of endpoint dimension-availability semantics."""
+    """Vectorised copy of scalar dimension-availability semantics."""
     n = len(frame)
     positions = np.arange(n)
     close = _numeric(frame, "Close").to_numpy(dtype=np.float64)
@@ -75,7 +76,7 @@ def _indicator_coverage(frame: pd.DataFrame) -> np.ndarray:
     trend = (
         (positions >= 251)
         & trend_pair
-        & (_rolling_count(trend_pair, 252) >= 60)
+        & (_rolling_count(trend_pair, 504) >= 60)
     )
 
     volume_pair = np.isfinite(vol20) & np.isfinite(vol120)
@@ -83,12 +84,9 @@ def _indicator_coverage(frame: pd.DataFrame) -> np.ndarray:
     volume = (positions >= 119) & (
         (
             volume_pair
-            & (
-                _rolling_count(volume_pair, 252)
-                >= int(_score.VOLUME_ACCUM_MIN_DAYS)
-            )
+            & (_rolling_count(volume_pair, 504) >= int(_score.VOLUME_ACCUM_MIN_DAYS))
         )
-        | (z_finite & (_rolling_count(z_finite, 252) >= 10))
+        | (z_finite & (_rolling_count(z_finite, 504) >= 10))
     )
 
     obv_finite = np.isfinite(obv)
@@ -96,15 +94,9 @@ def _indicator_coverage(frame: pd.DataFrame) -> np.ndarray:
     cmf_finite = np.isfinite(cmf)
     mfi_finite = np.isfinite(mfi)
     accumulation = (positions >= 59) & (
-        (obv_finite & (_rolling_count(obv_finite, 252) >= 40))
-        | (
-            ad_pair
-            & (
-                _rolling_count(ad_pair, 252)
-                >= int(_score.AD_SLOPE_LOOKBACK)
-            )
-        )
-        | (cmf_finite & (_rolling_count(cmf_finite, 252) >= 20))
+        (obv_finite & (_rolling_count(obv_finite, 504) >= 40))
+        | (ad_pair & (_rolling_count(ad_pair, 504) >= int(_score.AD_SLOPE_LOOKBACK)))
+        | (cmf_finite & (_rolling_count(cmf_finite, 504) >= 20))
         | mfi_finite
     )
 
@@ -119,7 +111,7 @@ def _indicator_coverage(frame: pd.DataFrame) -> np.ndarray:
         | (
             bb_finite
             & (
-                _rolling_count(bb_finite, 252)
+                _rolling_count(bb_finite, 504)
                 >= int(_score.BB_WIDTH_COMPRESSION_LOOKBACK)
             )
         )
@@ -170,8 +162,8 @@ def canonical_trigger_score_matrix(
     )
     clearance = (clearance - 1.0) * 100.0
     price_points, _confirmation = smooth_breakout_price_component(clearance)
-
     raw = np.asarray(price_points, dtype=np.float64).copy()
+
     prior_volume20 = volume_s.shift(1).rolling(20, min_periods=20).mean().to_numpy(
         dtype=np.float64
     )
@@ -226,7 +218,6 @@ def canonical_trigger_score_matrix(
         0.0,
     )
     raw = np.clip(raw, 0.0, 100.0)
-
     coverage = _indicator_coverage(frame)
     adjusted = np.clip(raw * (0.75 + 0.25 * coverage), 0.0, 100.0)
     return raw, adjusted
@@ -239,9 +230,10 @@ def _fast_score_matrix(frame: pd.DataFrame, *, is_etf: bool):
 
     _raw_trigger, trigger_score = canonical_trigger_score_matrix(frame)
     coverage = _indicator_coverage(frame)
+    base_score = matrix.base_score
     setup_weight, trigger_weight, execution_weight = _score._model_component_weights()
     final_score = np.clip(
-        matrix.base_score * float(setup_weight)
+        base_score * float(setup_weight)
         + trigger_score * float(trigger_weight)
         + matrix.execution_score * float(execution_weight),
         0.0,
@@ -249,7 +241,7 @@ def _fast_score_matrix(frame: pd.DataFrame, *, is_etf: bool):
     )
     final_score = np.minimum(final_score, 40.0 + 60.0 * coverage)
     return _fast.FastScoreMatrix(
-        base_score=matrix.base_score,
+        base_score=base_score,
         trigger_score=trigger_score,
         execution_score=matrix.execution_score,
         final_score=final_score,
@@ -261,9 +253,8 @@ def _fast_score_matrix(frame: pd.DataFrame, *, is_etf: bool):
 
 def install() -> None:
     global _INSTALLED, _ORIGINAL_FAST_SCORE_MATRIX
-    if _INSTALLED:
-        return
-    _ORIGINAL_FAST_SCORE_MATRIX = _fast._fast_score_matrix
-    _fast._fast_score_matrix = _fast_score_matrix
+    if not _INSTALLED:
+        _ORIGINAL_FAST_SCORE_MATRIX = _fast._fast_score_matrix
+        _fast._fast_score_matrix = _fast_score_matrix
+        _INSTALLED = True
     _analytics.SCORING_CONSISTENCY_VERSION = SCORING_CONSISTENCY_VERSION
-    _INSTALLED = True

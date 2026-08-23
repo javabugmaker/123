@@ -1,47 +1,38 @@
-"""Production backtest activation v93.
+"""Production backtest activation v93/v97.
 
 Historical point-in-time universe snapshots remain the preferred calibration
 evidence. When an old signal predates the locally recorded universe snapshots,
 the sample is not promoted to fully verified evidence: it enters a provisional
-lane with a reduced sample weight. Samples that are explicitly known to have
-been outside the historical universe remain excluded.
+lane with a reduced sample weight. Samples explicitly known outside the
+historical universe remain excluded.
 
-v94 hardens the degraded lane by separating historical-universe evidence
-quality from overlap weight and by requiring both an unknown status and a
-missing-snapshot reason before a row can be provisional. Explicit INELIGIBLE or
-EXCLUDED states therefore remain fail-closed even when their reason text is
-blank.
+The strict point-in-time helper remains a stable research API. Provisional
+admission and WAIT_PULLBACK conditional execution are scoped to production
+backtest transactions. Spawned workers install conditional execution in their
+own process. Legacy/test executors that predate the profile-aware contract are
+called unchanged instead of being wrapped twice.
 """
 
 from __future__ import annotations
 
+import inspect
 import threading
 from typing import Any
 
 import pandas as pd
 
 import analytics_core as _core
+import conditional_fill_v96 as _conditional_fill
 
 PRODUCTION_BACKTEST_ACTIVATION_VERSION = (
-    "2026-08-23-v94-provisional-universe-evidence-weight-v2"
+    "2026-08-23-v97-provisional-pit-conditional-fill-capability-v6"
 )
 PROVISIONAL_SAMPLE_WEIGHT_SCALE = 0.25
 _MISSING_UNIVERSE_REASONS = frozenset(
-    {
-        "",
-        "no_point_in_time_snapshot",
-        "snapshot_starts_after_signal",
-    }
+    {"", "no_point_in_time_snapshot", "snapshot_starts_after_signal"}
 )
 _MISSING_UNIVERSE_STATUSES = frozenset(
-    {
-        "",
-        "UNAVAILABLE",
-        "UNKNOWN",
-        "MISSING",
-        "UNVERIFIED",
-        "PROVISIONAL",
-    }
+    {"", "UNAVAILABLE", "UNKNOWN", "MISSING", "UNVERIFIED", "PROVISIONAL"}
 )
 
 _LOCK = threading.RLock()
@@ -56,14 +47,13 @@ _RUN_STATE: dict[str, int] = {
 
 
 def _reset_run_state() -> None:
-    with _LOCK:
-        _RUN_STATE.update(
-            {
-                "verified_model_samples": 0,
-                "provisional_model_samples": 0,
-                "known_excluded_model_samples": 0,
-            }
-        )
+    _RUN_STATE.update(
+        {
+            "verified_model_samples": 0,
+            "provisional_model_samples": 0,
+            "known_excluded_model_samples": 0,
+        }
+    )
 
 
 def _record_run_state(
@@ -72,28 +62,21 @@ def _record_run_state(
     provisional_model_samples: int,
     known_excluded_model_samples: int,
 ) -> None:
-    with _LOCK:
-        _RUN_STATE.update(
-            {
-                "verified_model_samples": int(verified_model_samples),
-                "provisional_model_samples": int(provisional_model_samples),
-                "known_excluded_model_samples": int(known_excluded_model_samples),
-            }
-        )
+    _RUN_STATE.update(
+        {
+            "verified_model_samples": int(verified_model_samples),
+            "provisional_model_samples": int(provisional_model_samples),
+            "known_excluded_model_samples": int(known_excluded_model_samples),
+        }
+    )
 
 
 def _run_state_snapshot() -> dict[str, int]:
-    with _LOCK:
-        return dict(_RUN_STATE)
+    return dict(_RUN_STATE)
 
 
 def _production_point_in_time_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    """Return verified evidence plus conservatively weighted missing-PIT rows.
-
-    Explicit historical exclusions are never admitted. Only rows whose
-    membership could not be observed because the local PIT snapshot is missing
-    (or begins after the signal) may enter the provisional lane.
-    """
+    """Return verified evidence plus conservatively weighted missing-PIT rows."""
     if frame.empty:
         _record_run_state(
             verified_model_samples=0,
@@ -102,27 +85,26 @@ def _production_point_in_time_frame(frame: pd.DataFrame) -> pd.DataFrame:
         )
         return frame.copy()
 
-    if "universe_snapshot_status" in frame.columns:
-        status = (
-            frame["universe_snapshot_status"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.upper()
+    status = (
+        frame.get(
+            "universe_snapshot_status",
+            pd.Series("", index=frame.index, dtype=object),
         )
-    else:
-        status = pd.Series("", index=frame.index, dtype=object)
-
-    if "universe_snapshot_reason" in frame.columns:
-        reason = (
-            frame["universe_snapshot_reason"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.lower()
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+    reason = (
+        frame.get(
+            "universe_snapshot_reason",
+            pd.Series("", index=frame.index, dtype=object),
         )
-    else:
-        reason = pd.Series("", index=frame.index, dtype=object)
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
 
     verified_mask = status.eq("ELIGIBLE")
     missing_snapshot_mask = (
@@ -131,13 +113,11 @@ def _production_point_in_time_frame(frame: pd.DataFrame) -> pd.DataFrame:
         & reason.isin(_MISSING_UNIVERSE_REASONS)
     )
     known_excluded_mask = (~verified_mask) & (~missing_snapshot_mask)
-
-    if "split" in frame.columns:
-        model_mask = frame["split"].astype(str).isin(
-            ["train", "validation", "test"]
-        )
-    else:
-        model_mask = pd.Series(True, index=frame.index, dtype=bool)
+    model_mask = (
+        frame["split"].astype(str).isin(["train", "validation", "test"])
+        if "split" in frame.columns
+        else pd.Series(True, index=frame.index, dtype=bool)
+    )
 
     _record_run_state(
         verified_model_samples=int((verified_mask & model_mask).sum()),
@@ -174,17 +154,34 @@ def _production_point_in_time_frame(frame: pd.DataFrame) -> pd.DataFrame:
             .str.strip()
             .eq("")
         )
-        if blank_reason.any():
-            provisional.loc[
-                blank_reason, "universe_snapshot_reason"
-            ] = "no_point_in_time_snapshot"
+        provisional.loc[
+            blank_reason, "universe_snapshot_reason"
+        ] = "no_point_in_time_snapshot"
 
     if verified.empty:
         return provisional.sort_index(kind="mergesort")
     if provisional.empty:
         return verified.sort_index(kind="mergesort")
-    return pd.concat([verified, provisional], axis=0).sort_index(
-        kind="mergesort"
+    return pd.concat([verified, provisional], axis=0).sort_index(kind="mergesort")
+
+
+def _supports_conditional_executor(function: Any) -> bool:
+    """Require the modern profile-aware scalar executor before wrapping it."""
+    # unittest/mock and older integrations may expose a permissive wrapper while
+    # the real callback lives in ``side_effect``. Inspect that callable so an
+    # old positional executor is never misclassified as profile-aware merely
+    # because MagicMock itself accepts **kwargs.
+    probe = getattr(function, "side_effect", None)
+    if callable(probe):
+        function = probe
+    try:
+        signature = inspect.signature(function)
+    except (TypeError, ValueError):
+        return False
+    parameters = signature.parameters
+    return "profile" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
     )
 
 
@@ -205,6 +202,11 @@ def _decorate_summary(summary: Any, state: dict[str, int]) -> Any:
         float(PROVISIONAL_SAMPLE_WEIGHT_SCALE),
     )
     setattr(summary, "historical_universe_excluded_samples", excluded)
+    setattr(
+        summary,
+        "conditional_fill_version",
+        _conditional_fill.CONDITIONAL_FILL_VERSION,
+    )
 
     if provisional <= 0:
         return summary
@@ -237,23 +239,38 @@ def _decorate_summary(summary: Any, state: dict[str, int]) -> Any:
 
 
 def install(analytics_module: Any, main_module: Any) -> None:
-    """Install the production calibration lane into analytics and main runtime."""
+    """Install the production calibration/execution lane into runtime."""
     global _INSTALLED, _ORIGINAL_RUN_HISTORICAL_BACKTEST
     if _INSTALLED:
         main_module.run_historical_backtest = analytics_module.run_historical_backtest
         return
 
     _ORIGINAL_RUN_HISTORICAL_BACKTEST = analytics_module.run_historical_backtest
-    _core._verified_point_in_time_frame = _production_point_in_time_frame
 
     def run_historical_backtest(*args: Any, **kwargs: Any) -> Any:
-        _reset_run_state()
-        summary = _ORIGINAL_RUN_HISTORICAL_BACKTEST(*args, **kwargs)
-        return _decorate_summary(summary, _run_state_snapshot())
+        with _LOCK:
+            _reset_run_state()
+            previous_verified = _core._verified_point_in_time_frame
+            _core._verified_point_in_time_frame = _production_point_in_time_frame
+            conditional_installed = _supports_conditional_executor(
+                _core._backtest_one_ticker
+            )
+            if conditional_installed:
+                _conditional_fill.install()
+            try:
+                summary = _ORIGINAL_RUN_HISTORICAL_BACKTEST(*args, **kwargs)
+            finally:
+                if conditional_installed:
+                    _conditional_fill.uninstall()
+                _core._verified_point_in_time_frame = previous_verified
+            return _decorate_summary(summary, _run_state_snapshot())
 
     run_historical_backtest.__name__ = "run_historical_backtest"
     run_historical_backtest.__doc__ = (
-        "Run canonical historical backtest with v94 provisional PIT calibration."
+        "Run canonical historical backtest with provisional PIT and conditional fill."
+    )
+    run_historical_backtest.__module__ = getattr(
+        _ORIGINAL_RUN_HISTORICAL_BACKTEST, "__module__", "analytics"
     )
 
     analytics_module.run_historical_backtest = run_historical_backtest

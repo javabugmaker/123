@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import numpy as np
 import pandas as pd
@@ -10,7 +10,8 @@ import analytics
 import score
 import score_acceleration_v79 as accelerated
 import score_core
-import volatility_state
+import score_runtime_v97 as runtime
+import score_scale_migration_v95 as scale
 from indicators import compute_all_indicators
 
 
@@ -109,13 +110,15 @@ def _legacy_trigger_event_score(df: pd.DataFrame) -> float:
 class ScoreKernelEquivalenceTests(unittest.TestCase):
     def setUp(self) -> None:
         accelerated.clear_thread_score_cache()
-        accelerated.install()
+        runtime.install()
 
     def tearDown(self) -> None:
         accelerated.clear_thread_score_cache()
-        accelerated.install()
+        runtime.install()
 
     def _assert_components_equal(self, frame: pd.DataFrame) -> None:
+        # These pairs intentionally test the raw v79 implementation kernel. The
+        # public v95+ runtime wraps Volume/Accumulation with nominal scaling.
         pairs = (
             (accelerated._LEGACY_SCORE_TREND, accelerated.score_trend),
             (accelerated._LEGACY_SCORE_VOLUME, accelerated.score_volume),
@@ -163,41 +166,16 @@ class ScoreKernelEquivalenceTests(unittest.TestCase):
             ):
                 self.assertEqual(getattr(actual, field), getattr(expected, field), msg=field)
 
-    def test_whole_score_breakdown_matches_when_only_execution_strategy_changes(self) -> None:
+    def test_whole_score_breakdown_survives_raw_kernel_reinstallation(self) -> None:
         frame = _enriched_frame()
-        legacy_patches = (
-            patch.object(score_core, "_series", accelerated._LEGACY_SERIES),
-            patch.object(score_core, "_latest", accelerated._LEGACY_LATEST),
-            patch.object(score_core, "_rolling_mean", accelerated._LEGACY_ROLLING_MEAN),
-            patch.object(score_core, "_safe_return", accelerated._LEGACY_SAFE_RETURN),
-            patch.object(score_core, "score_trend", accelerated._LEGACY_SCORE_TREND),
-            patch.object(score_core, "score_volume", accelerated._LEGACY_SCORE_VOLUME),
-            patch.object(
-                score_core,
-                "score_accumulation",
-                accelerated._LEGACY_SCORE_ACCUMULATION,
-            ),
-            patch.object(score_core, "score_structure", accelerated._LEGACY_SCORE_STRUCTURE),
-            patch.object(score_core, "classify_style", accelerated._LEGACY_CLASSIFY_STYLE),
-            patch.object(score_core, "entry_point", accelerated._LEGACY_ENTRY_POINT),
-            patch.object(
-                volatility_state,
-                "evaluate_volatility_contraction",
-                accelerated._LEGACY_VOLATILITY_STATE,
-            ),
-        )
-        contexts = []
-        try:
-            for context in legacy_patches:
-                context.start()
-                contexts.append(context)
-            accelerated.clear_thread_score_cache()
-            expected = score.score_ticker(frame.copy(), is_etf=False)
-        finally:
-            for context in reversed(contexts):
-                context.stop()
+        runtime.install()
+        accelerated.clear_thread_score_cache()
+        expected = score.score_ticker(frame.copy(), is_etf=False)
 
+        # Simulate an older facade re-installing its raw kernels, then restore
+        # the single canonical composition exactly as production does.
         accelerated.install()
+        runtime.install()
         accelerated.clear_thread_score_cache()
         actual = score.score_ticker(frame.copy(), is_etf=False)
         fields = (
@@ -233,11 +211,11 @@ class ScoreKernelEquivalenceTests(unittest.TestCase):
 class ScoreCacheBehaviorTests(unittest.TestCase):
     def setUp(self) -> None:
         accelerated.clear_thread_score_cache()
-        accelerated.install()
+        runtime.install()
 
     def tearDown(self) -> None:
         accelerated.clear_thread_score_cache()
-        accelerated.install()
+        runtime.install()
 
     def test_numeric_series_is_reused_for_same_frame(self) -> None:
         frame = _enriched_frame()
@@ -251,7 +229,7 @@ class ScoreCacheBehaviorTests(unittest.TestCase):
     def test_style_is_computed_once_per_frame_and_asset_type(self) -> None:
         frame = _enriched_frame()
         legacy = Mock(return_value="均衡")
-        with patch.object(accelerated, "_LEGACY_CLASSIFY_STYLE", legacy):
+        with unittest.mock.patch.object(accelerated, "_LEGACY_CLASSIFY_STYLE", legacy):
             self.assertEqual(accelerated.classify_style(frame, False), "均衡")
             self.assertEqual(accelerated.classify_style(frame, False), "均衡")
             self.assertEqual(accelerated.classify_style(frame, True), "均衡")
@@ -269,7 +247,7 @@ class ScoreCacheBehaviorTests(unittest.TestCase):
                 "stop": 9.0,
             }
         )
-        with patch.object(accelerated, "_LEGACY_ENTRY_POINT", legacy):
+        with unittest.mock.patch.object(accelerated, "_LEGACY_ENTRY_POINT", legacy):
             first = accelerated.entry_point(
                 frame,
                 breakout=66.0,
@@ -293,11 +271,17 @@ class ScoreCacheBehaviorTests(unittest.TestCase):
         second = accelerated.evaluate_volatility_contraction(frame)
         self.assertIs(first, second)
 
-    def test_v79_kernels_remain_installed_under_v80_runtime(self) -> None:
+    def test_v79_kernel_is_inner_layer_of_canonical_runtime(self) -> None:
         accelerated.install()
+        runtime.install()
         self.assertIs(score_core._series, accelerated._series)
-        self.assertIs(score_core.score_volume, accelerated.score_volume)
-        self.assertIs(score_core.score_accumulation, accelerated.score_accumulation)
+        self.assertIs(score_core.score_volume, scale.score_volume)
+        self.assertIs(score_core.score_accumulation, scale.score_accumulation)
+        self.assertIs(scale._ORIGINAL_SCORE_VOLUME, accelerated.score_volume)
+        self.assertIs(
+            scale._ORIGINAL_SCORE_ACCUMULATION,
+            accelerated.score_accumulation,
+        )
         self.assertIs(score_core.entry_point, accelerated.entry_point)
         self.assertEqual(
             analytics.PERFORMANCE_ENGINE_VERSION,

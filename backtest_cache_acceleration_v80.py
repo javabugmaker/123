@@ -10,10 +10,16 @@ paths retain the exact prefix verification and maturity rewind contract.
 FAST samples are namespaced once for the v80 whole-ticker scorer because v80
 also fixes the ETF value-trap quick-gate semantics. EXACT caches keep their
 existing identity.
+
+v97 keeps the production profile-aware executor but detects old positional-only
+research/test integrations at the actual cache-kernel call boundary. This makes
+compatibility independent of whichever facade currently owns the public cached
+function.
 """
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import pandas as pd
@@ -111,6 +117,63 @@ def _cache_identity(
     return identity
 
 
+def _supports_profile_contract(callable_obj: Any) -> bool:
+    """Return whether an executor accepts the modern keyword profile contract."""
+    probe = getattr(callable_obj, "side_effect", None)
+    if callable(probe):
+        callable_obj = probe
+    try:
+        parameters = inspect.signature(callable_obj).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(
+        parameter.name == "profile"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _invoke_backtest_one_ticker(
+    ticker: str,
+    source: str,
+    benchmark_frame: pd.DataFrame | None,
+    commission: float,
+    stamp_duty: float,
+    slippage: float,
+    split_dates: tuple[pd.Timestamp | None, pd.Timestamp | None],
+    *,
+    active_profile: Any | None = None,
+    signal_start_index: int | None = None,
+    sample_min_signal_index: int | None = None,
+    frame: pd.DataFrame | None = None,
+) -> list[dict[str, Any]]:
+    """Invoke modern production executors without breaking legacy positional hooks."""
+    executor = _core._backtest_one_ticker
+    if not _supports_profile_contract(executor):
+        return executor(
+            ticker,
+            source,
+            benchmark_frame,
+            commission,
+            stamp_duty,
+            slippage,
+            split_dates,
+        )
+    return executor(
+        ticker,
+        source,
+        benchmark_frame,
+        commission,
+        stamp_duty,
+        slippage,
+        split_dates,
+        profile=active_profile,
+        signal_start_index=signal_start_index,
+        sample_min_signal_index=sample_min_signal_index,
+        frame=frame,
+    )
+
+
 def _backtest_one_ticker_cached(
     ticker: str,
     source: str,
@@ -128,7 +191,7 @@ def _backtest_one_ticker_cached(
     frame = _core._load_cache(ticker, source)
     if frame is None or len(frame) < 300:
         return (
-            _core._backtest_one_ticker(
+            _invoke_backtest_one_ticker(
                 ticker,
                 source,
                 benchmark_frame,
@@ -200,7 +263,7 @@ def _backtest_one_ticker_cached(
                 for item in cached_samples
                 if pd.Timestamp(item.get("signal_date")) < cutoff_date
             ]
-            tail_samples = _core._backtest_one_ticker(
+            tail_samples = _invoke_backtest_one_ticker(
                 ticker,
                 source,
                 benchmark_frame,
@@ -208,7 +271,7 @@ def _backtest_one_ticker_cached(
                 stamp_duty,
                 slippage,
                 split_dates,
-                profile=active_profile,
+                active_profile=active_profile,
                 signal_start_index=warmup,
                 sample_min_signal_index=cutoff_index,
                 frame=frame,
@@ -227,7 +290,7 @@ def _backtest_one_ticker_cached(
                 context["_v80_last_recompute_bars"] = max(0, len(frame) - warmup)
             return samples, True
 
-    samples = _core._backtest_one_ticker(
+    samples = _invoke_backtest_one_ticker(
         ticker,
         source,
         benchmark_frame,
@@ -235,7 +298,7 @@ def _backtest_one_ticker_cached(
         stamp_duty,
         slippage,
         split_dates,
-        profile=active_profile,
+        active_profile=active_profile,
         frame=frame,
     )
     if _core.BACKTEST_CACHE_ENABLED:
