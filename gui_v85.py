@@ -10,7 +10,7 @@ same workstation the user already operates.
 from __future__ import annotations
 
 from collections import Counter
-from typing import Mapping
+from collections.abc import Mapping
 
 import customtkinter as ctk
 
@@ -22,7 +22,6 @@ from v85_terminal_config import (
     COLORS,
     LAYOUT,
     PAGE_LABEL,
-    TERMINAL_VERSION,
     TYPOGRAPHY,
 )
 
@@ -140,7 +139,13 @@ class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
         header.pack(fill=tk.X, padx=18, pady=(10, 5))
         header.pack_propagate(False)
 
-        brand = ctk.CTkFrame(header, width=145, height=54, corner_radius=0, fg_color="transparent")
+        brand = ctk.CTkFrame(
+            header,
+            width=145,
+            height=54,
+            corner_radius=0,
+            fg_color="transparent",
+        )
         brand.place(x=0, rely=0.5, anchor="w")
         ctk.CTkLabel(
             brand,
