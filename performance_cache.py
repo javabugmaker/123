@@ -1,10 +1,10 @@
-"""v69 compute-cache integrity facade.
+"""v94 compute-cache integrity facade.
 
 v52 isolated the canonical share-volume namespace. v62 added deterministic full
 OHLCV fingerprints so older provider revisions invalidate derived caches. v69
-closes the final same-length edge: content fingerprints are checked even when
-the source file size/mtime signature did not change. Pure appended histories
-still use the existing prefix-verified incremental path.
+closed the same-length edge. v94 advances the backtest cache namespace because
+FAST historical TriggerScore semantics now match the live/EXACT smooth formula;
+pre-v94 cached historical scores must not be mixed with the new calibration.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ _LEGACY_MARKET_PREFIX_MATCHES = _core.market_prefix_matches
 
 MARKET_DATA_CACHE_NAMESPACE = "volume-shares-history-fingerprint-v2"
 INDICATOR_CACHE_VERSION = "v7"
-BACKTEST_CACHE_VERSION = "v10"
+BACKTEST_CACHE_VERSION = "v11"
 INDICATOR_CACHE_DIR = _core.CACHE_DIR / (
     f"_indicators_{INDICATOR_CACHE_VERSION}_{MARKET_DATA_CACHE_NAMESPACE}"
 )
