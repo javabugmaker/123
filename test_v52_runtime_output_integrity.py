@@ -50,10 +50,11 @@ class V52RuntimeOutputIntegrityTests(unittest.TestCase):
         self.assertIn("v52", config.OUTPUT_CONTRACT_VERSION)
         self.assertIn("v52", config.MARKET_DATA_VERSION)
         self.assertIn("v52", config.BACKTEST_PROVENANCE_VERSION)
-        # v52 established v9; v62 advanced to v10 for deterministic OHLCV
-        # revision fingerprints. v94 advances to v11 because FAST historical
-        # TriggerScore now uses the same smooth formula as live/EXACT scoring.
-        self.assertEqual(performance_cache.BACKTEST_CACHE_VERSION, "v11")
+        # v52 established v9; v62 advanced to v10 for full-history revision
+        # fingerprints, v94 to v11 for smooth FAST TriggerScore, and v95/v96
+        # intentionally advance through v13 because score scale/profile and
+        # conditional-fill execution make older historical samples incomparable.
+        self.assertEqual(performance_cache.BACKTEST_CACHE_VERSION, "v13")
 
     def test_tickflow_limit_price_levels_are_not_misread_as_ratios(self) -> None:
         symbol = "600769.SH"
