@@ -1,22 +1,13 @@
 """Whole-command transaction for standalone backtests.
 
-``analytics.apply_backtest_ranking`` already stages ranking outputs, but the
-standalone CLI/GUI backtest also writes ``ScoreCalibration.json`` and an initial
-then-final ``BacktestSummary.json`` around that ranking step. Without an outer
-command transaction those metadata files can belong to a newer run than the
-canonical AllResults files when postprocessing fails.
+``analytics.apply_backtest_ranking`` stages ranking outputs, while the
+standalone CLI/GUI backtest also writes model calibration and summary metadata.
+This facade redirects the full command into one temporary stage and publishes
+only after the command completes successfully.
 
-This facade redirects the main/analytics/report output roots to one temporary
-command stage, seeds the current AllResults inputs, runs the existing backtest
-unchanged, and publishes the entire resulting file set with the durable journal
-only when the command returns success. DAILY safely nests this inside its own
-outer staging directory.
-
-v91 installs parent-process resonance recovery. v93/v94 activate production
-historical-universe evidence with a discounted missing-snapshot lane. v94 also
-separates PIT evidence quality from date-overlap weighting and forbids broad
-asset/global peer priors from leaking executable-signal performance into
-WAIT/HOLD/AVOID ranking states.
+v95/v96 activate canonical 504-bar score semantics, conditional WAIT_PULLBACK
+fills and stationary calibration math.  The public analytics transaction stays
+unchanged; calibration v96 wraps only its stable inner postprocess.
 """
 
 from __future__ import annotations
@@ -31,6 +22,7 @@ from typing import Any
 import analytics as _analytics
 import backtest_math_integrity_v94 as _math_integrity
 import backtest_production_activation_v93 as _production_activation
+import calibration_math_v96 as _calibration_math
 import main_core as _main
 import model_calibration as _model_calibration
 import report as _report
@@ -41,6 +33,7 @@ from web_report_v81 import maybe_publish_canonical_report
 _resonance_runtime.install()
 _production_activation.install(_analytics, _main)
 _math_integrity.install(_analytics, _model_calibration)
+_calibration_math.install(_analytics)
 _main.apply_backtest_ranking = _analytics.apply_backtest_ranking
 
 _LEGACY_CMD_BACKTEST = _main.cmd_backtest
@@ -168,11 +161,12 @@ def install() -> None:
     _resonance_runtime.install()
     _production_activation.install(_analytics, _main)
     _math_integrity.install(_analytics, _model_calibration)
+    _calibration_math.install(_analytics)
     _main.apply_backtest_ranking = _analytics.apply_backtest_ranking
     _main._legacy_cmd_backtest = _LEGACY_CMD_BACKTEST
     _main.cmd_backtest = cmd_backtest
     _main.BACKTEST_COMMAND_INTEGRITY_VERSION = (
-        "2026-08-23-v94-production-backtest-math-integrity-v1"
+        "2026-08-23-v96-scale-calibration-conditional-fill-v2"
     )
     _main.PRODUCTION_BACKTEST_ACTIVATION_VERSION = (
         _production_activation.PRODUCTION_BACKTEST_ACTIVATION_VERSION
@@ -180,6 +174,7 @@ def install() -> None:
     _main.PRODUCTION_BACKTEST_MATH_VERSION = (
         _math_integrity.PRODUCTION_BACKTEST_MATH_VERSION
     )
+    _main.CALIBRATION_MATH_VERSION = _calibration_math.CALIBRATION_MATH_VERSION
     _INSTALLED = True
 
 
