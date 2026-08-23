@@ -4,7 +4,7 @@
 keeps style labels descriptive, keeps TriggerScore orthogonal to setup trend,
 uses one volatility-contraction definition for filters/scoring, shares the
 continuous breakout-price evidence used by the execution integrity gate, and
-installs the v95 nominal setup-dimension scale after all legacy accelerators.
+installs the v95 score-scale / threshold migrations.
 """
 
 from __future__ import annotations
@@ -14,10 +14,17 @@ import sys
 import numpy as np
 import pandas as pd
 
-import score_core as _core
-from execution_integrity_v87 import smooth_breakout_price_component
-from score_core import *  # noqa: F403
-from volatility_state import volatility_contraction_score
+import config as _config
+import score_threshold_migration_v95 as _threshold_migration_v95
+
+# analytics_core imports score before signal_lifecycle. Publish the migrated
+# constants now so lifecycle_core reads the canonical thresholds on first load.
+_threshold_migration_v95.install(_config)
+
+import score_core as _core  # noqa: E402
+from execution_integrity_v87 import smooth_breakout_price_component  # noqa: E402
+from score_core import *  # noqa: E402,F403
+from volatility_state import volatility_contraction_score  # noqa: E402
 
 _legacy_score_ticker = _core.score_ticker
 
@@ -99,15 +106,7 @@ def trigger_event_score(df: pd.DataFrame) -> float:
 
 
 def score_ticker(df: pd.DataFrame, is_etf: bool = False):
-    """Run one cache-safe scoring transaction, then replace TriggerScore.
-
-    The v79 numeric cache is intentionally keyed by ``DataFrame`` identity so
-    all component kernels can share converted arrays during one score. A caller
-    may nevertheless update an existing frame in place before asking for a
-    fresh score. Clear the thread-local state at this public transaction
-    boundary so the new call can never observe arrays from the previous frame
-    contents; reuse inside the transaction remains unchanged.
-    """
+    """Run one cache-safe scoring transaction, then replace TriggerScore."""
     acceleration = sys.modules.get("score_acceleration_v79")
     clear_cache = getattr(acceleration, "clear_thread_score_cache", None)
     if callable(clear_cache):
@@ -142,9 +141,6 @@ _core.score_volatility = score_volatility
 _core.trigger_event_score = trigger_event_score
 _core.score_ticker = score_ticker
 
-# Older acceleration facades can initialize later through analytics.py. The
-# v79 installers are re-entrant so the newest exact-formula kernels remain the
-# final runtime bindings.
 import score_acceleration_v79 as _score_acceleration_v79  # noqa: E402
 import score_endpoint_acceleration_v79 as _score_endpoint_acceleration_v79  # noqa: E402
 import score_weight_cache_v79 as _score_weight_cache_v79  # noqa: E402
@@ -153,8 +149,7 @@ import score_scale_migration_v95 as _score_scale_migration_v95  # noqa: E402
 _score_acceleration_v79.install()
 _score_endpoint_acceleration_v79.install()
 _score_weight_cache_v79.install()
-# Scale migration must be last because v79 rebinds the stable component
-# endpoints.  This keeps scalar/live/EXACT calls on the canonical v95 scale.
+# Scale migration must be last because v79 rebinds stable component endpoints.
 _score_scale_migration_v95.install()
 
 sys.modules[__name__] = _core
