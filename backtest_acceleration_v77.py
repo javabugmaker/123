@@ -4,11 +4,12 @@ Each ProcessPool worker reuses one benchmark DataFrame for hundreds/thousands of
 tickers. v77/v78 keep exact market-history validation, incremental maturity
 rewind and historical-universe memoization. v80 adds O(1) benchmark alignment,
 vectorised tradeability/exit resolution, precomputed sample execution state,
-one-hash warm cache validation and vectorised-workload process/chunk tuning.
-v98 completes the normal numeric execution path with batched drawdown/outcome
-math, fixes the dense FAST 504-bar trend lookback and vectorises conditional
-WAIT_PULLBACK resolution. All layers are installed through ``import analytics``
-so Windows spawned workers receive the same runtime as the parent process.
+one-hash warm cache validation and the canonical vectorised-workload
+process/chunk tuning. v98 completes the normal numeric execution path with
+batched drawdown/outcome math, fixes the dense FAST 504-bar trend lookback and
+vectorises conditional WAIT_PULLBACK resolution. All layers are installed
+through ``import analytics`` so Windows spawned workers receive the same runtime
+as the parent process.
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ import backtest_incremental_v78 as _incremental
 import backtest_sample_acceleration_v80 as _sample_v80
 import backtest_sample_guard_v80 as _sample_guard_v80
 import backtest_vectorization_v98 as _vectorization_v98
-import backtest_worker_tuning_v78 as _worker_tuning_v78
 import backtest_worker_tuning_v80 as _worker_tuning_v80
 import cache_acceleration_v77 as _cache_acceleration
 import historical_lookup_acceleration_v78 as _historical_lookup
@@ -40,7 +40,6 @@ setattr(_core, "_model_component_weights", _score._model_component_weights)
 _cache_acceleration.install()
 _incremental.install()
 _historical_lookup.install()
-_worker_tuning_v78.install()
 _worker_tuning_v80.install()
 _score_cache_guard_v80.install()
 _tradeability_v80.install()
@@ -112,7 +111,6 @@ def install() -> None:
     _cache_acceleration.install()
     _incremental.install()
     _historical_lookup.install()
-    _worker_tuning_v78.install()
     _worker_tuning_v80.install()
     _score_cache_guard_v80.install()
     _tradeability_v80.install()
