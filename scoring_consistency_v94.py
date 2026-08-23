@@ -1,17 +1,15 @@
 """v94/v97 canonical FAST/EXACT scoring consistency.
 
-The v80 vectorised matrix owns the dense setup calculation. This layer now has
-only two responsibilities that differ from that historical kernel:
+The v80 vectorised matrix owns dense setup-score calculation. This bridge owns
+only the policy that the historical v80 kernel predates: canonical smooth
+TriggerScore and the resulting final-score recomposition.
 
-* replace the old discontinuous FAST TriggerScore with the canonical smooth
-  breakout-price evidence;
-* extend the trend drawdown context from the v80 252-bar peak to the canonical
-  504-bar scoring window.
-
-Volume/Accumulation scale migration is deliberately *not* reconstructed here.
-Doing so duplicated score-policy work across layers and, after the canonical
-runtime composition became re-entrant, double-counted the setup uplift. Keeping
-one owner for each transformation removes that import-order-sensitive drift.
+Setup dimensions are deliberately not re-derived here. Reconstructing Volume,
+Accumulation or trend adjustments in a second matrix created competing owners
+for BaseScore and made import/runtime composition affect numeric output. The
+canonical 504-bar contract is supplied to the historical scorer by the backtest
+profile; any future setup-kernel migration belongs in the v80 implementation
+itself, with direct scalar-equivalence tests.
 """
 
 from __future__ import annotations
@@ -27,7 +25,7 @@ import score_core as _score
 from execution_integrity_v87 import smooth_breakout_price_component
 
 SCORING_CONSISTENCY_VERSION = (
-    "2026-08-23-v97-fast-exact-single-owner-consistency-v4"
+    "2026-08-23-v97-fast-exact-single-owner-consistency-v5"
 )
 
 _INSTALLED = False
@@ -225,56 +223,6 @@ def canonical_trigger_score_matrix(
     return raw, adjusted
 
 
-def _trend_504_delta(frame: pd.DataFrame) -> np.ndarray:
-    """Return setup-point change from v80 252-row peak to 504-row context."""
-    close = _numeric(frame, "Close")
-    ma200 = _numeric(frame, "MA200")
-    pair = close.notna().to_numpy() & ma200.notna().to_numpy()
-    values = np.where(pair, close.to_numpy(dtype=np.float64), np.nan)
-    series = pd.Series(values, index=frame.index)
-    peak252 = series.rolling(252, min_periods=1).max().to_numpy(dtype=np.float64)
-    peak504 = series.rolling(504, min_periods=1).max().to_numpy(dtype=np.float64)
-    price = close.to_numpy(dtype=np.float64)
-
-    def depth_points(peak: np.ndarray) -> np.ndarray:
-        depth = np.abs(
-            np.divide(
-                price - peak,
-                peak,
-                out=np.zeros(len(frame), dtype=np.float64),
-                where=np.isfinite(peak) & (peak > 0.0) & np.isfinite(price),
-            )
-        )
-        mask = (depth >= 0.15) & (depth <= 0.50)
-        return np.where(
-            mask,
-            np.clip(1.0 - np.abs(depth - 0.32) / 0.25, 0.0, 1.0) * 3.0,
-            0.0,
-        )
-
-    available = (
-        (np.arange(len(frame)) >= 251)
-        & pair
-        & (_rolling_count(pair, 504) >= 60)
-    )
-    delta = depth_points(peak504) - depth_points(peak252)
-    return np.where(available, delta, 0.0)
-
-
-def _canonical_base_score(
-    frame: pd.DataFrame,
-    legacy_base: np.ndarray,
-    coverage: np.ndarray,
-) -> np.ndarray:
-    """Apply only the 504-bar trend correction owned by this bridge."""
-    setup_coverage = 0.55 + 0.45 * coverage
-    return np.clip(
-        legacy_base + _trend_504_delta(frame) * setup_coverage,
-        0.0,
-        100.0,
-    )
-
-
 def _fast_score_matrix(frame: pd.DataFrame, *, is_etf: bool):
     matrix = _ORIGINAL_FAST_SCORE_MATRIX(frame, is_etf=is_etf)
     if matrix is None:
@@ -282,7 +230,7 @@ def _fast_score_matrix(frame: pd.DataFrame, *, is_etf: bool):
 
     _raw_trigger, trigger_score = canonical_trigger_score_matrix(frame)
     coverage = _indicator_coverage(frame)
-    base_score = _canonical_base_score(frame, matrix.base_score, coverage)
+    base_score = matrix.base_score
     setup_weight, trigger_weight, execution_weight = _score._model_component_weights()
     final_score = np.clip(
         base_score * float(setup_weight)
