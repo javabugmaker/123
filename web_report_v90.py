@@ -8,12 +8,10 @@ fault must never roll back an otherwise valid DAILY result transaction.
 
 from __future__ import annotations
 
-import csv
 import html
 import json
 import logging
 import os
-import subprocess
 from pathlib import Path
 from typing import Any
 
