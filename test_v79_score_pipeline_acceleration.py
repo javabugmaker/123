@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import numpy as np
 import pandas as pd
@@ -12,7 +12,6 @@ import score_acceleration_v79 as accelerated
 import score_core
 import score_runtime_v97 as runtime
 import score_scale_migration_v95 as scale
-import volatility_state
 from indicators import compute_all_indicators
 
 
@@ -148,6 +147,8 @@ class ScoreKernelEquivalenceTests(unittest.TestCase):
             self.assertAlmostEqual(actual, expected, places=10)
 
     def test_volatility_state_matches_stable_implementation(self) -> None:
+        import volatility_state
+
         for frame in (_enriched_frame(), _enriched_frame(with_holes=True)):
             expected = accelerated._LEGACY_VOLATILITY_STATE(frame)
             accelerated.clear_thread_score_cache()
@@ -230,7 +231,7 @@ class ScoreCacheBehaviorTests(unittest.TestCase):
     def test_style_is_computed_once_per_frame_and_asset_type(self) -> None:
         frame = _enriched_frame()
         legacy = Mock(return_value="均衡")
-        with patch.object(accelerated, "_LEGACY_CLASSIFY_STYLE", legacy):
+        with unittest.mock.patch.object(accelerated, "_LEGACY_CLASSIFY_STYLE", legacy):
             self.assertEqual(accelerated.classify_style(frame, False), "均衡")
             self.assertEqual(accelerated.classify_style(frame, False), "均衡")
             self.assertEqual(accelerated.classify_style(frame, True), "均衡")
@@ -248,7 +249,7 @@ class ScoreCacheBehaviorTests(unittest.TestCase):
                 "stop": 9.0,
             }
         )
-        with patch.object(accelerated, "_LEGACY_ENTRY_POINT", legacy):
+        with unittest.mock.patch.object(accelerated, "_LEGACY_ENTRY_POINT", legacy):
             first = accelerated.entry_point(
                 frame,
                 breakout=66.0,
