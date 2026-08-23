@@ -1,25 +1,24 @@
-"""v90 public briefing adapter for five-factor resonance diagnostics.
+"""v91 public briefing adapter for five-factor resonance diagnostics.
 
 The existing v85 report owns the public allowlist, charts and interaction model.
-v90 intentionally post-processes that validated document with one aggregate
-backtest section sourced from ``BacktestSummary.json``.  No private cache paths,
-logs, raw samples, or ranking internals are published.
+v91 post-processes that validated document with one aggregate backtest section
+and keeps the web publication boundary strictly fail-soft: a presentation-layer
+fault must never roll back an otherwise valid DAILY result transaction.
 """
 
 from __future__ import annotations
 
-import csv
 import html
 import json
 import logging
-import subprocess
+import os
 from pathlib import Path
 from typing import Any
 
 import web_report_v85 as _v85
 from web_report_v85 import *  # noqa: F403
 
-WEB_REPORT_VERSION = "2026-08-23-v90-five-factor-resonance-web-v1"
+WEB_REPORT_VERSION = "2026-08-23-v91-runtime-hardening-web-v1"
 WebReportResult = _v85.WebReportResult
 DEFAULT_OUTPUT_DIR = _v85.DEFAULT_OUTPUT_DIR
 DEFAULT_SITE_DIR = _v85.DEFAULT_SITE_DIR
@@ -53,8 +52,21 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _safe(value: object) -> str:
-    """Escape diagnostic text without relying on private v85 helpers."""
+    """Escape diagnostic text without relying on private compatibility helpers."""
     return html.escape("" if value is None else str(value), quote=True)
+
+
+def _truthy_env(name: str, default: bool = True) -> bool:
+    """Read one boolean environment flag locally.
+
+    v85 deliberately does not re-export every private v84 helper. Keeping this
+    tiny compatibility rule here prevents another adapter-to-private-helper
+    dependency from reaching the DAILY transaction boundary.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", "disabled"}
 
 
 def _number(value: object) -> float | None:
@@ -96,20 +108,17 @@ def _group_table(groups: object) -> str:
         body.append(
             "<tr>"
             f"<td><strong>{_safe(raw.get('group', '—'))}</strong></td>"
-            f"<td class=\"number\">{_safe(raw.get('samples', 0))}</td>"
-            f"<td class=\"number\">{_safe(_pct_value(raw.get('net_excess_win_rate_20d'), fraction=True))}</td>"
-            f"<td class=\"number {_metric_class(avg20)}\">"
-            f"{_safe(_pct_value(avg20))}</td>"
-            f"<td class=\"number {_metric_class(avg60)}\">"
-            f"{_safe(_pct_value(avg60))}</td>"
-            f"<td class=\"number {_metric_class(drawdown)}\">"
-            f"{_safe(_pct_value(drawdown))}</td>"
+            f'<td class="number">{_safe(raw.get("samples", 0))}</td>'
+            f'<td class="number">{_safe(_pct_value(raw.get("net_excess_win_rate_20d"), fraction=True))}</td>'
+            f'<td class="number {_metric_class(avg20)}">{_safe(_pct_value(avg20))}</td>'
+            f'<td class="number {_metric_class(avg60)}">{_safe(_pct_value(avg60))}</td>'
+            f'<td class="number {_metric_class(drawdown)}">{_safe(_pct_value(drawdown))}</td>'
             "</tr>"
         )
     return (
         '<div class="table-wrap"><table><thead><tr>'
-        '<th>状态</th><th>样本</th><th>20D净超额胜率</th><th>20D净超额</th>'
-        '<th>60D净超额</th><th>60D最大回撤</th></tr></thead><tbody>'
+        "<th>状态</th><th>样本</th><th>20D净超额胜率</th><th>20D净超额</th>"
+        "<th>60D净超额</th><th>60D最大回撤</th></tr></thead><tbody>"
         + "".join(body)
         + "</tbody></table></div>"
     )
@@ -186,9 +195,9 @@ def build_and_publish_web_report(
     log = logger or logging.getLogger("institution_scanner")
     built = build_web_report(output_dir=output_dir, site_dir=site_dir)
     log.info(
-        "WEB v90 research briefing generated: %s (%s).", built.archive_path, reason
+        "WEB v91 research briefing generated: %s (%s).", built.archive_path, reason
     )
-    if not _v85._truthy_env(WEB_PUBLISH_ENV, True):
+    if not _truthy_env(WEB_PUBLISH_ENV, True):
         log.info("WEB publication disabled by %s.", WEB_PUBLISH_ENV)
         return built
     try:
@@ -197,7 +206,9 @@ def build_and_publish_web_report(
             repo_root=PROJECT_ROOT,
             report_date=built.report_date,
         )
-    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+    except Exception as exc:
+        # Publishing is a presentation side effect. Never let an unexpected
+        # adapter/Git/subprocess fault invalidate already-verified scan results.
         log.warning(
             "WEB report publication skipped/failed without affecting pipeline: %s",
             exc,
@@ -208,7 +219,7 @@ def build_and_publish_web_report(
             archive_path=built.archive_path,
             publish_message=str(exc),
         )
-    log.info("WEB v90 research briefing published: %s", published.page_url)
+    log.info("WEB v91 research briefing published: %s", published.page_url)
     return published
 
 
@@ -226,10 +237,13 @@ def maybe_publish_canonical_report(
             logger=logger,
             reason=reason,
         )
-    except (OSError, RuntimeError, csv.Error) as exc:
+    except Exception as exc:
+        # The web report is explicitly non-critical. Catch ordinary runtime
+        # exceptions here (but not BaseException) so a UI/report regression can
+        # never roll back the canonical DAILY publication transaction.
         log = logger or logging.getLogger("institution_scanner")
         log.warning(
-            "WEB v90 research briefing generation skipped/failed without affecting pipeline: %s",
+            "WEB v91 research briefing generation skipped/failed without affecting pipeline: %s",
             exc,
         )
         return None
