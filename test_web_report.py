@@ -115,6 +115,7 @@ class CanonicalWebReportTests(unittest.TestCase):
             page = result.index_path.read_text(encoding="utf-8")
 
         self.assertEqual(result.report_date, "2026-08-21")
+        self.assertIn("v101-canonical-decision-briefing", web.WEB_REPORT_VERSION)
         for token in (
             "TODAY / 今日行动摘要",
             "ACTION BOARD / 当前行动池",
