@@ -25,7 +25,7 @@ import analytics_core as _core
 import conditional_fill_v96 as _conditional_fill
 
 PRODUCTION_BACKTEST_ACTIVATION_VERSION = (
-    "2026-08-23-v97-provisional-pit-conditional-fill-capability-v5"
+    "2026-08-23-v97-provisional-pit-conditional-fill-capability-v6"
 )
 PROVISIONAL_SAMPLE_WEIGHT_SCALE = 0.25
 _MISSING_UNIVERSE_REASONS = frozenset(
@@ -167,6 +167,13 @@ def _production_point_in_time_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 def _supports_conditional_executor(function: Any) -> bool:
     """Require the modern profile-aware scalar executor before wrapping it."""
+    # unittest/mock and older integrations may expose a permissive wrapper while
+    # the real callback lives in ``side_effect``. Inspect that callable so an
+    # old positional executor is never misclassified as profile-aware merely
+    # because MagicMock itself accepts **kwargs.
+    probe = getattr(function, "side_effect", None)
+    if callable(probe):
+        function = probe
     try:
         signature = inspect.signature(function)
     except (TypeError, ValueError):
