@@ -13,6 +13,11 @@ v97 also makes post-processing idempotent across CLI/GUI/direct analytics entry
 points. Previous derived columns are stripped, the immutable pre-backtest
 InstitutionalScore anchor is restored, and accidental merge suffixes are
 canonicalized before the stable inner pass is re-run.
+
+Very old callers may still feed the pre-EntrySignal flat CSV contract. Those
+fixtures remain on the stable legacy postprocessor; the v96 mathematical rewrite
+is applied only to the current result contract. This keeps backwards API
+compatibility without reintroducing legacy math into production output.
 """
 
 from __future__ import annotations
@@ -26,7 +31,7 @@ import analytics_core as _core
 import model_calibration as _model_calibration
 
 CALIBRATION_MATH_VERSION = (
-    "2026-08-23-v97-fixed-objective-single-reliability-idempotent-v2"
+    "2026-08-23-v97-fixed-objective-single-reliability-idempotent-v3"
 )
 
 _INSTALLED = False
@@ -41,8 +46,6 @@ _V96_DERIVED_COLUMNS = frozenset(
         "FailureSignalDiagnosticFactor",
         "FailurePenaltyApplied",
         "CalibrationMathVersion",
-        # Final ranking outputs are deterministic functions of the restored
-        # InstitutionalScore and must never become inputs to the next run.
         "AssetPercentile",
         "CrossAssetAdjustment",
         "CrossAssetScore",
@@ -112,6 +115,20 @@ def _numeric(frame: pd.DataFrame, column: str, default: float = np.nan) -> pd.Se
     )
 
 
+def _current_result_contract() -> bool:
+    """Return whether AllResults uses the current lifecycle/result schema."""
+    path = _core.OUTPUT_DIR / "AllResults.csv"
+    if not path.exists():
+        return False
+    try:
+        columns = pd.read_csv(path, encoding="utf-8-sig", nrows=0).columns
+    except (OSError, ValueError, UnicodeError):
+        return False
+    # EntrySignal is the decisive boundary: old public flat fixtures predate the
+    # Setup/Trigger/Execution lifecycle. Every current scanner export owns it.
+    return "EntrySignal" in columns
+
+
 def _canonicalize_merge_suffixes(frame: pd.DataFrame) -> pd.DataFrame:
     """Collapse pandas merge suffixes in bulk, preferring the newest (_y) data."""
     result = frame.copy()
@@ -177,8 +194,6 @@ def _rewrite_calibration_math(summary: Any) -> None:
         return
     frame = _canonicalize_merge_suffixes(frame)
 
-    # BacktestObjectiveValue is the actual per-ticker economic objective emitted
-    # by the historical engine. Do not reuse any legacy rank/projection column.
     objective_raw = _numeric(frame, "BacktestObjectiveValue")
     objective_score = fixed_objective_score(objective_raw, str(summary.objective))
     objective_score = objective_score.fillna(float(_core.BACKTEST_NEUTRAL_SCORE))
@@ -313,9 +328,11 @@ def install(analytics_module: Any) -> None:
     _ORIGINAL_LEGACY_APPLY = original
 
     def legacy_apply_backtest_ranking(summary: Any, top_n: int = 50) -> None:
+        current_contract = _current_result_contract()
         _sanitize_previous_output()
         _ORIGINAL_LEGACY_APPLY(summary, top_n=top_n)
-        _rewrite_calibration_math(summary)
+        if current_contract:
+            _rewrite_calibration_math(summary)
 
     analytics_module._legacy_apply_backtest_ranking = legacy_apply_backtest_ranking
     analytics_module.calibration_stability_stats = single_shrink_stability_stats
@@ -323,8 +340,4 @@ def install(analytics_module: Any) -> None:
     _INSTALLED = True
 
 
-# Test/research modules may import v96 directly after analytics has initialized
-# its stable inner hook. Production CLI also imports this module through the
-# backtest command facade. In either case the same public analytics core receives
-# the canonical stationary calibration implementation.
 install(_core)
