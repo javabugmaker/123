@@ -243,7 +243,7 @@ def _resonance_block(backtest: dict[str, object]) -> str:
     by_count = analysis.get("by_count", [])
     return f"""
 <section id="five-factor-resonance" class="section card resonance-v90">
-  <div class="section-head"><h2>FIVE-FACTOR RESONANCE / 五因子共振回测</h2><p>MACD + KDJ + RSI + OBV + BOLL · 独立诊断，不进入当前排名</p></div>
+  <div class="section-head"><h2>FIVE-FACTOR RESONANCE / 五因子共振回测</h2><p>MACD + KDJ + RSI + OBV + BOLL · 仅作独立诊断，不进入当前排名</p></div>
   <div class="res-meta"><span>状态 {_safe(status)}</span><span>·</span><span>完整样本 {_safe(samples)}</span><span>·</span><span>{_safe(version)}</span><span>· 信号日收盘快照，无次日数据前视</span></div>
   <div class="res-grid">
     <article class="res-panel"><h3>VOTE BAND / 票数分层</h3>{_group_table(by_band)}</article>
