@@ -7,7 +7,9 @@ allows one overlap worker for I/O, and increases chunk size so a full-market run
 uses tens rather than hundreds of multiprocessing futures.
 
 Explicit CLI/environment worker settings always win and no scoring semantics are
-changed.
+changed.  Newer scoring-profile owners may wrap this module; re-installation must
+never replace those canonical semantics with the pre-migration profile captured
+when v80 was first imported.
 """
 
 from __future__ import annotations
@@ -76,9 +78,21 @@ def resolve_backtest_profile(mode: str | None, ticker_count: int):
 
 
 def install() -> None:
+    """Install scheduling policy without downgrading a newer profile owner.
+
+    v80 is imported before the v95/v97 504-bar profile migration, therefore
+    ``_LEGACY_RESOLVE_PROFILE`` intentionally represents the old stable resolver.
+    The first bootstrap must wrap that resolver so chunk tuning is preserved.
+    Later calls, however, can occur after v95/v97 has wrapped v80.  Rebinding in
+    that state used to silently restore the old 252-bar FAST score window.  Only
+    claim the resolver when it is still the original stable function or this
+    module's own wrapper; otherwise the newer owner remains authoritative.
+    """
     global _INSTALLED
     _core._adaptive_worker_count = adaptive_worker_count
-    _core._resolve_backtest_profile = resolve_backtest_profile
+    current = _core._resolve_backtest_profile
+    if current is _LEGACY_RESOLVE_PROFILE or current is resolve_backtest_profile:
+        _core._resolve_backtest_profile = resolve_backtest_profile
     _INSTALLED = True
 
 
