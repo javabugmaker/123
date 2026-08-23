@@ -1,8 +1,8 @@
 name: V101 Validation
 
 on:
-  push:
-    branches: [refactor/v101-canonical-web-report]
+  pull_request:
+    branches: [main]
 
 jobs:
   test:
