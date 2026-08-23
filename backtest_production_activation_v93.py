@@ -6,8 +6,11 @@ the sample is not promoted to fully verified evidence: it enters a provisional
 lane with a reduced sample weight. Samples that are explicitly known to have
 been outside the historical universe remain excluded.
 
-This keeps the production backtest usable on existing caches without pretending
-that missing historical membership data is equivalent to verified membership.
+v94 hardens the degraded lane by separating historical-universe evidence
+quality from overlap weight and by requiring both an unknown status and a
+missing-snapshot reason before a row can be provisional. Explicit INELIGIBLE or
+EXCLUDED states therefore remain fail-closed even when their reason text is
+blank.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import pandas as pd
 import analytics_core as _core
 
 PRODUCTION_BACKTEST_ACTIVATION_VERSION = (
-    "2026-08-23-v93-provisional-universe-calibration-v1"
+    "2026-08-23-v94-provisional-universe-evidence-weight-v2"
 )
 PROVISIONAL_SAMPLE_WEIGHT_SCALE = 0.25
 _MISSING_UNIVERSE_REASONS = frozenset(
@@ -28,6 +31,16 @@ _MISSING_UNIVERSE_REASONS = frozenset(
         "",
         "no_point_in_time_snapshot",
         "snapshot_starts_after_signal",
+    }
+)
+_MISSING_UNIVERSE_STATUSES = frozenset(
+    {
+        "",
+        "UNAVAILABLE",
+        "UNKNOWN",
+        "MISSING",
+        "UNVERIFIED",
+        "PROVISIONAL",
     }
 )
 
@@ -112,8 +125,10 @@ def _production_point_in_time_frame(frame: pd.DataFrame) -> pd.DataFrame:
         reason = pd.Series("", index=frame.index, dtype=object)
 
     verified_mask = status.eq("ELIGIBLE")
-    missing_snapshot_mask = (~verified_mask) & reason.isin(
-        _MISSING_UNIVERSE_REASONS
+    missing_snapshot_mask = (
+        ~verified_mask
+        & status.isin(_MISSING_UNIVERSE_STATUSES)
+        & reason.isin(_MISSING_UNIVERSE_REASONS)
     )
     known_excluded_mask = (~verified_mask) & (~missing_snapshot_mask)
 
@@ -132,6 +147,8 @@ def _production_point_in_time_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
     verified = frame.loc[verified_mask].copy()
     provisional = frame.loc[missing_snapshot_mask].copy()
+    if not verified.empty:
+        verified["universe_evidence_weight"] = 1.0
     if not provisional.empty:
         weights = pd.to_numeric(
             provisional.get(
@@ -140,6 +157,9 @@ def _production_point_in_time_frame(frame: pd.DataFrame) -> pd.DataFrame:
             ),
             errors="coerce",
         ).fillna(1.0).clip(lower=0.0, upper=1.0)
+        provisional["universe_evidence_weight"] = float(
+            PROVISIONAL_SAMPLE_WEIGHT_SCALE
+        )
         provisional["sample_weight"] = (
             weights * float(PROVISIONAL_SAMPLE_WEIGHT_SCALE)
         ).clip(lower=0.0, upper=1.0)
@@ -209,8 +229,9 @@ def _decorate_summary(summary: Any, state: dict[str, int]) -> Any:
         else "provisional_missing_point_in_time_snapshot"
     )
     summary.current_pool_selection_warning = (
-        "历史时点股票池证据缺失的样本仅以25% sample_weight参与校准；"
-        "已明确历史不合格的样本继续排除。该降级通道保留幸存者偏差警告。"
+        "历史时点股票池证据缺失的样本仅以25% evidence weight参与校准；"
+        "该折扣在交易日聚类去重之后保留，不会被横截面归一化抵消。"
+        "已明确历史不合格的样本继续排除，并保留幸存者偏差警告。"
     )
     return summary
 
@@ -232,7 +253,7 @@ def install(analytics_module: Any, main_module: Any) -> None:
 
     run_historical_backtest.__name__ = "run_historical_backtest"
     run_historical_backtest.__doc__ = (
-        "Run canonical historical backtest with v93 provisional PIT calibration."
+        "Run canonical historical backtest with v94 provisional PIT calibration."
     )
 
     analytics_module.run_historical_backtest = run_historical_backtest
