@@ -12,8 +12,8 @@ Three concepts remain orthogonal:
 
 v97 scopes signal-semantic filtering to the production analytics resolver. The
 generic ``model_calibration.calibration_details_for_frame`` research API keeps
-its normal asset/global fallback hierarchy, avoiding a hidden global behaviour
-change for notebooks, tests and diagnostics that are not producing live rank.
+its normal asset/global fallback hierarchy. The same bootstrap installs the
+narrow legacy-executor compatibility boundary; modern hot paths are untouched.
 """
 
 from __future__ import annotations
@@ -23,8 +23,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+import analytics_compat_v97 as _analytics_compat
+
 PRODUCTION_BACKTEST_MATH_VERSION = (
-    "2026-08-23-v97-production-signal-semantic-pit-weight-orthogonality-v3"
+    "2026-08-23-v97-production-signal-semantic-pit-weight-orthogonality-v4"
 )
 PROVISIONAL_EVIDENCE_WEIGHT = 0.25
 _SIGNAL_LEVEL_TOKEN = "signal"
@@ -111,6 +113,7 @@ def signal_semantic_calibration_rows(
 def install(analytics_module: Any, model_calibration_module: Any) -> None:
     """Install shared weights and production-only signal-preserving resolution."""
     global _INSTALLED, _ORIGINAL_PREPARE_SAMPLES, _ORIGINAL_CALIBRATION_DETAILS
+    _analytics_compat.install()
     if _INSTALLED:
         return
 
@@ -133,9 +136,6 @@ def install(analytics_module: Any, model_calibration_module: Any) -> None:
             signal_semantic_calibration_rows(rows),
         )
 
-    # Weight preparation is an evidence-quality correction shared by model
-    # calibration itself. Signal-level fallback policy, however, belongs only to
-    # the production analytics ranker and must not replace the generic API.
     model_calibration_module._prepare_samples = prepare_samples
     analytics_module._date_balanced_weights = date_balanced_evidence_weights
     analytics_module.calibration_details_for_frame = (
