@@ -105,7 +105,7 @@ def backtest_detail_label(data: Mapping[str, object]) -> str:
     if composite is not None and raw is not None:
         parts.append(f"Δ{composite - raw:+.1f}")
     if samples is not None:
-        sample_text = f"n={int(round(samples))}"
+        sample_text = f"n={round(samples)}"
         if effective is not None:
             sample_text += f"/eff={effective:.1f}"
         parts.append(sample_text)
