@@ -1,4 +1,4 @@
-"""Production backtest activation v93.
+"""Production backtest activation v93/v94.
 
 Historical point-in-time universe snapshots remain the preferred calibration
 evidence. When an old signal predates the locally recorded universe snapshots,
@@ -6,11 +6,10 @@ the sample is not promoted to fully verified evidence: it enters a provisional
 lane with a reduced sample weight. Samples that are explicitly known to have
 been outside the historical universe remain excluded.
 
-v94 hardens the degraded lane by separating historical-universe evidence
-quality from overlap weight and by requiring both an unknown status and a
-missing-snapshot reason before a row can be provisional. Explicit INELIGIBLE or
-EXCLUDED states therefore remain fail-closed even when their reason text is
-blank.
+The strict ``analytics_core._verified_point_in_time_frame`` helper remains a
+stable research-integrity API.  Provisional admission is installed only for the
+duration of a production backtest transaction, so direct audit callers continue
+to mean "verified only" and concurrent mutation is serialized.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ import pandas as pd
 import analytics_core as _core
 
 PRODUCTION_BACKTEST_ACTIVATION_VERSION = (
-    "2026-08-23-v94-provisional-universe-evidence-weight-v2"
+    "2026-08-23-v94-provisional-universe-evidence-transaction-v3"
 )
 PROVISIONAL_SAMPLE_WEIGHT_SCALE = 0.25
 _MISSING_UNIVERSE_REASONS = frozenset(
@@ -56,14 +55,13 @@ _RUN_STATE: dict[str, int] = {
 
 
 def _reset_run_state() -> None:
-    with _LOCK:
-        _RUN_STATE.update(
-            {
-                "verified_model_samples": 0,
-                "provisional_model_samples": 0,
-                "known_excluded_model_samples": 0,
-            }
-        )
+    _RUN_STATE.update(
+        {
+            "verified_model_samples": 0,
+            "provisional_model_samples": 0,
+            "known_excluded_model_samples": 0,
+        }
+    )
 
 
 def _record_run_state(
@@ -72,19 +70,17 @@ def _record_run_state(
     provisional_model_samples: int,
     known_excluded_model_samples: int,
 ) -> None:
-    with _LOCK:
-        _RUN_STATE.update(
-            {
-                "verified_model_samples": int(verified_model_samples),
-                "provisional_model_samples": int(provisional_model_samples),
-                "known_excluded_model_samples": int(known_excluded_model_samples),
-            }
-        )
+    _RUN_STATE.update(
+        {
+            "verified_model_samples": int(verified_model_samples),
+            "provisional_model_samples": int(provisional_model_samples),
+            "known_excluded_model_samples": int(known_excluded_model_samples),
+        }
+    )
 
 
 def _run_state_snapshot() -> dict[str, int]:
-    with _LOCK:
-        return dict(_RUN_STATE)
+    return dict(_RUN_STATE)
 
 
 def _production_point_in_time_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -244,16 +240,26 @@ def install(analytics_module: Any, main_module: Any) -> None:
         return
 
     _ORIGINAL_RUN_HISTORICAL_BACKTEST = analytics_module.run_historical_backtest
-    _core._verified_point_in_time_frame = _production_point_in_time_frame
 
     def run_historical_backtest(*args: Any, **kwargs: Any) -> Any:
-        _reset_run_state()
-        summary = _ORIGINAL_RUN_HISTORICAL_BACKTEST(*args, **kwargs)
-        return _decorate_summary(summary, _run_state_snapshot())
+        # Keep the strict helper globally observable.  The provisional policy is
+        # a production-run context, not a redefinition of "verified".
+        with _LOCK:
+            _reset_run_state()
+            previous = _core._verified_point_in_time_frame
+            _core._verified_point_in_time_frame = _production_point_in_time_frame
+            try:
+                summary = _ORIGINAL_RUN_HISTORICAL_BACKTEST(*args, **kwargs)
+            finally:
+                _core._verified_point_in_time_frame = previous
+            return _decorate_summary(summary, _run_state_snapshot())
 
     run_historical_backtest.__name__ = "run_historical_backtest"
     run_historical_backtest.__doc__ = (
         "Run canonical historical backtest with v94 provisional PIT calibration."
+    )
+    run_historical_backtest.__module__ = getattr(
+        _ORIGINAL_RUN_HISTORICAL_BACKTEST, "__module__", "analytics"
     )
 
     analytics_module.run_historical_backtest = run_historical_backtest
