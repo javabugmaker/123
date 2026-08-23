@@ -8,10 +8,10 @@ module composes the runtime in one order:
 2. v79 endpoint and weight-cache accelerators;
 3. v95 nominal component-scale / diagnostic-only HVN overlay.
 
-``ensure()`` is intentionally cheap. It performs identity checks only and
-re-composes the runtime if a legacy compatibility import has rebound a public
-score function after bootstrap. This removes import-order dependence without
-paying repeated installer work in the normal hot path.
+``ensure()`` is intentionally cheap. It repairs only *known* legacy raw-kernel
+rebinding. Arbitrary third-party/test hooks are left alone, so runtime
+composition no longer destroys legitimate instrumentation or compatibility
+patches merely because their callable identity differs from the canonical one.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ import score_scale_migration_v95 as _scale
 import score_weight_cache_v79 as _weight_cache
 
 SCORE_RUNTIME_COMPOSITION_VERSION = (
-    "2026-08-23-v97-canonical-score-runtime-composition-v3"
+    "2026-08-23-v97-canonical-score-runtime-composition-v4"
 )
 
 
@@ -37,15 +37,22 @@ def install() -> None:
 
 
 def ensure() -> None:
-    """Repair public score bindings only when a legacy installer has drifted."""
+    """Repair only recognized pre-v95 score-policy drift.
+
+    ``score_acceleration_v79.install`` is the compatibility installer that can
+    legitimately run late in spawned workers or old integrations. When that
+    happens it exposes its raw Volume/Accumulation/Structure kernels publicly.
+    Those exact identities are safe evidence of drift. A Mock, profiler,
+    extension hook or other callable is not evidence of legacy drift and must
+    not be overwritten here.
+    """
     if (
-        _core._series is not _raw_score._series
-        or _core.score_volume is not _scale.score_volume
-        or _core.score_accumulation is not _scale.score_accumulation
-        or _core.score_structure is not _scale.score_structure
-        or _core.entry_point is not _raw_score.entry_point
+        _core.score_volume is _raw_score.score_volume
+        or _core.score_accumulation is _raw_score.score_accumulation
+        or _core.score_structure is _raw_score.score_structure
     ):
-        install()
+        _scale.install()
+    _core.SCORE_RUNTIME_COMPOSITION_VERSION = SCORE_RUNTIME_COMPOSITION_VERSION
 
 
 install()
