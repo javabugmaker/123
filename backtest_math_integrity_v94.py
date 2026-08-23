@@ -11,8 +11,10 @@ This module keeps three concepts orthogonal:
   is discounted *after* overlap balancing so date normalization cannot erase
   the uncertainty haircut.
 
-The helpers are installed at runtime rather than duplicating the stable
-calibration/ranking engine.
+v94 deliberately patches the calibration resolver instead of wrapping the
+public ``analytics.apply_backtest_ranking`` transaction.  The latter is a
+spawn/publication contract owned by the analytics facade and must keep its
+module identity and generic test-double compatibility.
 """
 
 from __future__ import annotations
@@ -23,14 +25,14 @@ import numpy as np
 import pandas as pd
 
 PRODUCTION_BACKTEST_MATH_VERSION = (
-    "2026-08-23-v94-signal-semantic-peer-pit-weight-orthogonality-v1"
+    "2026-08-23-v94-signal-semantic-peer-pit-weight-orthogonality-v2"
 )
 PROVISIONAL_EVIDENCE_WEIGHT = 0.25
 _SIGNAL_LEVEL_TOKEN = "signal"
 
 _INSTALLED = False
 _ORIGINAL_PREPARE_SAMPLES: Any = None
-_ORIGINAL_APPLY_BACKTEST_RANKING: Any = None
+_ORIGINAL_CALIBRATION_DETAILS: Any = None
 
 
 def _numeric(values: Any, index: pd.Index, default: float) -> pd.Series:
@@ -115,30 +117,36 @@ def signal_semantic_calibration_rows(
 
 
 def install(analytics_module: Any, model_calibration_module: Any) -> None:
-    """Install one shared weighting and peer-semantics policy."""
-    global _INSTALLED, _ORIGINAL_PREPARE_SAMPLES, _ORIGINAL_APPLY_BACKTEST_RANKING
+    """Install shared weighting and signal-preserving peer resolution.
+
+    The public ranking transaction is intentionally untouched.  Filtering the
+    calibration rows at the resolver boundary applies the same semantic rule to
+    every caller while preserving the analytics facade's spawn-safe identity.
+    """
+    global _INSTALLED, _ORIGINAL_PREPARE_SAMPLES, _ORIGINAL_CALIBRATION_DETAILS
     if _INSTALLED:
         return
 
     _ORIGINAL_PREPARE_SAMPLES = model_calibration_module._prepare_samples
-    _ORIGINAL_APPLY_BACKTEST_RANKING = analytics_module.apply_backtest_ranking
+    _ORIGINAL_CALIBRATION_DETAILS = model_calibration_module.calibration_details_for_frame
 
     def prepare_samples(frame: pd.DataFrame) -> pd.DataFrame:
         result = _ORIGINAL_PREPARE_SAMPLES(frame)
         result["calibration_weight"] = date_balanced_evidence_weights(result)
         return result
 
-    def apply_backtest_ranking(summary: Any, top_n: int = 50) -> None:
-        # Historical samples are emitted only for immediately executable entry
-        # states. Do not let broad asset/global priors leak that performance
-        # into WAIT_PULLBACK/HOLD_WAIT/AVOID rows at ranking time.
-        summary.global_calibration = signal_semantic_calibration_rows(
-            getattr(summary, "global_calibration", None)
+    def calibration_details_for_frame(
+        frame: pd.DataFrame,
+        rows: list[dict[str, Any]] | None,
+    ) -> pd.DataFrame:
+        return _ORIGINAL_CALIBRATION_DETAILS(
+            frame,
+            signal_semantic_calibration_rows(rows),
         )
-        _ORIGINAL_APPLY_BACKTEST_RANKING(summary, top_n=top_n)
 
     model_calibration_module._prepare_samples = prepare_samples
+    model_calibration_module.calibration_details_for_frame = calibration_details_for_frame
     analytics_module._date_balanced_weights = date_balanced_evidence_weights
-    analytics_module.apply_backtest_ranking = apply_backtest_ranking
+    analytics_module.calibration_details_for_frame = calibration_details_for_frame
     analytics_module.PRODUCTION_BACKTEST_MATH_VERSION = PRODUCTION_BACKTEST_MATH_VERSION
     _INSTALLED = True
