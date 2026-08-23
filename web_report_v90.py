@@ -159,7 +159,7 @@ def _production_backtest_table(rows: list[dict[str, str]]) -> str:
         delta, delta_class = _delta_text(_delta(row))
         samples = _number(row.get("BacktestSamples"))
         effective = _number(row.get("BacktestEffectiveSamples"))
-        sample_text = "—" if samples is None else str(int(round(samples)))
+        sample_text = "—" if samples is None else str(round(samples))
         if effective is not None:
             sample_text += f" / {effective:.1f}"
         rank = (
