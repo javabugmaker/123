@@ -311,9 +311,9 @@ def verify_directory(output_dir: Path) -> dict[str, Any]:
         "warnings": len(warnings),
         "issues": issues,
         "counts": {
-            "all_results": int(len(all_results)),
-            "mixed": int(len(mixed)),
-            "trade_ready": int(len(trade_ready)),
+            "all_results": len(all_results),
+            "mixed": len(mixed),
+            "trade_ready": len(trade_ready),
         },
         "production_weight_signature_expected": (
             PRODUCTION_CONTRACT.weights.signature()
