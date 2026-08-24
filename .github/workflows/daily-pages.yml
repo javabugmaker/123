@@ -1,0 +1,75 @@
+name: Daily A-Share Pages
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 15:40 Asia/Shanghai, Monday-Friday. GitHub cron uses UTC.
+    - cron: '40 7 * * 1-5'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: institution-scanner-daily-pages
+  cancel-in-progress: false
+
+jobs:
+  daily-pages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONUNBUFFERED: '1'
+      INSTITUTION_SCANNER_WEB_PUBLISH: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Restore market/runtime cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            cache
+            output/AllResults.parquet
+            output/SignalHistory.csv
+            output/SignalTracking.csv
+          key: institution-daily-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            institution-daily-${{ runner.os }}-
+
+      - name: Install runtime
+        run: pip install -r requirements.txt
+
+      - name: Configure GitHub token for temporary gh-pages clone
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic ${auth}"
+
+      - name: Run canonical DAILY pipeline
+        shell: bash
+        run: python daily_pipeline.py --backtest-mode fast
+
+      - name: Verify LIVE publication contract
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from publication_freshness_v101 import validate_live_publication
+
+          check = validate_live_publication(Path('output'))
+          print(check.to_dict())
+          if not check.ready:
+              raise SystemExit(f'LIVE publication contract failed: {check.status}: {check.reason}')
+          PY

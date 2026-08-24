@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import config as _config
+import daily_live_freshness_v101 as _daily_live_freshness
 import daily_pipeline_core as _core
 import daily_recovery_v74 as _daily_recovery
 from trading_calendar import is_trading_day
@@ -296,6 +297,7 @@ _core._activate_run = _activate_run
 _core.DAILY_RECOVERY_INTEGRITY_VERSION = (
     "2026-08-19-v74-pid-aware-outer-transaction-recovery-v1"
 )
+_daily_live_freshness.install(_core)
 
 if __name__ == "__main__":
     raise SystemExit(_core.main())
