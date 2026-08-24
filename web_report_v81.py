@@ -1,8 +1,8 @@
 """Stable publication entry point routed through the canonical research terminal.
 
 The historical module name remains stable for scanner/daily/external callers.
-Freshness is enforced before publication; presentation enhancements live in the
-canonical ``institution_scanner.report_terminal`` module.
+Freshness and output integrity are enforced before publication; presentation
+enhancements live in the canonical ``institution_scanner.report_terminal`` module.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from pathlib import Path
 
 from institution_scanner import report_terminal as _v85
 from institution_scanner.report_terminal import *  # noqa: F403
+from institution_scanner.verify_output import verify_directory
 from publication_freshness_v101 import (
     PublicationFreshness,
     validate_live_publication,
@@ -34,6 +35,17 @@ def _assert_live_publication_ready(output_dir: Path) -> PublicationFreshness:
             f"LIVE publication blocked [{check.status}]: {check.reason}"
         )
     return check
+
+
+def _assert_output_contract_ready(output_dir: Path) -> dict[str, object]:
+    payload = verify_directory(Path(output_dir))
+    if payload.get("status") != "PASS":
+        issues = payload.get("issues", [])
+        raise RuntimeError(
+            "Output reliability contract failed before publication: "
+            f"{issues}"
+        )
+    return payload
 
 
 def build_web_report(
@@ -81,7 +93,7 @@ def build_and_publish_web_report(
     logger: logging.Logger | None = None,
     reason: str = "run-complete",
 ) -> _v85.WebReportResult:
-    """Publish only canonical data aligned to the latest completed session."""
+    """Publish only canonical data that pass freshness and integrity contracts."""
     output_dir = Path(output_dir)
     site_dir = Path(site_dir)
     log = logger or logging.getLogger("institution_scanner")
@@ -92,6 +104,12 @@ def build_and_publish_web_report(
             check.expected_trading_date,
             check.effective_trading_date,
             check.all_results_fresh_ratio * 100,
+        )
+        verification = _assert_output_contract_ready(output_dir)
+        log.info(
+            "WEB output reliability contract passed: errors=%s warnings=%s.",
+            verification.get("errors", 0),
+            verification.get("warnings", 0),
         )
     built = build_web_report(output_dir=output_dir, site_dir=site_dir)
     log.info(
