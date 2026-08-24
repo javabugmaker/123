@@ -9,18 +9,18 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 from pathlib import Path
-
-from publication_freshness_v101 import (
-    PublicationFreshness,
-    validate_live_publication,
-    write_publication_status,
-)
 
 # Keep the historical ``_v85`` alias because older tests/extensions patch it.
 # The implementation now points at v93, which preserves the production v92
 # backtest/resonance layer and adds public-safe decision-console diagnostics.
 import web_report_v93 as _v85
+from publication_freshness_v101 import (
+    PublicationFreshness,
+    validate_live_publication,
+    write_publication_status,
+)
 from web_report_v93 import *  # noqa: F403
 
 _archive_html = _v85._archive_html
@@ -66,6 +66,17 @@ def build_web_report(
     return result
 
 
+def _publication_enabled() -> bool:
+    raw = os.environ.get(_v85.WEB_PUBLISH_ENV)
+    return raw is None or raw.strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+        "disabled",
+    }
+
+
 def build_and_publish_web_report(
     *,
     output_dir: Path = _v85.DEFAULT_OUTPUT_DIR,
@@ -75,6 +86,7 @@ def build_and_publish_web_report(
 ) -> _v85.WebReportResult:
     """Generate/publish only when canonical data matches the completed session."""
     output_dir = Path(output_dir)
+    site_dir = Path(site_dir)
     log = logger or logging.getLogger("institution_scanner")
     if _v85.is_canonical_output_dir(output_dir):
         check = _assert_live_publication_ready(output_dir)
@@ -84,12 +96,28 @@ def build_and_publish_web_report(
             check.effective_trading_date,
             check.all_results_fresh_ratio * 100,
         )
-    return _v85.build_and_publish_web_report(
-        output_dir=output_dir,
-        site_dir=Path(site_dir),
-        logger=logger,
-        reason=reason,
-    )
+    built = build_web_report(output_dir=output_dir, site_dir=site_dir)
+    log.info("WEB v101 Research Console generated: %s (%s).", built.archive_path, reason)
+    if not _publication_enabled():
+        log.info("WEB publication disabled by %s.", _v85.WEB_PUBLISH_ENV)
+        return built
+    try:
+        return _v85.publish_site(
+            site_dir,
+            repo_root=_v85.PROJECT_ROOT,
+            report_date=built.report_date,
+        )
+    except Exception as exc:
+        log.warning(
+            "WEB report publication skipped/failed without affecting pipeline: %s",
+            exc,
+        )
+        return _v85.WebReportResult(
+            report_date=built.report_date,
+            index_path=built.index_path,
+            archive_path=built.archive_path,
+            publish_message=str(exc),
+        )
 
 
 def maybe_publish_canonical_report(
