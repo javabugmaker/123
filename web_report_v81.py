@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 
 from institution_scanner import report_terminal as _v85
+from institution_scanner.page_policy import polish_public_page_html
 from institution_scanner.report_terminal import *  # noqa: F403
 from institution_scanner.verify_output import verify_directory
 from publication_freshness_v101 import (
@@ -52,7 +53,7 @@ def build_web_report(
     output_dir: Path = _v85.DEFAULT_OUTPUT_DIR,
     site_dir: Path = _v85.DEFAULT_SITE_DIR,
 ) -> _v85.WebReportResult:
-    """Build the canonical report while retaining the legacy hidden marker."""
+    """Build the canonical report and apply the stable public-page policy."""
     result = _v85.build_web_report(output_dir=output_dir, site_dir=site_dir)
     marker = f"交易快报 {result.report_date}"
     for path in (result.index_path, result.archive_path):
@@ -60,14 +61,7 @@ def build_web_report(
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             continue
-        if marker not in text:
-            text = text.replace(
-                "<body>",
-                f'<body><span style="display:none">{marker}</span>',
-                1,
-            )
-        text = text.replace("● 数据已就绪", "● 已发布快照")
-        text = text.replace("LIVE · 数据就绪", "PUBLISHED SNAPSHOT · 数据对齐")
+        text = polish_public_page_html(text, marker=marker)
         try:
             path.write_text(text, encoding="utf-8")
         except OSError:
@@ -113,7 +107,7 @@ def build_and_publish_web_report(
         )
     built = build_web_report(output_dir=output_dir, site_dir=site_dir)
     log.info(
-        "WEB v105 Research Terminal generated: %s (%s).",
+        "WEB v105.2 Research Terminal generated: %s (%s).",
         built.archive_path,
         reason,
     )
