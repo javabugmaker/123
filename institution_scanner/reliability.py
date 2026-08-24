@@ -283,7 +283,7 @@ def reliability_summary(frame: pd.DataFrame) -> dict[str, object]:
         "version": RELIABILITY_FOUNDATION_VERSION,
         "production_contract": PRODUCTION_CONTRACT.to_dict(),
         "challenger_contract": CHALLENGER_CONTRACT.to_dict(),
-        "rows": int(len(frame)),
+        "rows": len(frame),
         "challenger_production_applied": False,
         "challenger_rows_scored": int(
             _numeric(frame, "ChallengerAxisScoreDiagnostic").notna().sum()
