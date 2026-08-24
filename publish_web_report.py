@@ -12,7 +12,11 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
-    result = build_and_publish_web_report(reason="manual-publish")
+    try:
+        result = build_and_publish_web_report(reason="manual-publish")
+    except RuntimeError as exc:
+        logging.error("%s", exc)
+        return 2
     if result.page_url:
         print(result.page_url)
     else:
