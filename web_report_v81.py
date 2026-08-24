@@ -1,10 +1,8 @@
-"""v81 compatibility entry for the current public research briefing.
+"""Historical v81 entry point routed through the current v102 report stack.
 
-Keep this historical module name so scan_service.py, daily_pipeline.py, old
-tests and external scripts continue to work while v93 layers the Research
-Console on top of the validated v92/v90 + v85 presentation stack.
+The module name remains stable for scanner/daily/external callers. v101 owns
+LIVE publication freshness; v102 owns ranking/display/calibration integrity.
 """
-
 from __future__ import annotations
 
 import csv
@@ -12,16 +10,13 @@ import logging
 import os
 from pathlib import Path
 
-# Keep the historical ``_v85`` alias because older tests/extensions patch it.
-# The implementation now points at v93, which preserves the production v92
-# backtest/resonance layer and adds public-safe decision-console diagnostics.
-import web_report_v93 as _v85
+import web_report_v102 as _v85
 from publication_freshness_v101 import (
     PublicationFreshness,
     validate_live_publication,
     write_publication_status,
 )
-from web_report_v93 import *  # noqa: F403
+from web_report_v102 import *  # noqa: F403
 
 _archive_html = _v85._archive_html
 _published_source_dir = _v85._published_source_dir
@@ -44,7 +39,7 @@ def build_web_report(
     output_dir: Path = _v85.DEFAULT_OUTPUT_DIR,
     site_dir: Path = _v85.DEFAULT_SITE_DIR,
 ) -> _v85.WebReportResult:
-    """Call v93 while retaining the hidden legacy report marker."""
+    """Build the v102 report while retaining the legacy hidden report marker."""
     result = _v85.build_web_report(output_dir=output_dir, site_dir=site_dir)
     marker = f"交易快报 {result.report_date}"
     for path in (result.index_path, result.archive_path):
@@ -59,6 +54,7 @@ def build_web_report(
                 1,
             )
         text = text.replace("● 数据已就绪", "● 已发布快照")
+        text = text.replace("LIVE · 数据就绪", "PUBLISHED SNAPSHOT · 数据对齐")
         try:
             path.write_text(text, encoding="utf-8")
         except OSError:
@@ -84,20 +80,20 @@ def build_and_publish_web_report(
     logger: logging.Logger | None = None,
     reason: str = "run-complete",
 ) -> _v85.WebReportResult:
-    """Generate/publish only when canonical data matches the completed session."""
+    """Publish only canonical data aligned to the latest completed session."""
     output_dir = Path(output_dir)
     site_dir = Path(site_dir)
     log = logger or logging.getLogger("institution_scanner")
     if _v85.is_canonical_output_dir(output_dir):
         check = _assert_live_publication_ready(output_dir)
         log.info(
-            "WEB LIVE freshness passed: expected=%s effective=%s ratio=%.1f%%.",
+            "WEB publication freshness passed: expected=%s effective=%s ratio=%.1f%%.",
             check.expected_trading_date,
             check.effective_trading_date,
             check.all_results_fresh_ratio * 100,
         )
     built = build_web_report(output_dir=output_dir, site_dir=site_dir)
-    log.info("WEB v101 Research Console generated: %s (%s).", built.archive_path, reason)
+    log.info("WEB v102 Research Console generated: %s (%s).", built.archive_path, reason)
     if not _publication_enabled():
         log.info("WEB publication disabled by %s.", _v85.WEB_PUBLISH_ENV)
         return built
@@ -126,7 +122,7 @@ def maybe_publish_canonical_report(
     logger: logging.Logger | None = None,
     reason: str,
 ) -> _v85.WebReportResult | None:
-    """Preserve v81 patch/mock semantics while enforcing v101 LIVE freshness."""
+    """Preserve the v81 API while enforcing v101 + v102 publication contracts."""
     if not _v85.is_canonical_output_dir(Path(output_dir)):
         return None
     try:
