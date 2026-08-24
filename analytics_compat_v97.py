@@ -14,7 +14,7 @@ import calibration_semantics_v102_1 as _calibration_semantics
 from institution_scanner import point_in_time_backtest as _pit_backtest
 from institution_scanner import reliability as _reliability
 
-ANALYTICS_COMPAT_VERSION = "2026-08-24-v106.1-pit-evidence-integrity-bootstrap-v1"
+ANALYTICS_COMPAT_VERSION = "2026-08-24-v106.2-pit-warmup-nonfatal-bootstrap-v1"
 LEGACY_PERFORMANCE_ENGINE_VERSION = (
     "2026-08-20-v80-vectorized-backtest-workstation-v1"
 )

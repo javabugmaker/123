@@ -1,9 +1,9 @@
 """Point-in-time scope enforcement for held-out backtest diagnostics.
 
 The historical backtest core already tags every sample with
-``universe_snapshot_status``.  Production calibration consumes only ELIGIBLE
+``universe_snapshot_status``. Production calibration consumes only ELIGIBLE
 rows, but legacy top-level held-out statistics were calculated from the full
-``test`` partition.  That allowed UNAVAILABLE universe observations to remain
+``test`` partition. That allowed UNAVAILABLE universe observations to remain
 visible in diagnostic RankIC, bucket monotonicity and return summaries even
 though v106 correctly prevented them from activating peer calibration.
 
@@ -15,7 +15,14 @@ weights, ranking thresholds or TradeReady policy:
 - therefore held-out estimators, RankIC, drawdown and score buckets use only
   ELIGIBLE point-in-time observations;
 - BacktestSummary exposes raw/verified/unverified test counts explicitly and
-  its canonical ``samples`` count matches the verified held-out metric scope.
+  its canonical ``samples`` count matches the verified held-out metric scope;
+- insufficient PIT coverage disables calibration but does not fail DAILY.
+
+The last rule matters for prospective snapshot archives. A newly-created PIT
+archive cannot immediately have mature 60-trading-day outcomes, so zero
+verified held-out samples is a normal warm-up state rather than a pipeline
+failure. Genuine raw-test failures detected by analytics_core remain fatal and
+are never cleared here.
 """
 from __future__ import annotations
 
@@ -29,7 +36,7 @@ import numpy as np
 import pandas as pd
 
 POINT_IN_TIME_BACKTEST_VERSION = (
-    "2026-08-24-v106.1-heldout-pit-metric-scope-v1"
+    "2026-08-24-v106.2-pit-warmup-nonfatal-v1"
 )
 PIT_HELDOUT_METRIC_SCOPE = "POINT_IN_TIME_ELIGIBLE_SAMPLES_ONLY"
 
@@ -148,34 +155,54 @@ def apply_summary_pit_scope(
     summary: Any,
     counts: dict[str, dict[str, int]],
 ) -> Any:
-    """Make the serialized held-out sample count match its PIT metric scope."""
+    """Align held-out metrics with PIT scope without creating a false fatal.
+
+    ``analytics_core`` owns command-fatal test-data validation. This function
+    must never turn a healthy raw backtest into exit code 2 merely because a
+    prospective PIT archive has not accumulated mature outcomes yet.
+    """
     test = counts.get("test", {})
     raw_test = int(test.get("raw", 0) or 0)
     verified_test = int(test.get("verified", 0) or 0)
     unverified_test = int(test.get("unverified", 0) or 0)
 
+    metric_available = verified_test >= 2
+    if metric_available and unverified_test == 0:
+        pit_status = "VERIFIED_ONLY"
+    elif metric_available:
+        pit_status = "VERIFIED_SUBSET"
+    elif raw_test >= 2 and verified_test == 0:
+        pit_status = "PIT_WARMUP"
+    else:
+        pit_status = "INSUFFICIENT_VERIFIED_TEST"
+
     summary.heldout_metric_scope = PIT_HELDOUT_METRIC_SCOPE
     summary.heldout_raw_test_samples = raw_test
     summary.heldout_verified_test_samples = verified_test
     summary.heldout_unverified_test_samples = unverified_test
-    summary.heldout_point_in_time_status = (
-        "VERIFIED_ONLY"
-        if verified_test >= 2 and unverified_test == 0
-        else "VERIFIED_SUBSET"
-        if verified_test >= 2
-        else "INSUFFICIENT_VERIFIED_TEST"
-    )
+    summary.heldout_point_in_time_status = pit_status
+    summary.heldout_metric_available = metric_available
+    summary.heldout_calibration_enabled = metric_available
+    summary.heldout_pit_shortage_pipeline_fatal = False
+
+    if metric_available:
+        summary.heldout_metric_warning = ""
+    else:
+        summary.heldout_metric_warning = (
+            "PIT held-out calibration disabled: "
+            f"{verified_test}/{raw_test} test samples are point-in-time verified; "
+            "production scoring continues with unverified backtest evidence excluded"
+        )
+
     # ``samples`` is the count associated with the top-level held-out metrics.
     # Raw partition counts remain available in rolling_oos and the explicit
     # heldout_raw_test_samples field above.
     summary.samples = verified_test
 
-    if verified_test < 2:
-        summary.insufficient_test_data = True
-        summary.error = (
-            "验证后的PIT测试集有效样本不足："
-            f"{verified_test}，至少需要2个样本"
-        )
+    # Do NOT set or clear summary.insufficient_test_data/error here. If the core
+    # already found a genuine raw-test failure it remains fatal. A PIT-only
+    # shortage is a calibration warm-up state and must not make cmd_backtest
+    # return 2.
 
     rolling = getattr(summary, "rolling_oos_stats", None)
     if isinstance(rolling, dict):
@@ -190,9 +217,7 @@ def apply_summary_pit_scope(
             bucket["point_in_time_unverified_samples"] = int(
                 values.get("unverified", 0) or 0
             )
-            bucket["heldout_metric_scope"] = (
-                PIT_HELDOUT_METRIC_SCOPE
-            )
+            bucket["heldout_metric_scope"] = PIT_HELDOUT_METRIC_SCOPE
     return summary
 
 
@@ -206,7 +231,7 @@ def _rewrite_summary_json(core: Any, summary: Any) -> None:
     output_dir = Path(core.OUTPUT_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / "BacktestSummary.json"
-    temporary = output_dir / ".BacktestSummary.json.v1061.tmp"
+    temporary = output_dir / ".BacktestSummary.json.v1062.tmp"
     try:
         temporary.write_text(
             json.dumps(
@@ -280,7 +305,7 @@ def install(core: Any) -> None:
     global _INSTALLED, _ORIGINAL_CACHED, _ORIGINAL_VERIFIED, _ORIGINAL_RUN
     if _INSTALLED or getattr(
         core,
-        "_POINT_IN_TIME_BACKTEST_V1061_INSTALLED",
+        "_POINT_IN_TIME_BACKTEST_V1062_INSTALLED",
         False,
     ):
         return
@@ -321,6 +346,14 @@ def install(core: Any) -> None:
             summary = _ORIGINAL_RUN(*args, **kwargs)
             counts = _PIT_SPLIT_COUNTS.get()
             apply_summary_pit_scope(summary, counts)
+            if not bool(getattr(summary, "heldout_calibration_enabled", False)):
+                core.logger.warning(
+                    "PIT held-out calibration is in warm-up: verified test samples=%d, "
+                    "raw test samples=%d. Backtest calibration remains disabled; "
+                    "DAILY continues with production scoring.",
+                    int(getattr(summary, "heldout_verified_test_samples", 0) or 0),
+                    int(getattr(summary, "heldout_raw_test_samples", 0) or 0),
+                )
             _rewrite_summary_json(core, summary)
             return summary
         finally:
@@ -332,5 +365,5 @@ def install(core: Any) -> None:
     core.run_historical_backtest = pit_run
     core.POINT_IN_TIME_BACKTEST_VERSION = POINT_IN_TIME_BACKTEST_VERSION
     core.PIT_HELDOUT_METRIC_SCOPE = PIT_HELDOUT_METRIC_SCOPE
-    core._POINT_IN_TIME_BACKTEST_V1061_INSTALLED = True
+    core._POINT_IN_TIME_BACKTEST_V1062_INSTALLED = True
     _INSTALLED = True

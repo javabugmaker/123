@@ -96,7 +96,10 @@ def test_summary_sample_count_matches_verified_heldout_scope() -> None:
     assert summary.heldout_unverified_test_samples == 3
     assert summary.heldout_point_in_time_status == "VERIFIED_SUBSET"
     assert summary.heldout_metric_scope == PIT_HELDOUT_METRIC_SCOPE
+    assert summary.heldout_metric_available is True
+    assert summary.heldout_calibration_enabled is True
     assert summary.insufficient_test_data is False
+    assert summary.error is None
     assert (
         summary.rolling_oos_stats["test"][
             "point_in_time_verified_samples"
@@ -105,7 +108,32 @@ def test_summary_sample_count_matches_verified_heldout_scope() -> None:
     )
 
 
-def test_summary_fails_closed_when_verified_test_is_too_small() -> None:
+def test_pit_warmup_disables_calibration_without_failing_pipeline() -> None:
+    summary = SimpleNamespace(
+        samples=1200,
+        insufficient_test_data=False,
+        error=None,
+        rolling_oos_stats={},
+    )
+    counts = {
+        "train": {"raw": 800, "verified": 0, "unverified": 800},
+        "validation": {"raw": 300, "verified": 0, "unverified": 300},
+        "test": {"raw": 100, "verified": 0, "unverified": 100},
+    }
+
+    apply_summary_pit_scope(summary, counts)
+
+    assert summary.samples == 0
+    assert summary.heldout_point_in_time_status == "PIT_WARMUP"
+    assert summary.heldout_metric_available is False
+    assert summary.heldout_calibration_enabled is False
+    assert summary.heldout_pit_shortage_pipeline_fatal is False
+    assert "calibration disabled" in summary.heldout_metric_warning
+    assert summary.insufficient_test_data is False
+    assert summary.error is None
+
+
+def test_one_verified_test_sample_is_nonfatal_but_not_metric_ready() -> None:
     summary = SimpleNamespace(
         samples=12,
         insufficient_test_data=False,
@@ -121,6 +149,28 @@ def test_summary_fails_closed_when_verified_test_is_too_small() -> None:
     apply_summary_pit_scope(summary, counts)
 
     assert summary.samples == 1
-    assert summary.insufficient_test_data is True
     assert summary.heldout_point_in_time_status == "INSUFFICIENT_VERIFIED_TEST"
-    assert "PIT测试集有效样本不足" in summary.error
+    assert summary.heldout_metric_available is False
+    assert summary.heldout_calibration_enabled is False
+    assert summary.insufficient_test_data is False
+    assert summary.error is None
+
+
+def test_real_core_test_failure_is_preserved() -> None:
+    summary = SimpleNamespace(
+        samples=1,
+        insufficient_test_data=True,
+        error="测试集有效样本不足：1，至少需要2个样本",
+        rolling_oos_stats={},
+    )
+    counts = {
+        "train": {"raw": 0, "verified": 0, "unverified": 0},
+        "validation": {"raw": 0, "verified": 0, "unverified": 0},
+        "test": {"raw": 1, "verified": 0, "unverified": 1},
+    }
+
+    apply_summary_pit_scope(summary, counts)
+
+    assert summary.samples == 0
+    assert summary.insufficient_test_data is True
+    assert summary.error == "测试集有效样本不足：1，至少需要2个样本"
