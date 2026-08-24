@@ -13,6 +13,10 @@ from pathlib import Path
 
 from institution_scanner import report_terminal as _v85
 from institution_scanner.page_policy import polish_public_page_html
+from institution_scanner.pit_page_semantics import (
+    apply_pit_page_semantics_html,
+    read_backtest_summary,
+)
 from institution_scanner.report_terminal import *  # noqa: F403
 from institution_scanner.verify_output import verify_directory
 from publication_freshness_v101 import (
@@ -54,13 +58,16 @@ def build_web_report(
     site_dir: Path = _v85.DEFAULT_SITE_DIR,
 ) -> _v85.WebReportResult:
     """Build the canonical report and apply the stable public-page policy."""
+    output_dir = Path(output_dir)
     result = _v85.build_web_report(output_dir=output_dir, site_dir=site_dir)
     marker = f"交易快报 {result.report_date}"
+    backtest_summary = read_backtest_summary(output_dir)
     for path in (result.index_path, result.archive_path):
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             continue
+        text = apply_pit_page_semantics_html(text, backtest_summary)
         text = polish_public_page_html(text, marker=marker)
         try:
             path.write_text(text, encoding="utf-8")
@@ -107,7 +114,7 @@ def build_and_publish_web_report(
         )
     built = build_web_report(output_dir=output_dir, site_dir=site_dir)
     log.info(
-        "WEB v105.2 Research Terminal generated: %s (%s).",
+        "WEB v106.3 PIT-aware Research Terminal generated: %s (%s).",
         built.archive_path,
         reason,
     )
