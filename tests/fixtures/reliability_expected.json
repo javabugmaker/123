@@ -1,0 +1,56 @@
+{
+  "A.ST": {
+    "challenger": 70.5,
+    "challenger_rank": 2,
+    "champion": 72.25,
+    "champion_rank": 1,
+    "delta": -1,
+    "hierarchy": "INDUSTRY_SIGNAL",
+    "hierarchy_status": "DIAGNOSTIC_ONLY"
+  },
+  "B.ST": {
+    "challenger": 72.0,
+    "challenger_rank": 1,
+    "champion": 71.5,
+    "champion_rank": 2,
+    "delta": 1,
+    "hierarchy": "INDUSTRY_SIGNAL",
+    "hierarchy_status": "DIAGNOSTIC_ONLY"
+  },
+  "C.ST": {
+    "challenger": 59.25,
+    "challenger_rank": 3,
+    "champion": 59.75,
+    "champion_rank": 3,
+    "delta": 0,
+    "hierarchy": "INDUSTRY",
+    "hierarchy_status": "DIAGNOSTIC_ONLY"
+  },
+  "D.ETF": {
+    "challenger": 64.5,
+    "challenger_rank": 1,
+    "champion": 65.25,
+    "champion_rank": 1,
+    "delta": 0,
+    "hierarchy": "INDUSTRY_SIGNAL",
+    "hierarchy_status": "DIAGNOSTIC_ONLY"
+  },
+  "E.ETF": {
+    "challenger": 61.75,
+    "challenger_rank": 2,
+    "champion": 61.0,
+    "champion_rank": 2,
+    "delta": 0,
+    "hierarchy": "INDUSTRY_SIGNAL",
+    "hierarchy_status": "DIAGNOSTIC_ONLY"
+  },
+  "F.ETF": {
+    "challenger": 50.5,
+    "challenger_rank": 3,
+    "champion": 51.0,
+    "champion_rank": 3,
+    "delta": 0,
+    "hierarchy": "INDUSTRY_SIGNAL",
+    "hierarchy_status": "DIAGNOSTIC_ONLY"
+  }
+}

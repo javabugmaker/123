@@ -1,8 +1,8 @@
-"""Historical v81 entry point routed through the current v102.1 report stack.
+"""Stable publication entry point routed through the canonical research terminal.
 
-The module name remains stable for scanner/daily/external callers. v101 owns
-publication freshness; v102 owns ranking/calibration integrity; v102.1 aligns
-remaining presentation semantics with the effective production state.
+The historical module name remains stable for scanner/daily/external callers.
+Freshness is enforced before publication; presentation enhancements live in the
+canonical ``institution_scanner.report_terminal`` module.
 """
 from __future__ import annotations
 
@@ -11,13 +11,13 @@ import logging
 import os
 from pathlib import Path
 
-import web_report_v102_1 as _v85
+from institution_scanner import report_terminal as _v85
+from institution_scanner.report_terminal import *  # noqa: F403
 from publication_freshness_v101 import (
     PublicationFreshness,
     validate_live_publication,
     write_publication_status,
 )
-from web_report_v102_1 import *  # noqa: F403
 
 _archive_html = _v85._archive_html
 _published_source_dir = _v85._published_source_dir
@@ -40,7 +40,7 @@ def build_web_report(
     output_dir: Path = _v85.DEFAULT_OUTPUT_DIR,
     site_dir: Path = _v85.DEFAULT_SITE_DIR,
 ) -> _v85.WebReportResult:
-    """Build the v102.1 report while retaining the legacy hidden report marker."""
+    """Build the canonical report while retaining the legacy hidden marker."""
     result = _v85.build_web_report(output_dir=output_dir, site_dir=site_dir)
     marker = f"交易快报 {result.report_date}"
     for path in (result.index_path, result.archive_path):
@@ -95,7 +95,7 @@ def build_and_publish_web_report(
         )
     built = build_web_report(output_dir=output_dir, site_dir=site_dir)
     log.info(
-        "WEB v102.1 Research Console generated: %s (%s).",
+        "WEB v105 Research Terminal generated: %s (%s).",
         built.archive_path,
         reason,
     )
@@ -127,7 +127,7 @@ def maybe_publish_canonical_report(
     logger: logging.Logger | None = None,
     reason: str,
 ) -> _v85.WebReportResult | None:
-    """Preserve the v81 API while enforcing v101 + v102.1 publication contracts."""
+    """Preserve the historical API while enforcing canonical publication rules."""
     if not _v85.is_canonical_output_dir(Path(output_dir)):
         return None
     try:

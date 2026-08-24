@@ -19,7 +19,9 @@ jobs:
     timeout-minutes: 120
     env:
       PYTHONUNBUFFERED: '1'
-      INSTITUTION_SCANNER_WEB_PUBLISH: '1'
+      # Build locally first; publication happens only after reliability and
+      # freshness contracts both pass.
+      INSTITUTION_SCANNER_WEB_PUBLISH: '0'
 
     steps:
       - name: Checkout
@@ -57,11 +59,15 @@ jobs:
           auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
           git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic ${auth}"
 
-      - name: Run canonical DAILY pipeline
+      - name: Run canonical DAILY pipeline without publishing
         shell: bash
         run: python daily_pipeline.py --backtest-mode fast
 
-      - name: Verify LIVE publication contract
+      - name: Verify model and output contracts
+        shell: bash
+        run: python -m institution_scanner.verify_output output
+
+      - name: Verify current-session freshness
         shell: bash
         run: |
           python - <<'PY'
@@ -71,5 +77,13 @@ jobs:
           check = validate_live_publication(Path('output'))
           print(check.to_dict())
           if not check.ready:
-              raise SystemExit(f'LIVE publication contract failed: {check.status}: {check.reason}')
+              raise SystemExit(
+                  f'LIVE publication contract failed: {check.status}: {check.reason}'
+              )
           PY
+
+      - name: Publish verified snapshot
+        env:
+          INSTITUTION_SCANNER_WEB_PUBLISH: '1'
+        shell: bash
+        run: python publish_web_report.py
