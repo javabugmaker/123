@@ -10,8 +10,9 @@ import csv
 import html
 import json
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import web_report_v102_1 as _base
 from web_report_v102_1 import *  # noqa: F403
