@@ -44,10 +44,13 @@ def install(backtest_module: Any) -> None:
         None,
     )
     report_module = getattr(backtest_module, "_report", None)
-    if not all(
-        callable(value)
-        for value in (original_legacy, original_materialize, canonical_runtime)
-    ) or report_module is None:
+    if not callable(original_legacy):
+        return
+    if not callable(original_materialize):
+        return
+    if not callable(canonical_runtime):
+        return
+    if report_module is None:
         return
 
     logger = backtest_module.logger
