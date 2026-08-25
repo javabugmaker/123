@@ -906,6 +906,7 @@ def run_scan(
     downloaded_frames = {
         _normalize_ticker(ticker): frame for ticker, frame in downloaded.items()
     }
+    del downloaded
     downloaded_symbols = set(downloaded_frames)
     analyse_queue: list[TickerInfo] = []
     skipped_no_cache = 0
@@ -1462,11 +1463,12 @@ def run_scan(
             except StopIteration:
                 return False
             ticker = _normalize_ticker(ti.ticker)
+            frame = downloaded_frames.pop(ticker)
             futures[
                 executor.submit(
                     _analyse_one_ticker_from_df,
                     ti,
-                    downloaded_frames[ticker],
+                    frame,
                     data_source,
                 )
             ] = ti
