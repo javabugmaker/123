@@ -23,7 +23,12 @@ import pandas as pd
 import historical_universe as _historical
 from downloader import normalize_ticker
 
-UNIVERSE_SNAPSHOT_VERSION = "2026-08-21-v88-stock-etf-universe-snapshot-v1"
+UNIVERSE_SNAPSHOT_VERSION = "2026-08-25-v108.2-selective-source-read-v1"
+_REASON_COLUMNS = (
+    "UniverseExclusionReason",
+    "ExclusionReason",
+    "EligibilityReason",
+)
 
 
 def _truthy(values: pd.Series, default: bool = True) -> pd.Series:
@@ -65,15 +70,7 @@ def _snapshot_frame(frame: pd.DataFrame, as_of: pd.Timestamp) -> pd.DataFrame:
         eligible = pd.Series(True, index=frame.index, dtype=bool)
 
     reason_column = next(
-        (
-            column
-            for column in (
-                "UniverseExclusionReason",
-                "ExclusionReason",
-                "EligibilityReason",
-            )
-            if column in frame.columns
-        ),
+        (column for column in _REASON_COLUMNS if column in frame.columns),
         None,
     )
     reason = (
@@ -94,6 +91,44 @@ def _snapshot_frame(frame: pd.DataFrame, as_of: pd.Timestamp) -> pd.DataFrame:
     output = output.loc[security & output["Ticker"].ne("")]
     output = output.drop_duplicates(subset=["Ticker"], keep="last")
     return output.sort_values("Ticker").reset_index(drop=True)
+
+
+def _source_columns(columns: list[str]) -> list[str]:
+    """Return only canonical fields needed to persist a PIT snapshot."""
+    available = set(columns)
+    selected = [
+        column
+        for column in ("Ticker", "DataAsOf", "UniverseEligible")
+        if column in available
+    ]
+    reason = next((column for column in _REASON_COLUMNS if column in available), None)
+    if reason is not None:
+        selected.append(reason)
+    return selected
+
+
+def _read_snapshot_source(path: Path) -> pd.DataFrame:
+    """Read the narrow snapshot projection instead of the 400+ column result set."""
+    if path.suffix.lower() == ".parquet":
+        # The canonical caller currently supplies CSV. Keep Parquet compatibility
+        # simple; column projection can be added once a schema-only read is needed.
+        return pd.read_parquet(path)
+
+    header = pd.read_csv(
+        path,
+        encoding="utf-8-sig",
+        nrows=0,
+        low_memory=False,
+    )
+    columns = _source_columns(list(header.columns))
+    if "Ticker" not in columns or "DataAsOf" not in columns:
+        return pd.DataFrame()
+    return pd.read_csv(
+        path,
+        encoding="utf-8-sig",
+        usecols=columns,
+        low_memory=False,
+    )
 
 
 def record_universe_snapshot(
@@ -148,8 +183,5 @@ def record_universe_snapshot_file(
     path = Path(result_path)
     if not path.exists():
         return None
-    if path.suffix.lower() == ".parquet":
-        frame = pd.read_parquet(path)
-    else:
-        frame = pd.read_csv(path, encoding="utf-8-sig", low_memory=False)
+    frame = _read_snapshot_source(path)
     return record_universe_snapshot(frame, snapshot_dir=snapshot_dir)
