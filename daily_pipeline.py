@@ -2,8 +2,8 @@
 
 The transactional implementation remains in ``daily_pipeline_core``. This
 facade resolves provider settlement-date semantics, installs PID-aware recovery,
-adds comparable performance health diagnostics, and keeps mixed-date/materially
-stale universes fail-closed.
+adds comparable performance health and structured version provenance, and keeps
+mixed-date/materially stale universes fail-closed.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ import daily_live_freshness_v101 as _daily_live_freshness
 import daily_pipeline_core as _core
 import daily_recovery_v74 as _daily_recovery
 from institution_scanner.performance_health import build_performance_health
+from institution_scanner.version_manifest import build_version_manifest
 from trading_calendar import is_trading_day
 from web_report_v81 import maybe_publish_canonical_report
 
@@ -252,15 +253,13 @@ def _write_manifest(*args: Any, **kwargs: Any) -> dict[str, object]:
             "market_data_date_reason": str(
                 scan_profile.get("market_data_date_reason", "") or ""
             ),
+            "version_manifest": build_version_manifest(),
         }
     )
     previous_summary = kwargs.get("previous_summary", {})
     if not isinstance(previous_summary, dict):
         previous_summary = {}
-    payload["performance_health"] = build_performance_health(
-        payload,
-        previous_summary,
-    )
+    payload["performance_health"] = build_performance_health(payload, previous_summary)
     root = kwargs.get("result_dir") or _core.OUTPUT_DIR
     _core._atomic_write_json(Path(root) / "DailyRunSummary.json", payload)
     return payload
@@ -287,6 +286,7 @@ def _activate_run(
                 "market_data_lag_trading_days", 0
             ),
             "performance_health": payload.get("performance_health", {}),
+            "version_manifest": payload.get("version_manifest", {}),
         }
     )
     _core._atomic_write_json(path, current)
