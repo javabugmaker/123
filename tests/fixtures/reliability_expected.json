@@ -1,35 +1,35 @@
 {
   "A.ST": {
-    "challenger": 70.5,
+    "challenger": 68.0,
     "challenger_rank": 2,
-    "champion": 72.25,
-    "champion_rank": 1,
-    "delta": -1,
+    "champion": 69.75,
+    "champion_rank": 2,
+    "delta": 0,
     "hierarchy": "INSUFFICIENT",
     "hierarchy_status": "INSUFFICIENT"
   },
   "B.ST": {
-    "challenger": 72.0,
+    "challenger": 73.0,
     "challenger_rank": 1,
-    "champion": 71.5,
-    "champion_rank": 2,
-    "delta": 1,
+    "champion": 72.5,
+    "champion_rank": 1,
+    "delta": 0,
     "hierarchy": "INSUFFICIENT",
     "hierarchy_status": "INSUFFICIENT"
   },
   "C.ST": {
-    "challenger": 59.25,
+    "challenger": 57.75,
     "challenger_rank": 3,
-    "champion": 59.75,
+    "champion": 58.25,
     "champion_rank": 3,
     "delta": 0,
     "hierarchy": "INSUFFICIENT",
     "hierarchy_status": "INSUFFICIENT"
   },
   "D.ETF": {
-    "challenger": 64.5,
+    "challenger": 62.0,
     "challenger_rank": 1,
-    "champion": 65.25,
+    "champion": 62.75,
     "champion_rank": 1,
     "delta": 0,
     "hierarchy": "INSUFFICIENT",
@@ -45,9 +45,9 @@
     "hierarchy_status": "INSUFFICIENT"
   },
   "F.ETF": {
-    "challenger": 50.5,
+    "challenger": 48.5,
     "challenger_rank": 3,
-    "champion": 51.0,
+    "champion": 49.0,
     "champion_rank": 3,
     "delta": 0,
     "hierarchy": "INSUFFICIENT",

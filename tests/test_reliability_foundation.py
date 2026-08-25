@@ -6,6 +6,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from config import (
+    MODEL_EXECUTION_WEIGHT,
+    MODEL_SETUP_WEIGHT,
+    MODEL_TRIGGER_WEIGHT,
+)
 from institution_scanner.contracts import (
     CHALLENGER_CONTRACT,
     PRODUCTION_CONTRACT,
@@ -22,12 +27,15 @@ FIXTURES = Path(__file__).parent / "fixtures"
 def test_production_contract_is_locked() -> None:
     assert (
         PRODUCTION_CONTRACT.weights.signature()
-        == "0.6000:0.1500:0.2500"
+        == "0.6000:0.2500:0.1500"
     )
     assert PRODUCTION_CONTRACT.production is True
+    assert PRODUCTION_CONTRACT.weights.setup == MODEL_SETUP_WEIGHT
+    assert PRODUCTION_CONTRACT.weights.trigger == MODEL_TRIGGER_WEIGHT
+    assert PRODUCTION_CONTRACT.weights.execution == MODEL_EXECUTION_WEIGHT
     assert (
         CHALLENGER_CONTRACT.weights.signature()
-        == "0.5500:0.2000:0.2500"
+        == "0.5500:0.3000:0.1500"
     )
     assert CHALLENGER_CONTRACT.production is False
 

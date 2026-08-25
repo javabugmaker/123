@@ -19,8 +19,8 @@ def _write_fixture(
         {
             "Ticker": ["A.ST", "B.ST"],
             "ModelWeightSignature": [
-                "0.6000:0.1500:0.2500",
-                "0.6000:0.1500:0.2500",
+                "0.6000:0.2500:0.1500",
+                "0.6000:0.2500:0.1500",
             ],
             "GlobalCalibrationGovernanceStatus": [
                 status,
