@@ -1,12 +1,10 @@
-"""v82 scan-service facade with ranking audit + universe-history capture.
+"""Canonical scan-service facade with ranking audit + universe-history capture.
 
 The existing snapshot, freshness and transactional publication contracts remain
-unchanged.  After a successful complete-market canonical publication, v82 runs
-the full-universe perturbation audit and persists the published stock universe
-by its dominant market date. Manual ticker subsets are never written as
-historical market snapshots and are not presented as full-market audits.
+unchanged. Recovery/bootstrap compatibility is routed through the canonical
+``institution_scanner.scan_runtime`` facade so versioned root kernels are no
+longer imported directly by the production scan entry point.
 """
-
 from __future__ import annotations
 
 import logging
@@ -14,16 +12,10 @@ import sys
 import threading
 from pathlib import Path
 
-import checkpoint_inputs_v59 as _checkpoint_inputs
-import fundamental_refresh_v61 as _fundamental_refresh
 import scanner as _scanner
-import scanner_resume_v59 as _resume_contract_v59
-import scanner_resume_v68 as _resume_contract
+from institution_scanner import scan_runtime as _scan_runtime
 
-_checkpoint_inputs.install()
-_fundamental_refresh.install()
-_resume_contract_v59.install()
-_resume_contract.install()
+_scan_runtime.install()
 
 import scan_service_core as _core  # noqa: E402
 from model_audit import run_audit  # noqa: E402
@@ -59,15 +51,10 @@ def _record_full_market_snapshot(
         return
     full_csv = _canonical_full_csv(execution)
     if full_csv is None:
-        # Observability must never change the legacy publication contract. Some
-        # integration tests and custom callers intentionally return sentinel
-        # success objects without canonical file metadata.
         return
     try:
         snapshot = record_universe_snapshot_file(full_csv)
     except (OSError, ValueError, TypeError, ImportError) as exc:
-        # The canonical result set is already committed. Snapshot capture is
-        # prospective bias mitigation and must not roll back a valid scan.
         log.warning("Historical universe snapshot capture failed: %s", exc)
         return
     if snapshot is not None:
@@ -86,13 +73,8 @@ def _refresh_full_market_audit(
     if full_csv is None:
         return
     try:
-        payload = run_audit(
-            full_csv,
-            Path(_scanner.OUTPUT_DIR) / "audit",
-        )
+        payload = run_audit(full_csv, Path(_scanner.OUTPUT_DIR) / "audit")
     except (OSError, ValueError, TypeError, KeyError, ImportError) as exc:
-        # Audit is observational. A valid canonical scan stays published even
-        # if a diagnostic file cannot be produced.
         log.warning("Full-universe ranking audit failed: %s", exc)
         return
     log.info(
