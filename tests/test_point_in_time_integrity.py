@@ -67,7 +67,9 @@ def test_point_in_time_snapshot_carry_forward_is_bounded(
 def test_universe_status_never_claims_complete_survivorship_control(
     tmp_path: Path,
 ) -> None:
-    _snapshot(tmp_path, "2026-08-24")
+    _snapshot(tmp_path, "2026-08-20")
+    _snapshot(tmp_path, "2026-08-21")
+    _snapshot(tmp_path, "2026-08-25")
 
     status = universe.historical_universe_status(tmp_path)
 
@@ -81,3 +83,6 @@ def test_universe_status_never_claims_complete_survivorship_control(
         status["max_snapshot_age_days"]
         == universe.PIT_UNIVERSE_MAX_SNAPSHOT_AGE_DAYS
     )
+    assert status["snapshot_date_count"] == 3
+    assert status["max_snapshot_gap_days"] == 4
+    assert status["median_snapshot_gap_days"] == 2.5
