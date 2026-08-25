@@ -16,6 +16,7 @@ from institution_scanner.page_health_fallback import (
     apply_model_health_fallback_html,
 )
 from institution_scanner.page_policy import polish_public_page_html
+from institution_scanner.page_version import apply_public_page_version_html
 from institution_scanner.pit_counts import repair_summary_payload
 from institution_scanner.pit_page_semantics import (
     apply_pit_page_semantics_html,
@@ -75,6 +76,7 @@ def build_web_report(
             continue
         text = apply_pit_page_semantics_html(text, backtest_summary)
         text = apply_model_health_fallback_html(text, output_dir)
+        text = apply_public_page_version_html(text)
         text = polish_public_page_html(text, marker=marker)
         try:
             path.write_text(text, encoding="utf-8")
@@ -121,7 +123,7 @@ def build_and_publish_web_report(
         )
     built = build_web_report(output_dir=output_dir, site_dir=site_dir)
     log.info(
-        "WEB v106.5 PIT-count-aware Research Terminal generated: %s (%s).",
+        "WEB v106.6 performance-consolidated Research Terminal generated: %s (%s).",
         built.archive_path,
         reason,
     )
