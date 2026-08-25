@@ -25,6 +25,6 @@ jobs:
       - name: Pyright GUI strict
         run: pyright -p pyrightconfig.gui.json
       - name: Model and output contract regression
-        run: pytest -q
+        run: python -m pytest -q
       - name: Compile
         run: python -m compileall -q .
