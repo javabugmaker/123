@@ -4,7 +4,6 @@ from pathlib import Path
 
 from institution_scanner.contracts import PRODUCTION_CONTRACT
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
