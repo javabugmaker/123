@@ -13,3 +13,8 @@ extend-exclude = [
 
 [tool.ruff.lint]
 select = ["F", "I", "UP035", "RUF046", "RUF059"]
+
+[tool.ruff.lint.per-file-ignores]
+# Frozen compatibility kernel: keep new/canonical code on modern typing imports
+# without rewriting the legacy publication layer solely for lint modernization.
+"web_report_v102.py" = ["UP035"]
