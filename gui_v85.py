@@ -1,9 +1,9 @@
-"""v92 A-share research briefing desktop GUI.
+"""v108 A-share research briefing desktop GUI.
 
-The v85 editorial shell remains intact. v90 added a compact, diagnostic-only
-five-factor resonance view sourced from held-out backtest outputs. v92 makes the
-production backtest calibration chain visible next to that diagnostic layer so
-operators can verify whether historical evidence actually changed the score.
+The editorial shell remains intact while wide-row derived labels are delegated to
+the canonical GUI view-model. Production backtest calibration and diagnostic
+five-factor resonance remain visible, but full-market CSV loading no longer
+materializes a 400+ field dictionary for every row.
 
 Production ranking semantics are unchanged: the standard BacktestScore /
 BacktestAdjustedScore / BacktestEffectiveWeight / CompositeScore chain is only
@@ -14,13 +14,17 @@ ranking eligibility, entry signals, or execution decisions.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping
 
 import customtkinter as ctk
 
 import gui as _legacy
 import gui_core as _core
 import gui_v84 as _v84
+from institution_scanner.gui_view_model import (
+    backtest_detail_label,
+    derived_row_labels,
+    resonance_history_label,
+)
 from v85_terminal_config import (
     BRAND_LABEL,
     COLORS,
@@ -29,89 +33,9 @@ from v85_terminal_config import (
     TYPOGRAPHY,
 )
 
-GUI_VERSION = "2026-08-23-v92-backtest-calibration-visibility-v1"
+GUI_VERSION = "2026-08-25-v108-compact-view-model-v1"
 BACKTEST_CALIBRATION_COLUMN = "BacktestCalibration"
 RESONANCE_HISTORY_COLUMN = "ResonanceHistory"
-
-
-def _finite_number(value: object) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if number != number or number in {float("inf"), float("-inf")}:
-        return None
-    return number
-
-
-def resonance_history_label(data: Mapping[str, object]) -> str:
-    """Return one compact label for held-out five-factor backtest evidence."""
-    mean_count = _finite_number(data.get("BacktestResonanceMeanCount"))
-    strong_share = _finite_number(data.get("BacktestResonanceStrongBullShare"))
-    rising_share = _finite_number(data.get("BacktestResonanceRisingShare"))
-    if mean_count is None:
-        return "—"
-    parts = [f"{mean_count:.1f}/5"]
-    if strong_share is not None:
-        parts.append(f"强{strong_share:.0%}")
-    if rising_share is not None:
-        parts.append(f"↑{rising_share:.0%}")
-    return " · ".join(parts)
-
-
-def backtest_calibration_label(data: Mapping[str, object]) -> str:
-    """Compact production backtest score, blend weight and direct score delta."""
-    score = _finite_number(data.get("BacktestScore"))
-    weight = _finite_number(data.get("BacktestEffectiveWeight"))
-    composite = _finite_number(data.get("CompositeScore"))
-    raw = _finite_number(data.get("FinalScore"))
-    if raw is None:
-        raw = _finite_number(data.get("Score"))
-    if score is None and composite is None:
-        return "—"
-    parts: list[str] = []
-    if score is not None:
-        parts.append(f"S{score:.1f}")
-    if weight is not None:
-        parts.append(f"W{weight:.0%}")
-    if composite is not None and raw is not None:
-        parts.append(f"Δ{composite - raw:+.1f}")
-    return " · ".join(parts) or "—"
-
-
-def backtest_detail_label(data: Mapping[str, object]) -> str:
-    """Explain the complete production calibration chain for one selected row."""
-    score = _finite_number(data.get("BacktestScore"))
-    adjusted = _finite_number(data.get("BacktestAdjustedScore"))
-    weight = _finite_number(data.get("BacktestEffectiveWeight"))
-    composite = _finite_number(data.get("CompositeScore"))
-    raw = _finite_number(data.get("FinalScore"))
-    if raw is None:
-        raw = _finite_number(data.get("Score"))
-    samples = _finite_number(data.get("BacktestSamples"))
-    effective = _finite_number(data.get("BacktestEffectiveSamples"))
-    confidence = str(data.get("BacktestConfidenceTier", "") or "").strip()
-    if score is None and adjusted is None and composite is None:
-        return "—"
-    parts: list[str] = []
-    if score is not None:
-        parts.append(f"回测分 {score:.1f}")
-    if adjusted is not None:
-        parts.append(f"校准分 {adjusted:.1f}")
-    if weight is not None:
-        parts.append(f"权重 {weight:.0%}")
-    if composite is not None:
-        parts.append(f"回测后 {composite:.1f}")
-    if composite is not None and raw is not None:
-        parts.append(f"Δ{composite - raw:+.1f}")
-    if samples is not None:
-        sample_text = f"n={round(samples)}"
-        if effective is not None:
-            sample_text += f"/eff={effective:.1f}"
-        parts.append(sample_text)
-    if confidence:
-        parts.append(confidence)
-    return " · ".join(parts) or "—"
 
 
 def _v92_display_columns() -> tuple[str, ...]:
@@ -128,7 +52,7 @@ def _v92_display_columns() -> tuple[str, ...]:
 
 
 class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
-    """v92 briefing presentation on top of the stable v84 workstation shell."""
+    """v108 briefing presentation on top of the stable v84 workstation shell."""
 
     def __init__(self, root) -> None:
         self.data_asof = _core.tk.StringVar(master=root, value="等待数据")
@@ -139,7 +63,7 @@ class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
         super().__init__(root)
 
     def _build_ui_configure_styles(self) -> None:
-        """Retain v84 geometry while applying v92 audit diagnostics."""
+        """Retain v84 geometry while applying v108 audit diagnostics."""
         _v84.ResearchTerminalGUI._build_ui_configure_styles(self)
         _core.DISPLAY_COLUMNS = _v92_display_columns()
         _core.COLUMN_NAMES.update(
@@ -194,12 +118,12 @@ class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
         )
 
     def _build_ui_header(self) -> None:
-        """Compact v92 briefing header; all lower geometry remains v84 stable."""
+        """Compact v108 briefing header; all lower geometry remains v84 stable."""
         tk = _core.tk
         sans = str(TYPOGRAPHY["sans"])
         mono = str(TYPOGRAPHY["mono"])
         minimum = tuple(LAYOUT["minimum"])
-        self.root.title("InstitutionScanner · A股研究简报 · v92")
+        self.root.title("InstitutionScanner · A股研究简报 · v108")
         self.root.geometry(str(LAYOUT["window"]))
         self.root.minsize(int(minimum[0]), int(minimum[1]))
 
@@ -269,7 +193,7 @@ class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
         rule.pack(fill=tk.X, padx=18, pady=(0, 7))
 
     def _build_ui_controls(self) -> None:
-        """Use v84's proven horizontal control bar and apply v92 emphasis."""
+        """Use v84's proven horizontal control bar and apply v108 emphasis."""
         _v84.ResearchTerminalGUI._build_ui_controls(self)
         self.daily_button.configure(
             fg_color=COLORS["red"],
@@ -334,13 +258,9 @@ class ResearchBriefingGUI(_v84.ResearchTerminalGUI):
         for row in self._csv_rows:
             if len(row) < len(self._csv_headers):
                 row.extend([""] * (len(self._csv_headers) - len(row)))
-            data = {
-                column: row[index]
-                for column, index in indexes.items()
-                if index < len(row)
-            }
-            row[backtest_target] = backtest_calibration_label(data)
-            row[resonance_target] = resonance_history_label(data)
+            calibration, resonance = derived_row_labels(row, indexes)
+            row[backtest_target] = calibration
+            row[resonance_target] = resonance
         self._csv_indexes = indexes
         self._csv_search_text = [
             " ".join(map(self._cell_text, row)).casefold() for row in self._csv_rows
