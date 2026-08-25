@@ -25,6 +25,8 @@ jobs:
           pip install -c constraints-ci.txt -r requirements-dev.txt
       - name: Ruff
         run: ruff check .
+      - name: Canonical package strict Ruff
+        run: ruff check institution_scanner --select B,C4,SIM,PERF,PIE
       - name: Pyright project
         run: pyright
       - name: Pyright GUI strict
