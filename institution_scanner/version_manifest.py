@@ -2,15 +2,17 @@
 
 Legacy version strings remain compatibility surfaces. New code should consume
 this manifest so provenance does not require parsing ever-growing concatenated
-strings.
+strings. The manifest also exposes the remaining compatibility-overlay debt so
+canonicalization progress is measurable rather than implicit.
 """
 from __future__ import annotations
 
 from typing import Final
 
 from .contracts import CONTRACT_VERSION, PRODUCTION_CONTRACT
+from .runtime_inventory import runtime_inventory
 
-VERSION_MANIFEST_SCHEMA: Final = "2026-08-25-v108.8-structured-version-manifest-v1"
+VERSION_MANIFEST_SCHEMA: Final = "2026-08-25-v109.3-structured-version-manifest-v2"
 
 
 def build_version_manifest() -> dict[str, object]:
@@ -37,4 +39,5 @@ def build_version_manifest() -> dict[str, object]:
                 getattr(config, "PERFORMANCE_ENGINE_VERSION", "")
             ),
         },
+        "compatibility_debt": runtime_inventory(),
     }
