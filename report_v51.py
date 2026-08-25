@@ -17,6 +17,7 @@ import pandas as pd
 
 import report_core as _core
 from downloader import _MARKET_MANIFEST_PATH, normalize_ticker
+from institution_scanner.report_determinism import install as _install_report_determinism
 from report_core import *  # noqa: F403
 from tradeability import fallback_daily_limit_pct
 
@@ -208,4 +209,5 @@ def _results_to_dataframe(results: list[Any]) -> pd.DataFrame:
 
 
 _core._results_to_dataframe = _results_to_dataframe
+_install_report_determinism(_core)
 sys.modules[__name__] = _core

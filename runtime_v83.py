@@ -3,7 +3,8 @@
 The project uses compatibility facades that retain imported function references.
 This installer patches both the canonical lifecycle module and the already-loaded
 analytics module, while remaining idempotent under repeated imports and worker
-initialization.
+initialization. Exact score ties are routed through the canonical deterministic
+ticker tie-breaker without changing any score or execution-state priority.
 """
 
 from __future__ import annotations
@@ -13,11 +14,11 @@ from typing import Any
 
 import pandas as pd
 
-from lifecycle_acceleration_v83 import install as install_lifecycle_acceleration
-from ranking_architecture_v83 import (
+from institution_scanner.ranking_determinism import (
     RANKING_ARCHITECTURE_VERSION,
     stamp_layered_ranking,
 )
+from lifecycle_acceleration_v83 import install as install_lifecycle_acceleration
 
 _WRAPPED_ATTR = "_v83_layered_ranking_installed"
 _ORIGINAL_ATTR = "_v83_layered_ranking_original"

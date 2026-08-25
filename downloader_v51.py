@@ -18,6 +18,9 @@ import numpy as np
 
 import downloader_v51_base as _core
 from downloader_v51_base import *  # noqa: F403
+from institution_scanner.market_cache_performance import (
+    install as _install_market_cache_performance,
+)
 
 _LIMIT_CANDIDATES = (0.05, 0.10, 0.20, 0.30)
 _EXPLICIT_RATIO_KEYS = (
@@ -58,8 +61,6 @@ def _canonical_ratio(value: Any) -> float | None:
         return None
     if not np.isfinite(numeric) or numeric <= 0:
         return None
-    # Some providers express percentage fields as 10/20/30 rather than
-    # 0.10/0.20/0.30.  Accept that only for fields whose *name* says ratio/pct.
     if 2.0 <= numeric <= 40.0:
         numeric /= 100.0
     if not 0.02 <= numeric <= 0.40:
@@ -136,8 +137,6 @@ def get_price_limit_pct(ticker: str, is_etf: bool = False) -> float | None:
 
 
 def _record_market_manifest(ticker: str, df) -> None:
-    # Preserve v51 liquidity/share-capital provenance, then overwrite the
-    # ambiguous price-limit fields with the v52 evidence contract.
     _legacy_record_market_manifest(ticker, df)
     key = _core.normalize_ticker(ticker)
     row = _core._MARKET_MANIFEST_DIRTY.get(key)
@@ -152,4 +151,5 @@ def _record_market_manifest(ticker: str, df) -> None:
 _core.get_price_limit_evidence = get_price_limit_evidence
 _core.get_price_limit_pct = get_price_limit_pct
 _core._record_market_manifest = _record_market_manifest
+_install_market_cache_performance(_core)
 sys.modules[__name__] = _core
