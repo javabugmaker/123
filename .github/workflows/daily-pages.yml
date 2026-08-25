@@ -35,6 +35,9 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            constraints-ci.txt
 
       - name: Restore market/runtime cache
         uses: actions/cache@v4
@@ -49,7 +52,7 @@ jobs:
             institution-daily-${{ runner.os }}-
 
       - name: Install runtime
-        run: pip install -r requirements.txt
+        run: pip install -c constraints-ci.txt -r requirements.txt
 
       - name: Configure GitHub token for temporary gh-pages clone
         env:
