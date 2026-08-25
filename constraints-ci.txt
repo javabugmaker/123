@@ -1,0 +1,17 @@
+# Reproducible direct-dependency constraints for GitHub Actions.
+# Versions are the environment that passed the v107.3 Static Quality gate on
+# Python 3.11 / Ubuntu 24.04. Keep requirements.txt range-friendly for local
+# users; CI/DAILY resolve those ranges through this reviewed constraint set.
+pandas==2.3.3
+numpy==2.4.6
+scipy==1.17.1
+tickflow==0.1.24
+akshare==1.18.83
+ta==0.11.0
+tqdm==4.70.0
+pyarrow==23.0.1
+customtkinter==5.2.2
+holidays==0.103
+pytest==8.4.2
+ruff==0.16.4
+pyright==1.1.411
