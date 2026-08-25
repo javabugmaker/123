@@ -1,11 +1,3 @@
-"""Typed result-contract helpers shared by ranking, exports and the GUI.
-
-The scanner produces a deliberately wide research table.  This module keeps
-the small set of fields that define *where* and *under which policy* a ranking
-was produced in one place.  Candidate subsets may be displayed and filtered,
-but they must never silently become a new cross-sectional ranking universe.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -55,6 +47,68 @@ RESULT_SCHEMA: tuple[ResultField, ...] = (
 
 RESULT_FIELD_MAP = {field.name: field for field in RESULT_SCHEMA}
 RESULT_FIELD_LABELS = {field.name: field.label for field in RESULT_SCHEMA}
+
+# Required production evidence is intentionally much smaller than the full
+# research surface. These columns prove what model/policy generated a row and
+# that shadow/diagnostic layers did not leak into production. Missing one is a
+# contract failure rather than an optional diagnostic omission.
+REQUIRED_PRODUCTION_COLUMNS: frozenset[str] = frozenset(
+    {
+        "Ticker",
+        "RunId",
+        "ModelVersion",
+        "PipelineVersion",
+        "OutputContractVersion",
+        "DecisionIntegrityVersion",
+        "DecisionPolicySignature",
+        "ModelWeightSignature",
+        "ProductionModelRole",
+        "ProductionModelWeightSignatureLocked",
+        "ChallengerModelRole",
+        "ChallengerProductionApplied",
+        "HierarchicalEvidenceProductionApplied",
+        "ReliabilityFoundationVersion",
+        "ModelContractVersion",
+        "GlobalCalibrationGovernanceStatus",
+        "BacktestPeerEvidenceWeight",
+        "BacktestLocalEvidenceWeight",
+        "BacktestEligibleForRanking",
+        "RankingScope",
+        "RankingUniverseSize",
+        "RankingRunId",
+        "CandidateViewRank",
+        "RankingScore",
+        "ExecutionState",
+        "EntrySignal",
+        "DataFreshnessStatus",
+    }
+)
+
+REQUIRED_MIXED_VIEW_COLUMNS: frozenset[str] = frozenset(
+    {
+        "Ticker",
+        "RunId",
+        "CandidateViewRank",
+        "RankingScore",
+        "ExecutionState",
+        "EntrySignal",
+    }
+)
+
+REQUIRED_TRADE_READY_COLUMNS: frozenset[str] = frozenset(
+    {
+        "Ticker",
+        "RunId",
+        "CandidateViewRank",
+        "ExecutionState",
+        "EntrySignal",
+        "QualityLayerStatus",
+        "DataFreshnessStatus",
+        "Close",
+        "StopLoss",
+        "TargetPrice",
+    }
+)
 
 _POLICY_PREFIXES = (
     "AD_",
@@ -109,8 +163,6 @@ _POLICY_NAMES = {
     "TICKFLOW_ADJUST",
 }
 
-# Runtime scheduling/caching controls can change speed but must not invalidate
-# an otherwise identical decision surface.
 _POLICY_EXCLUDED_NAMES = {
     "BACKTEST_CACHE_ENABLED",
     "BACKTEST_CHUNK_SIZE",
@@ -139,7 +191,6 @@ def _normalize_policy_value(value: Any) -> Any:
 
 
 def decision_policy_payload() -> dict[str, Any]:
-    """Return normalized configuration values that can change a decision."""
     import config
 
     payload: dict[str, Any] = {}
@@ -167,7 +218,6 @@ def decision_policy_signature() -> str:
 
 
 def candidate_generation_stage(backtest_stage: pd.Series) -> pd.Series:
-    """Map ticker-level backtest provenance to the published candidate stage."""
     normalized = backtest_stage.fillna("").astype(str).str.upper().str.strip()
     return normalized.map(
         {
@@ -192,7 +242,6 @@ def _unique_text(frame: pd.DataFrame, column: str) -> list[str]:
 
 
 def validate_ranking_input(frame: pd.DataFrame) -> None:
-    """Reject a previously ranked subset before percentiles can be recomputed."""
     if frame is None or frame.empty:
         return
     scopes = _unique_text(frame, "RankingScope")
@@ -243,7 +292,6 @@ def stamp_ranking_contract(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def apply_schema_defaults(record: dict[str, Any]) -> dict[str, Any]:
-    """Fill contract defaults without coercing legacy research columns."""
     result = dict(record)
     for field in RESULT_SCHEMA:
         result.setdefault(field.name, field.default)
