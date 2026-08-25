@@ -8,8 +8,8 @@ visible in diagnostic RankIC, bucket monotonicity and return summaries even
 though v106 correctly prevented them from activating peer calibration.
 
 This compatibility layer makes those legacy diagnostics point-in-time clean
-without changing the price path, signal generation, 60/15/25 production
-weights, ranking thresholds or TradeReady policy:
+without changing the price path, signal generation, production weights,
+ranking thresholds or TradeReady policy:
 - UNAVAILABLE samples remain in the raw audit set so coverage loss is visible;
 - their numeric outcomes and score are masked and their sample weight is zero;
 - therefore held-out estimators, RankIC, drawdown and score buckets use only
@@ -17,17 +17,12 @@ weights, ranking thresholds or TradeReady policy:
 - BacktestSummary exposes raw/verified/unverified test counts explicitly and
   its canonical ``samples`` count matches the verified held-out metric scope;
 - insufficient PIT coverage disables calibration but does not fail DAILY.
-
-The last rule matters for prospective snapshot archives. A newly-created PIT
-archive cannot immediately have mature 60-trading-day outcomes, so zero
-verified held-out samples is a normal warm-up state rather than a pipeline
-failure. Genuine raw-test failures detected by analytics_core remain fatal and
-are never cleared here.
 """
 from __future__ import annotations
 
 import json
 import os
+from contextlib import suppress
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
@@ -60,9 +55,9 @@ _INSTALLED = False
 _ORIGINAL_CACHED: Any = None
 _ORIGINAL_VERIFIED: Any = None
 _ORIGINAL_RUN: Any = None
-_PIT_SPLIT_COUNTS: ContextVar[dict[str, dict[str, int]]] = ContextVar(
+_PIT_SPLIT_COUNTS: ContextVar[dict[str, dict[str, int]] | None] = ContextVar(
     "pit_split_counts",
-    default={},
+    default=None,
 )
 
 
@@ -77,9 +72,7 @@ def scrub_samples_for_pit_metrics(
     result: list[dict[str, Any]] = []
     for source in samples:
         item = dict(source)
-        eligible = _status_is_eligible(
-            item.get("universe_snapshot_status")
-        )
+        eligible = _status_is_eligible(item.get("universe_snapshot_status"))
         item["pit_metric_eligible"] = eligible
         if not eligible:
             item["sample_weight"] = 0.0
@@ -110,11 +103,7 @@ def scrub_frame_for_pit_metrics(frame: pd.DataFrame) -> pd.DataFrame:
     if "sample_weight" not in result.columns:
         result["sample_weight"] = 1.0
     result.loc[~eligible, "sample_weight"] = 0.0
-    columns = [
-        column
-        for column in _MASKED_METRIC_COLUMNS
-        if column in result.columns
-    ]
+    columns = [column for column in _MASKED_METRIC_COLUMNS if column in result.columns]
     if columns:
         result.loc[~eligible, columns] = np.nan
     return result
@@ -132,10 +121,7 @@ def _split_counts(
         .str.lower()
     )
     verified_split = (
-        verified.get(
-            "split",
-            pd.Series("", index=verified.index),
-        )
+        verified.get("split", pd.Series("", index=verified.index))
         .fillna("")
         .astype(str)
         .str.lower()
@@ -155,12 +141,7 @@ def apply_summary_pit_scope(
     summary: Any,
     counts: dict[str, dict[str, int]],
 ) -> Any:
-    """Align held-out metrics with PIT scope without creating a false fatal.
-
-    ``analytics_core`` owns command-fatal test-data validation. This function
-    must never turn a healthy raw backtest into exit code 2 merely because a
-    prospective PIT archive has not accumulated mature outcomes yet.
-    """
+    """Align held-out metrics with PIT scope without creating a false fatal."""
     test = counts.get("test", {})
     raw_test = int(test.get("raw", 0) or 0)
     verified_test = int(test.get("verified", 0) or 0)
@@ -194,15 +175,7 @@ def apply_summary_pit_scope(
             "production scoring continues with unverified backtest evidence excluded"
         )
 
-    # ``samples`` is the count associated with the top-level held-out metrics.
-    # Raw partition counts remain available in rolling_oos and the explicit
-    # heldout_raw_test_samples field above.
     summary.samples = verified_test
-
-    # Do NOT set or clear summary.insufficient_test_data/error here. If the core
-    # already found a genuine raw-test failure it remains fatal. A PIT-only
-    # shortage is a calibration warm-up state and must not make cmd_backtest
-    # return 2.
 
     rolling = getattr(summary, "rolling_oos_stats", None)
     if isinstance(rolling, dict):
@@ -234,19 +207,13 @@ def _rewrite_summary_json(core: Any, summary: Any) -> None:
     temporary = output_dir / ".BacktestSummary.json.v1062.tmp"
     try:
         temporary.write_text(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                indent=2,
-            ),
+            json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         os.replace(temporary, target)
     finally:
-        try:
+        with suppress(OSError):
             temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _pit_backtest_chunk_worker(
@@ -274,23 +241,15 @@ def _pit_backtest_chunk_worker(
                 profile=context["profile"],
                 benchmark_name=context["benchmark"],
             )
-            ticker_samples = scrub_samples_for_pit_metrics(
-                ticker_samples
-            )
+            ticker_samples = scrub_samples_for_pit_metrics(ticker_samples)
             if ticker_samples:
-                frames.append(
-                    pd.DataFrame.from_records(ticker_samples)
-                )
+                frames.append(pd.DataFrame.from_records(ticker_samples))
             cache_hits += int(cache_hit)
             if cache_hit:
                 cache_hit_tickers.append(str(ticker))
         except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
             errors.append((ticker, str(exc)))
-    batch = (
-        pd.concat(frames, ignore_index=True)
-        if frames
-        else pd.DataFrame()
-    )
+    batch = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     return (
         scrub_frame_for_pit_metrics(batch),
         cache_hits,
@@ -303,23 +262,11 @@ def _pit_backtest_chunk_worker(
 def install(core: Any) -> None:
     """Install PIT metric scoping before any historical backtest runs."""
     global _INSTALLED, _ORIGINAL_CACHED, _ORIGINAL_VERIFIED, _ORIGINAL_RUN
-    if _INSTALLED or getattr(
-        core,
-        "_POINT_IN_TIME_BACKTEST_V1062_INSTALLED",
-        False,
-    ):
+    if _INSTALLED or getattr(core, "_POINT_IN_TIME_BACKTEST_V1062_INSTALLED", False):
         return
 
-    original_cached = getattr(
-        core,
-        "_backtest_one_ticker_cached",
-        None,
-    )
-    original_verified = getattr(
-        core,
-        "_verified_point_in_time_frame",
-        None,
-    )
+    original_cached = getattr(core, "_backtest_one_ticker_cached", None)
+    original_verified = getattr(core, "_verified_point_in_time_frame", None)
     original_run = getattr(core, "run_historical_backtest", None)
     if not all(
         callable(value)
@@ -344,7 +291,7 @@ def install(core: Any) -> None:
         token = _PIT_SPLIT_COUNTS.set({})
         try:
             summary = _ORIGINAL_RUN(*args, **kwargs)
-            counts = _PIT_SPLIT_COUNTS.get()
+            counts = _PIT_SPLIT_COUNTS.get() or {}
             apply_summary_pit_scope(summary, counts)
             if not bool(getattr(summary, "heldout_calibration_enabled", False)):
                 core.logger.warning(
