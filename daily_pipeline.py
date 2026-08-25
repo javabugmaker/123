@@ -1,11 +1,10 @@
-"""InstitutionScanner v74 daily-pipeline settlement and recovery facade.
+"""InstitutionScanner daily-pipeline settlement, recovery and observability facade.
 
-The transactional implementation remains in ``daily_pipeline_core``. v53
-hardens provider settlement-date semantics; v74 additionally installs PID-aware
-recovery of unfinished outer DAILY transactions before a new run can start.
-Mixed-date/materially stale universes remain fail-closed.
+The transactional implementation remains in ``daily_pipeline_core``. This
+facade resolves provider settlement-date semantics, installs PID-aware recovery,
+adds comparable performance health diagnostics, and keeps mixed-date/materially
+stale universes fail-closed.
 """
-
 from __future__ import annotations
 
 import csv
@@ -20,6 +19,7 @@ import config as _config
 import daily_live_freshness_v101 as _daily_live_freshness
 import daily_pipeline_core as _core
 import daily_recovery_v74 as _daily_recovery
+from institution_scanner.performance_health import build_performance_health
 from trading_calendar import is_trading_day
 from web_report_v81 import maybe_publish_canonical_report
 
@@ -176,7 +176,6 @@ def _resolve_profile_date(
 
 
 def _csv_profile(path: Path, expected_date: str) -> dict[str, object]:
-    """Profile freshness against calendar date, then a safe provider settlement date."""
     calendar_profile = _LEGACY_CSV_PROFILE(path, expected_date)
     resolution = _resolve_profile_date(path, expected_date, calendar_profile)
     effective_date = str(resolution.get("effective_date", expected_date) or expected_date)
@@ -255,6 +254,13 @@ def _write_manifest(*args: Any, **kwargs: Any) -> dict[str, object]:
             ),
         }
     )
+    previous_summary = kwargs.get("previous_summary", {})
+    if not isinstance(previous_summary, dict):
+        previous_summary = {}
+    payload["performance_health"] = build_performance_health(
+        payload,
+        previous_summary,
+    )
     root = kwargs.get("result_dir") or _core.OUTPUT_DIR
     _core._atomic_write_json(Path(root) / "DailyRunSummary.json", payload)
     return payload
@@ -280,6 +286,7 @@ def _activate_run(
             "market_data_lag_trading_days": payload.get(
                 "market_data_lag_trading_days", 0
             ),
+            "performance_health": payload.get("performance_health", {}),
         }
     )
     _core._atomic_write_json(path, current)
