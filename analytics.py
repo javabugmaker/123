@@ -1,12 +1,10 @@
-"""Canonical analytics facade for the vectorised v95+ runtime.
+"""Canonical analytics facade for the vectorised runtime.
 
-The stable implementation remains in :mod:`analytics_core`, while this module
-composes acceleration, score, FAST/EXACT consistency, point-in-time diagnostics
-and transactional publication exactly once. Historical version modules remain
-import-compatible kernels; import order is no longer allowed to define model
-semantics.
+The stable implementation remains in :mod:`analytics_core`. Versioned
+compatibility kernels are installed through the two-phase canonical
+``institution_scanner.analytics_runtime`` bootstrap so import order cannot
+silently redefine model semantics.
 """
-
 from __future__ import annotations
 
 import inspect
@@ -20,51 +18,21 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-import analytics_acceleration_v77 as _analytics_acceleration
-import analytics_compat_v97 as _analytics_compat
 import analytics_core as _core
-import backtest_acceleration_v77 as _backtest_acceleration
-import backtest_fastpath_v78 as _backtest_fastpath
-import backtest_fastscore_v80 as _backtest_fastscore
-import backtest_profile_alignment_v95 as _profile_alignment
-import cache_acceleration_v77 as _cache_acceleration
-import calibration_weight_cache_v79 as _calibration_weight_cache
-import indicator_acceleration_v77 as _indicator_acceleration
-import score_runtime_v97 as _score_runtime
-import scoring_consistency_v94 as _scoring_consistency
-import universe_cache_acceleration_v78 as _universe_cache_acceleration
 from analytics_core import *  # noqa: F403
-from backtest_alignment import install_analytics_alignment
-from backtest_rank_integrity_v82 import (
-    BACKTEST_RECENCY_NORMALIZATION_VERSION,
-    install_single_recency_ranking_guard,
-    single_recency_ranking_context,
-)
-from model_audit import run_audit
-from technical_resonance_v90 import (
+from institution_scanner import analytics_runtime as _analytics_runtime
+from institution_scanner.resonance_bridge import (
     RESONANCE_VERSION,
     attach_resonance_to_samples,
     summarize_resonance_samples,
 )
+from model_audit import run_audit
 
-# One deterministic bootstrap. Raw accelerators install first; canonical policy
-# overlays install last so workers, GUI and direct analytics share one runtime.
-_indicator_acceleration.install()
-_cache_acceleration.install()
-_universe_cache_acceleration.install()
-_backtest_acceleration.install()
-_analytics_acceleration.install()
-_score_runtime.install()
-_calibration_weight_cache.install()
-_backtest_fastpath.install()
-_backtest_fastscore.install()
-_profile_alignment.install()
-_scoring_consistency.install()
-install_analytics_alignment(_core)
-install_single_recency_ranking_guard(_core)
+# Phase one is intentionally before legacy baselines are captured below.
+_analytics_runtime.install_pre_facade(_core)
 
 ANALYTICS_RUNTIME_COMPOSITION_VERSION = (
-    "2026-08-23-v97-canonical-vectorized-analytics-runtime-v1"
+    _analytics_runtime.ANALYTICS_RUNTIME_FACADE_VERSION
 )
 _core.ANALYTICS_RUNTIME_COMPOSITION_VERSION = ANALYTICS_RUNTIME_COMPOSITION_VERSION
 
@@ -207,9 +175,6 @@ def _backtest_one_ticker_cached(
     """Preserve cache semantics and add resonance without signature brittleness."""
     executor = _core._backtest_one_ticker
     if not _supports_profile_contract(executor):
-        # Compatibility lane for old research/test integrations that supplied a
-        # positional-only executor. Production executors all use the modern
-        # profile contract, so this branch has no effect on normal cache paths.
         samples = executor(
             ticker,
             source,
@@ -293,13 +258,12 @@ def _ticker_backtest_rows(
         valid, ["ticker", "entry_signal", "resonance_count", "_resonance_rising"]
     ].copy()
     resonance["_strong"] = resonance["resonance_count"].ge(4.0)
-    metrics = (
-        resonance.groupby(["ticker", "entry_signal"], sort=False, as_index=False)
-        .agg(
-            resonance_mean_count=("resonance_count", "mean"),
-            resonance_strong_bull_share=("_strong", "mean"),
-            resonance_rising_share=("_resonance_rising", "mean"),
-        )
+    metrics = resonance.groupby(
+        ["ticker", "entry_signal"], sort=False, as_index=False
+    ).agg(
+        resonance_mean_count=("resonance_count", "mean"),
+        resonance_strong_bull_share=("_strong", "mean"),
+        resonance_rising_share=("_resonance_rising", "mean"),
     )
     for column in (
         "resonance_mean_count",
@@ -370,10 +334,7 @@ def _transaction_stage_path(path: Path, destination: Path, stage: Path) -> Path:
 def _refresh_published_ranking_audit(destination: Path) -> None:
     """Refresh diagnostics after publication without changing transaction state."""
     try:
-        payload = run_audit(
-            destination / "AllResults.csv",
-            destination / "audit",
-        )
+        payload = run_audit(destination / "AllResults.csv", destination / "audit")
     except (OSError, ValueError, TypeError, KeyError, ImportError) as exc:
         _core.logger.warning("Post-backtest ranking audit failed: %s", exc)
         return
@@ -397,10 +358,6 @@ def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> N
         backup = transaction_root / "backup"
         stage.mkdir(parents=True, exist_ok=True)
 
-        # The old transaction redirected writes only. Any nested postprocessor
-        # that re-read AllResults therefore saw the pre-transaction file. Seed
-        # the stage and point the canonical OUTPUT_DIR at it so every layer reads
-        # exactly the data that the previous layer wrote.
         source_csv = destination / "AllResults.csv"
         if source_csv.is_file():
             shutil.copy2(source_csv, stage / "AllResults.csv")
@@ -440,7 +397,7 @@ def apply_backtest_ranking(summary: _core.BacktestSummary, top_n: int = 50) -> N
         report_module._atomic_write_parquet = staged_parquet
         report_module.refresh_candidate_exports = staged_refresh
         try:
-            with single_recency_ranking_context():
+            with _analytics_runtime.single_recency_ranking_context():
                 _core._legacy_apply_backtest_ranking(summary, top_n=top_n)
         except BaseException:
             shutil.rmtree(transaction_root, ignore_errors=True)
@@ -484,19 +441,11 @@ _core.BACKTEST_PUBLICATION_INTEGRITY_VERSION = (
 )
 _core.BACKTEST_RANKING_INTEGRITY_VERSION = (
     "2026-08-21-v88-verified-point-in-time-ranking-"
-    + BACKTEST_RECENCY_NORMALIZATION_VERSION
+    + _analytics_runtime.BACKTEST_RECENCY_NORMALIZATION_VERSION
 )
 _core.PERFORMANCE_ENGINE_VERSION = "2026-08-23-v97-canonical-vectorized-runtime-v2"
 
-# Production ranking math belongs to analytics itself, not only to the CLI
-# command facade. The generic model_calibration API remains generic; only the
-# analytics resolver receives signal-semantic policy.
-import backtest_math_integrity_v94 as _math_integrity  # noqa: E402
-import calibration_math_v96 as _calibration_math  # noqa: E402
-import model_calibration as _model_calibration  # noqa: E402
-
-_math_integrity.install(_core, _model_calibration)
-_calibration_math.install(_core)
-_analytics_compat.install()
+# Phase two must remain after the facade wrappers above are attached to core.
+_analytics_runtime.install_post_facade(_core)
 
 sys.modules[__name__] = _core
