@@ -51,7 +51,7 @@ def _install_proxy(module: ModuleType) -> None:
     current = getattr(module, "pd", None)
     if isinstance(current, _PandasProxy) or current is None:
         return
-    setattr(module, "pd", _PandasProxy(pd))
+    module.__dict__["pd"] = _PandasProxy(pd)
 
 
 def install() -> None:
@@ -72,10 +72,8 @@ def install() -> None:
         resonance_reporting,
     ):
         _install_proxy(module)
-        setattr(
-            module,
-            "POSTPROCESS_FRAME_PERFORMANCE_VERSION",
-            POSTPROCESS_FRAME_PERFORMANCE_VERSION,
+        module.__dict__["POSTPROCESS_FRAME_PERFORMANCE_VERSION"] = (
+            POSTPROCESS_FRAME_PERFORMANCE_VERSION
         )
 
     _INSTALLED = True
