@@ -1,3 +1,9 @@
+"""Runtime verification for generated production artifacts.
+
+The verifier is intentionally independent of the scanner runtime. It checks the
+published contract after the DAILY pipeline has finished and before GitHub Pages
+is allowed to publish.
+"""
 from __future__ import annotations
 
 import json
@@ -22,7 +28,10 @@ VERIFICATION_VERSION: Final = "2026-08-25-v108.5-required-production-schema-v1"
 def _read_csv(path: Path) -> pd.DataFrame:
     if not path.is_file():
         return pd.DataFrame()
-    return pd.read_csv(path, encoding="utf-8-sig", low_memory=False)
+    try:
+        return pd.read_csv(path, encoding="utf-8-sig", low_memory=False)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
 
 
 def _numeric(frame: pd.DataFrame, column: str) -> pd.Series:
@@ -40,9 +49,8 @@ def _text(frame: pd.DataFrame, column: str, default: str = "") -> pd.Series:
 
 
 def _bool(frame: pd.DataFrame, column: str, default: bool = False) -> pd.Series:
-    return _text(frame, column, str(default)).str.lower().isin(
-        {"true", "1", "yes", "y", "是"}
-    )
+    raw = _text(frame, column, str(default))
+    return raw.str.lower().isin({"true", "1", "yes", "y", "是"})
 
 
 def _issue(
@@ -415,34 +423,33 @@ def verify_directory(output_dir: Path) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "version": VERIFICATION_VERSION,
         "status": "PASS" if not errors else "FAIL",
-        "errors": errors,
-        "warnings": warnings,
+        "errors": len(errors),
+        "warnings": len(warnings),
         "issues": issues,
         "counts": {
             "all_results": len(all_results),
             "mixed": len(mixed),
             "trade_ready": len(trade_ready),
         },
-        "production_weight_signature": PRODUCTION_CONTRACT.weights.signature(),
+        "production_weight_signature_expected": PRODUCTION_CONTRACT.weights.signature(),
     }
-    try:
-        (output_dir / "ReliabilityVerification.json").write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-    except OSError:
-        pass
+    path = output_dir / "ReliabilityVerification.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
     return payload
 
 
 def main(argv: list[str] | None = None) -> int:
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    output_dir = Path(arguments[0]) if arguments else Path("output")
+    args = list(sys.argv[1:] if argv is None else argv)
+    output_dir = Path(args[0]) if args else Path("output")
     payload = verify_directory(output_dir)
-    if payload["status"] == "PASS":
-        return 0
-    for issue in payload["errors"]:
-        print(f"{issue['code']}: {issue['detail']}", file=sys.stderr)
-    return 2
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if payload["status"] == "PASS" else 2
 
 
 if __name__ == "__main__":
