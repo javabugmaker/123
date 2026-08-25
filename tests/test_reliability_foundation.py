@@ -20,7 +20,6 @@ from institution_scanner.reliability import (
     annotate_reliability,
 )
 
-
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
