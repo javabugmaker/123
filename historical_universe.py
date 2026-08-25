@@ -4,6 +4,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from config import CACHE_DIR
@@ -14,7 +15,7 @@ _BENCHMARKS = {"000300.SH", "000905.SH", "399006.SZ"}
 _SECURITY = re.compile(r"^\d{6}\.(?:SH|SZ|BJ)$")
 _SNAPSHOT_DIR = CACHE_DIR / "historical_universe"
 
-POINT_IN_TIME_UNIVERSE_VERSION = "2026-08-24-v106-prospective-pit-staleness-guard-v1"
+POINT_IN_TIME_UNIVERSE_VERSION = "2026-08-25-v108.2-pit-coverage-diagnostics-v1"
 # Normal operation records one complete snapshot on each successful trading-day
 # full-market scan.  A stale snapshot must not be carried forward indefinitely:
 # long holidays fit inside 14 calendar days, while missed refreshes fail closed.
@@ -209,19 +210,38 @@ def point_in_time_eligibility(
     )
 
 
+def _snapshot_date_diagnostics(
+    index: dict[str, tuple[tuple[pd.Timestamp, bool, str], ...]],
+) -> tuple[list[pd.Timestamp], int, float]:
+    dates = sorted(
+        {
+            pd.Timestamp(entry[0]).normalize()
+            for entries in index.values()
+            for entry in entries
+        }
+    )
+    if len(dates) < 2:
+        return dates, 0, 0.0
+    gaps = np.diff(np.array(dates, dtype="datetime64[D]")).astype(int)
+    return dates, int(gaps.max(initial=0)), float(np.median(gaps))
+
+
 def historical_universe_status(
     snapshot_dir: Path | None = None,
 ) -> dict[str, object]:
     directory_text, signature = _snapshot_cache_key(snapshot_dir)
     index = _load_snapshot_index(directory_text, signature)
     observations = sum(len(entries) for entries in index.values())
-    dates = [entry[0] for entries in index.values() for entry in entries]
+    snapshot_dates, max_gap, median_gap = _snapshot_date_diagnostics(index)
     return {
         "available": bool(index),
         "ticker_count": len(index),
         "observations": observations,
-        "start_date": min(dates).strftime("%Y-%m-%d") if dates else "",
-        "end_date": max(dates).strftime("%Y-%m-%d") if dates else "",
+        "start_date": snapshot_dates[0].strftime("%Y-%m-%d") if snapshot_dates else "",
+        "end_date": snapshot_dates[-1].strftime("%Y-%m-%d") if snapshot_dates else "",
+        "snapshot_date_count": len(snapshot_dates),
+        "max_snapshot_gap_days": max_gap,
+        "median_snapshot_gap_days": round(median_gap, 2),
         "directory": str(snapshot_dir or _SNAPSHOT_DIR),
         "version": POINT_IN_TIME_UNIVERSE_VERSION,
         "max_snapshot_age_days": PIT_UNIVERSE_MAX_SNAPSHOT_AGE_DAYS,
