@@ -1,9 +1,9 @@
 """Canonical scan-service facade with ranking audit + universe-history capture.
 
 The existing snapshot, freshness and transactional publication contracts remain
-unchanged. Recovery/bootstrap compatibility is routed through the canonical
-``institution_scanner.scan_runtime`` facade so versioned root kernels are no
-longer imported directly by the production scan entry point.
+unchanged. Recovery/bootstrap and versioned observability compatibility are
+routed through ``institution_scanner.scan_runtime`` so the production entry
+point no longer imports versioned root kernels directly.
 """
 from __future__ import annotations
 
@@ -20,10 +20,7 @@ _scan_runtime.install()
 import scan_service_core as _core  # noqa: E402
 from model_audit import run_audit  # noqa: E402
 from pipeline_contracts import enforce_enrichment_contract  # noqa: E402
-from publication_guard_v65 import enforce_cache_first_market_contract  # noqa: E402
 from scan_service_core import *  # noqa: E402,F403
-from universe_snapshot_v82 import record_universe_snapshot_file  # noqa: E402
-from web_report_v81 import maybe_publish_canonical_report  # noqa: E402
 
 _legacy_execute_scan = _core.execute_scan
 _core._legacy_execute_scan = _legacy_execute_scan
@@ -53,7 +50,7 @@ def _record_full_market_snapshot(
     if full_csv is None:
         return
     try:
-        snapshot = record_universe_snapshot_file(full_csv)
+        snapshot = _scan_runtime.record_universe_snapshot_file(full_csv)
     except (OSError, ValueError, TypeError, ImportError) as exc:
         log.warning("Historical universe snapshot capture failed: %s", exc)
         return
@@ -121,7 +118,7 @@ def execute_scan(
                 health.complete_ratio * 100.0,
             )
             if request.cache_first:
-                market_health = enforce_cache_first_market_contract(results)
+                market_health = _scan_runtime.enforce_cache_first_market_contract(results)
                 log.info(
                     "Cache-first market contract: %s, date=%s, lag=%d trading days, coherence=%.1f%%.",
                     market_health["status"],
@@ -165,7 +162,7 @@ def execute_scan(
             log.info("Canonical publication committed; scan checkpoint cleared.")
             _record_full_market_snapshot(execution, request, log)
             _refresh_full_market_audit(execution, request, log)
-            maybe_publish_canonical_report(
+            _scan_runtime.maybe_publish_canonical_report(
                 Path(_scanner.OUTPUT_DIR),
                 logger=log,
                 reason="scan-complete",
