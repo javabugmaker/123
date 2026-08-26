@@ -52,6 +52,11 @@ RESULT_FIELD_LABELS = {field.name: field.label for field in RESULT_SCHEMA}
 # research surface. These columns prove what model/policy generated a row and
 # that shadow/diagnostic layers did not leak into production. Missing one is a
 # contract failure rather than an optional diagnostic omission.
+#
+# CandidateViewRank is deliberately NOT an AllResults contract field. It is a
+# presentation/view rank attached only after a candidate subset is selected;
+# requiring it on the full-universe surface conflates ranking provenance with
+# candidate-view presentation semantics.
 REQUIRED_PRODUCTION_COLUMNS: frozenset[str] = frozenset(
     {
         "Ticker",
@@ -76,7 +81,6 @@ REQUIRED_PRODUCTION_COLUMNS: frozenset[str] = frozenset(
         "RankingScope",
         "RankingUniverseSize",
         "RankingRunId",
-        "CandidateViewRank",
         "RankingScore",
         "ExecutionState",
         "EntrySignal",
@@ -106,7 +110,7 @@ REQUIRED_TRADE_READY_COLUMNS: frozenset[str] = frozenset(
         "DataFreshnessStatus",
         "Close",
         "StopLoss",
-        "TargetPrice",
+        "ProjectedTarget",
     }
 )
 
