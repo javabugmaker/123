@@ -44,7 +44,7 @@ def test_offline_reliability_to_publication_contract_golden(tmp_path: Path) -> N
     result["QualityLayerStatus"] = ["PASS", "NOT_APPLICABLE", "PASS"]
     result["Close"] = [10.0, 4.0, 20.0]
     result["StopLoss"] = [9.0, 3.8, 18.0]
-    result["TargetPrice"] = [12.0, 4.5, 24.0]
+    result["ProjectedTarget"] = [12.0, 4.5, 24.0]
 
     result.to_csv(tmp_path / "AllResults.csv", index=False, encoding="utf-8-sig")
     result.iloc[:3].to_csv(
