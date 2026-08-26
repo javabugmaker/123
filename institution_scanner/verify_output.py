@@ -22,7 +22,7 @@ from result_contract import (
 
 from .contracts import PRODUCTION_CONTRACT
 
-VERIFICATION_VERSION: Final = "2026-08-25-v108.5-required-production-schema-v1"
+VERIFICATION_VERSION: Final = "2026-08-26-v109.6-artifact-surface-schema-v1"
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
@@ -394,14 +394,14 @@ def _verify_trade_ready(
             f"{int(bad_stop.sum())} rows have StopLoss >= Close",
         )
 
-    target = _numeric(frame, "TargetPrice")
+    target = _numeric(frame, "ProjectedTarget")
     bad_target = target.notna() & close.notna() & target.le(close)
     if bad_target.any():
         _issue(
             issues,
             "ERROR",
             "TRADE_READY_TARGET_INVALID",
-            f"{int(bad_target.sum())} rows have TargetPrice <= Close",
+            f"{int(bad_target.sum())} rows have ProjectedTarget <= Close",
         )
 
 
