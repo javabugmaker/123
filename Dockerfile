@@ -26,7 +26,7 @@ WORKDIR /app
 
 # Keep container dependency resolution aligned with the CI/DAILY reviewed set.
 COPY requirements.txt constraints-ci.txt ./
-RUN pip install --break-system-packages -r requirements.txt -c constraints-ci.txt
+RUN pip install --break-system-packages -c constraints-ci.txt -r requirements.txt
 
 COPY . .
 
