@@ -11,14 +11,22 @@ from typing import Final
 
 import checkpoint_inputs_v59 as _checkpoint_inputs
 import fundamental_refresh_v61 as _fundamental_refresh
+import publication_guard_v65 as _publication_guard
 import scanner_resume_v59 as _resume_v59
 import scanner_resume_v68 as _resume_v68
-from publication_guard_v65 import enforce_cache_first_market_contract
-from universe_snapshot_v82 import record_universe_snapshot_file
-from web_report_v81 import maybe_publish_canonical_report
+import universe_snapshot_v82 as _universe_snapshot
+import web_report_v81 as _web_report
+
+# Stable canonical observability API. Production facades consume these names
+# without importing versioned root modules directly.
+enforce_cache_first_market_contract = (
+    _publication_guard.enforce_cache_first_market_contract
+)
+record_universe_snapshot_file = _universe_snapshot.record_universe_snapshot_file
+maybe_publish_canonical_report = _web_report.maybe_publish_canonical_report
 
 SCAN_RUNTIME_FACADE_VERSION: Final = (
-    "2026-08-26-v109.6-canonical-scan-runtime-observability-v1"
+    "2026-08-26-v109.6-canonical-scan-runtime-observability-v2"
 )
 
 _INSTALLED = False
