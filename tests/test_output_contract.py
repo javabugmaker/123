@@ -14,6 +14,7 @@ def _write_fixture(
     peer_active: bool = False,
     peer_integrity: bool = False,
     drop_column: str | None = None,
+    drop_trade_column: str | None = None,
 ) -> None:
     status = "ACTIVE" if peer_active else "DIAGNOSTIC_ONLY"
     all_results = pd.DataFrame(
@@ -44,7 +45,6 @@ def _write_fixture(
             "RankingScope": ["FULL_UNIVERSE"] * 2,
             "RankingUniverseSize": [2, 2],
             "RankingRunId": ["run-1", "run-1"],
-            "CandidateViewRank": [1, 2],
             "RankingScore": [60.0, 50.0],
             "ExecutionState": ["READY", "OBSERVE"],
             "EntrySignal": ["BREAKOUT_CONFIRM", "WAIT_PULLBACK"],
@@ -57,16 +57,16 @@ def _write_fixture(
     if drop_column is not None:
         all_results = all_results.drop(columns=[drop_column])
 
-    mixed = all_results.loc[
-        :, [
-            "Ticker",
-            "RunId",
-            "CandidateViewRank",
-            "RankingScore",
-            "ExecutionState",
-            "EntrySignal",
-        ]
-    ].copy()
+    mixed = pd.DataFrame(
+        {
+            "Ticker": ["A.ST", "B.ST"],
+            "RunId": ["run-1", "run-1"],
+            "CandidateViewRank": [1, 2],
+            "RankingScore": [60.0, 50.0],
+            "ExecutionState": ["READY", "OBSERVE"],
+            "EntrySignal": ["BREAKOUT_CONFIRM", "WAIT_PULLBACK"],
+        }
+    )
     trade_ready = pd.DataFrame(
         {
             "Ticker": ["A.ST"],
@@ -78,9 +78,12 @@ def _write_fixture(
             "DataFreshnessStatus": ["新鲜"],
             "Close": [10.0],
             "StopLoss": [9.0],
-            "TargetPrice": [12.0],
+            "ProjectedTarget": [12.0],
         }
     )
+    if drop_trade_column is not None:
+        trade_ready = trade_ready.drop(columns=[drop_trade_column])
+
     all_results.to_csv(root / "AllResults.csv", index=False, encoding="utf-8-sig")
     mixed.to_csv(root / "Top50Mixed.csv", index=False, encoding="utf-8-sig")
     trade_ready.to_csv(root / "Top50TradeReady.csv", index=False, encoding="utf-8-sig")
@@ -99,11 +102,26 @@ def test_output_contract_passes_clean_fixture(tmp_path: Path) -> None:
     assert payload["errors"] == 0
 
 
+def test_all_results_does_not_require_candidate_view_rank(tmp_path: Path) -> None:
+    _write_fixture(tmp_path)
+    all_results = pd.read_csv(tmp_path / "AllResults.csv")
+    assert "CandidateViewRank" not in all_results.columns
+    payload = verify_directory(tmp_path)
+    assert payload["status"] == "PASS"
+
+
 def test_output_contract_rejects_missing_required_production_column(tmp_path: Path) -> None:
     _write_fixture(tmp_path, drop_column="ModelContractVersion")
     payload = verify_directory(tmp_path)
     assert payload["status"] == "FAIL"
     assert "PRODUCTION_SCHEMA_MISSING" in _codes(payload)
+
+
+def test_trade_ready_requires_canonical_projected_target(tmp_path: Path) -> None:
+    _write_fixture(tmp_path, drop_trade_column="ProjectedTarget")
+    payload = verify_directory(tmp_path)
+    assert payload["status"] == "FAIL"
+    assert "TRADE_READY_SCHEMA_MISSING" in _codes(payload)
 
 
 def test_output_contract_rejects_diagnostic_peer_weight(tmp_path: Path) -> None:
