@@ -8,9 +8,9 @@ from __future__ import annotations
 import re
 from typing import Final
 
-PUBLIC_PAGE_VERSION: Final = "v106.6"
+PUBLIC_PAGE_VERSION: Final = "v106.7"
 PUBLIC_PAGE_VERSION_ID: Final = (
-    "2026-08-25-v106.6-performance-publication-consolidation-v1"
+    "2026-08-27-v106.7-model-health-curves-v1"
 )
 
 _PAGE_VERSION_RE = re.compile(
