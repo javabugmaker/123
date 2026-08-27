@@ -136,7 +136,7 @@ def build_and_publish_web_report(
         )
     built = build_web_report(output_dir=output_dir, site_dir=site_dir)
     log.info(
-        "WEB v106.6 performance-consolidated Research Terminal generated: %s (%s).",
+        "WEB v106.7 model-health Research Terminal generated: %s (%s).",
         built.archive_path,
         reason,
     )
