@@ -2,7 +2,8 @@
 
 No score, rank, eligibility, calibration weight, or candidate list is recomputed.
 This adapter only removes contradictory legacy labels revealed by the first real
-v102 publication.
+v102 publication and publishes longitudinal model-health diagnostics from the
+persisted SignalHistory research ledger.
 """
 from __future__ import annotations
 
@@ -10,9 +11,13 @@ import re
 from pathlib import Path
 
 import web_report_v102 as _v102
+from institution_scanner.performance_curve_runtime import (
+    after_page_build as _after_performance_page_build,
+    build_from_output_dir as _build_performance_curve,
+)
 from web_report_v102 import *  # noqa: F403
 
-WEB_REPORT_VERSION = "2026-08-24-v102.1-semantic-clarity-v1"
+WEB_REPORT_VERSION = "2026-08-27-v102.2-model-health-curves-v1"
 WebReportResult = _v102.WebReportResult
 DEFAULT_OUTPUT_DIR = _v102.DEFAULT_OUTPUT_DIR
 DEFAULT_SITE_DIR = _v102.DEFAULT_SITE_DIR
@@ -50,8 +55,12 @@ def _polish(path: Path) -> None:
         WEB_REPORT_VERSION,
     )
     text = text.replace(
+        "2026-08-24-v102.1-semantic-clarity-v1",
+        WEB_REPORT_VERSION,
+    )
+    text = text.replace(
         '<div class="run-item"><span>页面版本</span><strong>v102</strong></div>',
-        '<div class="run-item"><span>页面版本</span><strong>v102.1</strong></div>',
+        '<div class="run-item"><span>页面版本</span><strong>v102.2</strong></div>',
     )
     text = re.sub(
         r"<span>可执行</span><strong>(\d+)</strong>"
@@ -114,10 +123,19 @@ def build_web_report(
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     site_dir: Path = DEFAULT_SITE_DIR,
 ) -> WebReportResult:
+    output = Path(output_dir)
+    site = Path(site_dir)
+
+    # Presentation-only longitudinal diagnostics.  Failure or an immature
+    # SignalHistory ledger never changes scoring/ranking and never makes Pages
+    # publication fatal.
+    _build_performance_curve(output)
+
     result = _v102.build_web_report(
-        output_dir=Path(output_dir),
-        site_dir=Path(site_dir),
+        output_dir=output,
+        site_dir=site,
     )
     for path in (result.index_path, result.archive_path):
         _polish(path)
+        _after_performance_page_build(path, output)
     return result
