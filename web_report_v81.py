@@ -19,6 +19,8 @@ from institution_scanner.page_policy import polish_public_page_html
 from institution_scanner.page_version import apply_public_page_version_html
 from institution_scanner.performance_curve_runtime import (
     after_page_build as _after_performance_page_build,
+)
+from institution_scanner.performance_curve_runtime import (
     build_from_output_dir as _build_performance_curve,
 )
 from institution_scanner.pit_counts import repair_summary_payload
