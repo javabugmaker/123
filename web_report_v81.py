@@ -17,6 +17,10 @@ from institution_scanner.page_health_fallback import (
 )
 from institution_scanner.page_policy import polish_public_page_html
 from institution_scanner.page_version import apply_public_page_version_html
+from institution_scanner.performance_curve_runtime import (
+    after_page_build as _after_performance_page_build,
+    build_from_output_dir as _build_performance_curve,
+)
 from institution_scanner.pit_counts import repair_summary_payload
 from institution_scanner.pit_page_semantics import (
     apply_pit_page_semantics_html,
@@ -64,6 +68,12 @@ def build_web_report(
 ) -> _v85.WebReportResult:
     """Build the canonical report and apply the stable public-page policy."""
     output_dir = Path(output_dir)
+
+    # Longitudinal diagnostics are presentation-only.  They are rebuilt from
+    # the persisted SignalHistory ledger immediately before the page is built,
+    # so failures cannot alter production score/rank/eligibility or DAILY.
+    _build_performance_curve(output_dir)
+
     result = _v85.build_web_report(output_dir=output_dir, site_dir=site_dir)
     marker = f"交易快报 {result.report_date}"
     backtest_summary = repair_summary_payload(
@@ -82,6 +92,7 @@ def build_web_report(
             path.write_text(text, encoding="utf-8")
         except OSError:
             continue
+        _after_performance_page_build(path, output_dir)
     return result
 
 
