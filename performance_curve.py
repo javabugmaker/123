@@ -19,7 +19,6 @@ changing the web-report contract.
 from __future__ import annotations
 
 import json
-import math
 import os
 from pathlib import Path
 from typing import Any
@@ -122,7 +121,7 @@ def build_performance_curve(history: pd.DataFrame) -> pd.DataFrame:
         rows.append(
             {
                 "Date": trade_date,
-                "Samples": int(len(group)),
+                "Samples": len(group),
                 "RankIC20": _rank_ic(group, 20),
                 "RankIC60": _rank_ic(group, 60),
                 "CohortReturn20": _cohort_return(group, 20),
@@ -166,7 +165,7 @@ def _json_ready(value: Any) -> Any:
         return int(value)
     if isinstance(value, (np.floating, float)):
         return round(float(value), 6) if np.isfinite(value) else None
-    if isinstance(value, (pd.Timestamp,)):
+    if isinstance(value, pd.Timestamp):
         return value.date().isoformat()
     if pd.isna(value):
         return None
@@ -214,7 +213,7 @@ def curve_summary(curve: pd.DataFrame) -> dict[str, Any]:
         return {"rows": 0, "version": PERFORMANCE_CURVE_VERSION}
     latest = curve.iloc[-1]
     return {
-        "rows": int(len(curve)),
+        "rows": len(curve),
         "version": PERFORMANCE_CURVE_VERSION,
         "latest_date": _json_ready(latest.get("Date")),
         "research_cohort_nav": _json_ready(latest.get("ResearchCohortNAV")),
