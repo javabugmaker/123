@@ -21,6 +21,9 @@ from institution_scanner.performance_curve_runtime import (
     after_page_build as _after_performance_page_build,
 )
 from institution_scanner.performance_curve_runtime import (
+    build_detail_page as _build_performance_detail_page,
+)
+from institution_scanner.performance_curve_runtime import (
     build_from_output_dir as _build_performance_curve,
 )
 from institution_scanner.pit_counts import repair_summary_payload
@@ -77,6 +80,13 @@ def build_web_report(
     _build_performance_curve(output_dir)
 
     result = _v85.build_web_report(output_dir=output_dir, site_dir=site_dir)
+    try:
+        _build_performance_detail_page(Path(site_dir), output_dir)
+    except (OSError, UnicodeError, ValueError, TypeError) as exc:
+        logging.getLogger("institution_scanner").warning(
+            "Forward performance detail page skipped: %s",
+            exc,
+        )
     marker = f"交易快报 {result.report_date}"
     backtest_summary = repair_summary_payload(
         read_backtest_summary(output_dir)
@@ -136,7 +146,7 @@ def build_and_publish_web_report(
         )
     built = build_web_report(output_dir=output_dir, site_dir=site_dir)
     log.info(
-        "WEB v106.7 model-health Research Terminal generated: %s (%s).",
+        "WEB v106.8 forward-performance Research Terminal generated: %s (%s).",
         built.archive_path,
         reason,
     )

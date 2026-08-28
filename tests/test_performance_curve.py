@@ -19,7 +19,9 @@ def _history(days: int = 90) -> pd.DataFrame:
                     "Score": score,
                     "InstitutionalScore": score,
                     "Return20D": realised,
+                    "BenchmarkReturn20D": 0.35,
                     "Return60D": realised * 1.8,
+                    "BenchmarkReturn60D": 0.8,
                     "ChaseRiskScore": ticker_index * 8.0,
                     "IndustryRelativeStrength": ticker_index - 2.0,
                 }
@@ -39,8 +41,14 @@ def test_curve_is_daily_and_rank_ic_uses_cross_section() -> None:
 def test_curve_nav_and_summary_are_finite() -> None:
     curve = build_performance_curve(_history())
     assert curve["ResearchCohortNAV"].notna().all()
+    assert curve["BenchmarkNAV"].notna().all()
+    assert curve["ResearchExcessNAV"].notna().all()
     assert curve["BetaCanaryNAV"].notna().all()
+    assert curve["MaturedDates20"].iloc[-1] == 90
+    assert curve["CoverageStatus"].iloc[-1] == "MONITORABLE"
     summary = curve_summary(curve)
     assert summary["rows"] == 90
     assert summary["latest_date"]
     assert summary["research_cohort_nav"] is not None
+    assert summary["benchmark_nav"] is not None
+    assert summary["matured_dates_20"] == 90

@@ -869,9 +869,28 @@ def refresh_research_outcomes(
     except (OSError, UnicodeError, pd.errors.ParserError):
         return pd.DataFrame(columns=HISTORY_COLUMNS)
     for horizon in (20, 60):
-        for column in (f"Return{horizon}D", f"MaxDrawdown{horizon}D"):
+        for column in (
+            f"Return{horizon}D",
+            f"BenchmarkReturn{horizon}D",
+            f"MaxDrawdown{horizon}D",
+        ):
             if column not in history:
                 history[column] = np.nan
+
+    benchmark_frame = _load_benchmark_frames(source).get("沪深300")
+    benchmark_prices = pd.Series(dtype=float)
+    benchmark_dates = pd.DatetimeIndex([])
+    if (
+        benchmark_frame is not None
+        and not benchmark_frame.empty
+        and "Close" in benchmark_frame
+    ):
+        benchmark_frame = benchmark_frame.sort_index()
+        benchmark_prices = (
+            pd.to_numeric(benchmark_frame["Close"], errors="coerce")
+            .replace([np.inf, -np.inf], np.nan)
+        )
+        benchmark_dates = pd.DatetimeIndex(benchmark_frame.index)
     for ticker, positions in history.groupby("Ticker", sort=False).groups.items():
         frame = _load_cache(str(ticker), source)
         if frame is None or frame.empty or "Close" not in frame:
@@ -888,6 +907,14 @@ def refresh_research_outcomes(
             entry_index = int(dates.searchsorted(entry_date, side="left"))
             if entry_index >= len(prices):
                 continue
+            benchmark_entry_index = int(
+                benchmark_dates.searchsorted(entry_date, side="left")
+            )
+            benchmark_entry_matches = (
+                benchmark_entry_index < len(benchmark_dates)
+                and benchmark_dates[benchmark_entry_index].normalize()
+                == entry_date.normalize()
+            )
             for horizon in (20, 60):
                 exit_index = entry_index + horizon
                 if exit_index >= len(prices) or not np.isfinite(prices.iloc[exit_index]):
@@ -899,6 +926,27 @@ def refresh_research_outcomes(
                 history.at[position, f"MaxDrawdown{horizon}D"] = (
                     float(holding.min() / entry_price - 1.0) * 100
                 )
+                exit_date = dates[exit_index]
+                benchmark_exit_index = int(
+                    benchmark_dates.searchsorted(exit_date, side="left")
+                )
+                if (
+                    benchmark_entry_matches
+                    and benchmark_exit_index < len(benchmark_prices)
+                    and benchmark_dates[benchmark_exit_index].normalize()
+                    == exit_date.normalize()
+                    and np.isfinite(benchmark_prices.iloc[benchmark_entry_index])
+                    and benchmark_prices.iloc[benchmark_entry_index] > 0
+                    and np.isfinite(benchmark_prices.iloc[benchmark_exit_index])
+                ):
+                    history.at[position, f"BenchmarkReturn{horizon}D"] = (
+                        float(
+                            benchmark_prices.iloc[benchmark_exit_index]
+                            / benchmark_prices.iloc[benchmark_entry_index]
+                            - 1.0
+                        )
+                        * 100
+                    )
     temporary_path = path.with_name(f".{path.name}.tmp")
     try:
         history.to_csv(temporary_path, index=False, encoding="utf-8-sig")

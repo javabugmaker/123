@@ -639,8 +639,13 @@ def publish_site(
         shutil.copy2(site_dir / "index.html", worktree / "index.html")
         shutil.copy2(site_dir / ".nojekyll", worktree / ".nojekyll")
         shutil.copytree(site_dir / "reports", worktree / "reports", dirs_exist_ok=True)
+        publish_paths = ["index.html", ".nojekyll", "reports"]
+        performance_page = site_dir / "performance.html"
+        if performance_page.is_file():
+            shutil.copy2(performance_page, worktree / "performance.html")
+            publish_paths.append("performance.html")
         (worktree / "reports" / "index.html").write_text(_archive_html(worktree), encoding="utf-8")
-        _run_git(["add", "--", "index.html", ".nojekyll", "reports"], cwd=worktree)
+        _run_git(["add", "--", *publish_paths], cwd=worktree)
         diff = _run_git(["diff", "--cached", "--quiet"], cwd=worktree, allow=(0, 1))
         if diff.returncode == 1:
             stamp = report_date or date.today().isoformat()

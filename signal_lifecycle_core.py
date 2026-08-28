@@ -77,8 +77,10 @@ HISTORY_COLUMNS = [
     "IndustryRelativeStrength",
     "SignalCount",
     "Return20D",
+    "BenchmarkReturn20D",
     "MaxDrawdown20D",
     "Return60D",
+    "BenchmarkReturn60D",
     "MaxDrawdown60D",
 ]
 
@@ -1240,8 +1242,10 @@ def _load_history() -> pd.DataFrame:
     }
     outcome_columns = {
         "Return20D",
+        "BenchmarkReturn20D",
         "MaxDrawdown20D",
         "Return60D",
+        "BenchmarkReturn60D",
         "MaxDrawdown60D",
     }
     for column in HISTORY_COLUMNS:
@@ -1535,11 +1539,25 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
             "Return20D": _number(
                 result.get("Return20D", pd.Series(index=result.index)), np.nan
             ),
+            "BenchmarkReturn20D": _number(
+                result.get(
+                    "BenchmarkReturn20D",
+                    pd.Series(index=result.index),
+                ),
+                np.nan,
+            ),
             "MaxDrawdown20D": _number(
                 result.get("MaxDrawdown20D", pd.Series(index=result.index)), np.nan
             ),
             "Return60D": _number(
                 result.get("Return60D", pd.Series(index=result.index)), np.nan
+            ),
+            "BenchmarkReturn60D": _number(
+                result.get(
+                    "BenchmarkReturn60D",
+                    pd.Series(index=result.index),
+                ),
+                np.nan,
             ),
             "MaxDrawdown60D": _number(
                 result.get("MaxDrawdown60D", pd.Series(index=result.index)), np.nan
@@ -1594,8 +1612,10 @@ def enrich_signal_lifecycle(frame: pd.DataFrame) -> pd.DataFrame:
     if not history.empty:
         outcome_columns = [
             "Return20D",
+            "BenchmarkReturn20D",
             "MaxDrawdown20D",
             "Return60D",
+            "BenchmarkReturn60D",
             "MaxDrawdown60D",
         ]
         prior_outcomes = history[
