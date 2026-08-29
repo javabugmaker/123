@@ -107,6 +107,35 @@ python main.py scan --force-download
 python main.py scan --refresh-fundamentals
 ```
 
+### 价值结构影子模型
+
+`Auction Market Theory + Wyckoff/VSA + Market Structure + Trend/RS` 已作为
+独立影子挑战模型接入。它遵循
+`Market → RS → Trend → Value → Structure → Volume → Risk → Plan Lifecycle`，
+只使用已收盘的日线 OHLCV 与免费基准行情，不推测 Footprint、Delta 或 L2。
+
+指定标的运行影子评分和逐时点回测：
+
+```bash
+python -m institution_scanner.auction_structure_cli \
+  --tickers 002961.SZ,601899.SH \
+  --benchmark 沪深300
+```
+
+也可对当前 `AllResults.csv` 的全体标的运行：
+
+```bash
+python -m institution_scanner.auction_structure_cli --all-results
+```
+
+输出为 `AuctionStructureShadow.csv`、`AuctionStructureBacktestSamples.csv` 和
+`AuctionStructureBacktestSummary.json`。模型只生成诊断分与独立影子排名，明确记录
+`production_applied=false`；在完成样本外观察和人工晋级前，不会改写 `FinalScore`、
+`RankingScore`、`TradeReady` 或候选榜。回测在计划确认后的下一可成交开盘入场，
+最早 T+1 退出，并将跨训练/验证/测试边界的持仓样本标为 `purged`、排除出指标。
+命令默认每只标的读取最近 900 根日K，以限制全市场影子研究的运行时间和内存；可用
+`--max-bars` 调整，但不得少于 300。
+
 ## 输出
 
 结果位于 `output/`，主要包括：
