@@ -17,6 +17,7 @@ from typing import Any
 import web_report_v102_1 as _base
 from web_report_v102_1 import *  # noqa: F403
 
+from . import pages_publisher as _pages_publisher
 from .contracts import CHALLENGER_CONTRACT, PRODUCTION_CONTRACT
 
 WEB_REPORT_VERSION = "2026-08-24-v105-reliability-research-terminal-v1"
@@ -30,7 +31,31 @@ _archive_html = _base._archive_html
 _published_source_dir = _base._published_source_dir
 is_canonical_output_dir = _base.is_canonical_output_dir
 github_pages_url_from_remote = _base.github_pages_url_from_remote
-publish_site = _base.publish_site
+
+
+def publish_site(
+    site_dir: Path,
+    *,
+    repo_root: Path = PROJECT_ROOT,
+    branch: str = GH_PAGES_BRANCH,
+    report_date: str = "",
+) -> WebReportResult:
+    """Publish through the canonical HTTPS-first transport."""
+    result = _pages_publisher.publish_site_files(
+        Path(site_dir),
+        repo_root=Path(repo_root),
+        branch=branch,
+        report_date=report_date,
+        archive_renderer=_archive_html,
+    )
+    return WebReportResult(
+        report_date=result.report_date,
+        index_path=Path(site_dir) / "index.html",
+        archive_path=Path(site_dir) / "reports" / f"{result.report_date}.html",
+        page_url=result.page_url,
+        published=True,
+        publish_message=result.message,
+    )
 
 
 def _safe(value: object) -> str:
