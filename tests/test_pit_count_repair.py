@@ -45,6 +45,37 @@ def test_runtime_counts_never_infer_verified_from_raw() -> None:
     assert counts["test"]["unverified"] == 100
 
 
+def test_runtime_counts_preserve_raw_benchmark_and_reason_audit() -> None:
+    summary = SimpleNamespace(
+        rolling_oos={"test": 100},
+        rolling_oos_stats={},
+    )
+
+    counts = normalize_runtime_counts(
+        summary,
+        {
+            "test": {
+                "raw": 100,
+                "verified": 0,
+                "unverified": 100,
+                "raw_benchmark_valid_20d": 98,
+                "raw_benchmark_valid_60d": 91,
+                "unverified_reasons": {
+                    "snapshot_starts_after_signal": 99,
+                    "snapshot_too_old:23d": 1,
+                },
+            }
+        },
+    )
+
+    assert counts["test"]["raw_benchmark_valid_20d"] == 98
+    assert counts["test"]["raw_benchmark_valid_60d"] == 91
+    assert counts["test"]["unverified_reasons"] == {
+        "snapshot_starts_after_signal": 99,
+        "snapshot_too_old:23d": 1,
+    }
+
+
 def test_page_payload_repairs_false_zero_zero_into_pit_warmup() -> None:
     payload = {
         "heldout_raw_test_samples": 0,

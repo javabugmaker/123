@@ -17,7 +17,7 @@ from typing import Any, Final
 from . import point_in_time_backtest as _pit
 
 PIT_COUNT_REPAIR_VERSION: Final = (
-    "2026-08-25-v106.5-pit-raw-split-count-fallback-v1"
+    "2026-08-29-v106.5-pit-audit-provenance-v2"
 )
 _MODEL_SPLITS = ("train", "validation", "test")
 _INSTALLED = False
@@ -57,10 +57,19 @@ def _verified_split_from_summary(summary: Any, split: str) -> int:
     return _integer(bucket.get("point_in_time_verified_samples"))
 
 
+def _reason_counts(value: object) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for reason, count in _mapping(value).items():
+        normalized = _integer(count)
+        if normalized > 0:
+            result[str(reason)] = normalized
+    return result
+
+
 def normalize_runtime_counts(
     summary: Any,
-    counts: dict[str, dict[str, int]] | None,
-) -> dict[str, dict[str, int]]:
+    counts: dict[str, dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
     """Fill missing raw counts from durable core split provenance.
 
     Raw counts may be recovered from ``rolling_oos`` because those are direct
@@ -68,7 +77,7 @@ def normalize_runtime_counts(
     field; they are never guessed from the raw population.
     """
     source = counts if isinstance(counts, dict) else {}
-    normalized: dict[str, dict[str, int]] = {}
+    normalized: dict[str, dict[str, Any]] = {}
     for split in _MODEL_SPLITS:
         bucket = _mapping(source.get(split, {}))
         raw = _integer(bucket.get("raw"))
@@ -78,11 +87,22 @@ def normalize_runtime_counts(
         if verified <= 0:
             verified = _verified_split_from_summary(summary, split)
         raw = max(raw, verified)
-        normalized[split] = {
+        normalized_bucket: dict[str, Any] = {
             "raw": raw,
             "verified": verified,
             "unverified": max(0, raw - verified),
         }
+        for field in (
+            "raw_benchmark_valid_20d",
+            "raw_benchmark_valid_60d",
+        ):
+            if field in bucket:
+                normalized_bucket[field] = min(raw, _integer(bucket.get(field)))
+        if "unverified_reasons" in bucket:
+            normalized_bucket["unverified_reasons"] = _reason_counts(
+                bucket.get("unverified_reasons")
+            )
+        normalized[split] = normalized_bucket
     return normalized
 
 
@@ -120,10 +140,19 @@ def repair_summary_payload(payload: dict[str, Any]) -> dict[str, Any]:
     repaired["heldout_metric_available"] = metric_available
     repaired["heldout_calibration_enabled"] = metric_available
     if not metric_available:
+        reasons = _reason_counts(repaired.get("heldout_unverified_reason_counts"))
+        leading_reason = ""
+        if reasons:
+            reason, count = min(
+                reasons.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+            leading_reason = f"; leading exclusion={reason} ({count})"
         repaired["heldout_metric_warning"] = (
             "PIT held-out calibration disabled: "
             f"{verified}/{raw} test samples are point-in-time verified; "
             "production scoring continues with unverified backtest evidence excluded"
+            f"{leading_reason}"
         )
     return repaired
 
@@ -140,7 +169,7 @@ def install() -> None:
 
     def repaired_apply_summary_pit_scope(
         summary: Any,
-        counts: dict[str, dict[str, int]],
+        counts: dict[str, dict[str, Any]],
     ) -> Any:
         normalized = normalize_runtime_counts(summary, counts)
         return _ORIGINAL_APPLY(summary, normalized)

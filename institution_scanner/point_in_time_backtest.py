@@ -31,9 +31,14 @@ import numpy as np
 import pandas as pd
 
 POINT_IN_TIME_BACKTEST_VERSION = (
-    "2026-08-24-v106.2-pit-warmup-nonfatal-v1"
+    "2026-08-29-v106.2-pit-benchmark-provenance-v2"
 )
 PIT_HELDOUT_METRIC_SCOPE = "POINT_IN_TIME_ELIGIBLE_SAMPLES_ONLY"
+
+_RAW_BENCHMARK_MARKERS = {
+    "benchmark_return20": "pit_raw_benchmark_available_20d",
+    "benchmark_return60": "pit_raw_benchmark_available_60d",
+}
 
 _MASKED_METRIC_COLUMNS = (
     "return20",
@@ -55,14 +60,51 @@ _INSTALLED = False
 _ORIGINAL_CACHED: Any = None
 _ORIGINAL_VERIFIED: Any = None
 _ORIGINAL_RUN: Any = None
-_PIT_SPLIT_COUNTS: ContextVar[dict[str, dict[str, int]] | None] = ContextVar(
+_PIT_SPLIT_COUNTS: ContextVar[dict[str, dict[str, Any]] | None] = ContextVar(
     "pit_split_counts",
     default=None,
 )
 
 
 def _status_is_eligible(value: Any) -> bool:
-    return str(value or "").strip().upper() == "ELIGIBLE"
+    if value is None or value is pd.NA:
+        return False
+    return str(value).strip().upper() == "ELIGIBLE"
+
+
+def _is_finite_number(value: Any) -> bool:
+    try:
+        return bool(np.isfinite(float(value)))
+    except (TypeError, ValueError):
+        return False
+
+
+def _audit_flag(value: Any) -> bool:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if value is None or value is pd.NA:
+        return False
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return _is_finite_number(value) and float(value) != 0.0
+    return str(value).strip().lower() in {"1", "true", "yes"}
+
+
+def _add_raw_benchmark_markers(item: dict[str, Any]) -> None:
+    """Capture availability only; never retain a masked unverified return."""
+    for source, marker in _RAW_BENCHMARK_MARKERS.items():
+        if marker in item:
+            item[marker] = _audit_flag(item[marker])
+        else:
+            item[marker] = _is_finite_number(item.get(source))
+
+
+def _leading_reason(reason_counts: dict[str, int]) -> tuple[str, int] | None:
+    if not reason_counts:
+        return None
+    return min(
+        reason_counts.items(),
+        key=lambda item: (-item[1], item[0]),
+    )
 
 
 def scrub_samples_for_pit_metrics(
@@ -72,6 +114,7 @@ def scrub_samples_for_pit_metrics(
     result: list[dict[str, Any]] = []
     for source in samples:
         item = dict(source)
+        _add_raw_benchmark_markers(item)
         eligible = _status_is_eligible(item.get("universe_snapshot_status"))
         item["pit_metric_eligible"] = eligible
         if not eligible:
@@ -88,6 +131,14 @@ def scrub_frame_for_pit_metrics(frame: pd.DataFrame) -> pd.DataFrame:
     if frame is None or frame.empty:
         return frame
     result = frame.copy()
+    for source, marker in _RAW_BENCHMARK_MARKERS.items():
+        if marker in result.columns:
+            result[marker] = result[marker].map(_audit_flag).astype(bool)
+        elif source in result.columns:
+            numeric = pd.to_numeric(result[source], errors="coerce")
+            result[marker] = numeric.replace([np.inf, -np.inf], np.nan).notna()
+        else:
+            result[marker] = False
     status = (
         result.get(
             "universe_snapshot_status",
@@ -112,8 +163,8 @@ def scrub_frame_for_pit_metrics(frame: pd.DataFrame) -> pd.DataFrame:
 def _split_counts(
     raw: pd.DataFrame,
     verified: pd.DataFrame,
-) -> dict[str, dict[str, int]]:
-    counts: dict[str, dict[str, int]] = {}
+) -> dict[str, dict[str, Any]]:
+    counts: dict[str, dict[str, Any]] = {}
     raw_split = (
         raw.get("split", pd.Series("", index=raw.index))
         .fillna("")
@@ -127,25 +178,69 @@ def _split_counts(
         .str.lower()
     )
     for split in _MODEL_SPLITS:
-        raw_count = int(raw_split.eq(split).sum())
+        raw_mask = raw_split.eq(split)
+        raw_count = int(raw_mask.sum())
         verified_count = int(verified_split.eq(split).sum())
+        reason_counts: dict[str, int] = {}
+        if "universe_snapshot_reason" in raw.columns:
+            status = raw.get(
+                "universe_snapshot_status",
+                pd.Series("", index=raw.index, dtype=object),
+            )
+            unverified_mask = raw_mask & ~status.map(_status_is_eligible)
+            reasons = (
+                raw.loc[unverified_mask, "universe_snapshot_reason"]
+                .fillna("unspecified")
+                .astype(str)
+                .str.strip()
+                .replace("", "unspecified")
+                .value_counts()
+            )
+            reason_counts = {
+                str(reason): int(count)
+                for reason, count in reasons.items()
+            }
         counts[split] = {
             "raw": raw_count,
             "verified": verified_count,
             "unverified": max(0, raw_count - verified_count),
+            "raw_benchmark_valid_20d": int(
+                raw.loc[raw_mask, "pit_raw_benchmark_available_20d"].sum()
+            )
+            if "pit_raw_benchmark_available_20d" in raw.columns
+            else 0,
+            "raw_benchmark_valid_60d": int(
+                raw.loc[raw_mask, "pit_raw_benchmark_available_60d"].sum()
+            )
+            if "pit_raw_benchmark_available_60d" in raw.columns
+            else 0,
+            "unverified_reasons": reason_counts,
         }
     return counts
 
 
 def apply_summary_pit_scope(
     summary: Any,
-    counts: dict[str, dict[str, int]],
+    counts: dict[str, dict[str, Any]],
 ) -> Any:
     """Align held-out metrics with PIT scope without creating a false fatal."""
     test = counts.get("test", {})
     raw_test = int(test.get("raw", 0) or 0)
     verified_test = int(test.get("verified", 0) or 0)
     unverified_test = int(test.get("unverified", 0) or 0)
+    raw_benchmark_20d = min(
+        raw_test,
+        int(test.get("raw_benchmark_valid_20d", 0) or 0),
+    )
+    raw_benchmark_60d = min(
+        raw_test,
+        int(test.get("raw_benchmark_valid_60d", 0) or 0),
+    )
+    unverified_reasons = {
+        str(reason): max(0, int(count or 0))
+        for reason, count in dict(test.get("unverified_reasons", {}) or {}).items()
+        if int(count or 0) > 0
+    }
 
     metric_available = verified_test >= 2
     if metric_available and unverified_test == 0:
@@ -161,18 +256,34 @@ def apply_summary_pit_scope(
     summary.heldout_raw_test_samples = raw_test
     summary.heldout_verified_test_samples = verified_test
     summary.heldout_unverified_test_samples = unverified_test
+    summary.heldout_unverified_reason_counts = unverified_reasons
     summary.heldout_point_in_time_status = pit_status
     summary.heldout_metric_available = metric_available
     summary.heldout_calibration_enabled = metric_available
     summary.heldout_pit_shortage_pipeline_fatal = False
+    summary.benchmark_metric_scope = PIT_HELDOUT_METRIC_SCOPE
+    summary.benchmark_raw_valid_count_20d = raw_benchmark_20d
+    summary.benchmark_raw_valid_count_60d = raw_benchmark_60d
+    summary.benchmark_raw_coverage_20d = (
+        float(raw_benchmark_20d / raw_test) if raw_test else 0.0
+    )
+    summary.benchmark_raw_coverage_60d = (
+        float(raw_benchmark_60d / raw_test) if raw_test else 0.0
+    )
 
     if metric_available:
         summary.heldout_metric_warning = ""
     else:
+        leading_reason = ""
+        leading = _leading_reason(unverified_reasons)
+        if leading is not None:
+            reason, count = leading
+            leading_reason = f"; leading exclusion={reason} ({count})"
         summary.heldout_metric_warning = (
             "PIT held-out calibration disabled: "
             f"{verified_test}/{raw_test} test samples are point-in-time verified; "
             "production scoring continues with unverified backtest evidence excluded"
+            f"{leading_reason}"
         )
 
     summary.samples = verified_test
@@ -294,12 +405,30 @@ def install(core: Any) -> None:
             counts = _PIT_SPLIT_COUNTS.get() or {}
             apply_summary_pit_scope(summary, counts)
             if not bool(getattr(summary, "heldout_calibration_enabled", False)):
+                raw_test = int(
+                    getattr(summary, "heldout_raw_test_samples", 0) or 0
+                )
+                raw_benchmark = int(
+                    getattr(summary, "benchmark_raw_valid_count_20d", 0) or 0
+                )
+                leading = _leading_reason(
+                    getattr(summary, "heldout_unverified_reason_counts", {}) or {}
+                )
+                reason_text = (
+                    f"{leading[0]} ({leading[1]})"
+                    if leading is not None
+                    else "unspecified"
+                )
                 core.logger.warning(
                     "PIT held-out calibration is in warm-up: verified test samples=%d, "
-                    "raw test samples=%d. Backtest calibration remains disabled; "
+                    "raw test samples=%d; raw benchmark aligned 20d=%d/%d; "
+                    "top unverified reason=%s. Backtest calibration remains disabled; "
                     "DAILY continues with production scoring.",
                     int(getattr(summary, "heldout_verified_test_samples", 0) or 0),
-                    int(getattr(summary, "heldout_raw_test_samples", 0) or 0),
+                    raw_test,
+                    raw_benchmark,
+                    raw_test,
+                    reason_text,
                 )
             _rewrite_summary_json(core, summary)
             return summary

@@ -51,6 +51,7 @@ from downloader import (
 )
 from fundamental_data import fundamental_data_path, refresh_fundamental_data
 from historical_universe import historical_universe_status, merge_with_historical_universe
+from institution_scanner.backtest_observability import backtest_log_lines
 from report import export_all, print_scan_summary, print_terminal_report
 from scan_service import ScanRequest, execute_scan
 from scanner import clear_checkpoint, run_parallel_indicator_scan, run_scan
@@ -360,25 +361,9 @@ def cmd_backtest(args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
         os.replace(temporary_summary, summary_path)
-    logger.info(
-        "Backtest complete: mode=%s, %d test samples, %d all samples, 20d win rate %.1f%%, average return %.2f%%, 60d average return %.2f%%.",
-        str(getattr(summary, "mode", requested_mode)).upper(),
-        summary.samples,
-        getattr(summary, "all_samples", summary.samples),
-        summary.win_rate_20d * 100,
-        summary.average_return_20d,
-        summary.average_return_60d,
-    )
-    logger.info(
-        "Backtest dates: %s; benchmark valid count %d, coverage %.1f%%.",
-        getattr(summary, "split_dates", {}),
-        int(getattr(summary, "benchmark_valid_count", 0))
-        if isinstance(getattr(summary, "benchmark_valid_count", 0), (int, float))
-        else 0,
-        float(getattr(summary, "benchmark_coverage", 0.0)) * 100
-        if isinstance(getattr(summary, "benchmark_coverage", 0.0), (int, float))
-        else 0.0,
-    )
+    completion_log, benchmark_log = backtest_log_lines(summary, requested_mode)
+    logger.info("%s", completion_log)
+    logger.info("%s", benchmark_log)
     return 0
 
 
