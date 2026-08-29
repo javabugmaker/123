@@ -4,16 +4,17 @@ InstitutionScanner can generate a public-safe static research briefing after a s
 
 ## Automatic behavior
 
-Successful canonical runs continue to call the stable compatibility entry point `web_report_v81.maybe_publish_canonical_report(...)`, which now delegates rendering and publishing to `web_report_v85.py`.
+Successful canonical runs continue to call the stable compatibility entry point `web_report_v81.maybe_publish_canonical_report(...)`, which delegates rendering to the canonical research terminal and transport to `institution_scanner/pages_publisher.py`.
 
 The publisher:
 
 1. Reads only already-published candidate views, run summaries, and the historical price cache required for the selected report date.
 2. Keeps a strict public-field allowlist.
 3. Writes the local static site to `output/web_report/`.
-4. Uses a temporary Git working directory.
-5. Pushes only `index.html`, `.nojekyll`, and `reports/` to the `gh-pages` branch.
-6. Never changes the scan/backtest return code when GitHub/network authentication fails.
+4. Uses public HTTPS first when reading `gh-pages`, so an SSH port-22 timeout cannot block the clone.
+5. Tries HTTPS credentials and then the configured origin when pushing.
+6. Pushes only `index.html`, `.nojekyll`, `reports/`, and the optional performance page to the `gh-pages` branch.
+7. Never changes the scan/backtest return code when GitHub/network authentication fails.
 
 The report contains these primary sections:
 
@@ -46,6 +47,14 @@ python publish_web_report.py
 ```
 
 The command uses the latest already-published local output.
+
+If the network is unusually slow, the per-command Git timeout can be adjusted
+without changing source code (15-600 seconds, default 90):
+
+```powershell
+$env:INSTITUTION_SCANNER_WEB_GIT_TIMEOUT="180"
+python publish_web_report.py
+```
 
 ## Controls
 
