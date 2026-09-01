@@ -11,6 +11,7 @@ import logging
 import os
 from pathlib import Path
 
+from institution_scanner import backtest_web
 from institution_scanner import report_terminal as _v85
 from institution_scanner.page_health_fallback import (
     apply_model_health_fallback_html,
@@ -87,6 +88,17 @@ def build_web_report(
             "Forward performance detail page skipped: %s",
             exc,
         )
+    backtest_json = Path(output_dir) / "HistoricalBacktest.json"
+    if backtest_json.is_file():
+        try:
+            backtest_web.write_backtest_page(
+                Path(site_dir) / "backtest.html", backtest_json
+            )
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+            logging.getLogger("institution_scanner").warning(
+                "Historical backtest detail page skipped: %s",
+                exc,
+            )
     marker = f"交易快报 {result.report_date}"
     backtest_summary = repair_summary_payload(
         read_backtest_summary(output_dir)
@@ -105,6 +117,8 @@ def build_web_report(
         except OSError:
             continue
         _after_performance_page_build(path, output_dir)
+        if backtest_json.is_file():
+            backtest_web.inject_backtest_into_html(path, backtest_json)
     return result
 
 

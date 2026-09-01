@@ -269,6 +269,10 @@ def publish_site_files(
         if performance_page.is_file():
             shutil.copy2(performance_page, worktree / "performance.html")
             publish_paths.append("performance.html")
+        backtest_page = site_dir / "backtest.html"
+        if backtest_page.is_file():
+            shutil.copy2(backtest_page, worktree / "backtest.html")
+            publish_paths.append("backtest.html")
         (worktree / "reports" / "index.html").write_text(
             archive_renderer(worktree),
             encoding="utf-8",
