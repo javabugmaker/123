@@ -448,6 +448,11 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
 
     status = _holding_status(result)
     result["InstitutionHoldingStatus"] = status
+    quality_profile = _text_series(result, "QualityProfile", "").str.upper()
+    gate2_profile = quality_profile.isin(
+        {"GENERAL", "FINANCIAL", "CYCLICAL", "DEFENSIVE"}
+    )
+    margin_required = quality_profile.isin({"GENERAL", "CYCLICAL"})
     roe_available = pd.to_numeric(
         result.get("ROE", pd.Series(np.nan, index=result.index)), errors="coerce"
     ).notna()
@@ -471,12 +476,28 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
             errors="coerce",
         ).notna()
     )
-    completeness = (
+    provider_name = _text_series(result, "FundamentalProvider", "").str.lower()
+    metadata_required = provider_name.ne("") & provider_name.ne("legacy-cache")
+    report_metadata_available = (
+        _text_series(result, "LatestReportPeriod", "").ne("")
+        & _text_series(result, "LatestAnnouncementDate", "").ne("")
+    )
+    report_status_usable = _text_series(
+        result,
+        "FundamentalDataStatus",
+        "MISSING",
+    ).str.upper().isin({"CURRENT", "AWAITING_RELEASE"})
+    report_provenance_available = report_metadata_available & report_status_usable
+    completeness_numerator = (
         roe_available.astype(float)
-        + margin_available.astype(float)
         + profit_available.astype(float)
-        + status.isin({"PASS", "FAIL"}).astype(float)
-    ) / 4.0
+        + (margin_available & margin_required).astype(float)
+        + (report_provenance_available & metadata_required).astype(float)
+    )
+    completeness_denominator = (
+        2.0 + margin_required.astype(float) + metadata_required.astype(float)
+    )
+    completeness = completeness_numerator / completeness_denominator
     supplied_completeness = _number(
         result.get("QualityDataCompleteness", pd.Series(np.nan, index=result.index)),
         np.nan,
@@ -492,13 +513,11 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
         if "QualityGate" in result
         else pd.Series(False, index=result.index)
     )
-    quality_profile = _text_series(result, "QualityProfile", "").str.upper()
-    gate2_profile = quality_profile.isin({"GENERAL", "FINANCIAL", "CYCLICAL", "DEFENSIVE"})
-    margin_required = quality_profile.isin({"GENERAL", "CYCLICAL"})
     derived_hard_data_complete = (
         roe_available
         & profit_available
         & (~margin_required | margin_available)
+        & (~metadata_required | report_provenance_available)
     )
     if "QualityHardDataComplete" in result:
         hard_data_complete = _bool_series(result, "QualityHardDataComplete")
@@ -523,9 +542,7 @@ def finalize_signal_ranking(frame: pd.DataFrame) -> pd.DataFrame:
     legacy_unknown = quality_applicable & (
         status.eq("UNKNOWN") | ~(roe_available & margin_available & profit_available)
     )
-    gate2_uncertain = quality_applicable & gate2_profile & (
-        status.ne("PASS") | ~hard_data_complete
-    )
+    gate2_uncertain = quality_applicable & gate2_profile & ~hard_data_complete
     any_unknown = legacy_unknown.where(~gate2_profile, gate2_uncertain)
     result["QualityGate"] = ~known_fail
 

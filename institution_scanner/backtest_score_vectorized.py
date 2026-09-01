@@ -18,8 +18,6 @@ import pandas as pd
 from config import (
     AD_SLOPE_LOOKBACK,
     BB_WIDTH_COMPRESSION_LOOKBACK,
-    BREAKOUT_CONFIRM_MIN_VOLUME_RATIO,
-    CONSOLIDATION_DAYS,
     CONSOLIDATION_MAX_RANGE_PCT,
     SCORING_WEIGHTS,
     VOLUME_ACCUM_MIN_DAYS,
@@ -204,7 +202,6 @@ def _volume(
     if volz is not None:
         z_valid = np.isfinite(volz)
         z_ff = _ffill(volz)
-        z30 = _roll(volz, 30, "mean")
         # positive fraction over last 30 valid
         pos_mask = z_valid & (volz > 0)
         pos_mean30 = pd.Series(np.where(pos_mask, 1.0, 0.0)).rolling(30, min_periods=30).mean().to_numpy()
@@ -404,7 +401,6 @@ def _value_trap(
     n = len(close)
     risk = np.zeros(n)
     close_ff = _ffill(close)
-    vol_ff = _ffill(volume)
     ma20f = _ffill(ma20) if ma20 is not None else np.full(n, np.nan)
     ma50f = _ffill(ma50) if ma50 is not None else np.full(n, np.nan)
 
@@ -435,13 +431,9 @@ def _value_trap(
         )
 
     # recent low vs prior low
-    close40min = _roll(close, 40, "min")
-    close80_40 = np.full(n, np.nan)
     prior_low = np.full(n, np.nan)
-    low0_40 = _roll(close, 40, "min")
     low40_80 = np.full(n, np.nan)
     low_40min = _roll(close, 40, "min")
-    low_80min = _roll(close, 80, "min")
     # prior 40 = min over t-79..t-40
     low40_80[39:] = low_40min[: n - 39]
     recent_low = low_40min
@@ -483,7 +475,6 @@ def _value_trap(
     vol20 = _roll(volume, 20, "mean")
     vol60_40 = np.full(n, np.nan)
     vol40 = _roll(volume, 40, "mean")
-    vol60 = _roll(volume, 60, "mean")
     # scalar: vol60 = mean of volume.iloc[-60:-20] (last 40 of last 60)
     vol60_40[59:] = vol40[: n - 59]
     vvc = np.cumsum(np.isfinite(volume).astype(np.int64))
@@ -524,7 +515,6 @@ def _breakout(
 ) -> np.ndarray:
     n = len(close)
     close_ff = _ffill(close)
-    high_ff = _ffill(high)
     vol_ff = _ffill(volume)
     ma20f = _ffill(ma20) if ma20 is not None else np.full(n, np.nan)
     ma50f = _ffill(ma50) if ma50 is not None else np.full(n, np.nan)
@@ -612,9 +602,6 @@ def _entry_execution(
 ) -> np.ndarray:
     n = len(close)
     close_ff = _ffill(close)
-    high_ff = _ffill(high)
-    low_ff = _ffill(low)
-    vol_ff = _ffill(volume)
     atr = _ffill(atr14) if atr14 is not None else np.full(n, np.nan)
     ma20f = _ffill(ma20) if ma20 is not None else np.full(n, np.nan)
     rsif = _ffill(rsi) if rsi is not None else np.full(n, np.nan)
@@ -732,16 +719,16 @@ def final_score_series(
         return (vc >= minimum) & all_fin, vc
 
     trend_avail = (idx + 1 >= 252) & has_finite((close, ma200), 60)[0]
-    vol_hf, vol_vc = has_finite((volma20, volma120), VOLUME_ACCUM_MIN_DAYS)
+    vol_hf, _ = has_finite((volma20, volma120), VOLUME_ACCUM_MIN_DAYS)
     volz_hf, _ = has_finite((volz,), 10)
     volume_avail = (idx + 1 >= 120) & (vol_hf | volz_hf)
     obv_hf, _ = has_finite((obv,), 40)
     ad_hf, _ = has_finite((ad, ad_slope), AD_SLOPE_LOOKBACK)
-    cmf_hf, cmf_vc = has_finite((cmf,), 20)
-    mfi_hf, mfi_vc = has_finite((mfi,), 1)
+    cmf_hf, _ = has_finite((cmf,), 20)
+    mfi_hf, _ = has_finite((mfi,), 1)
     accum_avail = (idx + 1 >= 60) & (obv_hf | ad_hf | cmf_hf | mfi_hf)
     atr_hf, _ = has_finite((atr14, atr50), 1)
-    bb_hf, bb_vc = has_finite((bbw,), BB_WIDTH_COMPRESSION_LOOKBACK)
+    bb_hf, _ = has_finite((bbw,), BB_WIDTH_COMPRESSION_LOOKBACK)
     hv_hf, _ = has_finite((hv20, hv60), 1)
     volat_avail = (idx + 1 >= BB_WIDTH_COMPRESSION_LOOKBACK) & (atr_hf | bb_hf | hv_hf)
     struct_avail = (idx + 1 >= 252) & has_finite((close, high, low), 1)[0]

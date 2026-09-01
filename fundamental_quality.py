@@ -22,10 +22,26 @@ from config import (
     QUALITY_RECOVERY_MIN_GROWTH,
     QUALITY_RESILIENT_MIN_LATEST_RATIO,
 )
-from fundamental_data import FUNDAMENTAL_COLUMNS, fundamental_data_path
+from fundamental_data import (
+    FUNDAMENTAL_COLUMNS,
+    FUNDAMENTAL_REQUIRED_COLUMNS,
+    fundamental_data_path,
+)
+from institution_scanner.fundamental_schema import normalize_ticker
 
-FUNDAMENTAL_FACTOR_COLUMNS = tuple(
-    column for column in FUNDAMENTAL_COLUMNS if column not in {"Ticker", "Industry"}
+FUNDAMENTAL_FACTOR_COLUMNS = (
+    "ROE",
+    "GrossMargin",
+    "NetProfitLatest",
+    "RevenueLatest",
+    "NetProfitYoY",
+    "DebtToAssets",
+    "OperatingCashFlowToNetProfit",
+    "NetProfitY1",
+    "NetProfitY2",
+    "NetProfitY3",
+    "IndustryGrossMarginPercentile",
+    "InstitutionHoldingPeriods",
 )
 
 
@@ -36,6 +52,17 @@ class FundamentalQuality:
     applicable: bool = True
     roe: float = np.nan
     gross_margin: float = np.nan
+    latest_report_period: str = ""
+    latest_announcement_date: str = ""
+    latest_report_type: str = ""
+    fundamental_provider: str = ""
+    fundamental_fetched_at: str = ""
+    fundamental_data_status: str = "MISSING"
+    net_profit_latest: float = np.nan
+    revenue_latest: float = np.nan
+    net_profit_yoy: float = np.nan
+    debt_to_assets: float = np.nan
+    operating_cash_flow_to_net_profit: float = np.nan
     institution_holding_trend: Any = None
     institution_holding_periods: float = np.nan
     net_profit_y1: float = np.nan
@@ -65,7 +92,7 @@ class FundamentalQuality:
 
 
 def _ticker(value: Any) -> str:
-    return str(value).strip().upper()
+    return normalize_ticker(value)
 
 
 def _number(value: Any) -> float:
@@ -74,6 +101,18 @@ def _number(value: Any) -> float:
     except (TypeError, ValueError):
         return np.nan
     return result if np.isfinite(result) else np.nan
+
+
+def _text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    result = str(value).strip()
+    return "" if result.lower() in {"nan", "none", "null", "<na>"} else result
 
 
 def _trend_is_increasing(value: Any) -> bool:
@@ -208,6 +247,12 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
     numeric = {
         column: _number(values.get(column)) for column in FUNDAMENTAL_FACTOR_COLUMNS
     }
+    report_period = _text(values.get("LatestReportPeriod"))
+    announcement_date = _text(values.get("LatestAnnouncementDate"))
+    report_type = _text(values.get("LatestReportType"))
+    provider = _text(values.get("FundamentalProvider"))
+    fetched_at = _text(values.get("FundamentalFetchedAt"))
+    data_status = _text(values.get("FundamentalDataStatus")) or "MISSING"
     trend = values.get("InstitutionHoldingTrend")
     holding_status = _institution_holding_status(
         trend, numeric["InstitutionHoldingPeriods"]
@@ -218,7 +263,6 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
         np.isfinite(numeric[column])
         for column in ("NetProfitY1", "NetProfitY2", "NetProfitY3")
     )
-    holding_available = holding_status in {"PASS", "FAIL"}
     profit_status = profit_trend_status(
         numeric["NetProfitY1"], numeric["NetProfitY2"], numeric["NetProfitY3"]
     )
@@ -277,15 +321,27 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
     hard_factors: dict[str, bool | None] = {roe_label: roe_factor, profit_label: profit_factor}
     if margin_applicable:
         hard_factors[margin_label] = margin_factor
+    metadata_required = bool(provider and provider != "legacy-cache")
+    report_metadata_available = bool(report_period and announcement_date)
+    report_status_usable = data_status in {"CURRENT", "AWAITING_RELEASE"}
+    if metadata_required:
+        hard_factors["报告期与公告日可追溯"] = (
+            True if report_metadata_available else None
+        )
+        hard_factors["财报披露时效"] = True if report_status_usable else None
     hard_failed = [name for name, value in hard_factors.items() if value is False]
     hard_unknown = [name for name, value in hard_factors.items() if value is None]
     hard_data_complete = not hard_unknown
 
-    evidence_available = [roe_available, profit_available, holding_available]
+    evidence_available = [roe_available, profit_available]
     if margin_applicable:
         evidence_available.append(gross_margin_available)
+    if metadata_required:
+        evidence_available.append(report_metadata_available and report_status_usable)
     completeness = sum(float(value) for value in evidence_available) / len(evidence_available)
-    data_available = any(evidence_available)
+    data_available = bool(
+        roe_available or profit_available or gross_margin_available
+    )
     quality_gate = not hard_failed
     cyclical_override = bool(
         profile == "CYCLICAL"
@@ -297,7 +353,7 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
 
     if hard_failed:
         quality_multiplier = QUALITY_MULTIPLIER_FAIL
-    elif holding_status == "FAIL" or hard_unknown or holding_status == "UNKNOWN":
+    elif hard_unknown:
         quality_multiplier = QUALITY_MULTIPLIER_UNKNOWN
     else:
         quality_multiplier = QUALITY_MULTIPLIER_PASS
@@ -311,10 +367,9 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
         reason_parts.append("行业自适应硬门槛通过")
     if cyclical_override:
         reason_parts.append("周期利润触底回升已确认")
-    if holding_status == "FAIL":
-        reason_parts.append("辅助证据：机构覆盖家数未增加（不单独否决）")
-    elif holding_status == "UNKNOWN":
-        reason_parts.append("机构覆盖家数历史不足（中性）")
+    if report_period:
+        announcement_hint = f"，公告 {announcement_date}" if announcement_date else ""
+        reason_parts.append(f"财报 {report_period}{announcement_hint}")
     if hard_unknown:
         reason_parts.append("数据不足：" + "、".join(hard_unknown))
     reason = "；".join(reason_parts)
@@ -338,10 +393,6 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
             numeric["NetProfitY3"],
         ) * 25.0
         available_weight += 25.0
-    if holding_available:
-        weighted_points += 15.0 if holding_status == "PASS" else 0.0
-        available_weight += 15.0
-
     if available_weight > 0:
         observed_score = weighted_points / available_weight * 100.0
         shrunk_factor_score = 50.0 + (observed_score - 50.0) * completeness
@@ -354,6 +405,17 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
         industry=industry,
         roe=numeric["ROE"],
         gross_margin=numeric["GrossMargin"],
+        latest_report_period=report_period,
+        latest_announcement_date=announcement_date,
+        latest_report_type=report_type,
+        fundamental_provider=provider,
+        fundamental_fetched_at=fetched_at,
+        fundamental_data_status=data_status,
+        net_profit_latest=numeric["NetProfitLatest"],
+        revenue_latest=numeric["RevenueLatest"],
+        net_profit_yoy=numeric["NetProfitYoY"],
+        debt_to_assets=numeric["DebtToAssets"],
+        operating_cash_flow_to_net_profit=numeric["OperatingCashFlowToNetProfit"],
         institution_holding_trend=trend,
         institution_holding_periods=numeric["InstitutionHoldingPeriods"],
         net_profit_y1=numeric["NetProfitY1"],
@@ -383,23 +445,55 @@ def _path_value() -> Path | None:
     return fundamental_data_path()
 
 
-@lru_cache(maxsize=4)
-def load_fundamental_data(path_value: str) -> dict[str, dict[str, Any]]:
+@lru_cache(maxsize=8)
+def _load_fundamental_data_cached(
+    path_value: str,
+    mtime_ns: int,
+    size: int,
+) -> dict[str, dict[str, Any]]:
+    del mtime_ns, size
     path = Path(path_value)
     try:
         frame = pd.read_csv(path, dtype={"Ticker": str})
     except (OSError, UnicodeError, pd.errors.ParserError, ValueError):
         return {}
-    required_columns = set(FUNDAMENTAL_COLUMNS) - {"Industry"}
-    if not required_columns.issubset(frame.columns):
+    if not FUNDAMENTAL_REQUIRED_COLUMNS.issubset(frame.columns):
         return {}
-    if "Industry" not in frame:
-        frame["Industry"] = ""
+    for column in FUNDAMENTAL_COLUMNS:
+        if column not in frame:
+            frame[column] = "" if column in {
+                "Ticker",
+                "Industry",
+                "LatestReportPeriod",
+                "LatestAnnouncementDate",
+                "LatestReportType",
+                "FundamentalProvider",
+                "FundamentalFetchedAt",
+                "FundamentalDataStatus",
+                "InstitutionHoldingTrend",
+            } else np.nan
     frame = frame.loc[:, FUNDAMENTAL_COLUMNS].copy()
     frame["Ticker"] = frame["Ticker"].map(_ticker)
     return frame.drop_duplicates("Ticker", keep="last").set_index("Ticker").to_dict(
         orient="index"
     )
+
+
+def load_fundamental_data(path_value: str) -> dict[str, dict[str, Any]]:
+    path = Path(path_value)
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    return _load_fundamental_data_cached(
+        str(path),
+        stat.st_mtime_ns,
+        stat.st_size,
+    )
+
+
+def clear_fundamental_quality_cache() -> None:
+    _load_fundamental_data_cached.cache_clear()
 
 
 def get_quality(ticker: str, is_etf: bool = False) -> FundamentalQuality:

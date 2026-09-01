@@ -23,9 +23,11 @@ OUTPUT_DIR: Final[Path] = BASE_DIR / "output"
 LOG_DIR: Final[Path] = BASE_DIR / "logs"
 FUNDAMENTAL_DATA_PATH: str = ""
 FUNDAMENTAL_REFRESH_FORCE: bool = False
-FUNDAMENTAL_DOWNLOAD_THREADS: int = 8
-FUNDAMENTAL_DOWNLOAD_TIMEOUT: int = 8
-FUNDAMENTAL_DOWNLOAD_RETRIES: int = 1
+# BaoStock uses one process-global socket.  The thread/retry values remain for
+# source compatibility but the canonical refresh deliberately runs one session.
+FUNDAMENTAL_DOWNLOAD_THREADS: int = 1
+FUNDAMENTAL_DOWNLOAD_TIMEOUT: int = 12
+FUNDAMENTAL_DOWNLOAD_RETRIES: int = 0
 FUNDAMENTAL_PROGRESS_HEARTBEAT_SECONDS: float = 10.0
 
 # Ensure directories exist

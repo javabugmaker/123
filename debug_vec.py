@@ -1,9 +1,17 @@
-import glob, os, sys, warnings, logging, numpy as np, pandas as pd
+import glob
+import logging
+import os
+import sys
+import warnings
+
+import pandas as pd
+
 warnings.filterwarnings("ignore")
 logging.getLogger("institution_scanner.score").setLevel(50)
 sys.path.insert(0, r"d:\python1\1\InstitutionScanner-main")
-import indicators as ind, score_core as sc
+import indicators as ind
 import institution_scanner.backtest_score_vectorized as V
+import score_core as sc
 
 ind.ENABLE_VOLUME_PROFILE = False
 BASE = r"d:\python1\1\InstitutionScanner-main\cache\v4-tickflow-forward-volume-shares"
@@ -31,17 +39,6 @@ bbw,hv20,hv60 = get("BB_Width"),get("HV20"),get("HV60")
 l52,d52 = get("Low52W"),get("DistToLow52W")
 rs,r2 = get("RegSlope"),get("RegR2")
 ah,dh = get("Above_HVN"),get("DistToHVN_Pct")
-
-def part(name, fn_vec, fn_scalar, *extra):
-    for p in [260, 400, len(df)-1]:
-        sub = df.iloc[:p+1]
-        try:
-            w = float(fn_scalar(sub))
-        except Exception as e:
-            w = float("nan")
-        g = float(fn_vec(p) if callable(fn_vec) and extra or True else 0)
-        # simpler: recompute vector arrays once
-        print(f"{name:12s} p={p:4d} scalar={w:9.3f}")
 
 # compute vector sub-scores once (full arrays)
 tr = V._trend(C, ma200)

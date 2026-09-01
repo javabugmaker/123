@@ -12,7 +12,7 @@ from typing import Final
 from .contracts import CONTRACT_VERSION, PRODUCTION_CONTRACT
 from .runtime_inventory import runtime_inventory
 
-VERSION_MANIFEST_SCHEMA: Final = "2026-08-25-v109.3-structured-version-manifest-v2"
+VERSION_MANIFEST_SCHEMA: Final = "2026-09-01-v110-structured-version-manifest-v3"
 
 
 def build_version_manifest() -> dict[str, object]:
@@ -32,6 +32,9 @@ def build_version_manifest() -> dict[str, object]:
             "output_contract": str(getattr(config, "OUTPUT_CONTRACT_VERSION", "")),
             "decision_integrity": str(getattr(config, "DECISION_INTEGRITY_VERSION", "")),
             "market_data": str(getattr(config, "MARKET_DATA_VERSION", "")),
+            "fundamentals": str(
+                getattr(config, "FUNDAMENTAL_REFRESH_INTEGRITY_VERSION", "")
+            ),
             "backtest_provenance": str(
                 getattr(config, "BACKTEST_PROVENANCE_VERSION", "")
             ),

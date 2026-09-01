@@ -2,7 +2,7 @@
 downloader.py — TickFlow Free market-data layer for InstitutionScanner.
 
 TickFlow Free is the sole provider for the A-share/ETF universe and historical
-daily OHLCV data. AkShare is intentionally not imported here; it is used only
+daily OHLCV data. BaoStock is intentionally not imported here; it is used only
 by fundamental_data.py for low-frequency fundamental refreshes.
 """
 

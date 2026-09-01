@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Final
 
 import checkpoint_inputs_v59 as _checkpoint_inputs
-import fundamental_refresh_v61 as _fundamental_refresh
 import publication_guard_v65 as _publication_guard
 import scanner_resume_v59 as _resume_v59
 import scanner_resume_v68 as _resume_v68
@@ -26,7 +25,7 @@ record_universe_snapshot_file = _universe_snapshot.record_universe_snapshot_file
 maybe_publish_canonical_report = _web_report.maybe_publish_canonical_report
 
 SCAN_RUNTIME_FACADE_VERSION: Final = (
-    "2026-08-26-v109.6-canonical-scan-runtime-observability-v2"
+    "2026-09-01-v110-canonical-scan-runtime-observability-v3"
 )
 
 _INSTALLED = False
@@ -37,7 +36,6 @@ def install() -> None:
     if _INSTALLED:
         return
     _checkpoint_inputs.install()
-    _fundamental_refresh.install()
     _resume_v59.install()
     _resume_v68.install()
     _INSTALLED = True

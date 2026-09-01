@@ -182,6 +182,17 @@ class ScanResult:
     institutional_score: float = np.nan
     quality_roe: float = np.nan
     quality_gross_margin: float = np.nan
+    quality_latest_report_period: str = ""
+    quality_latest_announcement_date: str = ""
+    quality_latest_report_type: str = ""
+    quality_fundamental_provider: str = ""
+    quality_fundamental_fetched_at: str = ""
+    quality_fundamental_data_status: str = "MISSING"
+    quality_net_profit_latest: float = np.nan
+    quality_revenue_latest: float = np.nan
+    quality_net_profit_yoy: float = np.nan
+    quality_debt_to_assets: float = np.nan
+    quality_operating_cash_flow_to_net_profit: float = np.nan
     quality_institution_holding_trend: Any = None
     quality_institution_holding_periods: float = np.nan
     quality_net_profit_y1: float = np.nan
@@ -311,6 +322,18 @@ def _parse_float(value: Any, default: float = np.nan) -> float:
     return parsed if np.isfinite(parsed) else default
 
 
+def _parse_text(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    try:
+        if pd.isna(value):
+            return default
+    except (TypeError, ValueError):
+        return default
+    parsed = str(value).strip()
+    return default if parsed.lower() in {"nan", "none", "null", "<na>"} else parsed
+
+
 def _quality_hard_data_complete_from_row(
     row: pd.Series | dict[str, Any],
 ) -> bool:
@@ -331,10 +354,24 @@ def _quality_hard_data_complete_from_row(
         _parse_float(row.get("IndustryGrossMarginPercentile", np.nan))
     )
     margin_required = profile not in {"FINANCIAL", "DEFENSIVE", "ETF"}
+    provider = _parse_text(row.get("FundamentalProvider", "")).lower()
+    metadata_required = bool(provider and provider != "legacy-cache")
+    report_metadata_available = bool(
+        _parse_text(row.get("LatestReportPeriod", ""))
+        and _parse_text(row.get("LatestAnnouncementDate", ""))
+    )
+    report_status_usable = _parse_text(
+        row.get("FundamentalDataStatus", "MISSING"),
+        "MISSING",
+    ).upper() in {"CURRENT", "AWAITING_RELEASE"}
     return bool(
         roe_available
         and profit_available
         and (not margin_required or margin_available)
+        and (
+            not metadata_required
+            or (report_metadata_available and report_status_usable)
+        )
     )
 
 
@@ -739,6 +776,19 @@ def scan_single_from_df(
             style=style,
             quality_roe=quality.roe,
             quality_gross_margin=quality.gross_margin,
+            quality_latest_report_period=quality.latest_report_period,
+            quality_latest_announcement_date=quality.latest_announcement_date,
+            quality_latest_report_type=quality.latest_report_type,
+            quality_fundamental_provider=quality.fundamental_provider,
+            quality_fundamental_fetched_at=quality.fundamental_fetched_at,
+            quality_fundamental_data_status=quality.fundamental_data_status,
+            quality_net_profit_latest=quality.net_profit_latest,
+            quality_revenue_latest=quality.revenue_latest,
+            quality_net_profit_yoy=quality.net_profit_yoy,
+            quality_debt_to_assets=quality.debt_to_assets,
+            quality_operating_cash_flow_to_net_profit=(
+                quality.operating_cash_flow_to_net_profit
+            ),
             quality_institution_holding_trend=quality.institution_holding_trend,
             quality_institution_holding_periods=quality.institution_holding_periods,
             quality_net_profit_y1=quality.net_profit_y1,
@@ -1167,6 +1217,40 @@ def run_scan(
                         quality_roe=_parse_float(row.get("ROE", np.nan)),
                         quality_gross_margin=_parse_float(
                             row.get("GrossMargin", np.nan)
+                        ),
+                        quality_latest_report_period=_parse_text(
+                            row.get("LatestReportPeriod", "")
+                        ),
+                        quality_latest_announcement_date=_parse_text(
+                            row.get("LatestAnnouncementDate", "")
+                        ),
+                        quality_latest_report_type=_parse_text(
+                            row.get("LatestReportType", "")
+                        ),
+                        quality_fundamental_provider=_parse_text(
+                            row.get("FundamentalProvider", "")
+                        ),
+                        quality_fundamental_fetched_at=_parse_text(
+                            row.get("FundamentalFetchedAt", "")
+                        ),
+                        quality_fundamental_data_status=_parse_text(
+                            row.get("FundamentalDataStatus", "MISSING"),
+                            "MISSING",
+                        ),
+                        quality_net_profit_latest=_parse_float(
+                            row.get("NetProfitLatest", np.nan)
+                        ),
+                        quality_revenue_latest=_parse_float(
+                            row.get("RevenueLatest", np.nan)
+                        ),
+                        quality_net_profit_yoy=_parse_float(
+                            row.get("NetProfitYoY", np.nan)
+                        ),
+                        quality_debt_to_assets=_parse_float(
+                            row.get("DebtToAssets", np.nan)
+                        ),
+                        quality_operating_cash_flow_to_net_profit=_parse_float(
+                            row.get("OperatingCashFlowToNetProfit", np.nan)
                         ),
                         quality_institution_holding_trend=row.get(
                             "InstitutionHoldingTrend"

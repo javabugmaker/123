@@ -1,6 +1,7 @@
 # InstitutionScanner
 
-A 股 / ETF 日频扫描器：使用 **TickFlow Free** 提供行情与标的池，**AkShare** 仅用于低频基本面补充。
+A 股 / ETF 日频扫描器：使用 **TickFlow Free** 提供行情与标的池，使用
+**BaoStock** 提供低频、可追溯公告日的财报数据。
 
 ## 数据架构
 
@@ -14,15 +15,17 @@ TickFlow Free
         ↓
 指标 → 筛选 → 评分 → 买点 → 回测 → 排名 → GUI
 
-AkShare
-└─ ROE / 毛利率 / 净利润 / 机构覆盖等基本面
+BaoStock
+└─ 季度利润 / 成长 / 偿债 / 现金流指标
         ↓
- fundamental_data.csv（低频缓存）
+ fundamental_reports.csv（公告日点时明细）
+        ↓
+ fundamental_data.csv（扫描兼容快照）
         ↓
  QualityGate
 ```
 
-行情层不再使用东方财富、AkShare 行情、新浪或腾讯，也没有行情源自动回退或混源缓存。
+行情层不使用东方财富、AkShare 行情、新浪或腾讯，也没有行情源自动回退或混源缓存。
 
 ## TickFlow Free
 
@@ -37,16 +40,26 @@ AkShare
 
 TickFlow Free 不提供实时行情，因此 GUI 的“当日收盘价”始终对应最新已完成的日 K 交易日，不会用盘中价格冒充收盘价。盘后如果 Free 服务仍在分批结算，程序会重试未更新标的；不同交易日混排会直接阻断。统一供应商延迟最多只允许 1 个交易日继续作为研究数据，且非最新完成交易日的数据不会保持 `READY/CAUTIOUS` 即时交易资格。
 
-## AkShare 基本面
+## BaoStock 财报
 
-AkShare 只负责低频基本面，不参与任何 OHLCV 行情下载。基本面缓存默认 14 天：
+BaoStock 可匿名登录、无需 API Key，只负责低频财报，不参与 OHLCV、标的池或任何行情下载。程序按
+`股票 × 年份 × 季度` 查询，并保存 `ReportPeriod` 与 `AnnouncementDate`：
 
-- 缓存有效：直接读取，不联网
-- 缓存过期：尝试刷新
+- 同一天且股票池、目标报告期未变化：直接读取，不重复联网
+- 新季度结束后：逐日检查是否出现新公告；未公告时保留上一份已知财报
+- 法定披露窗口内标记为 `AWAITING_RELEASE`，过期仍无新报告才标记为 `STALE`
+- 每只股票增量保存：中途断网后可从已有明细继续
 - 刷新失败：保留已有缓存，行情扫描继续运行
-- GUI 勾选“刷新基本面数据”：强制刷新
+- GUI 勾选“刷新财报数据”：强制刷新
 
-Windows 开启 Clash 系统代理时，AkShare 基本面请求可读取系统代理；关闭系统代理时恢复直连。代理逻辑与 TickFlow 行情层隔离。
+财报汇总包含最新报告期、公告日、ROE、毛利率、净利润同比、资产负债率、
+经营现金流/净利润及最近三份年报净利润。历史回放只使用目标日期之前已经公告的记录，
+避免把后来发布的财报提前用于信号。BaoStock 不提供原“机构覆盖家数趋势”，因此该旧字段
+只为读取历史结果保留，不再参与质量门槛、完整度或质量系数。超过法定披露期限仍未更新的
+财报按数据未知处理，不会拿到完整财报质量系数。
+
+BaoStock 使用原生 TCP 连接 `public-api.baostock.com:10030`，不是 HTTP 接口；防火墙需允许
+该出站端口，`HTTP_PROXY` / `HTTPS_PROXY` 环境变量不会代理这条连接。
 
 ## 安装
 
@@ -72,7 +85,7 @@ Windows 也可以双击 `启动研究终端.bat`。v85 采用 1366×768 紧凑�
 统一桌面端与发布页的信息层级：数据日期、研究榜、板块轮动、风险雷达、模型变化和
 运行状态。扫描、排名、回测与结果字段仍复用稳定实现，不改变模型口径。
 
-GUI 行情源固定显示为 `TickFlow Free`，基本面来源为 `AkShare（低频缓存）`。
+GUI 行情源固定显示为 `TickFlow Free`，财报来源为 `BaoStock（点时缓存）`。
 
 ## CLI
 
@@ -101,7 +114,7 @@ python main.py scan --tickers 600036.SH,510300.SH
 python main.py scan --force-download
 ```
 
-强制刷新 AkShare 基本面：
+强制刷新 BaoStock 财报：
 
 ```bash
 python main.py scan --refresh-fundamentals
@@ -198,7 +211,8 @@ python -m institution_scanner.auction_structure_cli --all-results
 ## 性能架构
 
 - **行情层**：TickFlow Free 批量日 K + schema 隔离 Parquet 缓存；缓存读取使用受控并行，并生成 `_manifest.json` 记录每个标的的日期、行数和文件版本。
-- **基本面层**：AkShare 只做低频基本面缓存，不参与日常行情扫描热路径。
+- **财报层**：BaoStock 只做低频点时财报缓存，不参与日常行情扫描热路径；
+  单会话串行访问以适配其进程级 socket，并按股票增量落盘。
 - **指标层**：原始行情文件未变化且 `SCORING_VERSION` 相同时，复用持久化指标缓存；TickFlow 更新或复权重建会自动失效。
 - **评分层**：单次评分内部复用 NumPy 数组；每次公开评分调用先开启新的缓存事务，因此同一 DataFrame 原地更新后不会读取上一轮的旧指标。五维上限仍为 `20/25/25/15/15`，但缺失维度按零证据处理，不再把剩余维度重新放大到 100 分；覆盖率折扣和最终 `Setup/Trigger/Execution` 权重保持不变。
 - **回测层**：大股票池自动切换 `ProcessPoolExecutor` 多进程，小任务保持顺序执行以降低启动成本；每个历史候选点只评分一次，并把评分窗口限制在当前模型实际需要的 504 根已计算指标数据。分区采用 60 日标签 purge，收益率、胜率、波动与利润因子均实际使用重叠权重。

@@ -1,10 +1,17 @@
-import glob, os, sys, warnings, logging, numpy as np, pandas as pd
+import glob
+import logging
+import os
+import sys
+import warnings
+
+import pandas as pd
+
 warnings.filterwarnings("ignore")
 logging.getLogger("institution_scanner.score").setLevel(50)
 sys.path.insert(0, r"d:\python1\1\InstitutionScanner-main")
 import indicators as ind
-import score_core as sc
 import institution_scanner.backtest_score_vectorized as V
+import score_core as sc
 
 ind.ENABLE_VOLUME_PROFILE = False
 BASE = r"d:\python1\1\InstitutionScanner-main\cache\v4-tickflow-forward-volume-shares"
@@ -13,7 +20,7 @@ _by = {os.path.basename(x): x for x in sorted(glob.glob(os.path.join(BASE, "*.pa
 def sub_scores(df):
     C = V._col(df, "Close"); H = V._col(df, "High"); L = V._col(df, "Low"); Vol = V._col(df, "Volume")
     ma20 = V._col(df, "MA20"); ma50 = V._col(df, "MA50"); ma200 = V._col(df, "MA200")
-    atr14 = V._col(df, "ATR14"); atr50 = V._col(df, "ATR50"); rsi = V._col(df, "RSI14")
+    atr14 = V._col(df, "ATR14"); atr50 = V._col(df, "ATR50")
     obv = V._col(df, "OBV"); ad = V._col(df, "AD"); ad_slope = V._col(df, "AD_Slope")
     cmf = V._col(df, "CMF"); mfi = V._col(df, "MFI")
     vm20 = V._col(df, "VolMA20"); vm120 = V._col(df, "VolMA120"); vz = V._col(df, "VolZScore")

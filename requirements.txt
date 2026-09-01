@@ -9,8 +9,8 @@ scipy>=1.10.0,<2.0
 # Market data / fundamentals
 # TickFlow Free is the sole OHLCV + universe provider.
 tickflow[all]==0.1.24
-# AkShare is retained only for low-frequency fundamental refreshes.
-akshare==1.18.83
+# BaoStock supplies only low-frequency, point-in-time financial reports.
+baostock==0.9.3
 
 # Technical indicators
 ta>=0.11.0,<1.0

@@ -135,7 +135,7 @@ def refresh_fundamentals_if_needed(
     explicit_refresh = bool(force or FUNDAMENTAL_REFRESH_FORCE)
     if existing_path is None and not explicit_refresh:
         logger.info(
-            "AkShare 基本面缓存尚未初始化；普通扫描不主动联网。"
+            "BaoStock 财报缓存尚未初始化；普通扫描不主动联网。"
             "需要基本面时请勾选/使用 --refresh-fundamentals。"
         )
         return
@@ -148,7 +148,7 @@ def refresh_fundamentals_if_needed(
     except (OSError, ValueError, TypeError) as exc:
         logger.warning("基本面刷新失败，继续使用现有数据：%s", exc)
     else:
-        logger.info("基本面数据路径: %s", fundamental_path_fn() or fundamental_path)
+        logger.info("财报数据路径: %s", fundamental_path_fn() or fundamental_path)
 
 
 def _emit_progress(

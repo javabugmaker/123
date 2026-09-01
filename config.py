@@ -24,6 +24,7 @@ BACKTEST_FAST_CHUNK_SIZE: int = _RUNTIME.backtest_fast_chunk_size
 BACKTEST_INCREMENTAL_TAIL_BARS: int = _RUNTIME.backtest_incremental_tail_bars
 
 SCORING_VERSION: str = (
+    "2026-09-01-v110-baostock-financial-quality-"
     "2026-08-22-v89-continuous-breakout-trigger-"
     "2026-08-21-v88-missing-evidence-no-renormalization-"
     "2026-08-21-v82-single-recency-ranking-"
@@ -31,6 +32,7 @@ SCORING_VERSION: str = (
     + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-09-01-v110-baostock-point-in-time-fundamentals-"
     "2026-08-22-v89-executable-backtest-signal-semantics-"
     "2026-08-21-v88-purged-date-balanced-point-in-time-research-"
     "2026-08-21-v87-directional-execution-backtest-integrity-"
@@ -68,6 +70,7 @@ PIPELINE_VERSION: str = (
     + _v51.PIPELINE_VERSION
 )
 DECISION_INTEGRITY_VERSION: str = (
+    "2026-09-01-v110-financial-only-quality-evidence-"
     "2026-08-21-v87-directional-price-cost-gates-"
     "2026-08-19-v60-future-date-execution-gate-"
     "2026-08-19-v58-current-data-execution-gate-"
@@ -76,6 +79,7 @@ DECISION_INTEGRITY_VERSION: str = (
     + _v51.DECISION_INTEGRITY_VERSION
 )
 OUTPUT_CONTRACT_VERSION: str = (
+    "2026-09-01-v110-financial-report-provenance-columns-"
     "2026-08-21-v88-research-integrity-audit-provenance-"
     "2026-08-21-v87-execution-economics-backtest-evidence-"
     "2026-08-21-v82-ranking-audit-provenance-"
@@ -94,6 +98,11 @@ OUTPUT_CONTRACT_VERSION: str = (
     "2026-08-18-v53-effective-market-date-provenance-"
     "2026-08-17-v52-price-limit-source-marketcap-applicability-"
     + _v51.OUTPUT_CONTRACT_VERSION
+)
+FUNDAMENTAL_GATE_VERSION: str = (
+    "2026-09-01-v110-baostock-announcement-date-provenance-"
+    "financial-only-quality-evidence-"
+    + _v51.FUNDAMENTAL_GATE_VERSION
 )
 MARKET_DATA_VERSION: str = (
     "2026-08-19-v69-same-length-history-content-check-"
@@ -173,7 +182,9 @@ ETF_DIRECTIONAL_RESEARCH_RULE_VERSION: str = (
 )
 
 CHECKPOINT_RESUME_VERSION: str = "2026-08-19-v68-pinned-frame-publish-clear-v3"
-FUNDAMENTAL_REFRESH_INTEGRITY_VERSION: str = "2026-08-19-v70-hard-financial-coverage-v3"
+FUNDAMENTAL_REFRESH_INTEGRITY_VERSION: str = (
+    "2026-09-01-v110-baostock-point-in-time-financials-v1"
+)
 CACHE_HISTORY_INTEGRITY_VERSION: str = "2026-08-19-v69-full-ohlcv-content-check-v2"
 BENCHMARK_CACHE_INTEGRITY_VERSION: str = "2026-08-19-v63-current-benchmark-required-v1"
 GUI_PROCESS_INTEGRITY_VERSION: str = "2026-08-19-v64-process-tree-cancel-v1"

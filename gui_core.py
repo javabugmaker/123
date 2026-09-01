@@ -20,6 +20,8 @@ OUTPUT_DIR = PROJECT_ROOT / "output"
 MAIN_FILE = PROJECT_ROOT / "main.py"
 DISPLAY_VALUE_NAMES = {
     "tickflow": "TickFlow Free",
+    "baostock": "BaoStock",
+    "legacy-cache": "旧缓存",
     "ACCUMULATION": "吸筹阶段",
     "BREAKOUT": "启动阶段",
     "DISTRIBUTION": "派发阶段",
@@ -37,12 +39,21 @@ DISPLAY_VALUE_NAMES = {
     "PASS": "通过",
     "FAIL": "未通过",
     "UNKNOWN": "数据未知（中性）",
+    "CURRENT": "最新财报已取得",
+    "AWAITING_RELEASE": "披露窗口内待公告",
+    "STALE": "财报逾期未更新",
+    "PARTIAL": "财报字段不完整",
+    "INVALID": "财报期无效",
+    "LEGACY": "旧缓存兼容",
+    "MISSING": "财报缺失",
 }
 DISPLAY_VALUE_CODES = {label: value for value, label in DISPLAY_VALUE_NAMES.items()}
 
 DATA_SOURCE_CODES = {"TickFlow Free": "tickflow"}
 
-DATA_SOURCE_HINTS = {"TickFlow Free": "日K/标的池：TickFlow Free；基本面：AkShare 低频缓存"}
+DATA_SOURCE_HINTS = {
+    "TickFlow Free": "日K/标的池：TickFlow Free；财报：BaoStock 点时缓存"
+}
 
 CsvCacheToken = tuple[int, int] | tuple[int, int, str]
 MISSING_VALUE_TEXTS = frozenset(
@@ -170,6 +181,19 @@ COLUMN_NAMES = {
     "DataFreshnessStatus": "行情时效",
     "DataFreshnessFactor": "行情时效系数",
     "DataFreshnessReason": "行情时效说明",
+    "LatestReportPeriod": "最新财报期",
+    "LatestAnnouncementDate": "财报公告日",
+    "LatestReportType": "财报类型",
+    "FundamentalProvider": "财报来源",
+    "FundamentalFetchedAt": "财报抓取时间",
+    "FundamentalDataStatus": "财报数据状态",
+    "ROE": "ROE（%）",
+    "GrossMargin": "毛利率（%）",
+    "NetProfitLatest": "最新净利润",
+    "RevenueLatest": "最新营收",
+    "NetProfitYoY": "净利润同比（%）",
+    "DebtToAssets": "资产负债率（%）",
+    "OperatingCashFlowToNetProfit": "经营现金流/净利润",
     "InstitutionHoldingStatus": "机构持仓状态",
     "QualityApplicable": "基本面门槛适用",
     "QualityDataCompleteness": "质量数据完整度",
@@ -330,6 +354,13 @@ NUMBER_COLUMNS = {
     "HardRiskPenalty",
     "QualityDataCompleteness",
     "QualityMultiplier",
+    "ROE",
+    "GrossMargin",
+    "NetProfitLatest",
+    "RevenueLatest",
+    "NetProfitYoY",
+    "DebtToAssets",
+    "OperatingCashFlowToNetProfit",
     "BreakoutBuyPrice",
     "BacktestScore",
     "CompositeScore",
@@ -390,6 +421,12 @@ TEXT_COLUMNS = {
     "InstitutionalTier",
     "InstitutionalTierReason",
     "InstitutionHoldingStatus",
+    "LatestReportPeriod",
+    "LatestAnnouncementDate",
+    "LatestReportType",
+    "FundamentalProvider",
+    "FundamentalFetchedAt",
+    "FundamentalDataStatus",
     "QualityGateReason",
     "SignalAdjustmentReason",
     "BacktestConfidenceTier",
@@ -409,6 +446,10 @@ INTEGER_COLUMNS = {
     "BacktestFreshnessTradingDays",
 }
 PERCENTAGE_COLUMNS = {
+    "ROE",
+    "GrossMargin",
+    "NetProfitYoY",
+    "DebtToAssets",
     "DistToLow52W",
     "EntryZoneDistancePct",
     "StopDistancePct",
@@ -494,7 +535,7 @@ class ScannerGUI:
         self.refresh_fundamentals = tk.BooleanVar(value=False)
         self.data_source = tk.StringVar(value="TickFlow Free")
         self.data_source_label = tk.StringVar(
-            value="行情：TickFlow Free（日K/前复权） · 基本面：AkShare（低频缓存）"
+            value="行情：TickFlow Free（日K/前复权） · 财报：BaoStock（点时缓存）"
         )
         self.status = tk.StringVar(value="就绪")
         self.result_summary = tk.StringVar(value="等待加载结果")
@@ -688,7 +729,7 @@ class ScannerGUI:
             controls, text="快速扫描（优先缓存）", variable=self.cache_first
         ).grid(row=1, column=4, pady=(12, 0), sticky=tk.W)
         ttk.Checkbutton(
-            controls, text="刷新基本面数据", variable=self.refresh_fundamentals
+            controls, text="刷新财报数据", variable=self.refresh_fundamentals
         ).grid(row=1, column=5, pady=(12, 0), sticky=tk.W)
         self.start_button = ttk.Button(
             controls, text="▶ 开始扫描", style="Accent.TButton", command=self.start_scan
@@ -1508,7 +1549,18 @@ class ScannerGUI:
             "QualityDataCompleteness",
             "QualityHardDataComplete",
             "QualityGateReason",
-            "InstitutionHoldingStatus",
+            "LatestReportPeriod",
+            "LatestAnnouncementDate",
+            "LatestReportType",
+            "FundamentalProvider",
+            "FundamentalDataStatus",
+            "ROE",
+            "GrossMargin",
+            "NetProfitLatest",
+            "RevenueLatest",
+            "NetProfitYoY",
+            "DebtToAssets",
+            "OperatingCashFlowToNetProfit",
             "Score",
             "OpportunityScore",
             "ShortTermScore",
@@ -2039,7 +2091,15 @@ class ScannerGUI:
 
     def _format_table_value(self, column: str, value: str) -> str:
         text = self._cell_text(value)
-        if column in {"SmartMoneyStage", "EntrySignal", "AssetType", "DataSource", "UniverseType"}:
+        if column in {
+            "SmartMoneyStage",
+            "EntrySignal",
+            "AssetType",
+            "DataSource",
+            "UniverseType",
+            "FundamentalProvider",
+            "FundamentalDataStatus",
+        }:
             return DISPLAY_VALUE_NAMES.get(text, text)
         if column == "ATRExpansionSource":
             return {

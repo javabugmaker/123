@@ -91,7 +91,7 @@ def _refresh_fundamentals_if_needed(
     explicit_refresh = bool(force or FUNDAMENTAL_REFRESH_FORCE)
     if existing_path is None and not explicit_refresh:
         logger.info(
-            "AkShare 基本面缓存尚未初始化；普通扫描不主动联网。"
+            "BaoStock 财报缓存尚未初始化；普通扫描不主动联网。"
             "需要基本面时请勾选/使用 --refresh-fundamentals。"
         )
         return
@@ -104,7 +104,7 @@ def _refresh_fundamentals_if_needed(
     except (OSError, ValueError, TypeError) as exc:
         logger.warning("基本面刷新失败，继续使用现有数据：%s", exc)
     else:
-        logger.info("基本面数据路径: %s", fundamental_data_path() or fundamental_path)
+        logger.info("财报数据路径: %s", fundamental_data_path() or fundamental_path)
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
@@ -415,7 +415,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan_p.add_argument(
         "--refresh-fundamentals",
         action="store_true",
-        help="强制刷新基本面缓存（普通扫描会自动检查时效）",
+        help="强制刷新 BaoStock 财报缓存（普通扫描会自动检查时效）",
     )
     scan_p.add_argument(
         "--data-source", choices=DATA_SOURCE_CHOICES, default="tickflow"
@@ -451,7 +451,7 @@ def build_parser() -> argparse.ArgumentParser:
     report_p.add_argument(
         "--refresh-fundamentals",
         action="store_true",
-        help="强制刷新基本面缓存（普通报告会自动检查时效）",
+        help="强制刷新 BaoStock 财报缓存（普通报告会自动检查时效）",
     )
     report_p.add_argument("--verbose", "-v", action="store_true")
 

@@ -302,8 +302,31 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 )
                 if np.isfinite(r.pre_backtest_institutional_score)
                 else None,
+                "LatestReportPeriod": r.quality_latest_report_period,
+                "LatestAnnouncementDate": r.quality_latest_announcement_date,
+                "LatestReportType": r.quality_latest_report_type,
+                "FundamentalProvider": r.quality_fundamental_provider,
+                "FundamentalFetchedAt": r.quality_fundamental_fetched_at,
+                "FundamentalDataStatus": r.quality_fundamental_data_status,
                 "ROE": round(r.quality_roe, 4) if np.isfinite(r.quality_roe) else None,
                 "GrossMargin": round(r.quality_gross_margin, 4) if np.isfinite(r.quality_gross_margin) else None,
+                "NetProfitLatest": round(r.quality_net_profit_latest, 4)
+                if np.isfinite(r.quality_net_profit_latest)
+                else None,
+                "RevenueLatest": round(r.quality_revenue_latest, 4)
+                if np.isfinite(r.quality_revenue_latest)
+                else None,
+                "NetProfitYoY": round(r.quality_net_profit_yoy, 4)
+                if np.isfinite(r.quality_net_profit_yoy)
+                else None,
+                "DebtToAssets": round(r.quality_debt_to_assets, 4)
+                if np.isfinite(r.quality_debt_to_assets)
+                else None,
+                "OperatingCashFlowToNetProfit": round(
+                    r.quality_operating_cash_flow_to_net_profit, 4
+                )
+                if np.isfinite(r.quality_operating_cash_flow_to_net_profit)
+                else None,
                 "InstitutionHoldingTrend": r.quality_institution_holding_trend,
                 "InstitutionHoldingPeriods": round(r.quality_institution_holding_periods, 4) if np.isfinite(r.quality_institution_holding_periods) else None,
                 "NetProfitY1": round(r.quality_net_profit_y1, 4) if np.isfinite(r.quality_net_profit_y1) else None,
@@ -2227,13 +2250,24 @@ def export_all(
     )
     signal_counts = rankable.get("EntrySignal", pd.Series(dtype=str)).value_counts()
     logger.info(
-        "最终候选：BUY_NOW=%d，BREAKOUT_CONFIRM=%d，WAIT_PULLBACK=%d，AVOID=%d；回测低可信度=%d，Quality UNKNOWN=%d，HardRisk过滤=%d。",
+        "最终候选：BUY_NOW=%d，BREAKOUT_CONFIRM=%d，WAIT_PULLBACK=%d，AVOID=%d；回测低可信度=%d，财报数据不完整=%d，HardRisk过滤=%d。",
         int(signal_counts.get("BUY_NOW", 0)),
         int(signal_counts.get("BREAKOUT_CONFIRM", 0)),
         int(signal_counts.get("WAIT_PULLBACK", 0)),
         int(signal_counts.get("AVOID", 0)),
         int(rankable.get("BacktestConfidenceTier", pd.Series("", index=rankable.index)).isin(["样本不足", "低可信度"]).sum()),
-        int(rankable.get("InstitutionHoldingStatus", pd.Series("", index=rankable.index)).eq("UNKNOWN").sum()),
+        int(
+            (
+                ~rankable.get(
+                    "QualityHardDataComplete",
+                    pd.Series(False, index=rankable.index),
+                )
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .isin({"true", "1", "yes", "y", "是"})
+            ).sum()
+        ),
         int(rankable.get("RankingEligibility", pd.Series("", index=rankable.index)).eq("风险过滤").sum()),
     )
     logger.info(

@@ -1,9 +1,16 @@
-import glob, os, sys, time, warnings, logging
+import glob
+import logging
+import os
+import sys
+import time
+import warnings
+
 warnings.filterwarnings("ignore")
 logging.getLogger("institution_scanner.score").setLevel(50)
 sys.path.insert(0, r"d:\python1\1\InstitutionScanner-main")
 import numpy as np
 import pandas as pd
+
 import indicators as ind
 from institution_scanner.backtest_score_vectorized import final_score_series
 

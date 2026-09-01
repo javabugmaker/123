@@ -29,9 +29,11 @@ from result_contract import RESULT_FIELD_LABELS, decision_policy_signature
 # Compatibility alias: external callers historically patched gui.OUTPUT_DIR.
 OUTPUT_DIR = _core.OUTPUT_DIR
 
-# Market data is fixed to TickFlow Free; AkShare is fundamentals-only.
+# Market data is fixed to TickFlow Free; BaoStock is financial-reports-only.
 _core.DATA_SOURCE_HINTS.clear()
-_core.DATA_SOURCE_HINTS["TickFlow Free"] = "行情：TickFlow Free（日K / 标的池）"
+_core.DATA_SOURCE_HINTS["TickFlow Free"] = (
+    "行情：TickFlow Free（日K / 标的池） · 财报：BaoStock（点时缓存）"
+)
 
 # The main table is intentionally compact.  Long diagnostics stay in the
 # detail dialog/right-side decision card.  Two derived columns are appended
@@ -73,7 +75,10 @@ _core.COLUMN_NAMES.update(
         "RankingEligibility": "交易资格",
         "TradeReadinessReason": "执行说明",
         "BreakoutScore": "突破强度",
-        "InstitutionHoldingStatus": "机构覆盖趋势",
+        "LatestReportPeriod": "最新财报期",
+        "LatestAnnouncementDate": "财报公告日",
+        "FundamentalProvider": "财报来源",
+        "FundamentalDataStatus": "财报状态",
         "Quality": "旧质量标签",
         "QualityGate": "基本面门槛",
         "QualityDataAvailable": "基本面数据",
@@ -560,7 +565,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.source_box.grid(row=0, column=0, padx=(12, 8), pady=10, sticky="w")
         ctk.CTkLabel(
             self.advanced_frame,
-            text="行情：TickFlow Free · 基本面：AkShare（低频缓存）",
+            text="行情：TickFlow Free · 财报：BaoStock（点时缓存）",
             text_color="#64748b",
         ).grid(row=0, column=1, padx=(0, 18), pady=10, sticky="w")
         ctk.CTkCheckBox(
@@ -583,7 +588,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         ).grid(row=0, column=4, padx=8, pady=10, sticky="w")
         ctk.CTkCheckBox(
             self.advanced_frame,
-            text="刷新基本面",
+            text="刷新财报",
             variable=self.refresh_fundamentals,
             command=self._advanced_changed,
         ).grid(row=0, column=5, padx=8, pady=10, sticky="w")

@@ -1,11 +1,18 @@
-import glob, os, sys, warnings, logging, numpy as np, pandas as pd
+import glob
+import logging
+import os
+import sys
+import warnings
+
+import pandas as pd
+
 warnings.filterwarnings("ignore")
 logging.getLogger("institution_scanner.score").setLevel(50)
 sys.path.insert(0, r"d:\python1\1\InstitutionScanner-main")
 import indicators as ind
 import score_core as sc
+from institution_scanner.backtest_score_vectorized import final_score_series
 from score_core import _model_component_weights
-from institution_scanner.backtest_score_vectorized import final_score_series, _component_weights
 
 ind.ENABLE_VOLUME_PROFILE = False
 BASE = r"d:\python1\1\InstitutionScanner-main\cache\v4-tickflow-forward-volume-shares"

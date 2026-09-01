@@ -77,6 +77,14 @@ _PUBLIC_COLUMNS = (
     "FinalScore",
     "QualityGate",
     "QualityDataCompleteness",
+    "LatestReportPeriod",
+    "LatestAnnouncementDate",
+    "LatestReportType",
+    "FundamentalProvider",
+    "FundamentalDataStatus",
+    "ROE",
+    "GrossMargin",
+    "NetProfitYoY",
     "BacktestMode",
     "BacktestSamples",
     "BacktestWinRate20D",
@@ -367,6 +375,18 @@ def _quality_label(value: str) -> str:
     }.get(str(value or "").strip().upper(), str(value or "").strip() or "—")
 
 
+def _fundamental_status_label(value: str) -> str:
+    return {
+        "CURRENT": "最新财报已取得",
+        "AWAITING_RELEASE": "披露窗口内待公告",
+        "STALE": "财报逾期未更新",
+        "PARTIAL": "财报字段不完整",
+        "INVALID": "财报期无效",
+        "LEGACY": "旧缓存兼容",
+        "MISSING": "财报缺失",
+    }.get(str(value or "").strip().upper(), str(value or "").strip() or "—")
+
+
 def _parse_price_level(value: object) -> float | None:
     direct = _number(value)
     if direct is not None:
@@ -471,6 +491,16 @@ def _details_payload(rows: list[dict[str, str]]) -> dict[str, dict[str, object]]
             "signalStatus": row.get("SignalStatus", "") or "—",
             "signalDays": row.get("SignalDays", "") or "—",
             "quality": _quality_label(row.get("QualityLayerStatus", "")),
+            "reportPeriod": row.get("LatestReportPeriod", "") or "—",
+            "announcementDate": row.get("LatestAnnouncementDate", "") or "—",
+            "reportType": row.get("LatestReportType", "") or "—",
+            "fundamentalProvider": row.get("FundamentalProvider", "") or "—",
+            "fundamentalStatus": _fundamental_status_label(
+                row.get("FundamentalDataStatus", "")
+            ),
+            "roe": _number(row.get("ROE", "")),
+            "grossMargin": _number(row.get("GrossMargin", "")),
+            "netProfitYoY": _number(row.get("NetProfitYoY", "")),
             "smoothTrigger": _number(row.get("SmoothTriggerScore", "")),
             "buyText": row.get("ReferenceBuyPrice", "") or "—",
             "buy": _parse_price_level(row.get("ReferenceBuyPrice", "")),
@@ -581,7 +611,7 @@ function 文本(v,d='—'){{return v===null||v===undefined||v===''?d:String(v)}}
 function 详情项(k,v){{return `<div class="详情项"><span>${{k}}</span><strong>${{文本(v)}}</strong></div>`}}
 function 线(points,color,width=1.5){{return `<polyline points="${{points}}" fill="none" stroke="${{color}}" stroke-width="${{width}}" stroke-linejoin="round" stroke-linecap="round"/>`}}
 function 画K线(ticker,d){{const svg=document.getElementById('日K图'),x=图表[ticker];if(!x||!x.c||x.c.length<2){{svg.innerHTML='<text x="470" y="250" text-anchor="middle" fill="#6b7078" font-size="14">暂无本地日 K 缓存</text>';return}}const n=x.c.length,W=940,H=520,left=52,right=72,top=24,priceBottom=390,volTop=414,volBottom=490;let vals=[...x.h,...x.l,...x.e20,...x.e50,...x.e200].filter(Number.isFinite);for(const k of ['buy','breakout','stop','target']){{const v=Number(d[k]);if(Number.isFinite(v))vals.push(v)}}let lo=Math.min(...vals),hi=Math.max(...vals),pad=Math.max((hi-lo)*.06,hi*.005,1e-6);lo-=pad;hi+=pad;const pw=W-left-right,step=pw/n,cw=Math.max(1.4,Math.min(7,step*.58));const X=i=>left+(i+.5)*step,Y=v=>top+(hi-v)/(hi-lo)*(priceBottom-top),vmax=Math.max(...x.v,1),V=v=>volBottom-v/vmax*(volBottom-volTop);let out=`<rect x="0" y="0" width="${{W}}" height="${{H}}" fill="#fff"/>`;for(let i=0;i<5;i++){{const yy=top+i*(priceBottom-top)/4,price=hi-i*(hi-lo)/4;out+=`<line x1="${{left}}" x2="${{W-right}}" y1="${{yy}}" y2="${{yy}}" stroke="#eceef1"/><text x="${{W-right+8}}" y="${{yy+4}}" fill="#6b7078" font-size="10">${{price.toFixed(2)}}</text>`}}for(let i=0;i<n;i++){{const up=x.c[i]>=x.o[i],color=up?'#E33D3D':'#197A55',xx=X(i),yo=Y(x.o[i]),yc=Y(x.c[i]),yh=Y(x.h[i]),yl=Y(x.l[i]);out+=`<line x1="${{xx}}" x2="${{xx}}" y1="${{yh}}" y2="${{yl}}" stroke="${{color}}"/><rect x="${{xx-cw/2}}" y="${{Math.min(yo,yc)}}" width="${{cw}}" height="${{Math.max(1,Math.abs(yc-yo))}}" fill="${{color}}"/><rect x="${{xx-cw/2}}" y="${{V(x.v[i])}}" width="${{cw}}" height="${{volBottom-V(x.v[i])}}" fill="${{color}}" opacity=".35"/>`}}for(const [arr,color] of [[x.e20,'#1769AA'],[x.e50,'#B56A13'],[x.e200,'#6955B8']]){{const pts=arr.map((v,i)=>Number.isFinite(v)?`${{X(i).toFixed(1)}},${{Y(v).toFixed(1)}}`:null).filter(Boolean).join(' ');out+=线(pts,color,1.35)}}const levels=[['buy','买点','#1769AA'],['breakout','突破','#B56A13'],['stop','止损','#197A55'],['target','目标','#E33D3D']];for(const [k,label,color] of levels){{const v=Number(d[k]);if(!Number.isFinite(v)||v<lo||v>hi)continue;const yy=Y(v);out+=`<line x1="${{left}}" x2="${{W-right}}" y1="${{yy}}" y2="${{yy}}" stroke="${{color}}" stroke-dasharray="5 4" opacity=".75"/><text x="${{left+4}}" y="${{yy-4}}" fill="${{color}}" font-size="10" font-weight="700">${{label}} ${{v.toFixed(2)}}</text>`}}out+=`<text x="${{left}}" y="${{H-8}}" fill="#6b7078" font-size="10">${{x.d[0]}}</text><text x="${{W-right}}" y="${{H-8}}" text-anchor="end" fill="#6b7078" font-size="10">${{x.d[n-1]}}</text><text x="${{left}}" y="${{top-7}}" fill="#1769AA" font-size="10">EMA20</text><text x="${{left+48}}" y="${{top-7}}" fill="#B56A13" font-size="10">EMA50</text><text x="${{left+96}}" y="${{top-7}}" fill="#6955B8" font-size="10">EMA200</text>`;svg.innerHTML=out}}
-function 打开(ticker){{const d=详情[ticker];if(!d)return;document.getElementById('详情标题').textContent=`${{d.ticker}} · ${{d.name||''}}`;document.getElementById('详情副标题').textContent=`${{d.asset||''}} · ${{d.topic||''}} · 数据日 ${{d.asof||'—'}}`;document.getElementById('详情格').innerHTML=详情项('研究排名','#'+文本(d.researchRank))+详情项('交易排名','#'+文本(d.tradeRank))+详情项('Alpha',数字(d.alpha,1))+详情项('执行状态',d.execution)+详情项('技术信号',d.signal)+详情项('质量层',d.quality)+详情项('收盘',数字(d.close,3))+详情项('参考买点',d.buyText)+详情项('止损',数字(d.stop,3))+详情项('目标',数字(d.target,3))+详情项('盈亏比',数字(d.rr,2))+详情项('平滑触发',数字(d.smoothTrigger,1));document.getElementById('解释').textContent=d.reason||'—';画K线(ticker,d);遮罩.classList.add('开')}}for(const r of 表.querySelectorAll('tr'))r.addEventListener('click',()=>打开(r.dataset.ticker));
+function 打开(ticker){{const d=详情[ticker];if(!d)return;document.getElementById('详情标题').textContent=`${{d.ticker}} · ${{d.name||''}}`;document.getElementById('详情副标题').textContent=`${{d.asset||''}} · ${{d.topic||''}} · 数据日 ${{d.asof||'—'}}`;document.getElementById('详情格').innerHTML=详情项('研究排名','#'+文本(d.researchRank))+详情项('交易排名','#'+文本(d.tradeRank))+详情项('Alpha',数字(d.alpha,1))+详情项('执行状态',d.execution)+详情项('技术信号',d.signal)+详情项('质量层',d.quality)+详情项('财报期',d.reportPeriod)+详情项('公告日',d.announcementDate)+详情项('财报类型',d.reportType)+详情项('财报来源',d.fundamentalProvider)+详情项('财报状态',d.fundamentalStatus)+详情项('ROE(%)',数字(d.roe,2))+详情项('毛利率(%)',数字(d.grossMargin,2))+详情项('净利润同比(%)',数字(d.netProfitYoY,2))+详情项('收盘',数字(d.close,3))+详情项('参考买点',d.buyText)+详情项('止损',数字(d.stop,3))+详情项('目标',数字(d.target,3))+详情项('盈亏比',数字(d.rr,2))+详情项('平滑触发',数字(d.smoothTrigger,1));document.getElementById('解释').textContent=d.reason||'—';画K线(ticker,d);遮罩.classList.add('开')}}for(const r of 表.querySelectorAll('tr'))r.addEventListener('click',()=>打开(r.dataset.ticker));
 </script></body></html>"""
 
 

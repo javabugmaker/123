@@ -6,7 +6,7 @@ when those input files are unchanged as well as the per-ticker OHLCV frame.
 
 This small extension wraps ``scanner_resume_v59._contract_payload`` instead of
 copying the large scanner orchestration facade.  The checkpoint manifest then
-fails closed when either the AkShare fundamental cache or TickFlow universe
+fails closed when either the BaoStock fundamental cache or TickFlow universe
 snapshot changes between interruption and resume.
 """
 
@@ -32,7 +32,7 @@ def _existing_path(path: Path | None) -> Path | None:
 
 
 def _fundamental_input_path() -> Path | None:
-    """Mirror fundamental_data.fundamental_data_path without importing AkShare."""
+    """Mirror fundamental_data.fundamental_data_path without importing BaoStock."""
     default = _existing_path(Path(_config.CACHE_DIR) / "fundamental_data.csv")
     if default is not None:
         return default

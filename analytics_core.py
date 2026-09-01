@@ -2473,12 +2473,6 @@ def _decision_quality_multiplier(
     quality_available: pd.Series,
 ) -> pd.Series:
     """Reproduce Fundamental Gate multiplier semantics after backtesting."""
-    holding_status = (
-        frame.get("InstitutionHoldingStatus", pd.Series("", index=frame.index))
-        .fillna("")
-        .astype(str)
-        .str.upper()
-    )
     quality_applicable = (
         frame.get("QualityApplicable", pd.Series(~is_etf, index=frame.index))
         .astype(str)
@@ -2533,14 +2527,49 @@ def _decision_quality_multiplier(
         margin_required = ~quality_profile.isin(
             {"FINANCIAL", "DEFENSIVE", "ETF"}
         )
+        provider_name = (
+            frame.get("FundamentalProvider", pd.Series("", index=frame.index))
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+        )
+        metadata_required = provider_name.ne("") & provider_name.ne("legacy-cache")
+        report_metadata_available = (
+            frame.get("LatestReportPeriod", pd.Series("", index=frame.index))
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .ne("")
+            & frame.get(
+                "LatestAnnouncementDate",
+                pd.Series("", index=frame.index),
+            )
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .ne("")
+        )
+        report_status_usable = (
+            frame.get(
+                "FundamentalDataStatus",
+                pd.Series("MISSING", index=frame.index),
+            )
+            .fillna("MISSING")
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            .isin({"CURRENT", "AWAITING_RELEASE"})
+        )
         hard_data_complete = (
             roe_available
             & profit_available
             & (~margin_required | margin_available)
+            & (~metadata_required | (report_metadata_available & report_status_usable))
         )
     hard_gate_fail = quality_applicable & ~quality_gate
     quality_uncertain = quality_applicable & (
-        ~quality_available | ~hard_data_complete | holding_status.ne("PASS")
+        ~quality_available | ~hard_data_complete
     )
     return pd.Series(
         np.select(
