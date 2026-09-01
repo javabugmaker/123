@@ -20,7 +20,8 @@ OUTPUT_DIR = PROJECT_ROOT / "output"
 MAIN_FILE = PROJECT_ROOT / "main.py"
 DISPLAY_VALUE_NAMES = {
     "tickflow": "TickFlow Free",
-    "baostock": "BaoStock",
+    "akshare": "AKShare",
+    "baostock": "BaoStock（旧缓存）",
     "legacy-cache": "旧缓存",
     "ACCUMULATION": "吸筹阶段",
     "BREAKOUT": "启动阶段",
@@ -52,7 +53,7 @@ DISPLAY_VALUE_CODES = {label: value for value, label in DISPLAY_VALUE_NAMES.item
 DATA_SOURCE_CODES = {"TickFlow Free": "tickflow"}
 
 DATA_SOURCE_HINTS = {
-    "TickFlow Free": "日K/标的池：TickFlow Free；财报：BaoStock 点时缓存"
+    "TickFlow Free": "日K/标的池：TickFlow Free；财报：AKShare 公告日缓存"
 }
 
 CsvCacheToken = tuple[int, int] | tuple[int, int, str]
@@ -540,7 +541,7 @@ class ScannerGUI:
         self.refresh_fundamentals = tk.BooleanVar(value=False)
         self.data_source = tk.StringVar(value="TickFlow Free")
         self.data_source_label = tk.StringVar(
-            value="行情：TickFlow Free（日K/前复权） · 财报：BaoStock（点时缓存）"
+            value="行情：TickFlow Free（日K/前复权） · 财报：AKShare（公告日缓存）"
         )
         self.status = tk.StringVar(value="就绪")
         self.result_summary = tk.StringVar(value="等待加载结果")

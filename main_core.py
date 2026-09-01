@@ -91,7 +91,7 @@ def _refresh_fundamentals_if_needed(
     explicit_refresh = bool(force or FUNDAMENTAL_REFRESH_FORCE)
     if existing_path is None and not explicit_refresh:
         logger.info(
-            "BaoStock 财报缓存尚未初始化；普通扫描不主动联网。"
+            "AKShare 财报缓存尚未初始化；普通扫描不主动联网。"
             "需要基本面时请勾选/使用 --refresh-fundamentals。"
         )
         return
@@ -415,7 +415,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan_p.add_argument(
         "--refresh-fundamentals",
         action="store_true",
-        help="强制刷新 BaoStock 财报缓存（普通扫描会自动检查时效）",
+        help="强制刷新 AKShare 财报缓存（普通扫描会自动检查时效）",
     )
     scan_p.add_argument(
         "--data-source", choices=DATA_SOURCE_CHOICES, default="tickflow"
@@ -451,7 +451,7 @@ def build_parser() -> argparse.ArgumentParser:
     report_p.add_argument(
         "--refresh-fundamentals",
         action="store_true",
-        help="强制刷新 BaoStock 财报缓存（普通报告会自动检查时效）",
+        help="强制刷新 AKShare 财报缓存（普通报告会自动检查时效）",
     )
     report_p.add_argument("--verbose", "-v", action="store_true")
 

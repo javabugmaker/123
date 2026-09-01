@@ -23,14 +23,13 @@ OUTPUT_DIR: Final[Path] = BASE_DIR / "output"
 LOG_DIR: Final[Path] = BASE_DIR / "logs"
 FUNDAMENTAL_DATA_PATH: str = ""
 FUNDAMENTAL_REFRESH_FORCE: bool = False
-# BaoStock uses one process-global socket.  V111 isolates that state in worker
-# processes; this legacy default remains conservative for callers importing the
-# core configuration directly, while ``config.py`` sizes the production pool.
+# AKShare fetches one whole-market cross section per report period. Provider
+# calls remain serial; ticker extraction is vectorized after each batch lands.
 FUNDAMENTAL_DOWNLOAD_THREADS: int = 1
-FUNDAMENTAL_DOWNLOAD_TIMEOUT: int = 12
+FUNDAMENTAL_DOWNLOAD_TIMEOUT: int = 300
 FUNDAMENTAL_DOWNLOAD_RETRIES: int = 0
 FUNDAMENTAL_PROGRESS_HEARTBEAT_SECONDS: float = 10.0
-FUNDAMENTAL_CHECKPOINT_EVERY: int = 5
+FUNDAMENTAL_CHECKPOINT_EVERY: int = 100
 FUNDAMENTAL_MAX_IN_FLIGHT_FACTOR: int = 2
 
 # Ensure directories exist

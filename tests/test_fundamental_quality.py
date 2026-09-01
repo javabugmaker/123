@@ -16,7 +16,7 @@ def _complete_row() -> dict[str, object]:
         "LatestReportPeriod": "2026-09-30",
         "LatestAnnouncementDate": "2026-10-30",
         "LatestReportType": "三季报",
-        "FundamentalProvider": "baostock",
+        "FundamentalProvider": "akshare",
         "FundamentalDataStatus": "CURRENT",
         "ROE": 15.0,
         "GrossMargin": 45.0,
@@ -34,7 +34,7 @@ def _complete_row() -> dict[str, object]:
     }
 
 
-def test_baostock_quality_no_longer_depends_on_institution_coverage() -> None:
+def test_akshare_quality_no_longer_depends_on_institution_coverage() -> None:
     quality = calculate_quality(_complete_row())
 
     assert quality.institution_holding_status == "UNKNOWN"

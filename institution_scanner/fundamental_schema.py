@@ -15,7 +15,7 @@ from typing import Any, Final
 import numpy as np
 import pandas as pd
 
-FUNDAMENTAL_SCHEMA_VERSION: Final = "2026-09-01-baostock-pit-v1"
+FUNDAMENTAL_SCHEMA_VERSION: Final = "2026-09-01-akshare-batch-pit-v2"
 
 REPORT_COLUMNS: Final[tuple[str, ...]] = (
     "Ticker",
@@ -43,7 +43,7 @@ REPORT_COLUMNS: Final[tuple[str, ...]] = (
 )
 
 # The legacy institution fields remain readable so old result files and caches
-# do not become unparseable.  BaoStock does not supply this evidence and new
+# do not become unparseable.  AKShare no longer supplies this evidence and new
 # rows leave it unknown; current quality decisions do not depend on it.
 FUNDAMENTAL_COLUMNS: Final[tuple[str, ...]] = (
     "Ticker",
@@ -214,14 +214,6 @@ def normalize_ticker(value: Any) -> str:
     else:
         exchange = "SZ"
     return f"{number}.{exchange}"
-
-
-def baostock_code(ticker: str) -> str:
-    normalized = normalize_ticker(ticker)
-    if not normalized:
-        return ""
-    number, exchange = normalized.split(".", 1)
-    return f"{exchange.lower()}.{number}"
 
 
 def parse_report_period(value: Any) -> ReportPeriod | None:
@@ -434,6 +426,8 @@ def build_fundamental_summary(
         status.loc[latest_period.eq(pd.Timestamp(target.end_date))] = "CURRENT"
         status.loc[~report_complete] = "PARTIAL"
         status.loc[~valid_period] = "INVALID"
+        primary_provider = latest["Provider"].fillna("").astype(str).str.lower()
+        status.loc[primary_provider.ne("akshare")] = "LEGACY"
 
         new_summary["Ticker"] = ticker_index
         new_summary["Industry"] = resolved_industry
@@ -526,8 +520,7 @@ def build_fundamental_summary(
             )
             missing_provider = legacy["FundamentalProvider"].map(_text).eq("")
             legacy.loc[missing_provider, "FundamentalProvider"] = "legacy-cache"
-            missing_status = legacy["FundamentalDataStatus"].map(_text).eq("")
-            legacy.loc[missing_status, "FundamentalDataStatus"] = "LEGACY"
+            legacy["FundamentalDataStatus"] = "LEGACY"
     if summary.empty:
         summary = normalize_summary_frame(legacy)
     elif not legacy.empty:

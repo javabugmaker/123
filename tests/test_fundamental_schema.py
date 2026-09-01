@@ -31,7 +31,7 @@ def _record(
         "GrossMargin": 42.0,
         "NetProfit": profit,
         "Revenue": profit * 4,
-        "Provider": "baostock",
+        "Provider": "akshare",
         "FetchedAt": "2026-10-30T08:00:00+00:00",
     }
 
@@ -120,3 +120,50 @@ def test_partial_new_annual_history_is_not_replaced_by_legacy_values() -> None:
     assert row["NetProfitY1"] == 300.0
     assert pd.isna(row["NetProfitY2"])
     assert pd.isna(row["NetProfitY3"])
+
+
+def test_old_baostock_report_records_are_explicitly_legacy_after_migration() -> None:
+    records = pd.DataFrame(
+        [_record("2026-06-30", "2026-08-28", quarter=2, profit=250.0)]
+    )
+    records["Provider"] = "baostock"
+
+    row = build_fundamental_summary(
+        records,
+        empty_summary_frame(),
+        ["600000.SH"],
+        {"600000.SH": "银行"},
+        as_of=date(2026, 9, 1),
+    ).iloc[0]
+
+    assert row["FundamentalProvider"] == "baostock"
+    assert row["FundamentalDataStatus"] == "LEGACY"
+
+
+def test_old_summary_cannot_keep_current_status_without_akshare_records() -> None:
+    legacy = pd.DataFrame(
+        [
+            {
+                "Ticker": "600000.SH",
+                "Industry": "银行",
+                "FundamentalProvider": "baostock",
+                "FundamentalDataStatus": "CURRENT",
+                "ROE": 12.0,
+                "GrossMargin": 42.0,
+                "NetProfitY1": 300.0,
+                "NetProfitY2": 220.0,
+                "NetProfitY3": 180.0,
+                "IndustryGrossMarginPercentile": 0.1,
+            }
+        ]
+    )
+
+    row = build_fundamental_summary(
+        pd.DataFrame(),
+        legacy,
+        ["600000.SH"],
+        {"600000.SH": "银行"},
+        as_of=date(2026, 9, 1),
+    ).iloc[0]
+
+    assert row["FundamentalDataStatus"] == "LEGACY"

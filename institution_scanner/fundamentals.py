@@ -1,7 +1,7 @@
 """Canonical low-frequency fundamental refresh service.
 
 TickFlow remains the sole market-data and universe provider.  This service
-owns only BaoStock financial reports, point-in-time report records, and the
+owns only AKShare financial reports, point-in-time report records, and the
 compatibility summary consumed by the existing scanner.
 """
 
@@ -32,10 +32,10 @@ from config import (
     FUNDAMENTAL_PROGRESS_HEARTBEAT_SECONDS,
 )
 
-from .baostock_fundamentals import (
-    BAOSTOCK_PROVIDER_VERSION,
-    BaoStockFundamentalProvider,
-    BaoStockUnavailable,
+from .akshare_fundamentals import (
+    AKSHARE_PROVIDER_VERSION,
+    AkShareFundamentalProvider,
+    AkShareUnavailable,
     FundamentalFetchOutcome,
     FundamentalFetchPlan,
 )
@@ -60,7 +60,7 @@ from .fundamental_schema import (
 logger = logging.getLogger("institution_scanner.fundamentals")
 
 FUNDAMENTAL_PROVIDER_VERSION: Final = (
-    f"{FUNDAMENTAL_SCHEMA_VERSION}+{BAOSTOCK_PROVIDER_VERSION}"
+    f"{FUNDAMENTAL_SCHEMA_VERSION}+{AKSHARE_PROVIDER_VERSION}"
 )
 _CACHE_PATH = CACHE_DIR / "fundamental_data.csv"
 _REPORT_CACHE_PATH = CACHE_DIR / "fundamental_reports.csv"
@@ -71,7 +71,7 @@ _MIN_PROVIDER_CHECK_RATIO = 0.80
 _MIN_HARD_COVERAGE = 0.80
 _CHECKPOINT_EVERY = max(1, int(FUNDAMENTAL_CHECKPOINT_EVERY))
 _ETF_PREFIXES = ("15", "16", "50", "51", "56", "58")
-_REFRESH_JOURNAL_VERSION: Final = "2026-09-01-v111-fundamental-journal-v1"
+_REFRESH_JOURNAL_VERSION: Final = "2026-09-01-v112-akshare-fundamental-journal-v2"
 
 
 class FundamentalRefreshCancelled(RuntimeError):
@@ -359,7 +359,7 @@ def _cache_is_current(
 ) -> bool:
     if metadata.get("schema_version") != FUNDAMENTAL_SCHEMA_VERSION:
         return False
-    if metadata.get("provider") != "baostock":
+    if metadata.get("provider") != "akshare":
         return False
     if metadata.get("provider_check_status") not in {"SUCCESS", "DEGRADED"}:
         return False
@@ -407,7 +407,10 @@ def _build_fetch_plans(
     as_of: date,
     force: bool,
 ) -> list[FundamentalFetchPlan]:
-    probes = latest_probe_periods(as_of, limit=5)
+    # The current and immediately preceding quarters are enough to identify the
+    # latest disclosed report while a filing window is open. Annual history is
+    # fetched separately, keeping first-run upstream batches bounded.
+    probes = latest_probe_periods(as_of, limit=2)
     target = probes[0]
     annual_candidates = annual_candidate_periods(as_of, desired=3)
     plans: list[FundamentalFetchPlan] = []
@@ -524,9 +527,11 @@ def _provider_outcomes(
             "max_in_flight": workers
             * max(1, int(FUNDAMENTAL_MAX_IN_FLIGHT_FACTOR)),
         }
-        if isinstance(provider, BaoStockFundamentalProvider):
+        if isinstance(provider, AkShareFundamentalProvider):
             kwargs["cancel_event"] = cancel_event
         return parallel_fetch(plans, **kwargs)
+    if isinstance(provider, AkShareFundamentalProvider):
+        return provider.fetch(plans, cancel_event=cancel_event)
     return provider.fetch(plans)
 
 
@@ -585,7 +590,7 @@ def _clear_quality_reader_cache() -> None:
 
 
 def _provider_identity(provider: Any) -> tuple[str, str]:
-    name = str(getattr(provider, "provider_name", "baostock") or "baostock")
+    name = str(getattr(provider, "provider_name", "akshare") or "akshare")
     version = str(getattr(provider, "provider_version", "unknown") or "unknown")
     return name, version
 
@@ -658,9 +663,9 @@ def _consume_outcomes(
                     workers=workers,
                 )
             if outcome.error:
-                logger.debug("BaoStock 财报获取失败 %s: %s", outcome.ticker, outcome.error)
+                logger.debug("AKShare 财报获取失败 %s: %s", outcome.ticker, outcome.error)
             if cancel_event is not None and cancel_event.is_set():
-                raise FundamentalRefreshCancelled("BaoStock 财报刷新已取消")
+                raise FundamentalRefreshCancelled("AKShare 财报刷新已取消")
     finally:
         # Preserve even a short final batch when the provider raises or the GUI
         # requests cancellation.  A hard process termination can lose at most
@@ -698,13 +703,12 @@ def refresh_fundamental_data(
     as_of: date | None = None,
     cancel_event: threading.Event | None = None,
 ) -> Path:
-    """Refresh BaoStock reports with process isolation and resumable journals.
+    """Refresh AKShare report-period batches with PIT caches and journals.
 
-    BaoStock accepts one stock code per request and stores its active socket in
-    module globals.  The canonical provider therefore parallelises by process,
-    not thread.  Each worker keeps one independent session, while the parent
-    appends outcome batches to an fsynced journal before updating in-memory
-    records.  A terminated GUI run can resume both rows and no-data checks.
+    AKShare returns one whole-market earnings cross section per report period.
+    Provider calls are serial and bounded; ticker extraction is vectorized.
+    The existing fsynced journal preserves completed ticker outcomes so a GUI
+    cancellation or provider interruption can resume safely.
     """
     del request
     effective_date = as_of or _china_today()
@@ -717,7 +721,7 @@ def refresh_fundamental_data(
     if not symbols:
         return _CACHE_PATH
     if cancel_event is not None and cancel_event.is_set():
-        raise FundamentalRefreshCancelled("BaoStock 财报刷新已取消")
+        raise FundamentalRefreshCancelled("AKShare 财报刷新已取消")
 
     with _REFRESH_LOCK:
         existing = _merge_summary_sources(
@@ -746,7 +750,7 @@ def refresh_fundamental_data(
             if (cache_current or attempted_today) and not _journal_has_progress(
                 journal_state
             ):
-                logger.info("BaoStock 财报缓存今日已检查，跳过重复刷新。")
+                logger.info("AKShare 财报缓存今日已检查，跳过重复刷新。")
                 return _CACHE_PATH
 
         plans = _build_fetch_plans(
@@ -757,18 +761,17 @@ def refresh_fundamental_data(
         )
         latest_plans = _phase_fetch_plans(plans, journal_state, phase="latest")
         annual_plans = _phase_fetch_plans(plans, journal_state, phase="annual")
-        active_provider = provider or BaoStockFundamentalProvider(
+        active_provider = provider or AkShareFundamentalProvider(
             timeout_seconds=float(FUNDAMENTAL_DOWNLOAD_TIMEOUT),
             logger=logger,
         )
         provider_name, provider_version = _provider_identity(active_provider)
         logger.info(
-            "开始刷新 BaoStock 财报：股票 %d，最新季度 %d，历史回填 %d，"
-            "进程 %d，断点间隔 %d，目标报告期 %s。",
+            "开始刷新 AKShare 财报：股票 %d，最新季度 %d，历史回填 %d，"
+            "批量模式，断点间隔 %d，目标报告期 %s。",
             len(symbols),
             len(latest_plans),
             len(annual_plans),
-            requested_workers,
             _CHECKPOINT_EVERY,
             latest_completed_period(effective_date).iso_date,
         )
@@ -780,14 +783,13 @@ def refresh_fundamental_data(
             if not phase_plans or provider_unavailable:
                 continue
             if cancel_event is not None and cancel_event.is_set():
-                raise FundamentalRefreshCancelled("BaoStock 财报刷新已取消")
-            phase_workers = min(requested_workers, len(phase_plans))
+                raise FundamentalRefreshCancelled("AKShare 财报刷新已取消")
+            phase_workers = 1
             phase_label = "最新季度" if phase == "latest" else "历史年报回填"
             logger.info(
-                "BaoStock %s阶段启动：任务 %d，独立会话 %d。",
+                "AKShare %s阶段启动：股票 %d，整期批量请求串行执行。",
                 phase_label,
                 len(phase_plans),
-                phase_workers,
             )
             try:
                 outcomes = _provider_outcomes(
@@ -806,18 +808,18 @@ def refresh_fundamental_data(
                     cancel_event=cancel_event,
                 )
                 if cancel_event is not None and cancel_event.is_set():
-                    raise FundamentalRefreshCancelled("BaoStock 财报刷新已取消")
+                    raise FundamentalRefreshCancelled("AKShare 财报刷新已取消")
                 tasks_completed += completed
                 tasks_checked += checked
                 tasks_failed += failed
             except FundamentalRefreshCancelled:
                 raise
-            except BaoStockUnavailable as exc:
+            except AkShareUnavailable as exc:
                 provider_unavailable = str(exc)
-                logger.warning("BaoStock 财报刷新不可用，保留现有缓存：%s", exc)
+                logger.warning("AKShare 财报刷新不可用，保留现有缓存：%s", exc)
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 provider_unavailable = str(exc)
-                logger.warning("BaoStock 财报刷新异常，保留现有缓存：%s", exc)
+                logger.warning("AKShare 财报刷新异常，保留现有缓存：%s", exc)
             if phase == "latest" and not records.empty:
                 interim = build_fundamental_summary(
                     records,
@@ -833,7 +835,7 @@ def refresh_fundamental_data(
                     )
                     _clear_quality_reader_cache()
                     logger.info(
-                        "BaoStock 最新季度阶段已发布中间缓存；历史年报继续后台回填。"
+                        "AKShare 最新季度阶段已发布中间缓存；历史年报继续回填。"
                     )
 
         if provider_unavailable and _REPORT_CACHE_PATH.is_file():
@@ -909,10 +911,9 @@ def refresh_fundamental_data(
         if all_required_complete and not provider_unavailable:
             _remove_refresh_journal()
         logger.info(
-            "BaoStock 财报刷新完成：状态=%s，进程=%d，完成 %d/%d，"
+            "AKShare 财报刷新完成：状态=%s，批量串行，完成 %d/%d，"
             "硬财务覆盖 %.1f%%，最新报告期覆盖 %.1f%%。",
             check_status,
-            requested_workers,
             len(completed_symbols),
             len(plans),
             hard_coverage * 100.0,

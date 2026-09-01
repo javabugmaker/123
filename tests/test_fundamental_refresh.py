@@ -10,8 +10,8 @@ import pandas as pd
 import pytest
 
 from institution_scanner import fundamentals
-from institution_scanner.baostock_fundamentals import (
-    BaoStockUnavailable,
+from institution_scanner.akshare_fundamentals import (
+    AkShareUnavailable,
     FundamentalFetchOutcome,
     FundamentalFetchPlan,
 )
@@ -37,7 +37,7 @@ def _records(ticker: str) -> pd.DataFrame:
                 "GrossMargin": 36.0,
                 "NetProfit": profit,
                 "Revenue": profit * 4,
-                "Provider": "baostock",
+                "Provider": "akshare",
                 "FetchedAt": "2026-09-01T01:00:00+00:00",
             }
         )
@@ -45,8 +45,8 @@ def _records(ticker: str) -> pd.DataFrame:
 
 
 class _Provider:
-    provider_name = "baostock"
-    provider_version = "test-0.9.3"
+    provider_name = "akshare"
+    provider_version = "test-1.18.94"
 
     def __init__(self) -> None:
         self.calls = 0
@@ -78,7 +78,7 @@ class _UnavailableProvider(_Provider):
     ) -> Iterator[FundamentalFetchOutcome]:
         del plans
         self.calls += 1
-        raise BaoStockUnavailable("offline")
+        raise AkShareUnavailable("offline")
 
 
 class _InterruptedProvider(_Provider):
@@ -93,7 +93,7 @@ class _InterruptedProvider(_Provider):
         self.calls += 1
         for index, plan in enumerate(plans):
             if index >= self.successful_outcomes:
-                raise BaoStockUnavailable("interrupted")
+                raise AkShareUnavailable("interrupted")
             period = plan.latest_periods[0].iso_date
             records = _records(plan.ticker)
             records = records.loc[records["ReportPeriod"].eq(period)].copy()
@@ -187,7 +187,7 @@ def test_refresh_is_incremental_cached_and_preserves_last_good_snapshot(
     assert provider.calls == 2
     assert set(first["Ticker"]) == {"600000.SH", "000001.SZ"}
     assert set(first["LatestReportPeriod"]) == {"2026-06-30"}
-    assert set(first["FundamentalProvider"]) == {"baostock"}
+    assert set(first["FundamentalProvider"]) == {"akshare"}
     assert (cache_dir / "fundamental_reports.csv").is_file()
     metadata = json.loads((cache_dir / "fundamental_data_meta.json").read_text())
     assert metadata["provider_check_status"] == "SUCCESS"
@@ -277,7 +277,7 @@ def test_force_refresh_resumes_from_fsynced_journal(
     assert metadata["checkpoint_every"] == 2
 
 
-def test_refresh_honors_parallel_worker_configuration(
+def test_refresh_keeps_provider_calls_serial_even_if_workers_are_requested(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -303,7 +303,8 @@ def test_refresh_honors_parallel_worker_configuration(
         as_of=date(2026, 9, 1),
     )
 
-    assert provider.parallel_calls == [(3, 3, 6), (3, 3, 6)]
+    assert provider.parallel_calls == []
+    assert provider.calls == 2
 
 
 def test_cancel_flushes_short_batch_and_resumes_remaining_plans(

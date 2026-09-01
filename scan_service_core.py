@@ -140,7 +140,7 @@ def refresh_fundamentals_if_needed(
     explicit_refresh = bool(force or FUNDAMENTAL_REFRESH_FORCE)
     if existing_path is None and not explicit_refresh:
         logger.info(
-            "BaoStock 财报缓存尚未初始化；普通扫描不主动联网。"
+            "AKShare 财报缓存尚未初始化；普通扫描不主动联网。"
             "需要基本面时请勾选/使用 --refresh-fundamentals。"
         )
         return

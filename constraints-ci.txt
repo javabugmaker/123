@@ -6,7 +6,7 @@ pandas==2.3.3
 numpy==2.4.6
 scipy==1.17.1
 tickflow==0.1.24
-baostock==0.9.3
+akshare==1.18.94
 ta==0.11.0
 tqdm==4.70.0
 pyarrow==23.0.1

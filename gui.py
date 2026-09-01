@@ -29,10 +29,10 @@ from result_contract import RESULT_FIELD_LABELS, decision_policy_signature
 # Compatibility alias: external callers historically patched gui.OUTPUT_DIR.
 OUTPUT_DIR = _core.OUTPUT_DIR
 
-# Market data is fixed to TickFlow Free; BaoStock is financial-reports-only.
+# Market data is fixed to TickFlow Free; AKShare is financial-reports-only.
 _core.DATA_SOURCE_HINTS.clear()
 _core.DATA_SOURCE_HINTS["TickFlow Free"] = (
-    "行情：TickFlow Free（日K / 标的池） · 财报：BaoStock（点时缓存）"
+    "行情：TickFlow Free（日K / 标的池） · 财报：AKShare（公告日缓存）"
 )
 
 # The main table is intentionally compact.  Long diagnostics stay in the
@@ -565,7 +565,7 @@ class DecisionScannerGUI(_core.ScannerGUI):
         self.source_box.grid(row=0, column=0, padx=(12, 8), pady=10, sticky="w")
         ctk.CTkLabel(
             self.advanced_frame,
-            text="行情：TickFlow Free · 财报：BaoStock（点时缓存）",
+            text="行情：TickFlow Free · 财报：AKShare（公告日缓存）",
             text_color="#64748b",
         ).grid(row=0, column=1, padx=(0, 18), pady=10, sticky="w")
         ctk.CTkCheckBox(

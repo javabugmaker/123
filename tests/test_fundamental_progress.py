@@ -3,7 +3,7 @@ from __future__ import annotations
 import gui_core
 
 
-def test_v111_fundamental_progress_is_gui_parseable() -> None:
+def test_v112_fundamental_progress_is_gui_parseable() -> None:
     line = (
         "FUNDAMENTAL progress: 120/5337 (119 checked, 1 failed). "
         "phase=LATEST | workers=6 | rate=2.45 stocks/s | success=99.2% | ETA=35m29s"
