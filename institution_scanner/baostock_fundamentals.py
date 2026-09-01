@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import atexit
 import io
 import logging
+import multiprocessing
 import socket
 import threading
 from collections.abc import Iterator, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -29,7 +32,7 @@ try:
 except ImportError:  # pragma: no cover - exercised by dependency-free callers
     _baostock = None
 
-BAOSTOCK_PROVIDER_VERSION: Final = "2026-09-01-baostock-adapter-v1"
+BAOSTOCK_PROVIDER_VERSION: Final = "2026-09-01-baostock-adapter-v2-multiprocess"
 _SESSION_LOCK = threading.Lock()
 
 
@@ -46,6 +49,7 @@ class FundamentalFetchPlan:
     ticker: str
     latest_periods: tuple[ReportPeriod, ...]
     annual_periods: tuple[ReportPeriod, ...]
+    enrich_latest: bool = True
 
 
 @dataclass(frozen=True)
@@ -86,12 +90,11 @@ def _date_text(value: Any) -> str:
 
 
 class BaoStockFundamentalProvider:
-    """Single-session BaoStock reader.
+    """BaoStock reader with one long-lived session per worker process.
 
     BaoStock keeps its socket in module-global state, so concurrent threads are
-    unsafe.  One bounded session is deliberately used for a refresh; the caller
-    checkpoints records incrementally to make the slower per-ticker API
-    resumable.
+    unsafe.  Serial callers retain one bounded session, while production
+    parallel refreshes isolate one session in each spawned process.
     """
 
     provider_name: Final = "baostock"
@@ -104,6 +107,7 @@ class BaoStockFundamentalProvider:
         logger: logging.Logger | None = None,
     ) -> None:
         self._module = _baostock if module is None else module
+        self._uses_default_module = module is None
         self._timeout_seconds = max(1.0, float(timeout_seconds))
         self._logger = logger or logging.getLogger("institution_scanner.fundamentals")
 
@@ -316,7 +320,7 @@ class BaoStockFundamentalProvider:
                 record = self._profit_record(ticker, period, frame, fetched_at)
                 if record is not None:
                     records[period.key] = record
-            if records:
+            if records and plan.enrich_latest:
                 latest_key = max(records)
                 latest_period = parse_report_period(records[latest_key]["ReportPeriod"])
                 if latest_period is not None:
@@ -335,3 +339,152 @@ class BaoStockFundamentalProvider:
         with self._session():
             for plan in plans:
                 yield self._fetch_plan(plan)
+
+    def fetch_parallel(
+        self,
+        plans: Sequence[FundamentalFetchPlan],
+        *,
+        workers: int,
+        max_in_flight: int | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> Iterator[FundamentalFetchOutcome]:
+        """Fetch plans through isolated process-local BaoStock sessions.
+
+        The third-party client stores its active socket and login identity in
+        module globals.  Threads would race on that shared state; spawned
+        processes each import their own module and keep one session open for the
+        lifetime of the worker.  Injected provider modules remain serial so
+        deterministic tests and downstream adapters do not need to be pickled.
+        """
+        plan_list = list(plans)
+        worker_count = min(max(1, int(workers)), max(1, len(plan_list)))
+        if worker_count <= 1 or not self._uses_default_module:
+            yield from self.fetch(plan_list)
+            return
+        yield from self._parallel_fetch(
+            plan_list,
+            workers=worker_count,
+            max_in_flight=max_in_flight,
+            cancel_event=cancel_event,
+        )
+
+    def _parallel_fetch(
+        self,
+        plans: Sequence[FundamentalFetchPlan],
+        *,
+        workers: int,
+        max_in_flight: int | None,
+        cancel_event: threading.Event | None,
+    ) -> Iterator[FundamentalFetchOutcome]:
+        completed_tickers: set[str] = set()
+        retry_plans: list[FundamentalFetchPlan] = []
+        pending: dict[Future[FundamentalFetchOutcome], FundamentalFetchPlan] = {}
+        fatal_error: Exception | None = None
+        cancelled = False
+        executor: ProcessPoolExecutor | None = None
+        plan_list = list(plans)
+        in_flight_limit = max(
+            workers,
+            int(max_in_flight or workers * 2),
+        )
+        iterator = iter(plan_list)
+
+        try:
+            executor = ProcessPoolExecutor(
+                max_workers=workers,
+                mp_context=multiprocessing.get_context("spawn"),
+                initializer=_parallel_worker_initialize,
+                initargs=(self._timeout_seconds,),
+            )
+
+            def submit_available() -> None:
+                assert executor is not None
+                while len(pending) < in_flight_limit:
+                    try:
+                        plan = next(iterator)
+                    except StopIteration:
+                        return
+                    pending[executor.submit(_parallel_worker_fetch_plan, plan)] = plan
+
+            submit_available()
+            while pending:
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                    break
+                finished, _ = wait(
+                    tuple(pending),
+                    timeout=0.25,
+                    return_when=FIRST_COMPLETED,
+                )
+                for future in finished:
+                    plan = pending.pop(future)
+                    try:
+                        outcome = future.result()
+                    except Exception as exc:
+                        retry_plans.append(plan)
+                        self._logger.warning(
+                            "BaoStock worker failed for %s; queued for serial retry: %s",
+                            plan.ticker,
+                            exc,
+                        )
+                        continue
+                    completed_tickers.add(normalize_ticker(plan.ticker))
+                    yield outcome
+                submit_available()
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            fatal_error = exc
+        finally:
+            for future in pending:
+                future.cancel()
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
+
+        if cancelled:
+            return
+        if fatal_error is None:
+            remaining = retry_plans
+        else:
+            remaining = [
+                plan
+                for plan in plan_list
+                if normalize_ticker(plan.ticker) not in completed_tickers
+            ]
+            self._logger.warning(
+                "BaoStock 多进程通道异常，剩余 %d 只降级为单会话：%s",
+                len(remaining),
+                fatal_error,
+            )
+        if remaining:
+            yield from self.fetch(remaining)
+
+
+_PARALLEL_WORKER_PROVIDER: BaoStockFundamentalProvider | None = None
+_PARALLEL_WORKER_SESSION: Any | None = None
+
+
+def _parallel_worker_shutdown() -> None:
+    global _PARALLEL_WORKER_PROVIDER, _PARALLEL_WORKER_SESSION
+    session = _PARALLEL_WORKER_SESSION
+    _PARALLEL_WORKER_SESSION = None
+    _PARALLEL_WORKER_PROVIDER = None
+    if session is not None:
+        session.__exit__(None, None, None)
+
+
+def _parallel_worker_initialize(timeout_seconds: float) -> None:
+    global _PARALLEL_WORKER_PROVIDER, _PARALLEL_WORKER_SESSION
+    provider = BaoStockFundamentalProvider(timeout_seconds=timeout_seconds)
+    session = provider._session()
+    session.__enter__()
+    _PARALLEL_WORKER_PROVIDER = provider
+    _PARALLEL_WORKER_SESSION = session
+    atexit.register(_parallel_worker_shutdown)
+
+
+def _parallel_worker_fetch_plan(
+    plan: FundamentalFetchPlan,
+) -> FundamentalFetchOutcome:
+    provider = _PARALLEL_WORKER_PROVIDER
+    if provider is None:
+        raise BaoStockUnavailable("BaoStock worker session was not initialized")
+    return provider._fetch_plan(plan)

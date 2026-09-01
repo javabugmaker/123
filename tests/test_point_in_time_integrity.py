@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
+import historical_lookup_acceleration_v78 as accelerated_universe
 import historical_universe as universe
 
 
@@ -54,6 +55,28 @@ def test_point_in_time_snapshot_carry_forward_is_bounded(
         tmp_path,
     )
     stale, reason = universe.point_in_time_eligibility(
+        "600000.SH",
+        "2026-08-24",
+        tmp_path,
+    )
+
+    assert within is True
+    assert stale is None
+    assert reason == "snapshot_too_old:23d"
+
+
+def test_accelerated_snapshot_lookup_preserves_bounded_carry_forward(
+    tmp_path: Path,
+) -> None:
+    _snapshot(tmp_path, "2026-08-01")
+    accelerated_universe.clear_historical_lookup_acceleration()
+
+    within, _ = accelerated_universe.point_in_time_eligibility(
+        "600000.SH",
+        "2026-08-10",
+        tmp_path,
+    )
+    stale, reason = accelerated_universe.point_in_time_eligibility(
         "600000.SH",
         "2026-08-24",
         tmp_path,

@@ -49,7 +49,7 @@ def _refresh_state(
         if key != _STATE_KEY:
             _STATE_INDEX = _history._load_snapshot_index(directory_text, signature)
             _STATE_DATES = {
-                ticker: tuple(entry[0] for entry in entries)
+                ticker: tuple(pd.Timestamp(entry[0]).normalize() for entry in entries)
                 for ticker, entries in _STATE_INDEX.items()
             }
             _STATE_KEY = key
@@ -69,14 +69,20 @@ def point_in_time_eligibility(
     if not entries:
         return None, "no_point_in_time_snapshot"
 
-    cutoff = pd.Timestamp(at_date)
+    cutoff = pd.Timestamp(at_date).normalize()
     dates = _STATE_DATES.get(symbol)
     if dates is None:
-        dates = tuple(entry[0] for entry in entries)
+        dates = tuple(pd.Timestamp(entry[0]).normalize() for entry in entries)
     position = bisect.bisect_right(dates, cutoff) - 1
     if position < 0:
         return None, "snapshot_starts_after_signal"
     selected = entries[position]
+    observed = pd.Timestamp(selected[0]).normalize()
+    age_days = int((cutoff - observed).days)
+    if age_days < 0:
+        return None, "snapshot_starts_after_signal"
+    if age_days > _history.PIT_UNIVERSE_MAX_SNAPSHOT_AGE_DAYS:
+        return None, f"snapshot_too_old:{age_days}d"
     return bool(selected[1]), selected[2] or (
         "eligible" if selected[1] else "snapshot_excluded"
     )

@@ -33,6 +33,7 @@ class _BaoStockModule:
         self.login_count = 0
         self.logout_count = 0
         self.codes: list[str] = []
+        self.enrichment_calls = 0
 
     def login(self) -> SimpleNamespace:
         self.login_count += 1
@@ -64,6 +65,7 @@ class _BaoStockModule:
 
     def query_growth_data(self, *, code: str, year: int, quarter: int) -> _Result:
         del code, year, quarter
+        self.enrichment_calls += 1
         return _Result(
             ["pubDate", "statDate", "YOYNI", "YOYEquity", "YOYAsset"],
             [["2026-10-30", "2026-09-30", "18.2", "7.1", "8.3"]],
@@ -71,6 +73,7 @@ class _BaoStockModule:
 
     def query_balance_data(self, *, code: str, year: int, quarter: int) -> _Result:
         del code, year, quarter
+        self.enrichment_calls += 1
         return _Result(
             ["pubDate", "statDate", "liabilityToAsset", "currentRatio", "quickRatio"],
             [["2026-10-30", "2026-09-30", "42.0", "1.8", "1.3"]],
@@ -78,6 +81,7 @@ class _BaoStockModule:
 
     def query_cash_flow_data(self, *, code: str, year: int, quarter: int) -> _Result:
         del code, year, quarter
+        self.enrichment_calls += 1
         return _Result(
             ["pubDate", "statDate", "CFOToOR", "CFOToNP"],
             [["2026-10-30", "2026-09-30", "0.21", "1.14"]],
@@ -107,3 +111,21 @@ def test_provider_maps_latest_quarter_and_optional_financial_tables() -> None:
     assert row["NetProfitYoY"] == 18.2
     assert row["DebtToAssets"] == 42.0
     assert row["OperatingCashFlowToNetProfit"] == 1.14
+    assert module.enrichment_calls == 3
+
+
+def test_annual_backfill_skips_latest_quarter_enrichment_queries() -> None:
+    module = _BaoStockModule()
+    provider = BaoStockFundamentalProvider(module=module, timeout_seconds=2)
+    plan = FundamentalFetchPlan(
+        ticker="600000.SH",
+        latest_periods=(),
+        annual_periods=(ReportPeriod(2026, 3),),
+        enrich_latest=False,
+    )
+
+    outcomes = list(provider.fetch([plan]))
+
+    assert len(outcomes) == 1
+    assert not outcomes[0].records.empty
+    assert module.enrichment_calls == 0

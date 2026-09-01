@@ -12,7 +12,7 @@ from typing import Final
 from .contracts import CONTRACT_VERSION, PRODUCTION_CONTRACT
 from .runtime_inventory import runtime_inventory
 
-VERSION_MANIFEST_SCHEMA: Final = "2026-09-01-v110-structured-version-manifest-v3"
+VERSION_MANIFEST_SCHEMA: Final = "2026-09-01-v111-structured-version-manifest-v4"
 
 
 def build_version_manifest() -> dict[str, object]:

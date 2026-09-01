@@ -491,8 +491,13 @@ DOWNLOAD_PROGRESS_RE = re.compile(
     r"DOWNLOAD progress: (\d+)/(\d+) \((\d+) succeeded, (\d+) no-data/failed\)\."
 )
 FUNDAMENTAL_PROGRESS_RE = re.compile(
-    r"FUNDAMENTAL progress: (\d+)/(\d+) \((\d+) updated, (\d+) unavailable\)\."
+    r"FUNDAMENTAL progress: (\d+)/(\d+) \((\d+) "
+    r"(?:checked|updated), (\d+) (?:failed|unavailable)\)\."
 )
+FUNDAMENTAL_PHASE_RE = re.compile(r"phase=(LATEST|ANNUAL)")
+FUNDAMENTAL_RATE_RE = re.compile(r"rate=([0-9.]+) stocks/s")
+FUNDAMENTAL_SUCCESS_RE = re.compile(r"success=([0-9.]+)%")
+FUNDAMENTAL_ETA_RE = re.compile(r"ETA=([^|\r\n]+)")
 ANALYSE_PROGRESS_RE = re.compile(
     r"ANALYSE progress: (\d+)/(\d+) \((\d+) successful, (\d+) failed\)\."
 )
@@ -1433,15 +1438,31 @@ class ScannerGUI:
         analyse_progress = ANALYSE_PROGRESS_RE.search(text)
         backtest_progress = BACKTEST_PROGRESS_RE.search(text)
         if fundamental_progress:
-            completed, total, updated, unavailable = (
+            completed, total, checked, failed = (
                 int(value) for value in fundamental_progress.groups()
             )
+            phase_match = FUNDAMENTAL_PHASE_RE.search(text)
+            phase = phase_match.group(1) if phase_match else ""
+            phase_label = (
+                "最新财报"
+                if phase == "LATEST"
+                else "历史回填"
+                if phase == "ANNUAL"
+                else "基本面"
+            )
+            rate_match = FUNDAMENTAL_RATE_RE.search(text)
+            rate = rate_match.group(1) if rate_match else "—"
+            success_match = FUNDAMENTAL_SUCCESS_RE.search(text)
+            success = success_match.group(1) if success_match else "—"
+            eta_match = FUNDAMENTAL_ETA_RE.search(text)
+            eta = eta_match.group(1).strip() if eta_match else "计算中"
             self.progress.stop()
             self.progress.configure(
                 mode="determinate", maximum=max(total, 1), value=completed
             )
             self.status.set(
-                f"基本面进度 {completed}/{total} · 已更新 {updated} · 暂不可用 {unavailable}"
+                f"{phase_label} {completed}/{total} · 已检查 {checked} · "
+                f"失败 {failed} · 成功率 {success}% · {rate}只/秒 · ETA {eta}"
             )
         elif progress:
             completed, total, successful, skipped = (

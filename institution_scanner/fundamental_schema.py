@@ -240,6 +240,12 @@ def _date_text(value: Any) -> str:
     return "" if pd.isna(parsed) else pd.Timestamp(parsed).date().isoformat()
 
 
+def _date_series(values: pd.Series) -> pd.Series:
+    """Normalize a complete date column in one compiled pandas operation."""
+    parsed = pd.to_datetime(values, errors="coerce", format="mixed")
+    return parsed.dt.strftime("%Y-%m-%d").fillna("")
+
+
 def _text(value: Any) -> str:
     if value is None:
         return ""
@@ -250,14 +256,6 @@ def _text(value: Any) -> str:
         return ""
     result = str(value).strip()
     return "" if result.lower() in {"nan", "none", "null", "<na>"} else result
-
-
-def _number(value: Any) -> float:
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return np.nan
-    return result if np.isfinite(result) else np.nan
 
 
 def empty_report_frame() -> pd.DataFrame:
@@ -278,8 +276,8 @@ def normalize_report_frame(frame: pd.DataFrame | None) -> pd.DataFrame:
     normalized = normalized.loc[:, REPORT_COLUMNS]
     normalized["Ticker"] = normalized["Ticker"].map(normalize_ticker)
     normalized["Industry"] = normalized["Industry"].map(_text)
-    normalized["ReportPeriod"] = normalized["ReportPeriod"].map(_date_text)
-    normalized["AnnouncementDate"] = normalized["AnnouncementDate"].map(_date_text)
+    normalized["ReportPeriod"] = _date_series(normalized["ReportPeriod"])
+    normalized["AnnouncementDate"] = _date_series(normalized["AnnouncementDate"])
     normalized["Provider"] = normalized["Provider"].map(_text)
     normalized["FetchedAt"] = normalized["FetchedAt"].map(_text)
     for column in REPORT_COLUMNS:
@@ -322,108 +320,6 @@ def merge_report_records(existing: pd.DataFrame, downloaded: pd.DataFrame) -> pd
     return normalize_report_frame(pd.concat([existing, downloaded], ignore_index=True))
 
 
-def _record_value(row: pd.Series, column: str) -> float:
-    return _number(row.get(column, np.nan))
-
-
-def _existing_row(existing: pd.DataFrame, ticker: str) -> pd.Series | None:
-    matches = existing.loc[existing["Ticker"].eq(ticker)]
-    return None if matches.empty else matches.iloc[-1]
-
-
-def _latest_announced_records(records: pd.DataFrame, as_of: date) -> pd.DataFrame:
-    if records.empty:
-        return records
-    report_date = pd.to_datetime(records["ReportPeriod"], errors="coerce").dt.date
-    announcement = pd.to_datetime(records["AnnouncementDate"], errors="coerce").dt.date
-    known_on_date = announcement.notna() & announcement.le(as_of)
-    usable = report_date.notna() & report_date.le(as_of) & known_on_date
-    filtered = records.loc[usable].copy()
-    if filtered.empty:
-        return filtered
-    return filtered.sort_values(
-        ["ReportPeriod", "AnnouncementDate", "FetchedAt"], kind="stable"
-    ).drop_duplicates(["ReportPeriod"], keep="last")
-
-
-def _summary_from_records(
-    ticker: str,
-    records: pd.DataFrame,
-    existing: pd.Series | None,
-    industry: str,
-    target: ReportPeriod,
-    as_of: date,
-) -> dict[str, Any] | None:
-    usable = _latest_announced_records(records, as_of)
-    if usable.empty:
-        return None
-    latest = usable.iloc[-1]
-    latest_period = parse_report_period(latest["ReportPeriod"])
-    annual = usable.loc[pd.to_numeric(usable["ReportQuarter"], errors="coerce").eq(4)].copy()
-    annual = annual.sort_values(["ReportYear", "AnnouncementDate"], ascending=[False, False])
-    annual = annual.drop_duplicates("ReportYear", keep="first")
-    annual_profits = [
-        _record_value(row, "NetProfit") for _, row in annual.head(3).iterrows()
-    ]
-    if not annual_profits and existing is not None:
-        legacy = [_number(existing.get(f"NetProfitY{offset}")) for offset in range(1, 4)]
-        if all(np.isfinite(value) for value in legacy):
-            annual_profits = legacy
-    annual_profits.extend([np.nan] * (3 - len(annual_profits)))
-
-    roe = _record_value(latest, "ROE")
-    net_profit = _record_value(latest, "NetProfit")
-    report_complete = np.isfinite(roe) and np.isfinite(net_profit)
-    if latest_period is None:
-        status = "INVALID"
-    elif not report_complete:
-        status = "PARTIAL"
-    elif latest_period == target:
-        status = "CURRENT"
-    elif as_of <= target.filing_deadline:
-        status = "AWAITING_RELEASE"
-    else:
-        status = "STALE"
-
-    resolved_industry = industry or _text(latest.get("Industry"))
-    if not resolved_industry and existing is not None:
-        resolved_industry = _text(existing.get("Industry"))
-    return {
-        "Ticker": ticker,
-        "Industry": resolved_industry,
-        "LatestReportPeriod": _text(latest.get("ReportPeriod")),
-        "LatestAnnouncementDate": _text(latest.get("AnnouncementDate")),
-        "LatestReportType": latest_period.report_type if latest_period is not None else "",
-        "FundamentalProvider": _text(latest.get("Provider")),
-        "FundamentalFetchedAt": _text(latest.get("FetchedAt")),
-        "FundamentalDataStatus": status,
-        "ROE": roe,
-        "GrossMargin": _record_value(latest, "GrossMargin"),
-        "NetProfitLatest": net_profit,
-        "RevenueLatest": _record_value(latest, "Revenue"),
-        "NetProfitYoY": _record_value(latest, "NetProfitYoY"),
-        "DebtToAssets": _record_value(latest, "DebtToAssets"),
-        "OperatingCashFlowToNetProfit": _record_value(latest, "OperatingCashFlowToNetProfit"),
-        "NetProfitY1": annual_profits[0],
-        "NetProfitY2": annual_profits[1],
-        "NetProfitY3": annual_profits[2],
-        "IndustryGrossMarginPercentile": np.nan,
-        "InstitutionHoldingTrend": "",
-        "InstitutionHoldingPeriods": np.nan,
-    }
-
-
-def _legacy_summary(existing: pd.Series, industry: str) -> dict[str, Any]:
-    row = {column: existing.get(column, np.nan) for column in FUNDAMENTAL_COLUMNS}
-    row["Ticker"] = normalize_ticker(existing.get("Ticker"))
-    row["Industry"] = industry or _text(existing.get("Industry"))
-    if not _text(row.get("FundamentalProvider")):
-        row["FundamentalProvider"] = "legacy-cache"
-    if not _text(row.get("FundamentalDataStatus")):
-        row["FundamentalDataStatus"] = "LEGACY"
-    return row
-
-
 def _industry_margin_percentiles(frame: pd.DataFrame) -> pd.Series:
     margins = pd.to_numeric(frame["GrossMargin"], errors="coerce")
     industries = frame["Industry"].fillna("").astype(str).str.strip()
@@ -452,23 +348,198 @@ def build_fundamental_summary(
     normalized_symbols = tuple(
         ticker for ticker in dict.fromkeys(normalize_ticker(value) for value in symbols) if ticker
     )
-    rows: list[dict[str, Any]] = []
-    for ticker in normalized_symbols:
-        old = _existing_row(existing, ticker)
-        ticker_records = normalized_records.loc[normalized_records["Ticker"].eq(ticker)]
-        row = _summary_from_records(
-            ticker,
-            ticker_records,
-            old,
-            str(industries.get(ticker, "") or "").strip(),
-            target,
-            as_of,
+    if not normalized_symbols:
+        return empty_summary_frame()
+
+    requested = pd.Index(normalized_symbols, dtype="object")
+    industry_map = {
+        ticker: _text(value)
+        for raw_ticker, value in industries.items()
+        if (ticker := normalize_ticker(raw_ticker)) and _text(value)
+    }
+    old_by_ticker = existing.set_index("Ticker", drop=False)
+
+    usable = normalized_records.loc[
+        normalized_records["Ticker"].isin(requested)
+    ].copy()
+    if not usable.empty:
+        usable["_ReportDate"] = pd.to_datetime(
+            usable["ReportPeriod"], errors="coerce"
         )
-        if row is None and old is not None:
-            row = _legacy_summary(old, str(industries.get(ticker, "") or "").strip())
-        if row is not None:
-            rows.append(row)
-    summary = normalize_summary_frame(pd.DataFrame(rows))
+        usable["_AnnouncementDate"] = pd.to_datetime(
+            usable["AnnouncementDate"], errors="coerce"
+        )
+        usable = usable.loc[
+            usable["_ReportDate"].notna()
+            & usable["_ReportDate"].le(pd.Timestamp(as_of))
+            & usable["_AnnouncementDate"].notna()
+            & usable["_AnnouncementDate"].le(pd.Timestamp(as_of))
+        ].copy()
+        usable = usable.sort_values(
+            [
+                "Ticker",
+                "_ReportDate",
+                "_AnnouncementDate",
+                "FetchedAt",
+            ],
+            kind="stable",
+        ).drop_duplicates(["Ticker", "ReportPeriod"], keep="last")
+
+    if usable.empty:
+        latest = pd.DataFrame()
+    else:
+        latest = usable.drop_duplicates("Ticker", keep="last").set_index(
+            "Ticker", drop=False
+        )
+
+    if latest.empty:
+        summary = empty_summary_frame()
+    else:
+        new_summary = pd.DataFrame(index=latest.index)
+        ticker_index = latest.index.to_series()
+        configured_industry = ticker_index.map(industry_map).fillna("")
+        report_industry = latest["Industry"].map(_text)
+        if old_by_ticker.empty:
+            old_industry = pd.Series("", index=latest.index, dtype=object)
+        else:
+            old_industry = (
+                old_by_ticker["Industry"].reindex(latest.index).map(_text).fillna("")
+            )
+        resolved_industry = configured_industry.where(
+            configured_industry.ne(""), report_industry
+        )
+        resolved_industry = resolved_industry.where(
+            resolved_industry.ne(""), old_industry
+        )
+
+        latest_period = pd.to_datetime(latest["ReportPeriod"], errors="coerce")
+        expected_day = latest_period.dt.month.map({3: 31, 6: 30, 9: 30, 12: 31})
+        valid_period = expected_day.notna() & latest_period.dt.day.eq(expected_day)
+        latest_quarter = latest_period.dt.month.map({3: 1, 6: 2, 9: 3, 12: 4})
+        latest_type = latest_quarter.map(_REPORT_TYPE_NAMES).fillna("")
+        latest_type = latest_type.where(valid_period, "")
+
+        def numeric(column: str) -> pd.Series:
+            return pd.to_numeric(latest[column], errors="coerce").replace(
+                [np.inf, -np.inf], np.nan
+            )
+
+        roe = numeric("ROE")
+        net_profit = numeric("NetProfit")
+        report_complete = roe.notna() & net_profit.notna()
+        status_default = (
+            "AWAITING_RELEASE" if as_of <= target.filing_deadline else "STALE"
+        )
+        status = pd.Series(status_default, index=latest.index, dtype=object)
+        status.loc[latest_period.eq(pd.Timestamp(target.end_date))] = "CURRENT"
+        status.loc[~report_complete] = "PARTIAL"
+        status.loc[~valid_period] = "INVALID"
+
+        new_summary["Ticker"] = ticker_index
+        new_summary["Industry"] = resolved_industry
+        new_summary["LatestReportPeriod"] = latest["ReportPeriod"]
+        new_summary["LatestAnnouncementDate"] = latest["AnnouncementDate"]
+        new_summary["LatestReportType"] = latest_type
+        new_summary["FundamentalProvider"] = latest["Provider"]
+        new_summary["FundamentalFetchedAt"] = latest["FetchedAt"]
+        new_summary["FundamentalDataStatus"] = status
+        new_summary["ROE"] = roe
+        new_summary["GrossMargin"] = numeric("GrossMargin")
+        new_summary["NetProfitLatest"] = net_profit
+        new_summary["RevenueLatest"] = numeric("Revenue")
+        new_summary["NetProfitYoY"] = numeric("NetProfitYoY")
+        new_summary["DebtToAssets"] = numeric("DebtToAssets")
+        new_summary["OperatingCashFlowToNetProfit"] = numeric(
+            "OperatingCashFlowToNetProfit"
+        )
+
+        annual = usable.loc[
+            pd.to_numeric(usable["ReportQuarter"], errors="coerce").eq(4)
+        ].copy()
+        if annual.empty:
+            annual_count = pd.Series(0, index=latest.index, dtype=np.int64)
+            annual_profit = pd.DataFrame(index=latest.index, columns=range(3))
+        else:
+            annual["_ReportYear"] = pd.to_numeric(
+                annual["ReportYear"], errors="coerce"
+            )
+            annual = annual.sort_values(
+                ["Ticker", "_ReportYear", "_AnnouncementDate"],
+                ascending=[True, False, False],
+                kind="stable",
+            ).drop_duplicates(["Ticker", "_ReportYear"], keep="first")
+            annual_count = (
+                annual.groupby("Ticker", sort=False).size().reindex(latest.index, fill_value=0)
+            )
+            annual["_AnnualRank"] = annual.groupby("Ticker", sort=False).cumcount()
+            annual_top = annual.loc[annual["_AnnualRank"].lt(3)].copy()
+            annual_top["NetProfit"] = pd.to_numeric(
+                annual_top["NetProfit"], errors="coerce"
+            ).replace([np.inf, -np.inf], np.nan)
+            annual_profit = annual_top.pivot(
+                index="Ticker",
+                columns="_AnnualRank",
+                values="NetProfit",
+            ).reindex(index=latest.index, columns=range(3))
+
+        if old_by_ticker.empty:
+            old_annual = pd.DataFrame(
+                np.nan,
+                index=latest.index,
+                columns=("NetProfitY1", "NetProfitY2", "NetProfitY3"),
+            )
+        else:
+            old_annual = old_by_ticker.reindex(latest.index).loc[
+                :, ("NetProfitY1", "NetProfitY2", "NetProfitY3")
+            ]
+            old_annual = old_annual.apply(pd.to_numeric, errors="coerce").replace(
+                [np.inf, -np.inf], np.nan
+            )
+        legacy_fallback = annual_count.eq(0) & old_annual.notna().all(axis=1)
+        for position, column in enumerate(
+            ("NetProfitY1", "NetProfitY2", "NetProfitY3")
+        ):
+            values = pd.to_numeric(
+                annual_profit[position], errors="coerce"
+            ).replace([np.inf, -np.inf], np.nan)
+            new_summary[column] = values.where(
+                ~legacy_fallback, old_annual[column]
+            )
+
+        new_summary["IndustryGrossMarginPercentile"] = np.nan
+        new_summary["InstitutionHoldingTrend"] = ""
+        new_summary["InstitutionHoldingPeriods"] = np.nan
+        summary = normalize_summary_frame(new_summary.reset_index(drop=True))
+
+    latest_tickers = set(latest.index) if not latest.empty else set()
+    if existing.empty:
+        legacy = empty_summary_frame()
+    else:
+        legacy = existing.loc[
+            existing["Ticker"].isin(requested)
+            & ~existing["Ticker"].isin(latest_tickers)
+        ].copy()
+        if not legacy.empty:
+            configured = legacy["Ticker"].map(industry_map).fillna("")
+            legacy["Industry"] = configured.where(
+                configured.ne(""), legacy["Industry"]
+            )
+            missing_provider = legacy["FundamentalProvider"].map(_text).eq("")
+            legacy.loc[missing_provider, "FundamentalProvider"] = "legacy-cache"
+            missing_status = legacy["FundamentalDataStatus"].map(_text).eq("")
+            legacy.loc[missing_status, "FundamentalDataStatus"] = "LEGACY"
+    if summary.empty:
+        summary = normalize_summary_frame(legacy)
+    elif not legacy.empty:
+        summary = normalize_summary_frame(
+            pd.concat([summary, legacy], ignore_index=True, sort=False)
+        )
+    order = {ticker: position for position, ticker in enumerate(normalized_symbols)}
+    if not summary.empty:
+        summary["_InputOrder"] = summary["Ticker"].map(order)
+        summary = summary.sort_values("_InputOrder", kind="stable").drop(
+            columns="_InputOrder"
+        )
     if not summary.empty:
         summary["IndustryGrossMarginPercentile"] = _industry_margin_percentiles(summary)
     return normalize_summary_frame(summary)

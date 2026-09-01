@@ -16,9 +16,13 @@ from pathlib import Path
 
 from config import FUNDAMENTAL_REFRESH_FORCE, TOP_N_PARQUET, TOP_N_REPORT
 from downloader import TickerInfo, build_ticker_universe, is_etf_ticker, normalize_ticker
-from fundamental_data import fundamental_data_path, refresh_fundamental_data
+from fundamental_data import (
+    FundamentalRefreshCancelled,
+    fundamental_data_path,
+    refresh_fundamental_data,
+)
 from report import export_all
-from scanner import ScanProgressCallback, ScanReport, run_scan
+from scanner import ScanCancelled, ScanProgressCallback, ScanReport, run_scan
 
 
 @dataclass(frozen=True)
@@ -128,6 +132,7 @@ def refresh_fundamentals_if_needed(
     *,
     fundamental_path_fn: FundamentalPathFn = fundamental_data_path,
     refresh_fundamentals_fn: RefreshFundamentalsFn = refresh_fundamental_data,
+    cancel_event: threading.Event | None = None,
 ) -> None:
     if not stock_universe:
         return
@@ -140,11 +145,18 @@ def refresh_fundamentals_if_needed(
         )
         return
     try:
+        refresh_kwargs = {
+            "force": explicit_refresh,
+            "industry_by_ticker": _fundamental_industry_map(stock_universe),
+        }
+        if cancel_event is not None:
+            refresh_kwargs["cancel_event"] = cancel_event
         fundamental_path = refresh_fundamentals_fn(
             [ticker.ticker for ticker in stock_universe],
-            force=explicit_refresh,
-            industry_by_ticker=_fundamental_industry_map(stock_universe),
+            **refresh_kwargs,
         )
+    except FundamentalRefreshCancelled as exc:
+        raise ScanCancelled("扫描已取消") from exc
     except (OSError, ValueError, TypeError) as exc:
         logger.warning("基本面刷新失败，继续使用现有数据：%s", exc)
     else:
@@ -209,6 +221,7 @@ def execute_scan(
             log,
             fundamental_path_fn=fundamental_path_fn,
             refresh_fundamentals_fn=refresh_fundamentals_fn,
+            cancel_event=cancel_event,
         )
     fundamentals_seconds = time.perf_counter() - fundamentals_started
     scan_started = time.perf_counter()

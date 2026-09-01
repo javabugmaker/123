@@ -14,6 +14,7 @@ from institution_scanner.fundamentals import (
     FUNDAMENTAL_PROVIDER_VERSION,
     FUNDAMENTAL_SCHEMA_VERSION,
     REPORT_COLUMNS,
+    FundamentalRefreshCancelled,
     fundamental_data_path,
     refresh_fundamental_data,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "FUNDAMENTAL_PROVIDER_VERSION",
     "FUNDAMENTAL_REQUIRED_COLUMNS",
     "FUNDAMENTAL_SCHEMA_VERSION",
+    "FundamentalRefreshCancelled",
     "REPORT_COLUMNS",
     "_CACHE_PATH",
     "_META_PATH",

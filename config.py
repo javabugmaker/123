@@ -19,6 +19,16 @@ SCAN_THREADS: int = _RUNTIME.scan_threads
 BACKTEST_MAX_PROCESSES: int = _RUNTIME.backtest_processes
 BACKTEST_CHUNK_SIZE: int = _RUNTIME.backtest_chunk_size
 BACKTEST_FAST_CHUNK_SIZE: int = _RUNTIME.backtest_fast_chunk_size
+# BaoStock cannot batch multiple stock codes in one request and keeps its socket
+# in module-global state.  Separate processes provide isolated long-lived
+# sessions without unsafe thread sharing.  Six workers are selected on the
+# target 6-core workstation; smaller/larger hosts remain bounded at 4..8.
+FUNDAMENTAL_DOWNLOAD_THREADS: int = min(
+    8,
+    max(4, _RUNTIME.estimated_physical_cores),
+)
+FUNDAMENTAL_CHECKPOINT_EVERY: int = 5
+FUNDAMENTAL_MAX_IN_FLIGHT_FACTOR: int = 2
 # Retained as the legacy/fallback bound. The v78 cache-aware path derives the
 # normal append-only recomputation window from the previous cached row count.
 BACKTEST_INCREMENTAL_TAIL_BARS: int = _RUNTIME.backtest_incremental_tail_bars
@@ -32,6 +42,7 @@ SCORING_VERSION: str = (
     + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-09-01-v111-baostock-multiprocess-resumable-refresh-"
     "2026-09-01-v110-baostock-point-in-time-fundamentals-"
     "2026-08-22-v89-executable-backtest-signal-semantics-"
     "2026-08-21-v88-purged-date-balanced-point-in-time-research-"
@@ -183,7 +194,7 @@ ETF_DIRECTIONAL_RESEARCH_RULE_VERSION: str = (
 
 CHECKPOINT_RESUME_VERSION: str = "2026-08-19-v68-pinned-frame-publish-clear-v3"
 FUNDAMENTAL_REFRESH_INTEGRITY_VERSION: str = (
-    "2026-09-01-v110-baostock-point-in-time-financials-v1"
+    "2026-09-01-v111-baostock-multiprocess-resume-v1"
 )
 CACHE_HISTORY_INTEGRITY_VERSION: str = "2026-08-19-v69-full-ohlcv-content-check-v2"
 BENCHMARK_CACHE_INTEGRITY_VERSION: str = "2026-08-19-v63-current-benchmark-required-v1"
