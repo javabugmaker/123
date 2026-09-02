@@ -294,7 +294,8 @@ def run_backtest(
     benchmark_close = benchmark.reindex(day_index).astype(np.float64)
     benchmark_ret = benchmark_close.pct_change().to_numpy(dtype=np.float64)
 
-    tickers = list_universe()
+
+tickers = list_universe()
 
     scores: list[tuple[int, str, float]] = []
     returns: dict[str, np.ndarray] = {}
