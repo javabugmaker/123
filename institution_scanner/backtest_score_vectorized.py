@@ -46,17 +46,91 @@ def _ffill(a: np.ndarray) -> np.ndarray:
     return pd.Series(a).ffill().to_numpy()
 
 
+def _valid_lag(a: np.ndarray, periods: int) -> np.ndarray:
+    """Lag over finite observations, then project back to the source rows.
+
+    Several scalar scoring rules call ``dropna()`` before selecting an older
+    observation.  A fixed row shift is therefore wrong after an indicator gap
+    (most commonly a zero-turnover suspension).  The projected result also
+    carries forward across an invalid current row, matching ``dropna()`` on a
+    prefix ending at that row.
+    """
+    if periods < 0:
+        raise ValueError(periods)
+    values = np.asarray(a, dtype=np.float64)
+    output = np.full(len(values), np.nan, dtype=np.float64)
+    positions = np.flatnonzero(np.isfinite(values))
+    if periods == 0:
+        output[positions] = values[positions]
+    elif positions.size > periods:
+        output[positions[periods:]] = values[positions[:-periods]]
+    return _ffill(output)
+
+
+def _valid_rolling(
+    a: np.ndarray,
+    window: int,
+    kind: str,
+    *,
+    min_periods: int | None = None,
+    exclude_recent: int = 0,
+) -> np.ndarray:
+    """Rolling aggregate over the compact finite-observation sequence."""
+    if window <= 0 or exclude_recent < 0:
+        raise ValueError((window, exclude_recent))
+    values = np.asarray(a, dtype=np.float64)
+    output = np.full(len(values), np.nan, dtype=np.float64)
+    positions = np.flatnonzero(np.isfinite(values))
+    if positions.size == 0:
+        return output
+    compact = pd.Series(values[positions])
+    rolling = compact.rolling(
+        int(window),
+        min_periods=int(window if min_periods is None else min_periods),
+    )
+    if kind == "min":
+        result = rolling.min()
+    elif kind == "max":
+        result = rolling.max()
+    elif kind == "mean":
+        result = rolling.mean()
+    elif kind == "median":
+        result = rolling.median()
+    else:
+        raise ValueError(kind)
+    if exclude_recent:
+        result = result.shift(int(exclude_recent))
+    output[positions] = result.to_numpy(dtype=np.float64)
+    return _ffill(output)
+
+
+def _valid_trailing_run(mask: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """Trailing true run over valid observations, projected to all rows."""
+    valid = np.asarray(valid, dtype=bool)
+    compact = np.asarray(mask, dtype=bool)[valid]
+    output = np.full(len(valid), np.nan, dtype=np.float64)
+    if compact.size == 0:
+        return np.zeros(len(valid), dtype=np.float64)
+    positions = np.arange(len(compact), dtype=np.int64)
+    last_false = np.maximum.accumulate(np.where(compact, -1, positions))
+    run = np.where(compact, positions - last_false, 0).astype(np.float64)
+    output[np.flatnonzero(valid)] = run
+    return np.nan_to_num(_ffill(output), nan=0.0)
+
+
 def _ret(a: np.ndarray, periods: int) -> np.ndarray:
     """``_safe_return``: (a[t]/a[t-p]-1)*100 with finite/positive guards."""
-    n = len(a)
     if periods <= 0:
-        return np.full(n, np.nan)
-    prev = np.full(n, np.nan)
-    prev[periods:] = a[: n - periods]
+        return np.full(len(a), np.nan)
+    current = _ffill(a)
+    prev = _valid_lag(a, periods)
     with np.errstate(divide="ignore", invalid="ignore"):
         ratio = np.where(
-            (a > 0) & (prev > 0) & np.isfinite(a) & np.isfinite(prev),
-            a / prev,
+            (current > 0)
+            & (prev > 0)
+            & np.isfinite(current)
+            & np.isfinite(prev),
+            current / prev,
             np.nan,
         )
     return (ratio - 1.0) * 100.0
@@ -166,7 +240,6 @@ def _volume(
 ) -> np.ndarray:
     n = len(frame)
     s = np.zeros(n)
-    idx = np.arange(n)
 
     if volma20 is not None and volma120 is not None:
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -179,16 +252,11 @@ def _volume(
         ratio_ff = _ffill(ratio)
         # trailing run of (ratio >= VOLUME_ACCUM_RATIO) within valid region
         is_true = ratio_valid & (ratio >= VOLUME_ACCUM_RATIO)
-        is_false = ratio_valid & (ratio < VOLUME_ACCUM_RATIO)
-        first_valid = int(idx[ratio_valid].min()) if ratio_valid.any() else n
-        last_false = np.maximum.accumulate(np.where(is_false, idx, -1))
-        consecutive = np.where(is_true, idx - np.maximum(last_false, first_valid - 1), 0)
+        consecutive = _valid_trailing_run(is_true, ratio_valid)
 
         ratio_now = ratio_ff
-        ratio20 = np.full(n, np.nan)
         vc = np.cumsum(ratio_valid.astype(np.int64))
-        # 20th-valid-back: under head-NaN-only, index t-19
-        ratio20[19:] = ratio_ff[: n - 19]
+        ratio20 = _valid_lag(ratio, 19)
         ratio_change = np.where(np.isfinite(ratio20), ratio_now - ratio20, np.nan)
 
         s += np.where(
@@ -202,9 +270,12 @@ def _volume(
     if volz is not None:
         z_valid = np.isfinite(volz)
         z_ff = _ffill(volz)
-        # positive fraction over last 30 valid
-        pos_mask = z_valid & (volz > 0)
-        pos_mean30 = pd.Series(np.where(pos_mask, 1.0, 0.0)).rolling(30, min_periods=30).mean().to_numpy()
+        # The scalar path drops invalid values and averages up to 30 valid
+        # observations once at least ten exist.
+        positive = np.where(z_valid, (volz > 0).astype(np.float64), np.nan)
+        pos_mean30 = _valid_rolling(
+            positive, 30, "mean", min_periods=1
+        )
         vc_z = np.cumsum(z_valid.astype(np.int64))
         s += np.where(vc_z >= 10, pos_mean30 * 3.0, 0.0)
         s += np.where(vc_z >= 10, _clampc(z_ff / 2.0) * 2.0, 0.0)
@@ -251,34 +322,44 @@ def _accumulation(
 
     if ad is not None and ad_slope is not None:
         ad_ff = _ffill(ad)
-        ad_slope_ff = _ffill(ad_slope)
         vc_ad = np.cumsum(np.isfinite(ad).astype(np.int64))
-        # ad_scale = median(|ad| last 30 valid)
-        ad_abs30 = pd.Series(np.abs(ad)).rolling(30, min_periods=30).median().to_numpy()
-        ad_scale = np.maximum(ad_abs30, 1.0)
+        ad_scale = np.maximum(
+            _valid_rolling(
+                np.abs(ad), AD_SLOPE_LOOKBACK, "median"
+            ),
+            1.0,
+        )
+        active = (
+            (vc_ad >= AD_SLOPE_LOOKBACK)
+            & np.isfinite(ad_slope)
+        )
         with np.errstate(divide="ignore", invalid="ignore"):
-            slope_score = _clampc(ad_slope_ff / (ad_scale * 0.03))
-        s += slope_score * 5.0
-        # ad[-1] >= max(last min(120,v) ad)*0.95
-        ad120max = _roll(ad_ff, 120, "max")
-        s += np.where(np.isfinite(ad_ff) & np.isfinite(ad120max) & (ad_ff >= ad120max * 0.95), 1.0, 0.0)
-        s = np.where(vc_ad >= AD_SLOPE_LOOKBACK, s, 0.0)
+            slope_score = _clampc(ad_slope / (ad_scale * 0.03))
+        s += np.where(active, slope_score * 5.0, 0.0)
+        # Scalar uses max(last min(120, valid_count) AD observations).
+        ad120max = _valid_rolling(ad, 120, "max", min_periods=1)
+        s += np.where(
+            active
+            & np.isfinite(ad_ff)
+            & np.isfinite(ad120max)
+            & (ad_ff >= ad120max * 0.95),
+            1.0,
+            0.0,
+        )
 
     if cmf is not None:
         cmf_ff = _ffill(cmf)
         vc_cmf = np.cumsum(np.isfinite(cmf).astype(np.int64))
-        cmf20 = np.full(n, np.nan); cmf20[19:] = cmf_ff[: n - 19]
+        cmf20 = _valid_lag(cmf, 19)
         cmf_change = np.where(np.isfinite(cmf20), cmf_ff - cmf20, np.nan)
-        s += _clampc(cmf_ff / 0.15) * 4.0
-        s += _clampc(cmf_change / 0.10) * 2.0
-        s = np.where(vc_cmf >= 20, s, 0.0)
+        s += np.where(vc_cmf >= 20, _clampc(cmf_ff / 0.15) * 4.0, 0.0)
+        s += np.where(vc_cmf >= 20, _clampc(cmf_change / 0.10) * 2.0, 0.0)
 
     if mfi is not None:
-        mfi_ff = _ffill(mfi)
-        fin = np.isfinite(mfi_ff)
+        fin = np.isfinite(mfi)
         s += np.where(
-            fin & (mfi_ff >= 40) & (mfi_ff <= 70), 3.0,
-            np.where(fin & (mfi_ff >= 30) & (mfi_ff <= 80), 1.5, 0.0),
+            fin & (mfi >= 40) & (mfi <= 70), 3.0,
+            np.where(fin & (mfi >= 30) & (mfi <= 80), 1.5, 0.0),
         )
 
     return _clampc(s, 0.0, 25.0)
@@ -310,8 +391,11 @@ def _volatility(
         current = _ffill(bbw)
         bb_vc = np.cumsum(np.isfinite(bbw).astype(np.int64))
         # median over the 50 values bb[-60:-10] -> rolling(50).median() ended at t-10
-        base = (
-            pd.Series(bbw).rolling(50, min_periods=50).median().shift(10).to_numpy()
+        base = _valid_rolling(
+            bbw,
+            BB_WIDTH_COMPRESSION_LOOKBACK - 10,
+            "median",
+            exclude_recent=10,
         )
         with np.errstate(divide="ignore", invalid="ignore"):
             comps.append(
@@ -335,8 +419,14 @@ def _volatility(
     if not comps:
         return np.zeros(n)
     stacked = np.stack(comps, axis=0)
-    coverage = np.sum(np.isfinite(stacked), axis=0) / 3.0
-    mean_comp = np.nanmean(stacked, axis=0)
+    finite_count = np.sum(np.isfinite(stacked), axis=0)
+    coverage = finite_count / 3.0
+    mean_comp = np.divide(
+        np.nansum(stacked, axis=0),
+        finite_count,
+        out=np.full(n, np.nan, dtype=np.float64),
+        where=finite_count > 0,
+    )
     return _clampc(mean_comp * coverage * 15.0, 0.0, 15.0)
 
 
@@ -397,6 +487,8 @@ def _value_trap(
     cmf: np.ndarray | None,
     ad_slope: np.ndarray | None,
     obv: np.ndarray | None,
+    *,
+    is_etf: bool = False,
 ) -> np.ndarray:
     n = len(close)
     risk = np.zeros(n)
@@ -418,7 +510,7 @@ def _value_trap(
     if ma50 is not None:
         ma50v = _ffill(ma50)
         old_ma50 = np.full(n, np.nan)
-        old_ma50[24:] = ma50v[: n - 24]
+        old_ma50[24:] = ma50[: n - 24]
         risk += np.where(
             np.isfinite(old_ma50) & (old_ma50 > 0) & (ma50v < old_ma50),
             _clampc((old_ma50 - ma50v) / old_ma50 / 0.12) * 12.0,
@@ -431,13 +523,11 @@ def _value_trap(
         )
 
     # recent low vs prior low
-    prior_low = np.full(n, np.nan)
-    low40_80 = np.full(n, np.nan)
-    low_40min = _roll(close, 40, "min")
-    # prior 40 = min over t-79..t-40
-    low40_80[39:] = low_40min[: n - 39]
-    recent_low = low_40min
-    prior_low = np.where(np.arange(n) >= 79, low40_80, recent_low)
+    recent_low = _valid_rolling(close, 40, "min", min_periods=1)
+    prior_block = _valid_rolling(
+        close, 40, "min", min_periods=1, exclude_recent=40
+    )
+    prior_low = np.where(clean_vc >= 80, prior_block, recent_low)
     risk += np.where(
         np.isfinite(prior_low) & (prior_low > 0) & (recent_low < prior_low * 0.98),
         _clampc((prior_low - recent_low) / prior_low / 0.12) * 15.0,
@@ -459,8 +549,7 @@ def _value_trap(
         flow_positive += (fin & (arr > 0)).astype(np.float64)
     if obv is not None:
         obv_ff = _ffill(obv)
-        obv20 = np.full(n, np.nan)
-        obv20[19:] = obv_ff[: n - 19]
+        obv20 = _valid_lag(obv, 19)
         obv_ok = np.isfinite(obv_ff) & np.isfinite(obv20)
         flow_available += obv_ok.astype(np.float64)
         flow_positive += (obv_ok & (obv_ff - obv20 > 0)).astype(np.float64)
@@ -472,11 +561,10 @@ def _value_trap(
     )
 
     # volume contraction
-    vol20 = _roll(volume, 20, "mean")
-    vol60_40 = np.full(n, np.nan)
-    vol40 = _roll(volume, 40, "mean")
-    # scalar: vol60 = mean of volume.iloc[-60:-20] (last 40 of last 60)
-    vol60_40[59:] = vol40[: n - 59]
+    vol20 = _valid_rolling(volume, 20, "mean")
+    vol60_40 = _valid_rolling(
+        volume, 40, "mean", exclude_recent=20
+    )
     vvc = np.cumsum(np.isfinite(volume).astype(np.int64))
     risk += np.where(
         (vvc >= 60) & np.isfinite(vol20) & (vol60_40 > 0) & (vol20 < vol60_40 * 0.75)
@@ -502,6 +590,8 @@ def _value_trap(
         ~recovery & np.isfinite(ret20) & (ret20 > 5.0) & (flow_positive >= 2), 8.0, 0.0
     )
 
+    if is_etf:
+        risk *= 0.80
     return _clampc(risk, 0.0, 100.0)
 
 
@@ -599,6 +689,8 @@ def _entry_execution(
     ad_slope: np.ndarray | None,
     obv: np.ndarray | None,
     breakout: np.ndarray,
+    *,
+    price_decimals: int,
 ) -> np.ndarray:
     n = len(close)
     close_ff = _ffill(close)
@@ -618,7 +710,7 @@ def _entry_execution(
     lvc = np.cumsum(np.isfinite(low).astype(np.int64))
 
     # entry_point rounds resistance to 2dp; execution_quality_score does not.
-    res_entry = np.round(res, 2)
+    res_entry = np.round(res, int(price_decimals))
     resistance_entry = np.where(hvc >= 21, res_entry, price)
     resistance_exec = np.where(hvc >= 21, res, price + eff_atr * 2.0)
     support_entry = np.where(lvc >= 20, sup_entry, price)
@@ -633,9 +725,9 @@ def _entry_execution(
     # stop and projected_target (entry), rounded to 2 decimals (stocks)
     stop_base = np.where(price_breakout, resistance_entry, support_entry)
     stop = np.maximum(stop_base - eff_atr, 0.0)
-    stop = np.round(stop, 2)
+    stop = np.round(stop, int(price_decimals))
     projected = np.where(price_breakout, price + eff_atr * 2.5, np.maximum(resistance_entry, price))
-    projected = np.round(projected, 2)
+    projected = np.round(projected, int(price_decimals))
 
     # execution_quality_score (uses unrounded resistance)
     exec_support = np.where(price_breakout, resistance_exec, support_exec)
@@ -792,6 +884,14 @@ def final_score_series(
     adj_acc = np.where(low_def, 1.05, adj_acc)
     adj_volat = np.where(low_def, 1.25, adj_volat)
     adj_struct = np.where(low_def, 1.20, adj_struct)
+    if is_etf:
+        # ``score_core.classify_style`` always selects the dedicated ETF
+        # profile; market-derived stock style masks must not leak into it.
+        adj_trend.fill(1.00)
+        adj_vol.fill(1.00)
+        adj_acc.fill(1.10)
+        adj_volat.fill(1.00)
+        adj_struct.fill(0.90)
 
     limits = np.array(
         [
@@ -808,10 +908,30 @@ def final_score_series(
 
     total = adjusted.sum(axis=0)
 
-    trap = _value_trap(close, volume, ma20, ma50, cmf, ad_slope, obv)
+    trap = _value_trap(
+        close,
+        volume,
+        ma20,
+        ma50,
+        cmf,
+        ad_slope,
+        obv,
+        is_etf=is_etf,
+    )
     breakout = _breakout(close, high, volume, ma20, ma50, ma200)
     exec_raw = _entry_execution(
-        close, high, low, volume, atr14, rsi, ma20, cmf, ad_slope, obv, breakout
+        close,
+        high,
+        low,
+        volume,
+        atr14,
+        rsi,
+        ma20,
+        cmf,
+        ad_slope,
+        obv,
+        breakout,
+        price_decimals=3 if is_etf else 2,
     )
 
     setup_cov = 0.55 + 0.45 * coverage
