@@ -42,7 +42,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 from config_core import OUTPUT_DIR  # noqa: E402
 
-HISTORICAL_BACKTEST_VERSION = "2026-08-31-v1-pit-top30-rules-based"
+HISTORICAL_BACKTEST_VERSION = "2026-09-02-v2-fast-exact-score-alignment"
 
 CACHE_DIR_SUFFIX = Path("cache") / "v4-tickflow-forward-volume-shares"
 BENCHMARK_TICKER = "000300.SH"
@@ -113,6 +113,7 @@ def _worker(
 ) -> tuple[list[tuple[int, str, float]], dict[str, np.ndarray]]:
     """Score ``chunk`` tickers at each rebalance date; return scores + aligned returns."""
     import indicators as _indicators
+    from downloader_core import is_etf_ticker
     from institution_scanner.backtest_score_vectorized import final_score_series
 
     _indicators.ENABLE_VOLUME_PROFILE = False
@@ -137,7 +138,10 @@ def _worker(
             continue
 
         _indicators.compute_all_indicators(frame)
-        score_series = final_score_series(frame).astype(np.float64)
+        score_series = final_score_series(
+            frame,
+            is_etf=is_etf_ticker(ticker),
+        ).astype(np.float64)
 
         # Aligned daily returns (NaN where the ticker did not trade that day).
         ret_series = close.pct_change()
