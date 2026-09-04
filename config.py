@@ -1,12 +1,14 @@
-"""InstitutionScanner v89 scoring/backtest-semantics configuration facade.
+"""InstitutionScanner production configuration facade.
 
-v89 builds on v88 evidence fidelity by making breakout-price TriggerScore
-continuous around resistance and by allowing only immediately executable signal
-states to create next-open historical calibration samples.
+The production Champion weights remain unchanged. v113 only repairs financial
+quality semantics, separates market/portfolio execution capacity, and adds gate
+distribution observability. Scoring changes must still follow Champion/Challenger
+governance in ``institution_scanner.contracts``.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 
 import config_v51 as _v51
@@ -19,16 +21,14 @@ SCAN_THREADS: int = _RUNTIME.scan_threads
 BACKTEST_MAX_PROCESSES: int = _RUNTIME.backtest_processes
 BACKTEST_CHUNK_SIZE: int = _RUNTIME.backtest_chunk_size
 BACKTEST_FAST_CHUNK_SIZE: int = _RUNTIME.backtest_fast_chunk_size
-# AKShare returns a whole-market cross section per report period. Keep upstream
-# requests serial and vectorize only the local ticker extraction.
 FUNDAMENTAL_DOWNLOAD_THREADS: int = 1
 FUNDAMENTAL_DOWNLOAD_TIMEOUT: int = 300
 FUNDAMENTAL_CHECKPOINT_EVERY: int = 100
 FUNDAMENTAL_MAX_IN_FLIGHT_FACTOR: int = 2
-# Retained as the legacy/fallback bound. The v78 cache-aware path derives the
-# normal append-only recomputation window from the previous cached row count.
 BACKTEST_INCREMENTAL_TAIL_BARS: int = _RUNTIME.backtest_incremental_tail_bars
 
+# The Champion score signature is intentionally unchanged. These version bumps
+# describe data/decision semantics and engineering, not a new alpha model.
 SCORING_VERSION: str = (
     "2026-09-01-v112-akshare-financial-quality-"
     "2026-08-22-v89-continuous-breakout-trigger-"
@@ -38,6 +38,7 @@ SCORING_VERSION: str = (
     + _v51.SCORING_VERSION
 )
 PIPELINE_VERSION: str = (
+    "2026-09-04-v113-canonical-quality-capacity-gate-health-"
     "2026-09-01-v112-akshare-batch-resumable-refresh-"
     "2026-09-01-v112-akshare-point-in-time-fundamentals-"
     "2026-08-22-v89-executable-backtest-signal-semantics-"
@@ -77,6 +78,7 @@ PIPELINE_VERSION: str = (
     + _v51.PIPELINE_VERSION
 )
 DECISION_INTEGRITY_VERSION: str = (
+    "2026-09-04-v113-annual-roe-tristate-capacity-"
     "2026-09-01-v110-financial-only-quality-evidence-"
     "2026-08-21-v87-directional-price-cost-gates-"
     "2026-08-19-v60-future-date-execution-gate-"
@@ -86,6 +88,7 @@ DECISION_INTEGRITY_VERSION: str = (
     + _v51.DECISION_INTEGRITY_VERSION
 )
 OUTPUT_CONTRACT_VERSION: str = (
+    "2026-09-04-v113-quality-status-execution-capacity-"
     "2026-09-01-v110-financial-report-provenance-columns-"
     "2026-08-21-v88-research-integrity-audit-provenance-"
     "2026-08-21-v87-execution-economics-backtest-evidence-"
@@ -107,6 +110,7 @@ OUTPUT_CONTRACT_VERSION: str = (
     + _v51.OUTPUT_CONTRACT_VERSION
 )
 FUNDAMENTAL_GATE_VERSION: str = (
+    "2026-09-04-v113-annual-roe-interim-diagnostic-tristate-"
     "2026-09-01-v112-akshare-announcement-date-provenance-"
     "financial-only-quality-evidence-"
     + _v51.FUNDAMENTAL_GATE_VERSION
@@ -159,29 +163,52 @@ def _install_gui_runtime_contract_if_ready() -> None:
         return
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return float(default)
+    try:
+        value = float(raw)
+    except ValueError:
+        return float(default)
+    return value if value == value and abs(value) != float("inf") else float(default)
+
+
 FILTER_OVERRIDE_MIN_SIGNAL_COUNT: int = 3
 DAILY_MAX_PROVIDER_LAG_TRADING_DAYS: int = 1
 DAILY_MIN_COHERENT_DATA_DATE_RATIO: float = 0.90
 
-TRADE_READY_MIN_MEDIAN_TURNOVER_60D: float = 5_000_000.0
+# Market capacity is a property of the security. Portfolio capacity is a
+# property of the configured order. The compatibility v54 gate still consumes
+# the same effective threshold, but the new canonical diagnostics expose both.
+TRADE_LIQUIDITY_MARKET_FLOOR_CNY: float = float(VOLUME_MIN_MEDIAN_TURNOVER_60D)  # noqa: F405
+TRADE_READY_MIN_MEDIAN_TURNOVER_60D: float = TRADE_LIQUIDITY_MARKET_FLOOR_CNY
 TRADE_READY_MAX_ASSUMED_PARTICIPATION_RATE: float = 0.01
-TRADE_LIQUIDITY_RULE_VERSION: str = "2026-08-18-v54-order-participation"
+LIVE_EXECUTION_ASSUMED_NOTIONAL_CNY: float = max(
+    0.0,
+    _env_float(
+        "INSTITUTION_SCANNER_ORDER_NOTIONAL_CNY",
+        float(BACKTEST_ASSUMED_TRADE_NOTIONAL),  # noqa: F405
+    ),
+)
+# Legacy execution modules read BACKTEST_ASSUMED_TRADE_NOTIONAL directly.
+# Point it at the explicit live-capacity setting so old and canonical gates
+# cannot disagree. With no environment override, the historical 50k default is
+# unchanged.
+BACKTEST_ASSUMED_TRADE_NOTIONAL: float = LIVE_EXECUTION_ASSUMED_NOTIONAL_CNY
+TRADE_LIQUIDITY_RULE_VERSION: str = (
+    "2026-09-04-v113-market-portfolio-capacity-v1"
+)
 
 TRADE_READY_MAX_DATA_AGE_TRADING_DAYS: int = 0
 TRADE_FRESHNESS_RULE_VERSION: str = "2026-08-19-v60-completed-session-only"
 
-# Breakout price evidence uses one monotone smooth-step definition in both the
-# TriggerScore and execution gate, so crossing resistance by a few basis points
-# can no longer manufacture a discontinuous score jump.
 TRADE_READY_MIN_BREAKOUT_PRICE_CONFIRMATION_SCORE: float = 60.0
 TRADE_READY_BASE_SLIPPAGE_RATE: float = 0.001
 TRADE_READY_STOCK_STAMP_DUTY_RATE: float = 0.0005
 TRADE_READY_MIN_TARGET_COST_MULTIPLE: float = 1.50
 TRADE_ECONOMICS_RULE_VERSION: str = "2026-08-21-v87-round-trip-cost-coverage-v1"
 
-# Name classification remains the first line of defence. These behavioural
-# bounds catch unlabelled cash-equivalent ETFs without excluding ordinary low-
-# volatility equity products on a single metric alone.
 ETF_CASH_EQUIVALENT_MAX_ATR_PCT: float = 0.20
 ETF_CASH_EQUIVALENT_MAX_ABS_RETURN_20D_PCT: float = 0.50
 ETF_DIRECTIONAL_RESEARCH_RULE_VERSION: str = (
@@ -190,6 +217,7 @@ ETF_DIRECTIONAL_RESEARCH_RULE_VERSION: str = (
 
 CHECKPOINT_RESUME_VERSION: str = "2026-08-19-v68-pinned-frame-publish-clear-v3"
 FUNDAMENTAL_REFRESH_INTEGRITY_VERSION: str = (
+    "2026-09-04-v113-annual-roe-summary-v1-"
     "2026-09-01-v112-akshare-report-period-batch-resume-v1"
 )
 CACHE_HISTORY_INTEGRITY_VERSION: str = "2026-08-19-v69-full-ohlcv-content-check-v2"
@@ -200,6 +228,7 @@ REPORT_PUBLICATION_INTEGRITY_VERSION: str = "2026-08-19-v75-idempotent-journal-r
 BACKTEST_PUBLICATION_INTEGRITY_VERSION: str = "2026-08-19-v75-idempotent-journal-recovery-v3"
 CACHE_REPORT_PUBLICATION_VERSION: str = "2026-08-19-v72-coherent-market-date-v1"
 DAILY_RECOVERY_INTEGRITY_VERSION: str = (
+    "2026-09-04-v113-gate-health-v1-"
     "2026-08-19-v74-pid-aware-outer-transaction-recovery-v1"
 )
 BACKTEST_COMMAND_INTEGRITY_VERSION: str = (
@@ -213,9 +242,7 @@ SCORE_PIPELINE_ACCELERATION_VERSION: str = (
     "2026-08-21-v86-cache-safe-score-transaction-v1"
 )
 BACKTEST_FASTPATH_VERSION: str = "2026-08-20-v80-whole-ticker-fastscore-v1"
-BACKTEST_IO_CACHE_VERSION: str = (
-    "2026-08-21-v86-vectorized-benchmark-alignment-v1"
-)
+BACKTEST_IO_CACHE_VERSION: str = "2026-08-21-v86-vectorized-benchmark-alignment-v1"
 RESEARCH_POLICY_ACCELERATION_VERSION: str = (
     "2026-08-21-v87-vectorized-name-behaviour-policy-v1"
 )
@@ -226,17 +253,11 @@ BACKTEST_EXECUTION_ACCELERATION_VERSION: str = (
 BACKTEST_WORKSTATION_TUNING_VERSION: str = (
     "2026-08-20-v80-physical-core-chunk-v1"
 )
-
 BACKTEST_RANKING_INTEGRITY_VERSION: str = (
     "2026-08-21-v88-verified-point-in-time-ranking-v1"
 )
-FULL_UNIVERSE_AUDIT_VERSION: str = (
-    "2026-08-21-v82-full-universe-perturbation-v1"
-)
-UNIVERSE_SNAPSHOT_VERSION: str = (
-    "2026-08-21-v88-stock-etf-universe-snapshot-v1"
-)
-
+FULL_UNIVERSE_AUDIT_VERSION: str = "2026-08-21-v82-full-universe-perturbation-v1"
+UNIVERSE_SNAPSHOT_VERSION: str = "2026-08-21-v88-stock-etf-universe-snapshot-v1"
 PRICE_LIMIT_RULE_VERSION: str = "2026-08-17-v52-exchange-rule"
 CALIBRATION_GOVERNANCE_VERSION: str = "2026-08-19-v57-unstable-stable-ratio-shrink-v1"
 
