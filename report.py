@@ -1,15 +1,9 @@
-"""v75 report provenance and idempotent crash-recovery publication facade.
+"""v113 report provenance and idempotent crash-recovery publication facade.
 
-The v51 report contract remains in ``report_v51``. v52 corrected ETF market-cap
-and price-limit provenance; v58 exposed execution diagnostics; v66 staged the
-stateful ordinary report set; v73 added durable PREPARED/COMMITTING/COMMITTED
-journals. v75 makes rollback itself retry-safe: backups are never consumed while
-restoring targets, so another filesystem interruption during recovery can be
-retried on the next run with the same complete backup set.
-
-Existing SignalHistory is seeded into staging so transactional publication never
-resets lifecycle continuity. DAILY may wrap this with its outer staging
-transaction; nested staging remains deliberate and safe.
+The stable report contract remains in ``report_v51``. This facade preserves the
+transactional publication/recovery semantics and adds canonical quality and
+execution-capacity provenance at the final DataFrame boundary without changing
+scores, ranks or eligibility.
 """
 
 from __future__ import annotations
@@ -27,6 +21,10 @@ from typing import Any
 import pandas as pd
 
 import report_v51 as _core
+from institution_scanner.quality_output import (
+    QUALITY_PROVENANCE_COLUMNS,
+    stamp_quality_provenance,
+)
 from report_v51 import *  # noqa: F403
 from tradeability import daily_limit_pct, price_limit_source
 
@@ -46,12 +44,17 @@ _DECISION_EXECUTION_DIAGNOSTICS = (
     "TradeTargetCostMultiple",
     "TradeEconomicsReason",
     "TradeLiquidityApplicable",
+    "MarketExecutionEligible",
+    "PortfolioExecutionEligible",
     "TradeLiquidityPassed",
     "TradeLiquidityStatus",
+    "TradeLiquidityMarketThresholdCNY",
     "TradeLiquidityThresholdCNY",
     "TradeLiquidityAssumedNotionalCNY",
     "TradeLiquidityParticipationPct",
     "TradeLiquidityMaxParticipationPct",
+    "TradeLiquidityMaxOrderCNY",
+    "TradeLiquidityHeadroomCNY",
     "TradeLiquidityReason",
     "TradeLiquidityGateApplied",
     "TradeFreshnessApplicable",
@@ -61,6 +64,7 @@ _DECISION_EXECUTION_DIAGNOSTICS = (
     "TradeFreshnessMaxTradingDays",
     "TradeFreshnessReason",
     "TradeFreshnessGateApplied",
+    *QUALITY_PROVENANCE_COLUMNS,
 )
 
 
@@ -71,6 +75,9 @@ def _results_to_dataframe(results: list[Any]) -> pd.DataFrame:
             frame["MarketCapApplicable"] = pd.Series(dtype=bool)
         if "PriceLimitSource" not in frame.columns:
             frame["PriceLimitSource"] = pd.Series(dtype=object)
+        for column in QUALITY_PROVENANCE_COLUMNS:
+            if column not in frame.columns:
+                frame[column] = pd.Series(dtype=object)
         return frame
 
     is_etf = (
@@ -108,7 +115,7 @@ def _results_to_dataframe(results: list[Any]) -> pd.DataFrame:
         limit_sources.append(price_limit_source(ticker, is_etf=etf))
     frame["PriceLimitPct"] = limit_values
     frame["PriceLimitSource"] = limit_sources
-    return frame
+    return stamp_quality_provenance(frame)
 
 
 def _staged_files(stage: Path) -> list[Path]:
@@ -234,9 +241,6 @@ def recover_publication_transactions(destination: Path) -> int:
         for root in sorted(path for path in group.iterdir() if path.is_dir()):
             state = _read_transaction_state(root)
             if state is None:
-                # Pre-v73 orphan or a crash before the journal became visible.
-                # No v73+ target replacement can occur before state.json exists,
-                # so leave an unknown legacy orphan untouched rather than guess.
                 continue
             if _recover_publication_transaction(root, destination):
                 recovered += 1
@@ -413,6 +417,7 @@ _core._publish_stage = _publish_stage
 _core._seed_lifecycle_state = _seed_lifecycle_state
 _core.export_all = export_all
 _core.REPORT_PUBLICATION_INTEGRITY_VERSION = (
+    "2026-09-04-v113-quality-capacity-provenance-v1-"
     "2026-08-19-v75-idempotent-journal-recovery-v3"
 )
 sys.modules[__name__] = _core
