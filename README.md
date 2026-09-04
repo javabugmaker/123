@@ -98,32 +98,32 @@ GUI 行情源固定显示为 `TickFlow Free`，财报来源为 `AKShare（公告
 全市场扫描：
 
 ```bash
-python main.py scan
+python -m institution_scanner scan
 ```
 
 仅股票 / ETF：
 
 ```bash
-python main.py scan --stocks-only
-python main.py scan --etfs-only
+python -m institution_scanner scan --stocks-only
+python -m institution_scanner scan --etfs-only
 ```
 
 指定标的：
 
 ```bash
-python main.py scan --tickers 600036.SH,510300.SH
+python -m institution_scanner scan --tickers 600036.SH,510300.SH
 ```
 
 强制重建行情缓存：
 
 ```bash
-python main.py scan --force-download
+python -m institution_scanner scan --force-download
 ```
 
 强制刷新 AKShare 财报：
 
 ```bash
-python main.py scan --refresh-fundamentals
+python -m institution_scanner scan --refresh-fundamentals
 ```
 
 ### 价值结构影子模型
@@ -160,6 +160,8 @@ python -m institution_scanner.auction_structure_cli --all-results
 结果位于 `output/`，主要包括：
 
 - `AllResults.csv` / `AllResults.parquet`：完整研究结果
+- `DecisionResults.csv`：GUI / 执行工作流使用的轻量决策面
+- `PublicCandidates.csv` / `PublicationManifest.json`：58 列公开候选面与单次运行级结构化版本、策略和市场状态；网页不读取 400+ 列审计表
 - `Top200.parquet`：统一 RankingScore 的机器研究榜，视图标识为 `RANKED_RESEARCH`
 - `Top50.csv` / `Top50Mixed.csv`：统一 RankingScore + 多样性约束的综合研究榜
 - `Top50Stocks.csv` / `Top50ETF.csv`：股票、ETF 各自独立纯排名
@@ -186,7 +188,7 @@ python -m institution_scanner.auction_structure_cli --all-results
 - `DailyRunSummary.json` 记录阻断项统计、与上一运行的资格升降、分数大幅变化、成本模型、校准稳定性和历史股票池覆盖情况。
 - 行情结果记录复权方式、复权基准日、ATR 截止日和复权重建标记，避免不同价格口径混用。
 - `DecisionResults.csv` 保留执行流动性与行情时效诊断；研究排序可以保留延迟数据，但即时 `READY/CAUTIOUS` 必须使用最新完成交易日。
-- 成功的正式运行会生成 v85 A 股研究简报站点；页面只读取公开字段白名单，并按报告日期截断 K 线，避免历史页面混入未来数据。详见 [WEB_REPORT.md](WEB_REPORT.md)。
+- 成功的正式运行会生成 v114 A 股研究简报站点；当前页与历史页共享静态资源，只读取公开候选契约，不嵌入完整研究表或行情缓存。详见 [WEB_REPORT.md](WEB_REPORT.md)。
 
 ## 回测交易成本
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -86,3 +87,18 @@ def test_renderer_consumes_compact_contract_and_externalizes_assets(
     assert (site / "assets" / "report-v114.css").is_file()
     assert (site / "assets" / "report-v114.js").is_file()
     assert (site / "reports" / "index.html").is_file()
+
+
+def test_production_publication_facades_do_not_import_versioned_renderers() -> None:
+    root = Path(__file__).resolve().parents[1]
+    versioned_import = re.compile(
+        r"^(?:from|import)\s+web_report_v\d+",
+        flags=re.MULTILINE,
+    )
+    for relative in (
+        "web_report_v81.py",
+        "institution_scanner/report_terminal.py",
+    ):
+        text = (root / relative).read_text(encoding="utf-8")
+        assert not versioned_import.search(text), relative
+        assert "import *" not in text, relative
