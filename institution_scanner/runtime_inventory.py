@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Final
 
-RUNTIME_INVENTORY_VERSION: Final = "2026-09-04-v113-runtime-overlay-inventory-v3"
+RUNTIME_INVENTORY_VERSION: Final = "2026-09-04-v113-runtime-overlay-inventory-v4"
 
 LEGACY_ANALYTICS_OVERLAYS: Final[tuple[str, ...]] = (
     "indicator_acceleration_v77",
@@ -27,15 +27,15 @@ LEGACY_ANALYTICS_OVERLAYS: Final[tuple[str, ...]] = (
 )
 
 LEGACY_SCAN_OVERLAYS: Final[tuple[str, ...]] = (
-    "checkpoint_inputs_v59",
     "scanner_resume_v59",
-    "scanner_resume_v68",
 )
 
 RETIRED_FROM_PRODUCTION_PATH: Final[tuple[str, ...]] = (
     "analytics_compat_v97",
     "backtest_profile_alignment_v95",
     "score_runtime_v97",
+    "checkpoint_inputs_v59",
+    "scanner_resume_v68",
 )
 
 
