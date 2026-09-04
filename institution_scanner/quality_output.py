@@ -16,7 +16,6 @@ import pandas as pd
 
 from fundamental_data import fundamental_data_path
 from fundamental_quality import calculate_quality, load_fundamental_data
-from institution_scanner.quality_policy import EvidenceStatus
 
 
 QUALITY_PROVENANCE_COLUMNS = (
@@ -75,10 +74,10 @@ def stamp_quality_provenance(frame: pd.DataFrame) -> pd.DataFrame:
                 "LatestAnnualROEPeriod": "",
                 "ROEHardGateValue": np.nan,
                 "ROEHardGateSource": "NOT_APPLICABLE",
-                "QualityROEStatus": str(EvidenceStatus.NOT_APPLICABLE),
-                "QualityGrossMarginStatus": str(EvidenceStatus.NOT_APPLICABLE),
-                "QualityNetProfitStatus": str(EvidenceStatus.NOT_APPLICABLE),
-                "QualityGateStatus": str(EvidenceStatus.NOT_APPLICABLE),
+                "QualityROEStatus": "NOT_APPLICABLE",
+                "QualityGrossMarginStatus": "NOT_APPLICABLE",
+                "QualityNetProfitStatus": "NOT_APPLICABLE",
+                "QualityGateStatus": "NOT_APPLICABLE",
                 "QualityGateEvidenceCompleteness": 0.0,
                 "FinancialFieldCoverage": np.nan,
             }
