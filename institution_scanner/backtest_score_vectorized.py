@@ -23,6 +23,7 @@ from config import (
     VOLUME_ACCUM_MIN_DAYS,
     VOLUME_ACCUM_RATIO,
 )
+from institution_scanner.score_kernel import combine_score_components
 
 
 def _component_weights() -> tuple[float, float, float]:
@@ -942,10 +943,13 @@ def final_score_series(
     trigger = _clampc(breakout * trigger_cov, 0.0, 100.0)
     execution = _clampc(exec_raw * exec_cov, 0.0, 100.0)
 
-    ws, wt, we = _component_weights()
-    final = _clampc(base * ws + trigger * wt + execution * we, 0.0, 100.0)
-    coverage_cap = 40.0 + 60.0 * coverage
-    final = np.minimum(final, coverage_cap)
+    final = combine_score_components(
+        base,
+        trigger,
+        execution,
+        coverage,
+        weights=_component_weights(),
+    )
 
     final = np.where(missing >= 4, 0.0, final)
     if return_components:
