@@ -22,6 +22,7 @@ _threshold_migration_v95.install(_config)
 
 import score_core as _core  # noqa: E402
 from execution_integrity_v87 import smooth_breakout_price_component  # noqa: E402
+from institution_scanner.score_kernel import combine_scalar_score  # noqa: E402
 from score_core import *  # noqa: E402,F403
 from volatility_state import volatility_contraction_score  # noqa: E402
 
@@ -119,17 +120,17 @@ def score_ticker(df: pd.DataFrame, is_etf: bool = False):
     trigger_score = _core._clamp(trigger_raw * trigger_coverage, 0.0, 100.0)
 
     setup_weight, trigger_weight, execution_weight = _core._model_component_weights()
-    final_score = _core._clamp(
-        result.base_score * setup_weight
-        + trigger_score * trigger_weight
-        + result.execution_score * execution_weight,
-        0.0,
-        100.0,
+    final_score = combine_scalar_score(
+        result.base_score,
+        trigger_score,
+        result.execution_score,
+        result.indicator_coverage,
+        weights=(setup_weight, trigger_weight, execution_weight),
     )
     coverage_cap = 40.0 + 60.0 * float(result.indicator_coverage)
 
     result.trigger_score = trigger_score
-    result.final_score = min(final_score, coverage_cap)
+    result.final_score = final_score
     result.contributions["trigger_event"] = trigger_raw
     result.contributions["coverage_cap"] = coverage_cap
     return result

@@ -28,6 +28,7 @@ Thumbs.db
 cache/
 output/
 logs/
+.gh-pages/
 
 # Except keep the directory structure
 !cache/.gitkeep

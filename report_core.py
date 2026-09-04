@@ -56,6 +56,7 @@ from config import (
     VALUE_TRAP_RISK_THRESHOLD,
 )
 from evidence import enrich_evidence_fields
+from institution_scanner.publication_contract import write_publication_contract
 from performance_cache import BACKTEST_CACHE_VERSION, INDICATOR_CACHE_VERSION
 from research_policy_v87 import vectorized_etf_research_policy
 from result_contract import (
@@ -2141,6 +2142,27 @@ def refresh_candidate_exports(
     ).head(top_n_csv)
     sustained = _annotate_candidate_view(sustained, "SUSTAINED_SIGNAL")
     _atomic_write_csv(sustained, sustained_path)
+    public_path, public_manifest_path = write_publication_contract(
+        research_pool,
+        destination=destination,
+        source_rows=ranked,
+        views={
+            "MIXED_RESEARCH": research_pool,
+            "STOCK_RESEARCH": stock_pool,
+            "ETF_RESEARCH": etf_pool,
+            "TRADE_READY": trade_ready,
+            "OPPORTUNITY": opportunity,
+            "CONFIRMED_BREAKOUT": trigger,
+            "ENTRY_SETUP": entry,
+            "VALUE_TRAP_RISK": trap,
+            "SUSTAINED_SIGNAL": sustained,
+        },
+    )
+    logger.info(
+        "Exported compact public contract: %s and %s",
+        public_path,
+        public_manifest_path,
+    )
     return csv_path, parquet_path, ranked
 
 
@@ -2223,6 +2245,11 @@ def export_all(
             f"Top{top_n_csv}SustainedSignals.csv",
         ):
             _atomic_write_csv(df, OUTPUT_DIR / name)
+        write_publication_contract(
+            df,
+            destination=OUTPUT_DIR,
+            source_rows=df,
+        )
         return csv_path, parquet_path, full_csv, full_parquet_path
 
     # Validate and prepare the complete candidate set before publishing even
