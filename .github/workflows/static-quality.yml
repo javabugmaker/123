@@ -35,11 +35,22 @@ jobs:
         run: python -m pytest -q
       - name: Compile
         run: python -m compileall -q .
-      - name: Upload refactor source snapshot
-        if: always()
-        uses: actions/upload-artifact@v4
+
+  windows-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          name: refactor-source-snapshot
-          path: .
-          include-hidden-files: true
-          retention-days: 1
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            constraints-ci.txt
+      - name: Install runtime
+        run: pip install -c constraints-ci.txt -r requirements.txt
+      - name: Compile and import canonical entry points
+        shell: pwsh
+        run: |
+          python -m compileall -q institution_scanner
+          python -c "import main, daily_pipeline, web_report_v81"

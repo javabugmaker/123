@@ -52,6 +52,10 @@ Core canonical services include:
 - `performance_health.py` — comparable DAILY runtime regression diagnostics.
 - `version_manifest.py` / `runtime_inventory.py` — structured provenance and
   measurable compatibility-debt inventory.
+- `publication_contract.py` — narrow, stable candidate projection plus one
+  run-level provenance manifest.
+- `publication_renderer.py` — single-pass Pages renderer with shared static
+  assets; no chained HTML mutation or embedded wide research frames.
 
 No new root version overlay above the v102 compatibility ceiling is allowed.
 
@@ -176,6 +180,20 @@ derived publication surfaces and must not recompute cross-sectional ranks.
 Candidate exports are deferred until calibration, narrative, reliability and
 other diagnostics are complete, then materialized once.
 
+The publication boundary has three deliberately different artifacts:
+
+1. `AllResults.parquet` is the complete research/audit surface.
+2. `DecisionResults.csv` is the lightweight operational/GUI surface.
+3. `PublicCandidates.csv` plus `PublicationManifest.json` is the stable public
+   page contract. Long legacy version strings occur once in the manifest, not
+   once per candidate row.
+
+The stable `web_report_v81` entry point now calls the canonical renderer
+directly. Historical `web_report_vXX` modules are compatibility archives and
+are not composed on the production Pages path. Current and dated reports share
+`assets/report-v114.css` and `assets/report-v114.js`; market-cache/K-line data is
+not embedded into every archive page.
+
 Wide CSV frames are consolidated at postprocessor read boundaries. Market-data
 frames are validated before cache persistence; independent ticker writes may be
 bounded-parallel while manifest materialization remains ordered.
@@ -192,6 +210,15 @@ constraints file defines the tested runtime set.
 Legacy concatenated version strings remain readable for compatibility. New
 consumers should use `version_manifest`, including its typed decision-policy
 manifest/hash and explicit runtime overlay inventory.
+
+The supported CLI entry point is `python -m institution_scanner`; `main.py`
+remains a compatibility facade. Docker and the Windows CI smoke job exercise
+the package entry point/import surface.
+
+DAILY compute/verification and Pages publication are separate CI jobs. The
+compute job has read-only repository permission and uploads a verified static
+artifact; only the dependent publication job receives write permission. The
+generated `gh-pages` worktree is no longer tracked on `main`.
 
 ## Shrink-only legacy budget
 

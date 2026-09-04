@@ -265,6 +265,14 @@ def publish_site_files(
             dirs_exist_ok=True,
         )
         publish_paths = ["index.html", ".nojekyll", "reports"]
+        assets_dir = site_dir / "assets"
+        if assets_dir.is_dir():
+            shutil.copytree(
+                assets_dir,
+                worktree / "assets",
+                dirs_exist_ok=True,
+            )
+            publish_paths.append("assets")
         performance_page = site_dir / "performance.html"
         if performance_page.is_file():
             shutil.copy2(performance_page, worktree / "performance.html")

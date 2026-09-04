@@ -35,4 +35,4 @@ RUN mkdir -p /app/cache /app/output /app/logs && \
 
 USER scanner
 
-CMD ["python", "main.py", "scan"]
+CMD ["python", "-m", "institution_scanner", "scan"]

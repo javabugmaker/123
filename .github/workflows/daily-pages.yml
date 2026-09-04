@@ -7,16 +7,18 @@ on:
     - cron: '40 7 * * 1-5'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: institution-scanner-daily-pages
   cancel-in-progress: false
 
 jobs:
-  daily-pages:
+  compute-and-verify:
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    permissions:
+      contents: read
     env:
       PYTHONUNBUFFERED: '1'
       # Build locally first; publication happens only after reliability and
@@ -54,14 +56,6 @@ jobs:
       - name: Install runtime
         run: pip install -c constraints-ci.txt -r requirements.txt
 
-      - name: Configure GitHub token for temporary gh-pages clone
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
-          git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic ${auth}"
-
       - name: Run canonical DAILY pipeline without publishing
         shell: bash
         run: python daily_pipeline.py --backtest-mode fast
@@ -85,8 +79,47 @@ jobs:
               )
           PY
 
-      - name: Publish verified snapshot
+      - name: Package verified static site
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-pages-site
+          path: output/web_report
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: compute-and-verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout publication transport
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download verified site
+        uses: actions/download-artifact@v4
+        with:
+          name: verified-pages-site
+          path: output/web_report
+
+      - name: Configure GitHub token for Pages push
         env:
-          INSTITUTION_SCANNER_WEB_PUBLISH: '1'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
-        run: python publish_web_report.py
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic ${auth}"
+
+      - name: Publish immutable verified artifact
+        shell: bash
+        run: python -m institution_scanner.publish_site output/web_report
