@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import numpy as np
 import pandas as pd
 
-CHINEXT_20_START: Final[pd.Timestamp] = pd.Timestamp("2020-08-24")
+CHINEXT_20_START: Final[pd.Timestamp] = cast(
+    pd.Timestamp, pd.Timestamp("2020-08-24")
+)
 LIMIT_TOLERANCE: Final[float] = 0.0025
 
 
