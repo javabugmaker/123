@@ -8,8 +8,8 @@ inside the allowed turnover participation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -43,7 +43,6 @@ def _env_float(name: str, default: float) -> float:
 
 def policy_from_config(config: Any) -> LiquidityCapacityPolicy:
     """Resolve capacity policy without coupling the pure calculator to config.py."""
-
     market_floor = float(
         getattr(
             config,
@@ -76,7 +75,6 @@ def stamp_liquidity_capacity(
     policy: LiquidityCapacityPolicy,
 ) -> pd.Series:
     """Stamp capacity diagnostics and return portfolio execution eligibility."""
-
     normalized = policy.normalized()
     market_floor = normalized.market_turnover_floor_cny
     max_participation = normalized.max_participation_rate
@@ -112,20 +110,18 @@ def stamp_liquidity_capacity(
     participation.loc[valid] = notional / turnover.loc[valid]
 
     market_pass = valid & turnover.ge(market_floor)
-    portfolio_pass = (
-        market_pass
-        & (participation.le(max_participation + 1e-12) if max_participation > 0.0 else False)
-    )
+    if max_participation > 0.0:
+        portfolio_pass = market_pass & participation.le(
+            max_participation + 1e-12
+        )
+    else:
+        portfolio_pass = pd.Series(False, index=result.index, dtype=bool)
     if notional <= 0.0:
         portfolio_pass = market_pass.copy()
 
     effective_threshold = pd.Series(market_floor, index=result.index, dtype=float)
     if max_participation > 0.0:
-        effective_threshold = pd.Series(
-            max(market_floor, notional / max_participation),
-            index=result.index,
-            dtype=float,
-        )
+        effective_threshold[:] = max(market_floor, notional / max_participation)
 
     result["TradeLiquidityApplicable"] = True
     result["MarketExecutionEligible"] = market_pass
@@ -146,13 +142,14 @@ def stamp_liquidity_capacity(
     reason.loc[valid & ~market_pass] = (
         "市场成交容量不足：60日中位成交额低于最低研究执行门槛"
     )
-    reason.loc[market_pass & ~portfolio_pass] = [
+    portfolio_fail = market_pass & ~portfolio_pass
+    reason.loc[portfolio_fail] = [
         (
             f"市场容量合格，但当前假设订单{notional / 10_000:.2f}万元超过"
             f"{max_participation:.1%}参与率容量；该标的当前最大建议订单约"
             f"{value / 10_000:.2f}万元"
         )
-        for value in max_order.loc[market_pass & ~portfolio_pass]
+        for value in max_order.loc[portfolio_fail]
     ]
     reason.loc[portfolio_pass] = [
         (
