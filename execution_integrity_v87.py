@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+import config as _config
 from config import (
     BACKTEST_ASSUMED_TRADE_NOTIONAL,
     BACKTEST_LIQUIDITY_IMPACT_AT_ONE_PERCENT,
@@ -15,6 +16,10 @@ from config import (
     TRADE_READY_STOCK_STAMP_DUTY_RATE,
 )
 from execution_costs import BrokerFeeSchedule
+from institution_scanner.execution_capacity import (
+    policy_from_config,
+    stamp_liquidity_capacity,
+)
 
 _ACTIONABLE_SIGNAL_TYPES = frozenset(
     {"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"}
@@ -93,7 +98,9 @@ def stamp_breakout_price_diagnostics(result: pd.DataFrame) -> pd.Series:
         clearance.to_numpy(dtype=np.float64)
     )
     minimum = float(TRADE_READY_MIN_BREAKOUT_PRICE_CONFIRMATION_SCORE)
-    passed = ~applicable | (valid & pd.Series(confirmation, index=result.index).ge(minimum))
+    passed = ~applicable | (
+        valid & pd.Series(confirmation, index=result.index).ge(minimum)
+    )
 
     result["BreakoutClearancePct"] = clearance.round(4)
     result["LegacyBreakoutPriceComponent"] = np.round(legacy, 4)
@@ -117,6 +124,11 @@ def stamp_breakout_price_diagnostics(result: pd.DataFrame) -> pd.Series:
         reason[:] = "历史结果缺少突破价格字段，沿用旧执行语义"
     result["BreakoutPriceGateReason"] = reason
     return passed.astype(bool)
+
+
+def stamp_trade_liquidity_capacity_diagnostics(result: pd.DataFrame) -> pd.Series:
+    """Expose market capacity separately from configured portfolio capacity."""
+    return stamp_liquidity_capacity(result, policy_from_config(_config))
 
 
 def stamp_trade_economics_diagnostics(
@@ -197,4 +209,9 @@ def stamp_trade_economics_diagnostics(
     if not schema_available:
         reason[:] = "历史结果缺少执行经济性字段，沿用旧执行语义"
     result["TradeEconomicsReason"] = reason
+
+    # Add capacity diagnostics at the same canonical execution boundary. The
+    # legacy v54 gate may still consume compatibility fields afterwards, but
+    # these additional columns retain the market-vs-portfolio distinction.
+    stamp_trade_liquidity_capacity_diagnostics(result)
     return passed.astype(bool)
