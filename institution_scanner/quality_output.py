@@ -17,7 +17,6 @@ import pandas as pd
 from fundamental_data import fundamental_data_path
 from fundamental_quality import calculate_quality, load_fundamental_data
 
-
 QUALITY_PROVENANCE_COLUMNS = (
     "InterimROE",
     "LatestAnnualROE",
@@ -87,29 +86,17 @@ def stamp_quality_provenance(frame: pd.DataFrame) -> pd.DataFrame:
             payload = {
                 "InterimROE": quality.interim_roe if quality else np.nan,
                 "LatestAnnualROE": quality.latest_annual_roe if quality else np.nan,
-                "LatestAnnualROEPeriod": (
-                    quality.latest_annual_roe_period if quality else ""
-                ),
+                "LatestAnnualROEPeriod": quality.latest_annual_roe_period if quality else "",
                 "ROEHardGateValue": quality.roe_hard_gate_value if quality else np.nan,
-                "ROEHardGateSource": (
-                    quality.roe_hard_gate_source if quality else "UNKNOWN"
-                ),
+                "ROEHardGateSource": quality.roe_hard_gate_source if quality else "UNKNOWN",
                 "QualityROEStatus": quality.roe_status if quality else "UNKNOWN",
-                "QualityGrossMarginStatus": (
-                    quality.gross_margin_status if quality else "UNKNOWN"
-                ),
-                "QualityNetProfitStatus": (
-                    quality.net_profit_status if quality else "UNKNOWN"
-                ),
-                "QualityGateStatus": (
-                    quality.quality_gate_status if quality else "UNKNOWN"
-                ),
+                "QualityGrossMarginStatus": quality.gross_margin_status if quality else "UNKNOWN",
+                "QualityNetProfitStatus": quality.net_profit_status if quality else "UNKNOWN",
+                "QualityGateStatus": quality.quality_gate_status if quality else "UNKNOWN",
                 "QualityGateEvidenceCompleteness": (
                     quality.quality_gate_evidence_completeness if quality else 0.0
                 ),
-                "FinancialFieldCoverage": (
-                    quality.financial_field_coverage if quality else np.nan
-                ),
+                "FinancialFieldCoverage": quality.financial_field_coverage if quality else np.nan,
             }
         for column in QUALITY_PROVENANCE_COLUMNS:
             values[column].append(payload[column])
