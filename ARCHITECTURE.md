@@ -10,106 +10,156 @@ The production Champion remains locked at:
 - Signature order: `Setup:Trigger:Execution`
 - Backtest minimum samples: 10
 - v102/v106 fail-closed calibration governance: unchanged
-- TradeReady hard gates: unchanged
+- TradeReady hard gates: preserved except for explicit data-semantic integrity repairs
 
 The canonical source of truth is `config_core.py` plus
-`institution_scanner/contracts.py`. Documentation, tests and reliability
-verification must agree with those values; the reliability layer verifies the
-production engine and never redefines it.
-
-New model ideas must run as shadow challengers. They may create diagnostic scores,
-ranks and summaries, but they must never rewrite production score/rank/eligibility
-columns until an explicit promotion is made after out-of-sample validation.
+`institution_scanner/contracts.py`. New alpha/model ideas remain shadow
+challengers until explicit out-of-sample promotion. Engineering/data-semantic
+repairs must not silently change the Champion weight signature.
 
 ## Canonical forward path
 
-New reliability, evidence, performance and report work belongs under
-`institution_scanner/`:
+New work belongs under `institution_scanner/`. Root `*_vXX.py` files are
+compatibility kernels only and the production overlay count is shrink-only.
+
+Core canonical services include:
 
 - `contracts.py` — immutable Champion / Challenger contracts.
-- `point_in_time_backtest.py` / `pit_counts.py` — PIT metric scope and truthful
-  raw/verified held-out provenance.
-- `pit_maturity.py` — diagnostic archive maturity state; never auto-activates
-  production evidence.
+- `policy_manifest.py` — typed model, quality and execution policies plus stable
+  `DP-xxxxxxxxxxxx` policy hash.
+- `quality_policy.py` — PASS / FAIL / UNKNOWN / NOT_APPLICABLE evidence semantics
+  and annual-vs-interim ROE ownership.
+- `execution_capacity.py` — market capacity vs configured portfolio/order capacity.
+- `price_limit_policy.py` — one A-share/ETF exchange-limit rule used by scalar and
+  vectorized tradeability paths.
+- `gate_health.py` — diagnostic-only run-level gate distribution drift detection.
+- `quality_output.py` — additive publication provenance without expanding the
+  legacy `ScanResult` object.
+- `backtest_profile.py` — canonical FAST/EXACT historical scoring profile.
+- `score_runtime.py` — canonical score-runtime composition.
+- `checkpoint_inputs.py` / `scan_resume_boundary.py` — canonical scan wrapper
+  semantics around the remaining v59 checkpoint kernel.
+- `point_in_time_backtest.py` / `pit_counts.py` / `pit_maturity.py` — PIT metric
+  scope, provenance and archive maturity.
 - `reliability.py` — shadow challenger and leave-one-out hierarchical evidence.
 - `verify_output.py` — post-run production artifact verifier.
-- `postprocess_performance.py` — wide-frame consolidation at postprocess read
-  boundaries; performance only, never scoring.
-- `market_cache_performance.py` — validated-frame cache-write elision and bounded
-  parallel Parquet persistence while preserving atomic files and manifest order.
-- `ranking_determinism.py` / `report_determinism.py` — ticker-stable exact-tie
-  ordering so concurrent scanner completion order can never change ranks.
-- `export_batch.py` — defers redundant candidate-view refreshes and materializes
-  the final fully annotated candidate set once per canonical backtest command.
-- `gui_view_model.py` — pure GUI row/view derivation outside Tk widgets.
+- `postprocess_performance.py` — wide-frame consolidation at read boundaries.
+- `market_cache_performance.py` — validated cache persistence performance.
+- `ranking_determinism.py` / `report_determinism.py` — deterministic exact-tie
+  ordering.
+- `export_batch.py` — final candidate-view materialization after annotations.
+- `gui_view_model.py` — pure GUI view derivation outside Tk widgets.
 - `performance_health.py` — comparable DAILY runtime regression diagnostics.
 - `version_manifest.py` / `runtime_inventory.py` — structured provenance and
   measurable compatibility-debt inventory.
-- `report_terminal.py` plus page policy modules — research-terminal presentation
-  enhancements and page-only provenance.
 
-Legacy root `*_vXX.py` files remain compatibility kernels for now. **No new root
-version overlays above the current v102 compatibility ceiling are allowed.** New
-forward work must live under `institution_scanner/` and be routed through stable
-facades.
+No new root version overlay above the v102 compatibility ceiling is allowed.
+
+## Financial quality semantics
+
+AKShare/Eastmoney exposes ROE for the report period. An interim Q1/H1/Q3 ROE is
+therefore not a full-year ROE and must not be compared directly with the fixed
+annual quality thresholds.
+
+The production semantic contract is:
+
+1. keep the raw latest report-period `ROE` for provenance;
+2. expose it as `InterimROE` when the latest report is not annual;
+3. derive `LatestAnnualROE` only from an annual report that was already announced
+   by the point-in-time cutoff;
+4. use `ROEHardGateValue=LatestAnnualROE` for full-year quality thresholds;
+5. if an AKShare interim report exists but no usable annual ROE exists, ROE
+   evidence is `UNKNOWN`, not `FAIL`;
+6. never multiply Q1/H1/Q3 ROE by a guessed annualization factor;
+7. preserve `LatestReportPeriod` and `LatestAnnouncementDate` PIT provenance.
+
+`QualityGateEvidenceCompleteness` means completeness of evidence required by the
+quality gate. `FinancialFieldCoverage` is a separate measure of how many raw
+financial fields are present; an unavailable `DebtToAssets` value must not be
+misrepresented as a failed quality condition.
+
+## Execution-capacity semantics
+
+Liquidity has two different meanings and they are kept separate:
+
+- `MarketExecutionEligible`: the security itself clears the minimum 60-day
+  turnover floor.
+- `PortfolioExecutionEligible`: the configured order also fits within the maximum
+  turnover participation rate.
+
+The output exposes `TradeLiquidityMaxOrderCNY` and headroom. The default assumed
+order remains 50,000 CNY for backward compatibility, while
+`INSTITUTION_SCANNER_ORDER_NOTIONAL_CNY` may explicitly set the live research
+notional. A smaller account can therefore pass portfolio capacity on a security
+that would fail a 50,000 CNY order without pretending the market itself is
+illiquid.
+
+## Price-limit semantics
+
+`institution_scanner.price_limit_policy` is the single source for:
+
+- standard A-share 10% rules;
+- ChiNext 10% before 2020-08-24 and 20% thereafter;
+- STAR 20%;
+- Beijing Stock Exchange 30%;
+- relevant ETF fallback rules;
+- validated provider ratio overrides.
+
+Scalar tradeability and the vectorized historical matrix consume this same
+policy so historical rule changes cannot drift between live and backtest paths.
 
 ## Mandatory production output schema
 
-`AllResults.csv` is not considered valid merely because it contains prices and
-scores. The verifier requires a compact production-proof schema covering:
+`AllResults.csv` is not valid merely because it contains prices and scores. The
+verifier requires production/model/pipeline provenance, full-universe ranking
+scope, run ID, execution/signal/freshness fields and candidate-view provenance.
 
-- run/model/pipeline/output/decision provenance;
-- production model role and locked weight signature;
-- Challenger and hierarchical non-production certification;
-- calibration-governance/local-peer evidence eligibility;
-- full-universe ranking scope and RunId;
-- CandidateViewRank / RankingScore / execution / signal / freshness fields.
+Additive v113 audit fields include:
 
-Missing a required production-proof field is a fail-closed publication error.
-Candidate views have their own smaller required schemas. An empty TradeReady view
-remains valid when no row passes hard gates.
+- interim/annual/hard-gate ROE provenance;
+- quality evidence status strings;
+- gate-evidence completeness and raw financial-field coverage;
+- market and portfolio execution eligibility;
+- maximum order capacity and liquidity headroom;
+- structured decision-policy hash via the version manifest.
+
+Missing required production-proof fields remains a fail-closed publication
+error. An empty TradeReady view is valid when no row passes hard gates.
+
+## Gate-health observability
+
+`DailyRunSummary.json` records diagnostic gate health. A near-zero quality pass
+rate, especially with high hard-data completeness or a sharp collapse relative
+to the previous comparable run, is surfaced as a warning/critical flag. This is
+observability only: gate-health diagnostics never alter scores or eligibility.
 
 ## Release gates
 
-A model-affecting change must pass:
+A model-affecting or decision-semantic change must pass:
 
-1. Static quality (Ruff, Pyright, compile).
+1. Static quality (Ruff, strict canonical Ruff, Pyright, compile).
 2. Unit / regression tests.
 3. Golden reliability fixture.
-4. Offline reliability-to-publication golden pipeline.
+4. Offline reliability-to-publication golden pipeline where applicable.
 5. Output-contract verification.
 6. Current-session freshness verification.
-7. Shadow observation before Champion promotion when scoring semantics change.
+7. Shadow observation before Champion promotion for genuine alpha/model changes.
 
-Engineering-only changes must additionally preserve canonical model signatures
-and ranking columns in regression tests. Exact score ties must be invariant to
-input order; `Ticker` is the final deterministic ordering key.
-
-The canonical `institution_scanner/` package has a stricter Ruff lane
-(`B/C4/SIM/PERF/PIE`) in addition to the repository-wide compatibility lint.
-Legacy kernels are not used as an excuse to weaken the forward-code quality bar.
-
-GitHub DAILY builds with publication disabled, verifies the generated output,
-checks freshness, and only then publishes the snapshot.
+Engineering-only changes must preserve the Champion weight signature and ranking
+semantics. Exact ties remain ticker-stable.
 
 ## Evidence semantics
 
-Three evidence layers are intentionally separated:
+Three evidence layers remain intentionally separated:
 
-- LOCAL BT — ticker-level historical evidence; production use still requires the
+- LOCAL BT — ticker-level historical evidence; production use requires the
   minimum-sample contract.
-- PEER BT — global/peer calibration; PIT, survivorship, leave-one-out, held-out
-  ordering and walk-forward governance can force it to diagnostic-only.
-- HIER BT — pooled asset/industry/signal evidence. It uses focal-ticker
-  leave-one-out plus a Kish peer-breadth cap and remains diagnostic-only by
-  contract.
+- PEER BT — global/peer calibration; PIT/survivorship/held-out governance can
+  force it to diagnostic-only.
+- HIER BT — pooled asset/industry/signal evidence with focal-ticker leave-one-out
+  and peer-breadth caps; diagnostic-only by contract.
 
-This separation prevents sparse, correlated or unverified historical evidence
-from being presented as a probability or silently changing the production model.
-
-### PIT maturity
-
-The prospective PIT archive has an explicit maturity state:
+Prospective PIT archive maturity remains:
 
 - `NO_ARCHIVE`
 - `WARMUP`
@@ -117,53 +167,36 @@ The prospective PIT archive has an explicit maturity state:
 - `SHADOW_ELIGIBLE`
 - `PROMOTION_CANDIDATE`
 
-Maturity uses snapshot-day depth, archive span, maximum snapshot gap and verified
-held-out samples. It is diagnostic only: `production_activation_allowed` is always
-false and any future promotion remains an explicit manual model-governance event.
-With partial survivorship control the archive can become shadow-eligible but
-cannot claim production-grade survivorship completeness.
+Maturity never auto-promotes a model.
 
-## Publication / performance semantics
+## Publication and performance semantics
 
-`AllResults` is the canonical mutable post-ranking surface. Intermediate overlays
-may update it, but candidate views are a derived publication surface. During a
-canonical backtest command, candidate exports are deferred until calibration,
-narrative, reliability and resonance diagnostics are complete, then generated
-once from the final annotated frame.
+`AllResults` is the canonical mutable post-ranking surface. Candidate views are
+derived publication surfaces and must not recompute cross-sectional ranks.
+Candidate exports are deferred until calibration, narrative, reliability and
+other diagnostics are complete, then materialized once.
 
-Wide CSV frames are consolidated once when postprocessors read them. This avoids
-pandas block fragmentation warnings without suppressing warnings globally and
-without changing any values.
+Wide CSV frames are consolidated at postprocessor read boundaries. Market-data
+frames are validated before cache persistence; independent ticker writes may be
+bounded-parallel while manifest materialization remains ordered.
 
-Market-data frames are validated before cache persistence. The cache writer marks
-canonical validated frames, avoids a redundant second full-frame validation, and
-overlaps independent per-ticker Parquet writes with bounded worker threads.
-Manifest materialization remains ordered after all cache writes complete.
-
-Scanner analysis transfers market-frame ownership from the main downloaded-frame
-dictionary into bounded worker futures as each ticker is submitted, reducing peak
-RAM without changing indicator/scoring inputs.
-
-`DailyRunSummary.json` exposes stage timings, scan/backtest breakdowns and a
-`performance_health` comparison. A previous run is considered a valid benchmark
-only when mode, universe size and cache state are materially comparable; runtime
-health is diagnostic and never changes ranking/publication eligibility.
+`DailyRunSummary.json` exposes stage timings, scan/backtest breakdowns,
+performance health and gate health. These diagnostics never change ranking.
 
 ## Runtime and dependency reproducibility
 
-Static CI and the Docker image use Python 3.11 and the same reviewed
-`constraints-ci.txt` dependency constraints. `requirements.txt` remains the
-compatibility range declaration; constraints define the tested runtime set.
+Static CI and the Docker image use Python 3.11 and reviewed constraints from
+`constraints-ci.txt`. `requirements.txt` remains the compatibility range; the
+constraints file defines the tested runtime set.
 
-Legacy concatenated version strings remain available for compatibility, while
-`version_manifest` provides structured production/runtime provenance and includes
-an explicit inventory of compatibility overlays still on the production path.
-Every removed overlay must reduce that inventory after golden-equivalence tests.
+Legacy concatenated version strings remain readable for compatibility. New
+consumers should use `version_manifest`, including its typed decision-policy
+manifest/hash and explicit runtime overlay inventory.
 
 ## Shrink-only legacy budget
 
-The remaining giant compatibility modules are **shrink-only**. CI guards their
-size envelope so new logic cannot silently accumulate in them:
+The remaining giant compatibility modules are shrink-only. CI guards their size
+ceiling so new logic cannot accumulate in them:
 
 - `analytics_core.py` <= 160 KB
 - `report_core.py` <= 105 KB
@@ -172,18 +205,24 @@ size envelope so new logic cannot silently accumulate in them:
 - `scanner.py` <= 80 KB
 - `signal_lifecycle_core.py` <= 70 KB
 
-Future extraction should move pure services/view models into the canonical package,
-then reduce these ceilings. GUI and PAGE development should prefer subtraction and
-view-model extraction over adding more top-level controls or diagnostic sections.
+Future extraction moves pure services/view models into the canonical package and
+then lowers these ceilings. GUI and Pages development should prefer subtraction
+and shared view-model extraction over new top-level controls.
 
-## Consolidation policy
+## Compatibility-debt policy
 
-Architecture consolidation is behavior-first, not deletion-first. A legacy module
-can be removed only after canonical code has equivalent regression coverage and a
-golden test demonstrates that the production output is unchanged.
+Architecture consolidation is behavior-first, not deletion-first. A legacy
+module may be removed from the production path only after canonical code owns the
+same semantics and regression/golden tests prove equivalence.
 
-Runtime monkey-patch composition is treated as visible compatibility debt, not a
-preferred architecture. Production-facing facades should progressively depend on
-canonical services; compatibility kernels are retired one at a time only when an
-offline golden/equivalence test proves the same score, rank, eligibility and
-publication surface.
+v113 retires five thin production wrappers from runtime composition:
+
+- `analytics_compat_v97`
+- `backtest_profile_alignment_v95`
+- `score_runtime_v97`
+- `checkpoint_inputs_v59`
+- `scanner_resume_v68`
+
+The remaining overlay count is reported by `runtime_inventory()` and must only
+move downward. Large kernels such as `scanner_resume_v59` are retained until a
+full equivalence test can protect their checkpoint/crash semantics.

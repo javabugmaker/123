@@ -28,4 +28,12 @@ def test_runtime_inventory_is_explicitly_nonexpanding() -> None:
     inventory = runtime_inventory()
     assert inventory["new_root_overlays_allowed"] is False
     assert inventory["migration_policy"] == "GOLDEN_EQUIVALENCE_BEFORE_REMOVAL"
-    assert int(inventory["legacy_overlay_count"]) >= 0
+    assert int(inventory["legacy_overlay_count"]) == 13
+    retired = set(inventory["retired_from_production_path"])
+    assert {
+        "analytics_compat_v97",
+        "backtest_profile_alignment_v95",
+        "score_runtime_v97",
+        "checkpoint_inputs_v59",
+        "scanner_resume_v68",
+    }.issubset(retired)

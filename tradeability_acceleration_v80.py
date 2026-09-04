@@ -1,10 +1,9 @@
 """v80 vectorised A-share/ETF tradeability matrices for historical backtests.
 
 The stable execution model calls entry/exit tradeability helpers for every
-historical sample. Those helpers repeatedly select pandas rows and resolve the
-same security price-limit rule. v80 computes the complete entry/exit state once
-per ticker DataFrame, then serves O(1) lookups. Historical ChiNext rule changes,
-metadata overrides, suspensions and locked-limit semantics are unchanged.
+historical sample. This acceleration layer computes the complete state once per
+ticker DataFrame, but delegates exchange price-limit semantics to the canonical
+policy used by scalar tradeability.
 """
 
 from __future__ import annotations
@@ -12,12 +11,12 @@ from __future__ import annotations
 import threading
 import weakref
 from dataclasses import dataclass, field
-from typing import Any
 
 import numpy as np
 import pandas as pd
 
 import tradeability as _trade
+from institution_scanner.price_limit_policy import price_limit_vector
 
 _INSTALLED = False
 _TLS = threading.local()
@@ -57,50 +56,14 @@ def _date_array(frame: pd.DataFrame) -> np.ndarray:
 
 
 def _limit_vector(ticker: str, frame: pd.DataFrame, is_etf: bool) -> np.ndarray:
-    symbol = str(ticker or "").strip().upper()
-    code = symbol.split(".", 1)[0]
-    suffix = symbol.rsplit(".", 1)[-1] if "." in symbol else ""
-    evidence: dict[str, Any] = {}
-    try:
-        from downloader import get_price_limit_evidence
-
-        raw = get_price_limit_evidence(symbol, is_etf=is_etf)
-        if isinstance(raw, dict):
-            evidence = raw
-    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
-        evidence = {}
-
-    try:
-        metadata_limit = float(evidence.get("pct"))
-    except (TypeError, ValueError):
-        metadata_limit = np.nan
-    source = str(evidence.get("source", "") or "")
-    dates = _date_array(frame)
-    pre_chinext = (~np.isnat(dates)) & (
-        dates < np.datetime64("2020-08-24", "ns")
+    metadata_pct, metadata_source = _trade._price_limit_evidence(ticker, is_etf)
+    return price_limit_vector(
+        ticker,
+        _date_array(frame),
+        is_etf=is_etf,
+        metadata_pct=metadata_pct,
+        metadata_source=metadata_source,
     )
-
-    if np.isfinite(metadata_limit) and 0.02 <= metadata_limit <= 0.40:
-        limits = np.full(len(frame), metadata_limit, dtype=np.float64)
-        chinext_related = (
-            (not is_etf and code.startswith(("300", "301")))
-            or source == "chinext_related_etf_20pct_rule"
-        )
-        if chinext_related:
-            limits[pre_chinext] = 0.10
-        return limits
-
-    if suffix == "BJ":
-        return np.full(len(frame), 0.30, dtype=np.float64)
-    if not is_etf and code.startswith(("300", "301")):
-        limits = np.full(len(frame), 0.20, dtype=np.float64)
-        limits[pre_chinext] = 0.10
-        return limits
-    if not is_etf and code.startswith(("688", "689")):
-        return np.full(len(frame), 0.20, dtype=np.float64)
-    if is_etf and code.startswith(("588", "589")):
-        return np.full(len(frame), 0.20, dtype=np.float64)
-    return np.full(len(frame), 0.10, dtype=np.float64)
 
 
 def _build_state(
@@ -231,7 +194,9 @@ def is_exit_tradeable(
     return bool(state.exit_tradeable[index]), str(state.exit_reason[index])
 
 
-def _exit_resolution(state: _TradeState, max_delay_days: int) -> tuple[np.ndarray, np.ndarray]:
+def _exit_resolution(
+    state: _TradeState, max_delay_days: int
+) -> tuple[np.ndarray, np.ndarray]:
     delay_limit = max(0, int(max_delay_days))
     cached = state.exit_resolution.get(delay_limit)
     if cached is not None:

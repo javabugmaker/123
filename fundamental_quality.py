@@ -28,15 +28,25 @@ from fundamental_data import (
     fundamental_data_path,
 )
 from institution_scanner.fundamental_schema import normalize_ticker
+from institution_scanner.quality_policy import (
+    EvidenceStatus,
+    gate_status,
+    resolve_roe_evidence,
+    status_from_optional_bool,
+)
 
 FUNDAMENTAL_FACTOR_COLUMNS = (
     "ROE",
+    "InterimROE",
+    "LatestAnnualROE",
+    "ROEHardGateValue",
     "GrossMargin",
     "NetProfitLatest",
     "RevenueLatest",
     "NetProfitYoY",
     "DebtToAssets",
     "OperatingCashFlowToNetProfit",
+    "FinancialFieldCoverage",
     "NetProfitY1",
     "NetProfitY2",
     "NetProfitY3",
@@ -51,6 +61,11 @@ class FundamentalQuality:
     industry: str = ""
     applicable: bool = True
     roe: float = np.nan
+    interim_roe: float = np.nan
+    latest_annual_roe: float = np.nan
+    latest_annual_roe_period: str = ""
+    roe_hard_gate_value: float = np.nan
+    roe_hard_gate_source: str = "UNKNOWN"
     gross_margin: float = np.nan
     latest_report_period: str = ""
     latest_announcement_date: str = ""
@@ -63,6 +78,7 @@ class FundamentalQuality:
     net_profit_yoy: float = np.nan
     debt_to_assets: float = np.nan
     operating_cash_flow_to_net_profit: float = np.nan
+    financial_field_coverage: float = np.nan
     institution_holding_trend: Any = None
     institution_holding_periods: float = np.nan
     net_profit_y1: float = np.nan
@@ -73,12 +89,17 @@ class FundamentalQuality:
     gross_margin_factor: bool = False
     institution_holding_factor: bool = False
     net_profit_factor: bool = False
+    roe_status: str = EvidenceStatus.UNKNOWN
+    gross_margin_status: str = EvidenceStatus.UNKNOWN
+    net_profit_status: str = EvidenceStatus.UNKNOWN
+    quality_gate_status: str = EvidenceStatus.UNKNOWN
     quality_score: float = np.nan
     quality_gate: bool = True
     quality_reason: str = "基本面数据缺失（中性）"
     data_available: bool = False
     institution_holding_status: str = "UNKNOWN"
     quality_data_completeness: float = 0.0
+    quality_gate_evidence_completeness: float = 0.0
     quality_hard_data_complete: bool = False
     quality_gate_reason: str = "基本面数据缺失（中性）"
     quality_multiplier: float = QUALITY_MULTIPLIER_UNKNOWN
@@ -134,7 +155,6 @@ def _trend_is_increasing(value: Any) -> bool:
 
 
 def _institution_holding_status(trend: Any, periods: float) -> str:
-    """Classify institution-count evidence without treating missing history as failure."""
     if not np.isfinite(periods) or periods < INSTITUTION_HOLDING_MIN_PERIODS:
         return "UNKNOWN"
     if trend is None or (isinstance(trend, str) and not trend.strip()):
@@ -162,11 +182,30 @@ def _institution_holding_status(trend: Any, periods: float) -> str:
 
 _FINANCIAL_INDUSTRY_KEYWORDS = ("银行", "证券", "保险", "多元金融", "信托", "金融", "租赁")
 _CYCLICAL_INDUSTRY_KEYWORDS = (
-    "煤炭", "工业金属", "贵金属", "小金属", "钢铁", "水泥", "建材",
-    "化学原料", "化学制品", "化学纤维", "造纸", "航运", "港口", "养殖", "饲料",
+    "煤炭",
+    "工业金属",
+    "贵金属",
+    "小金属",
+    "钢铁",
+    "水泥",
+    "建材",
+    "化学原料",
+    "化学制品",
+    "化学纤维",
+    "造纸",
+    "航运",
+    "港口",
+    "养殖",
+    "饲料",
 )
 _DEFENSIVE_INDUSTRY_KEYWORDS = (
-    "电力", "燃气", "水务", "环境治理", "铁路公路", "高速公路", "公用事业",
+    "电力",
+    "燃气",
+    "水务",
+    "环境治理",
+    "铁路公路",
+    "高速公路",
+    "公用事业",
 )
 
 
@@ -182,7 +221,6 @@ def quality_profile(industry: str) -> str:
 
 
 def profit_trend_status(y1: float, y2: float, y3: float) -> str:
-    """Classify newest-to-oldest three-year profit shape without look-ahead."""
     if not all(np.isfinite(value) for value in (y1, y2, y3)):
         return "UNKNOWN"
     if y1 >= y2 >= y3:
@@ -195,11 +233,7 @@ def profit_trend_status(y1: float, y2: float, y3: float) -> str:
         and (y2 <= 0 or recovery >= QUALITY_RECOVERY_MIN_GROWTH)
     ):
         return "RECOVERY"
-    if (
-        y1 > 0
-        and y2 > 0
-        and y1 >= QUALITY_RESILIENT_MIN_LATEST_RATIO * y2
-    ):
+    if y1 > 0 and y2 > 0 and y1 >= QUALITY_RESILIENT_MIN_LATEST_RATIO * y2:
         return "RESILIENT"
     if (y1 <= 0 < y2) or (y1 < y2 <= y3):
         return "DETERIORATING"
@@ -239,8 +273,54 @@ def _profile_name(profile: str) -> str:
     }.get(profile, profile)
 
 
+def _quality_thresholds(profile: str) -> tuple[float, set[str], bool, float, str, str, str]:
+    if profile == "FINANCIAL":
+        threshold = QUALITY_FINANCIAL_ROE_THRESHOLD
+        return (
+            threshold,
+            {"STABLE_GROWTH", "RECOVERY", "RESILIENT"},
+            False,
+            np.nan,
+            f"年报ROE>={threshold:g}%",
+            "",
+            "利润趋势稳定/恢复",
+        )
+    if profile == "CYCLICAL":
+        threshold = QUALITY_CYCLICAL_ROE_THRESHOLD
+        return (
+            threshold,
+            {"STABLE_GROWTH", "RECOVERY"},
+            True,
+            QUALITY_CYCLICAL_MARGIN_MAX_PERCENTILE,
+            f"年报ROE>={threshold:g}%",
+            f"毛利率行业前{int(QUALITY_CYCLICAL_MARGIN_MAX_PERCENTILE * 100)}%",
+            "利润趋势稳定或触底回升",
+        )
+    if profile == "DEFENSIVE":
+        threshold = QUALITY_DEFENSIVE_ROE_THRESHOLD
+        return (
+            threshold,
+            {"STABLE_GROWTH", "RESILIENT"},
+            False,
+            np.nan,
+            f"年报ROE>={threshold:g}%",
+            "",
+            "利润保持稳定",
+        )
+    threshold = QUALITY_GENERAL_ROE_THRESHOLD
+    return (
+        threshold,
+        {"STABLE_GROWTH"},
+        True,
+        QUALITY_GENERAL_MARGIN_MAX_PERCENTILE,
+        f"年报ROE>{threshold:g}%",
+        f"毛利率行业前{int(QUALITY_GENERAL_MARGIN_MAX_PERCENTILE * 100)}%",
+        "近3年净利润非下降",
+    )
+
+
 def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> FundamentalQuality:
-    values = row.to_dict() if isinstance(row, pd.Series) else row
+    values = row.to_dict() if isinstance(row, pd.Series) else dict(row)
     normalized_ticker = _ticker(values.get("Ticker", ticker))
     industry = str(values.get("Industry", "") or "").strip()
     profile = quality_profile(industry)
@@ -253,12 +333,30 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
     provider = _text(values.get("FundamentalProvider"))
     fetched_at = _text(values.get("FundamentalFetchedAt"))
     data_status = _text(values.get("FundamentalDataStatus")) or "MISSING"
-    trend = values.get("InstitutionHoldingTrend")
-    holding_status = _institution_holding_status(
-        trend, numeric["InstitutionHoldingPeriods"]
+    annual_period = _text(values.get("LatestAnnualROEPeriod"))
+    roe_evidence = resolve_roe_evidence(values)
+
+    threshold, allowed_profit, margin_applicable, margin_threshold, roe_label, margin_label, profit_label = (
+        _quality_thresholds(profile)
     )
-    roe_available = np.isfinite(numeric["ROE"])
+    gate_roe = roe_evidence.hard_gate_roe
+    roe_factor: bool | None
+    if not np.isfinite(gate_roe):
+        roe_factor = None
+    elif profile == "GENERAL":
+        roe_factor = gate_roe > threshold
+    else:
+        roe_factor = gate_roe >= threshold
+
     gross_margin_available = np.isfinite(numeric["IndustryGrossMarginPercentile"])
+    margin_factor: bool | None = None
+    if margin_applicable:
+        margin_factor = (
+            None
+            if not gross_margin_available
+            else numeric["IndustryGrossMarginPercentile"] <= margin_threshold
+        )
+
     profit_available = all(
         np.isfinite(numeric[column])
         for column in ("NetProfitY1", "NetProfitY2", "NetProfitY3")
@@ -266,59 +364,20 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
     profit_status = profit_trend_status(
         numeric["NetProfitY1"], numeric["NetProfitY2"], numeric["NetProfitY3"]
     )
-
-    margin_applicable = profile in {"GENERAL", "CYCLICAL"}
-    if profile == "FINANCIAL":
-        roe_threshold = QUALITY_FINANCIAL_ROE_THRESHOLD
-        allowed_profit = {"STABLE_GROWTH", "RECOVERY", "RESILIENT"}
-        roe_label = f"ROE>={roe_threshold:g}%"
-        margin_label = ""
-        profit_label = "利润趋势稳定/恢复"
-    elif profile == "CYCLICAL":
-        roe_threshold = QUALITY_CYCLICAL_ROE_THRESHOLD
-        allowed_profit = {"STABLE_GROWTH", "RECOVERY"}
-        roe_label = f"ROE>={roe_threshold:g}%"
-        margin_label = f"毛利率行业前{int(QUALITY_CYCLICAL_MARGIN_MAX_PERCENTILE * 100)}%"
-        profit_label = "利润趋势稳定或触底回升"
-    elif profile == "DEFENSIVE":
-        roe_threshold = QUALITY_DEFENSIVE_ROE_THRESHOLD
-        allowed_profit = {"STABLE_GROWTH", "RESILIENT"}
-        roe_label = f"ROE>={roe_threshold:g}%"
-        margin_label = ""
-        profit_label = "利润保持稳定"
-    else:
-        roe_threshold = QUALITY_GENERAL_ROE_THRESHOLD
-        allowed_profit = {"STABLE_GROWTH"}
-        roe_label = f"ROE>{roe_threshold:g}%"
-        margin_label = f"毛利率行业前{int(QUALITY_GENERAL_MARGIN_MAX_PERCENTILE * 100)}%"
-        profit_label = "近3年净利润非下降"
-
-    roe_factor: bool | None
-    if not roe_available:
-        roe_factor = None
-    elif profile == "GENERAL":
-        roe_factor = numeric["ROE"] > roe_threshold
-    else:
-        roe_factor = numeric["ROE"] >= roe_threshold
-
-    margin_factor: bool | None = None
-    if margin_applicable:
-        if not gross_margin_available:
-            margin_factor = None
-        else:
-            threshold = (
-                QUALITY_CYCLICAL_MARGIN_MAX_PERCENTILE
-                if profile == "CYCLICAL"
-                else QUALITY_GENERAL_MARGIN_MAX_PERCENTILE
-            )
-            margin_factor = numeric["IndustryGrossMarginPercentile"] <= threshold
-
     profit_factor = profit_status in allowed_profit if profit_available else None
+
+    trend = values.get("InstitutionHoldingTrend")
+    holding_status = _institution_holding_status(
+        trend, numeric["InstitutionHoldingPeriods"]
+    )
     holding_factor = (
         True if holding_status == "PASS" else False if holding_status == "FAIL" else None
     )
 
-    hard_factors: dict[str, bool | None] = {roe_label: roe_factor, profit_label: profit_factor}
+    hard_factors: dict[str, bool | None] = {
+        roe_label: roe_factor,
+        profit_label: profit_factor,
+    }
     if margin_applicable:
         hard_factors[margin_label] = margin_factor
     metadata_required = bool(provider and provider != "legacy-cache")
@@ -329,19 +388,28 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
             True if report_metadata_available else None
         )
         hard_factors["财报披露时效"] = True if report_status_usable else None
+
     hard_failed = [name for name, value in hard_factors.items() if value is False]
     hard_unknown = [name for name, value in hard_factors.items() if value is None]
     hard_data_complete = not hard_unknown
+    status = gate_status(*hard_factors.values())
 
-    evidence_available = [roe_available, profit_available]
+    evidence_available = [np.isfinite(gate_roe), profit_available]
     if margin_applicable:
         evidence_available.append(gross_margin_available)
     if metadata_required:
         evidence_available.append(report_metadata_available and report_status_usable)
-    completeness = sum(float(value) for value in evidence_available) / len(evidence_available)
-    data_available = bool(
-        roe_available or profit_available or gross_margin_available
+    completeness = sum(float(value) for value in evidence_available) / len(
+        evidence_available
     )
+    raw_report_available = np.isfinite(roe_evidence.reported_roe)
+    data_available = bool(
+        raw_report_available
+        or np.isfinite(gate_roe)
+        or profit_available
+        or gross_margin_available
+    )
+
     quality_gate = not hard_failed
     cyclical_override = bool(
         profile == "CYCLICAL"
@@ -351,9 +419,9 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
         and margin_factor is not False
     )
 
-    if hard_failed:
+    if status is EvidenceStatus.FAIL:
         quality_multiplier = QUALITY_MULTIPLIER_FAIL
-    elif hard_unknown:
+    elif status is EvidenceStatus.UNKNOWN:
         quality_multiplier = QUALITY_MULTIPLIER_UNKNOWN
     else:
         quality_multiplier = QUALITY_MULTIPLIER_PASS
@@ -365,6 +433,16 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
         reason_parts.append("可用硬门槛未见失败")
     else:
         reason_parts.append("行业自适应硬门槛通过")
+    if np.isfinite(gate_roe):
+        source_hint = annual_period or roe_evidence.latest_annual_period
+        suffix = f"（{source_hint}）" if source_hint else ""
+        reason_parts.append(
+            f"ROE硬门槛采用{roe_evidence.hard_gate_source}:{gate_roe:.2f}%{suffix}"
+        )
+    elif roe_evidence.latest_report_is_interim and provider.lower() == "akshare":
+        reason_parts.append("中期ROE仅作诊断，缺少可用已公告年报ROE")
+    if np.isfinite(roe_evidence.interim_roe):
+        reason_parts.append(f"中期ROE {roe_evidence.interim_roe:.2f}%（诊断）")
     if cyclical_override:
         reason_parts.append("周期利润触底回升已确认")
     if report_period:
@@ -376,9 +454,9 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
 
     weighted_points = 0.0
     available_weight = 0.0
-    if roe_available:
+    if np.isfinite(gate_roe):
         roe_scale = 20.0 if profile == "GENERAL" else 15.0
-        weighted_points += float(np.clip(numeric["ROE"] / roe_scale, 0.0, 1.0)) * 25.0
+        weighted_points += float(np.clip(gate_roe / roe_scale, 0.0, 1.0)) * 25.0
         available_weight += 25.0
     if margin_applicable and gross_margin_available:
         weighted_points += float(
@@ -400,10 +478,28 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
     else:
         quality_score = np.nan
 
+    field_coverage = numeric["FinancialFieldCoverage"]
+    if not np.isfinite(field_coverage):
+        available = [
+            raw_report_available,
+            np.isfinite(numeric["GrossMargin"]),
+            np.isfinite(numeric["NetProfitLatest"]),
+            np.isfinite(numeric["RevenueLatest"]),
+            np.isfinite(numeric["NetProfitYoY"]),
+            np.isfinite(numeric["DebtToAssets"]),
+            np.isfinite(numeric["OperatingCashFlowToNetProfit"]),
+        ]
+        field_coverage = float(sum(available) / len(available))
+
     return FundamentalQuality(
         ticker=normalized_ticker,
         industry=industry,
-        roe=numeric["ROE"],
+        roe=roe_evidence.reported_roe,
+        interim_roe=roe_evidence.interim_roe,
+        latest_annual_roe=roe_evidence.latest_annual_roe,
+        latest_annual_roe_period=annual_period or roe_evidence.latest_annual_period,
+        roe_hard_gate_value=gate_roe,
+        roe_hard_gate_source=roe_evidence.hard_gate_source,
         gross_margin=numeric["GrossMargin"],
         latest_report_period=report_period,
         latest_announcement_date=announcement_date,
@@ -416,22 +512,32 @@ def calculate_quality(row: pd.Series | dict[str, Any], ticker: str = "") -> Fund
         net_profit_yoy=numeric["NetProfitYoY"],
         debt_to_assets=numeric["DebtToAssets"],
         operating_cash_flow_to_net_profit=numeric["OperatingCashFlowToNetProfit"],
+        financial_field_coverage=round(field_coverage, 4),
         institution_holding_trend=trend,
         institution_holding_periods=numeric["InstitutionHoldingPeriods"],
         net_profit_y1=numeric["NetProfitY1"],
         net_profit_y2=numeric["NetProfitY2"],
         net_profit_y3=numeric["NetProfitY3"],
         industry_gross_margin_percentile=numeric["IndustryGrossMarginPercentile"],
-        roe_factor=bool(roe_factor),
-        gross_margin_factor=True if not margin_applicable else bool(margin_factor),
-        institution_holding_factor=bool(holding_factor),
-        net_profit_factor=bool(profit_factor),
+        roe_factor=roe_factor is True,
+        gross_margin_factor=True if not margin_applicable else margin_factor is True,
+        institution_holding_factor=holding_factor is True,
+        net_profit_factor=profit_factor is True,
+        roe_status=str(status_from_optional_bool(roe_factor)),
+        gross_margin_status=(
+            str(EvidenceStatus.NOT_APPLICABLE)
+            if not margin_applicable
+            else str(status_from_optional_bool(margin_factor))
+        ),
+        net_profit_status=str(status_from_optional_bool(profit_factor)),
+        quality_gate_status=str(status),
         quality_score=quality_score,
         quality_gate=quality_gate,
         quality_reason=reason,
         data_available=data_available,
         institution_holding_status=holding_status,
         quality_data_completeness=round(completeness, 4),
+        quality_gate_evidence_completeness=round(completeness, 4),
         quality_hard_data_complete=hard_data_complete,
         quality_gate_reason=reason,
         quality_multiplier=quality_multiplier,
@@ -459,19 +565,22 @@ def _load_fundamental_data_cached(
         return {}
     if not FUNDAMENTAL_REQUIRED_COLUMNS.issubset(frame.columns):
         return {}
+    text_columns = {
+        "Ticker",
+        "Industry",
+        "LatestReportPeriod",
+        "LatestAnnouncementDate",
+        "LatestReportType",
+        "FundamentalProvider",
+        "FundamentalFetchedAt",
+        "FundamentalDataStatus",
+        "LatestAnnualROEPeriod",
+        "ROEHardGateSource",
+        "InstitutionHoldingTrend",
+    }
     for column in FUNDAMENTAL_COLUMNS:
         if column not in frame:
-            frame[column] = "" if column in {
-                "Ticker",
-                "Industry",
-                "LatestReportPeriod",
-                "LatestAnnouncementDate",
-                "LatestReportType",
-                "FundamentalProvider",
-                "FundamentalFetchedAt",
-                "FundamentalDataStatus",
-                "InstitutionHoldingTrend",
-            } else np.nan
+            frame[column] = "" if column in text_columns else np.nan
     frame = frame.loc[:, FUNDAMENTAL_COLUMNS].copy()
     frame["Ticker"] = frame["Ticker"].map(_ticker)
     return frame.drop_duplicates("Ticker", keep="last").set_index("Ticker").to_dict(
@@ -507,11 +616,16 @@ def get_quality(ticker: str, is_etf: bool = False) -> FundamentalQuality:
             data_available=False,
             institution_holding_status="UNKNOWN",
             quality_data_completeness=0.0,
+            quality_gate_evidence_completeness=0.0,
             quality_hard_data_complete=True,
             quality_gate_reason="ETF基本面门槛不适用",
             quality_multiplier=QUALITY_MULTIPLIER_PASS,
             quality_profile="ETF",
             profit_trend_status="NOT_APPLICABLE",
+            roe_status=str(EvidenceStatus.NOT_APPLICABLE),
+            gross_margin_status=str(EvidenceStatus.NOT_APPLICABLE),
+            net_profit_status=str(EvidenceStatus.NOT_APPLICABLE),
+            quality_gate_status=str(EvidenceStatus.NOT_APPLICABLE),
             cyclical_quality_override=False,
         )
     path = _path_value()

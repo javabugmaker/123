@@ -2,9 +2,10 @@
 
 The transactional implementation remains in ``daily_pipeline_core``. This
 facade resolves provider settlement-date semantics, installs PID-aware recovery,
-adds comparable performance health and structured version provenance, and keeps
-mixed-date/materially stale universes fail-closed.
+adds comparable performance/gate health and structured version provenance, and
+keeps mixed-date/materially stale universes fail-closed.
 """
+
 from __future__ import annotations
 
 import csv
@@ -19,6 +20,7 @@ import config as _config
 import daily_live_freshness_v101 as _daily_live_freshness
 import daily_pipeline_core as _core
 import daily_recovery_v74 as _daily_recovery
+from institution_scanner.gate_health import build_gate_health
 from institution_scanner.performance_health import build_performance_health
 from institution_scanner.version_manifest import build_version_manifest
 from trading_calendar import is_trading_day
@@ -260,6 +262,7 @@ def _write_manifest(*args: Any, **kwargs: Any) -> dict[str, object]:
     if not isinstance(previous_summary, dict):
         previous_summary = {}
     payload["performance_health"] = build_performance_health(payload, previous_summary)
+    payload["gate_health"] = build_gate_health(scan_profile, previous_summary)
     root = kwargs.get("result_dir") or _core.OUTPUT_DIR
     _core._atomic_write_json(Path(root) / "DailyRunSummary.json", payload)
     return payload
@@ -286,6 +289,7 @@ def _activate_run(
                 "market_data_lag_trading_days", 0
             ),
             "performance_health": payload.get("performance_health", {}),
+            "gate_health": payload.get("gate_health", {}),
             "version_manifest": payload.get("version_manifest", {}),
         }
     )
@@ -302,6 +306,7 @@ _core._quality_gate_errors = _quality_gate_errors
 _core._write_manifest = _write_manifest
 _core._activate_run = _activate_run
 _core.DAILY_RECOVERY_INTEGRITY_VERSION = (
+    "2026-09-04-v113-gate-health-v1-"
     "2026-08-19-v74-pid-aware-outer-transaction-recovery-v1"
 )
 _daily_live_freshness.install(_core)

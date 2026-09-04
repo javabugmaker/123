@@ -1,8 +1,9 @@
 """Point-in-time schemas and pure transformations for A-share fundamentals.
 
-The market-data boundary is intentionally absent from this module.  TickFlow
-owns the universe and OHLCV; this module only normalises low-frequency financial
-reports and materialises the compatibility summary consumed by the scanner.
+TickFlow owns market data and the security universe. This module only normalises
+low-frequency financial reports and materialises the compatibility summary used
+by the scanner. Interim report-period ROE and annual ROE are deliberately kept
+separate so a half-year return is never compared with a full-year hard gate.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from typing import Any, Final
 import numpy as np
 import pandas as pd
 
-FUNDAMENTAL_SCHEMA_VERSION: Final = "2026-09-01-akshare-batch-pit-v2"
+FUNDAMENTAL_SCHEMA_VERSION: Final = "2026-09-04-akshare-batch-pit-v3-annual-roe"
 
 REPORT_COLUMNS: Final[tuple[str, ...]] = (
     "Ticker",
@@ -42,9 +43,8 @@ REPORT_COLUMNS: Final[tuple[str, ...]] = (
     "FetchedAt",
 )
 
-# The legacy institution fields remain readable so old result files and caches
-# do not become unparseable.  AKShare no longer supplies this evidence and new
-# rows leave it unknown; current quality decisions do not depend on it.
+# Compatibility summary consumed by legacy scanner/report code. New ROE
+# provenance columns are additive; old caches remain readable.
 FUNDAMENTAL_COLUMNS: Final[tuple[str, ...]] = (
     "Ticker",
     "Industry",
@@ -55,12 +55,18 @@ FUNDAMENTAL_COLUMNS: Final[tuple[str, ...]] = (
     "FundamentalFetchedAt",
     "FundamentalDataStatus",
     "ROE",
+    "InterimROE",
+    "LatestAnnualROE",
+    "LatestAnnualROEPeriod",
+    "ROEHardGateValue",
+    "ROEHardGateSource",
     "GrossMargin",
     "NetProfitLatest",
     "RevenueLatest",
     "NetProfitYoY",
     "DebtToAssets",
     "OperatingCashFlowToNetProfit",
+    "FinancialFieldCoverage",
     "NetProfitY1",
     "NetProfitY2",
     "NetProfitY3",
@@ -69,6 +75,7 @@ FUNDAMENTAL_COLUMNS: Final[tuple[str, ...]] = (
     "InstitutionHoldingPeriods",
 )
 
+# Keep the legacy required set so existing caches can be opened and upgraded.
 FUNDAMENTAL_REQUIRED_COLUMNS: Final[frozenset[str]] = frozenset(
     {
         "Ticker",
@@ -94,6 +101,8 @@ _SUMMARY_TEXT_COLUMNS = frozenset(
         "FundamentalProvider",
         "FundamentalFetchedAt",
         "FundamentalDataStatus",
+        "LatestAnnualROEPeriod",
+        "ROEHardGateSource",
         "InstitutionHoldingTrend",
     }
 )
@@ -109,6 +118,15 @@ _REPORT_TYPE_NAMES: Final[dict[int, str]] = {
     3: "三季报",
     4: "年报",
 }
+_FINANCIAL_COVERAGE_COLUMNS: Final[tuple[str, ...]] = (
+    "ROE",
+    "GrossMargin",
+    "NetProfitLatest",
+    "RevenueLatest",
+    "NetProfitYoY",
+    "DebtToAssets",
+    "OperatingCashFlowToNetProfit",
+)
 
 
 @dataclass(frozen=True, order=True)
@@ -172,7 +190,6 @@ def latest_probe_periods(as_of: date, limit: int = 5) -> tuple[ReportPeriod, ...
 
 
 def annual_candidate_periods(as_of: date, desired: int = 3) -> tuple[ReportPeriod, ...]:
-    """Return enough annual candidates to find three already-published years."""
     if desired <= 0:
         return ()
     latest = latest_completed_period(as_of)
@@ -233,7 +250,6 @@ def _date_text(value: Any) -> str:
 
 
 def _date_series(values: pd.Series) -> pd.Series:
-    """Normalize a complete date column in one compiled pandas operation."""
     parsed = pd.to_datetime(values, errors="coerce", format="mixed")
     return parsed.dt.strftime("%Y-%m-%d").fillna("")
 
@@ -301,7 +317,9 @@ def normalize_summary_frame(frame: pd.DataFrame | None) -> pd.DataFrame:
     for column in FUNDAMENTAL_COLUMNS:
         if column not in _SUMMARY_TEXT_COLUMNS:
             normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
-    return normalized.loc[normalized["Ticker"].ne("")].drop_duplicates("Ticker", keep="last")
+    return normalized.loc[normalized["Ticker"].ne("")].drop_duplicates(
+        "Ticker", keep="last"
+    )
 
 
 def merge_report_records(existing: pd.DataFrame, downloaded: pd.DataFrame) -> pd.DataFrame:
@@ -309,7 +327,9 @@ def merge_report_records(existing: pd.DataFrame, downloaded: pd.DataFrame) -> pd
         return normalize_report_frame(downloaded)
     if downloaded.empty:
         return normalize_report_frame(existing)
-    return normalize_report_frame(pd.concat([existing, downloaded], ignore_index=True))
+    return normalize_report_frame(
+        pd.concat([existing, downloaded], ignore_index=True)
+    )
 
 
 def _industry_margin_percentiles(frame: pd.DataFrame) -> pd.Series:
@@ -318,12 +338,25 @@ def _industry_margin_percentiles(frame: pd.DataFrame) -> pd.Series:
     global_rank = margins.rank(method="min", ascending=False)
     global_count = max(1, int(margins.notna().sum()) - 1)
     global_percentile = (global_rank - 1.0) / global_count
-    peer_rank = margins.groupby(industries, dropna=False).rank(method="min", ascending=False)
+    peer_rank = margins.groupby(industries, dropna=False).rank(
+        method="min", ascending=False
+    )
     peer_count = margins.groupby(industries, dropna=False).transform("count")
     peer_percentile = (peer_rank - 1.0) / (peer_count - 1.0).clip(lower=1.0)
     return peer_percentile.where(
         industries.ne("") & peer_count.ge(3), global_percentile
     ).where(margins.notna())
+
+
+def _field_coverage(frame: pd.DataFrame) -> pd.Series:
+    available = pd.DataFrame(
+        {
+            column: pd.to_numeric(frame[column], errors="coerce").notna()
+            for column in _FINANCIAL_COVERAGE_COLUMNS
+        },
+        index=frame.index,
+    )
+    return available.mean(axis=1).round(4)
 
 
 def build_fundamental_summary(
@@ -338,7 +371,9 @@ def build_fundamental_summary(
     existing = normalize_summary_frame(existing_summary)
     target = latest_completed_period(as_of)
     normalized_symbols = tuple(
-        ticker for ticker in dict.fromkeys(normalize_ticker(value) for value in symbols) if ticker
+        ticker
+        for ticker in dict.fromkeys(normalize_ticker(value) for value in symbols)
+        if ticker
     )
     if not normalized_symbols:
         return empty_summary_frame()
@@ -368,21 +403,17 @@ def build_fundamental_summary(
             & usable["_AnnouncementDate"].le(pd.Timestamp(as_of))
         ].copy()
         usable = usable.sort_values(
-            [
-                "Ticker",
-                "_ReportDate",
-                "_AnnouncementDate",
-                "FetchedAt",
-            ],
+            ["Ticker", "_ReportDate", "_AnnouncementDate", "FetchedAt"],
             kind="stable",
         ).drop_duplicates(["Ticker", "ReportPeriod"], keep="last")
 
-    if usable.empty:
-        latest = pd.DataFrame()
-    else:
-        latest = usable.drop_duplicates("Ticker", keep="last").set_index(
+    latest = (
+        pd.DataFrame()
+        if usable.empty
+        else usable.drop_duplicates("Ticker", keep="last").set_index(
             "Ticker", drop=False
         )
+    )
 
     if latest.empty:
         summary = empty_summary_frame()
@@ -391,25 +422,22 @@ def build_fundamental_summary(
         ticker_index = latest.index.to_series()
         configured_industry = ticker_index.map(industry_map).fillna("")
         report_industry = latest["Industry"].map(_text)
-        if old_by_ticker.empty:
-            old_industry = pd.Series("", index=latest.index, dtype=object)
-        else:
-            old_industry = (
-                old_by_ticker["Industry"].reindex(latest.index).map(_text).fillna("")
-            )
+        old_industry = (
+            pd.Series("", index=latest.index, dtype=object)
+            if old_by_ticker.empty
+            else old_by_ticker["Industry"].reindex(latest.index).map(_text).fillna("")
+        )
         resolved_industry = configured_industry.where(
             configured_industry.ne(""), report_industry
-        )
-        resolved_industry = resolved_industry.where(
-            resolved_industry.ne(""), old_industry
-        )
+        ).where(lambda values: values.ne(""), old_industry)
 
         latest_period = pd.to_datetime(latest["ReportPeriod"], errors="coerce")
         expected_day = latest_period.dt.month.map({3: 31, 6: 30, 9: 30, 12: 31})
         valid_period = expected_day.notna() & latest_period.dt.day.eq(expected_day)
         latest_quarter = latest_period.dt.month.map({3: 1, 6: 2, 9: 3, 12: 4})
-        latest_type = latest_quarter.map(_REPORT_TYPE_NAMES).fillna("")
-        latest_type = latest_type.where(valid_period, "")
+        latest_type = latest_quarter.map(_REPORT_TYPE_NAMES).fillna("").where(
+            valid_period, ""
+        )
 
         def numeric(column: str) -> pd.Series:
             return pd.to_numeric(latest[column], errors="coerce").replace(
@@ -438,6 +466,7 @@ def build_fundamental_summary(
         new_summary["FundamentalFetchedAt"] = latest["FetchedAt"]
         new_summary["FundamentalDataStatus"] = status
         new_summary["ROE"] = roe
+        new_summary["InterimROE"] = roe.where(latest_quarter.ne(4))
         new_summary["GrossMargin"] = numeric("GrossMargin")
         new_summary["NetProfitLatest"] = net_profit
         new_summary["RevenueLatest"] = numeric("Revenue")
@@ -453,6 +482,8 @@ def build_fundamental_summary(
         if annual.empty:
             annual_count = pd.Series(0, index=latest.index, dtype=np.int64)
             annual_profit = pd.DataFrame(index=latest.index, columns=range(3))
+            latest_annual_roe = pd.Series(np.nan, index=latest.index, dtype=float)
+            latest_annual_period = pd.Series("", index=latest.index, dtype=object)
         else:
             annual["_ReportYear"] = pd.to_numeric(
                 annual["ReportYear"], errors="coerce"
@@ -463,33 +494,85 @@ def build_fundamental_summary(
                 kind="stable",
             ).drop_duplicates(["Ticker", "_ReportYear"], keep="first")
             annual_count = (
-                annual.groupby("Ticker", sort=False).size().reindex(latest.index, fill_value=0)
+                annual.groupby("Ticker", sort=False)
+                .size()
+                .reindex(latest.index, fill_value=0)
             )
             annual["_AnnualRank"] = annual.groupby("Ticker", sort=False).cumcount()
             annual_top = annual.loc[annual["_AnnualRank"].lt(3)].copy()
             annual_top["NetProfit"] = pd.to_numeric(
                 annual_top["NetProfit"], errors="coerce"
             ).replace([np.inf, -np.inf], np.nan)
+            annual_top["ROE"] = pd.to_numeric(
+                annual_top["ROE"], errors="coerce"
+            ).replace([np.inf, -np.inf], np.nan)
             annual_profit = annual_top.pivot(
                 index="Ticker",
                 columns="_AnnualRank",
                 values="NetProfit",
             ).reindex(index=latest.index, columns=range(3))
+            annual_latest = annual_top.loc[annual_top["_AnnualRank"].eq(0)].set_index(
+                "Ticker"
+            )
+            latest_annual_roe = pd.to_numeric(
+                annual_latest["ROE"].reindex(latest.index), errors="coerce"
+            ).replace([np.inf, -np.inf], np.nan)
+            latest_annual_period = (
+                annual_latest["ReportPeriod"]
+                .reindex(latest.index)
+                .fillna("")
+                .astype(str)
+            )
 
         if old_by_ticker.empty:
-            old_annual = pd.DataFrame(
+            old_annual_profit = pd.DataFrame(
                 np.nan,
                 index=latest.index,
                 columns=("NetProfitY1", "NetProfitY2", "NetProfitY3"),
             )
+            old_annual_roe = pd.Series(np.nan, index=latest.index, dtype=float)
+            old_annual_period = pd.Series("", index=latest.index, dtype=object)
         else:
-            old_annual = old_by_ticker.reindex(latest.index).loc[
+            old_aligned = old_by_ticker.reindex(latest.index)
+            old_annual_profit = old_aligned.loc[
                 :, ("NetProfitY1", "NetProfitY2", "NetProfitY3")
-            ]
-            old_annual = old_annual.apply(pd.to_numeric, errors="coerce").replace(
+            ].apply(pd.to_numeric, errors="coerce").replace(
                 [np.inf, -np.inf], np.nan
             )
-        legacy_fallback = annual_count.eq(0) & old_annual.notna().all(axis=1)
+            old_annual_roe = pd.to_numeric(
+                old_aligned["LatestAnnualROE"], errors="coerce"
+            ).replace([np.inf, -np.inf], np.nan)
+            old_annual_period = (
+                old_aligned["LatestAnnualROEPeriod"].fillna("").astype(str)
+            )
+
+        latest_annual_roe = latest_annual_roe.where(
+            latest_annual_roe.notna(), old_annual_roe
+        )
+        latest_annual_period = latest_annual_period.where(
+            latest_annual_period.ne(""), old_annual_period
+        )
+        new_summary["LatestAnnualROE"] = latest_annual_roe
+        new_summary["LatestAnnualROEPeriod"] = latest_annual_period
+
+        hard_gate_roe = latest_annual_roe.copy()
+        hard_gate_source = pd.Series(
+            np.where(
+                latest_annual_roe.notna(),
+                "LATEST_ANNUAL_ROE",
+                "UNKNOWN",
+            ),
+            index=latest.index,
+            dtype=object,
+        )
+        latest_is_annual = latest_quarter.eq(4) & roe.notna()
+        use_reported_annual = hard_gate_roe.isna() & latest_is_annual
+        hard_gate_roe.loc[use_reported_annual] = roe.loc[use_reported_annual]
+        hard_gate_source.loc[use_reported_annual] = "REPORTED_ANNUAL_ROE"
+        new_summary["ROEHardGateValue"] = hard_gate_roe
+        new_summary["ROEHardGateSource"] = hard_gate_source
+
+        legacy_fallback = annual_count.eq(0) & old_annual_profit.notna().all(axis=1)
         for position, column in enumerate(
             ("NetProfitY1", "NetProfitY2", "NetProfitY3")
         ):
@@ -497,9 +580,10 @@ def build_fundamental_summary(
                 annual_profit[position], errors="coerce"
             ).replace([np.inf, -np.inf], np.nan)
             new_summary[column] = values.where(
-                ~legacy_fallback, old_annual[column]
+                ~legacy_fallback, old_annual_profit[column]
             )
 
+        new_summary["FinancialFieldCoverage"] = _field_coverage(new_summary)
         new_summary["IndustryGrossMarginPercentile"] = np.nan
         new_summary["InstitutionHoldingTrend"] = ""
         new_summary["InstitutionHoldingPeriods"] = np.nan
@@ -527,24 +611,35 @@ def build_fundamental_summary(
         summary = normalize_summary_frame(
             pd.concat([summary, legacy], ignore_index=True, sort=False)
         )
+
     order = {ticker: position for position, ticker in enumerate(normalized_symbols)}
     if not summary.empty:
         summary["_InputOrder"] = summary["Ticker"].map(order)
         summary = summary.sort_values("_InputOrder", kind="stable").drop(
             columns="_InputOrder"
         )
-    if not summary.empty:
-        summary["IndustryGrossMarginPercentile"] = _industry_margin_percentiles(summary)
+        summary["IndustryGrossMarginPercentile"] = _industry_margin_percentiles(
+            summary
+        )
     return normalize_summary_frame(summary)
 
 
-def summary_hard_financial_coverage(frame: pd.DataFrame, symbols: Sequence[str]) -> float:
+def summary_hard_financial_coverage(
+    frame: pd.DataFrame, symbols: Sequence[str]
+) -> float:
     normalized = normalize_summary_frame(frame).set_index("Ticker")
-    requested = [ticker for ticker in dict.fromkeys(normalize_ticker(value) for value in symbols) if ticker]
+    requested = [
+        ticker
+        for ticker in dict.fromkeys(normalize_ticker(value) for value in symbols)
+        if ticker
+    ]
     if not requested:
         return 1.0
     aligned = normalized.reindex(requested)
-    complete = pd.to_numeric(aligned["ROE"], errors="coerce").notna()
+    hard = pd.to_numeric(aligned["ROEHardGateValue"], errors="coerce")
+    reported = pd.to_numeric(aligned["ROE"], errors="coerce")
+    roe_gate = hard.where(hard.notna(), reported)
+    complete = roe_gate.notna()
     for column in ("NetProfitY1", "NetProfitY2", "NetProfitY3"):
         complete &= pd.to_numeric(aligned[column], errors="coerce").notna()
     return float(complete.mean()) if len(complete) else 0.0
@@ -557,7 +652,11 @@ def summary_latest_period_coverage(
     as_of: date,
 ) -> float:
     normalized = normalize_summary_frame(frame).set_index("Ticker")
-    requested = [ticker for ticker in dict.fromkeys(normalize_ticker(value) for value in symbols) if ticker]
+    requested = [
+        ticker
+        for ticker in dict.fromkeys(normalize_ticker(value) for value in symbols)
+        if ticker
+    ]
     if not requested:
         return 1.0
     aligned = normalized.reindex(requested)

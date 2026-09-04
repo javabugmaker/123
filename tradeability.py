@@ -6,22 +6,18 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-_LIMIT_TOLERANCE = 0.0025
-_CHINEXT_20_START = pd.Timestamp("2020-08-24")
+from institution_scanner.price_limit_policy import (
+    CHINEXT_20_START,
+    LIMIT_TOLERANCE,
+    fallback_resolution,
+    resolve_price_limit,
+    trade_timestamp,
+)
 
-
-def _trade_timestamp(value: Any) -> pd.Timestamp | None:
-    if value is None:
-        return None
-    try:
-        timestamp = pd.Timestamp(value)
-    except (TypeError, ValueError):
-        return None
-    if pd.isna(timestamp):
-        return None
-    if timestamp.tzinfo is not None:
-        timestamp = timestamp.tz_localize(None)
-    return timestamp.normalize()
+# Compatibility aliases consumed by the vectorized v80 acceleration facade.
+_LIMIT_TOLERANCE = LIMIT_TOLERANCE
+_CHINEXT_20_START = CHINEXT_20_START
+_trade_timestamp = trade_timestamp
 
 
 def _fallback_limit_and_source(
@@ -30,26 +26,12 @@ def _fallback_limit_and_source(
     is_etf: bool = False,
     trade_date: str | date | datetime | pd.Timestamp | None = None,
 ) -> tuple[float, str]:
-    symbol = str(ticker or "").strip().upper()
-    code = symbol.split(".", 1)[0]
-    suffix = symbol.rsplit(".", 1)[-1] if "." in symbol else ""
-    when = _trade_timestamp(trade_date)
-
-    if suffix == "BJ":
-        return 0.30, "beijing_30pct_rule"
-
-    if not is_etf and code.startswith(("300", "301")):
-        if when is not None and when < _CHINEXT_20_START:
-            return 0.10, "chinext_pre_2020_10pct_rule"
-        return 0.20, "chinext_20pct_rule"
-
-    if not is_etf and code.startswith(("688", "689")):
-        return 0.20, "star_20pct_rule"
-
-    if is_etf and code.startswith(("588", "589")):
-        return 0.20, "star_etf_20pct_rule"
-
-    return 0.10, "standard_10pct_rule"
+    resolved = fallback_resolution(
+        ticker,
+        is_etf=is_etf,
+        trade_date=trade_date,
+    )
+    return resolved.pct, resolved.source
 
 
 def fallback_daily_limit_pct(
@@ -58,7 +40,6 @@ def fallback_daily_limit_pct(
     is_etf: bool = False,
     trade_date: str | date | datetime | pd.Timestamp | None = None,
 ) -> float:
-    """Offline exchange-rule fallback when explicit metadata is unavailable."""
     return _fallback_limit_and_source(
         ticker,
         is_etf=is_etf,
@@ -66,18 +47,7 @@ def fallback_daily_limit_pct(
     )[0]
 
 
-def resolve_daily_limit_pct(
-    ticker: str,
-    *,
-    is_etf: bool = False,
-    trade_date: str | date | datetime | pd.Timestamp | None = None,
-) -> tuple[float, str]:
-    """Resolve one price-limit ratio with auditable provenance.
-
-    ``limit_up``/``limit_down`` price levels are intentionally not consumed as
-    ratios.  Only downloader evidence explicitly identified as a ratio or an
-    ETF rule may override the exchange fallback.
-    """
+def _price_limit_evidence(ticker: str, is_etf: bool) -> tuple[float | None, str]:
     evidence: dict[str, Any] = {}
     try:
         from downloader import get_price_limit_evidence
@@ -87,32 +57,30 @@ def resolve_daily_limit_pct(
             evidence = raw
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):
         evidence = {}
-
     try:
-        metadata_limit = float(evidence.get("pct"))
+        pct = float(evidence.get("pct"))
     except (TypeError, ValueError):
-        metadata_limit = np.nan
+        pct = np.nan
     source = str(evidence.get("source", "") or "")
-    when = _trade_timestamp(trade_date)
+    return (float(pct) if np.isfinite(pct) else None), source
 
-    if np.isfinite(metadata_limit) and 0.02 <= metadata_limit <= 0.40:
-        # ChiNext stock/related-fund limit widened from 10% to 20% on
-        # 2020-08-24.  Preserve the historical execution regime in backtests.
-        symbol = str(ticker or "").strip().upper()
-        code = symbol.split(".", 1)[0]
-        chinext_related = (
-            (not is_etf and code.startswith(("300", "301")))
-            or source == "chinext_related_etf_20pct_rule"
-        )
-        if chinext_related and when is not None and when < _CHINEXT_20_START:
-            return 0.10, "chinext_pre_2020_10pct_rule"
-        return float(metadata_limit), source or "security_metadata_rule"
 
-    return _fallback_limit_and_source(
+def resolve_daily_limit_pct(
+    ticker: str,
+    *,
+    is_etf: bool = False,
+    trade_date: str | date | datetime | pd.Timestamp | None = None,
+) -> tuple[float, str]:
+    """Resolve one price-limit ratio with auditable provenance."""
+    metadata_pct, metadata_source = _price_limit_evidence(ticker, is_etf)
+    resolved = resolve_price_limit(
         ticker,
         is_etf=is_etf,
         trade_date=trade_date,
+        metadata_pct=metadata_pct,
+        metadata_source=metadata_source,
     )
+    return resolved.pct, resolved.source
 
 
 def daily_limit_pct(
@@ -154,15 +122,11 @@ def _row_trade_date(frame: pd.DataFrame, index: int) -> pd.Timestamp | None:
         value = frame.index[int(index)]
     except (IndexError, TypeError, ValueError):
         return None
-    # A RangeIndex/Int64Index is a row locator, not a Unix-nanosecond trading
-    # timestamp.  Treating integer 1 as 1970-01-01 silently selects historical
-    # exchange rules for undated frames.  With no date provenance, use the
-    # current board rule instead.
     if isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(
         value, (bool, np.bool_)
     ):
         return None
-    return _trade_timestamp(value)
+    return trade_timestamp(value)
 
 
 def is_entry_tradeable(
@@ -212,7 +176,6 @@ def is_exit_tradeable(
     *,
     is_etf: bool = False,
 ) -> tuple[bool, str]:
-    """Return whether a close exit can reasonably fill on the requested day."""
     required = {"Open", "High", "Low", "Close", "Volume"}
     if frame is None or exit_index <= 0 or exit_index >= len(frame):
         return False, "invalid_exit_index"
@@ -255,7 +218,6 @@ def resolve_exit_index(
     is_etf: bool = False,
     max_delay_days: int = 10,
 ) -> tuple[int | None, int, str]:
-    """Delay an exit through suspension/locked limit-down sessions."""
     start = max(1, int(intended_index))
     stop = min(len(frame), start + max(0, int(max_delay_days)) + 1)
     last_reason = "out_of_range"
