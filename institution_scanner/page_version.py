@@ -8,10 +8,8 @@ from __future__ import annotations
 import re
 from typing import Final
 
-PUBLIC_PAGE_VERSION: Final = "v106.8"
-PUBLIC_PAGE_VERSION_ID: Final = (
-    "2026-08-28-v106.8-forward-performance-audit-v1"
-)
+PUBLIC_PAGE_VERSION: Final = "v115"
+PUBLIC_PAGE_VERSION_ID: Final = "2026-09-04-v115-terminal-trend-renderer-v1"
 
 _PAGE_VERSION_RE = re.compile(
     r'(<span>页面版本</span><strong>)([^<]*)(</strong>)',
