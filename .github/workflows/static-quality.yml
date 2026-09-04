@@ -35,3 +35,11 @@ jobs:
         run: python -m pytest -q
       - name: Compile
         run: python -m compileall -q .
+      - name: Upload refactor source snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: refactor-source-snapshot
+          path: .
+          include-hidden-files: true
+          retention-days: 1
