@@ -1,4 +1,4 @@
-"""Stable publication entry point backed by the canonical v114 renderer.
+"""Stable publication entry point backed by the canonical renderer.
 
 The module name is retained for scanner, DAILY and external callers.  It no
 longer composes the historical web-report overlay chain.
@@ -128,7 +128,7 @@ def build_and_publish_web_report(
 
     built = build_web_report(output_dir=output_dir, site_dir=site_dir)
     log.info(
-        "WEB v114 research briefing generated: %s (%s).",
+        "WEB research briefing generated: %s (%s).",
         built.archive_path,
         reason,
     )

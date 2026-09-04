@@ -11,7 +11,10 @@ from institution_scanner.publication_contract import (
     build_public_candidates,
     write_publication_contract,
 )
-from institution_scanner.publication_renderer import build_web_report
+from institution_scanner.publication_renderer import (
+    PUBLIC_PAGE_VERSION,
+    build_web_report,
+)
 
 
 def _wide_candidates() -> pd.DataFrame:
@@ -57,6 +60,7 @@ def test_public_candidates_are_narrow_and_do_not_repeat_legacy_versions() -> Non
 
 def test_renderer_consumes_compact_contract_and_externalizes_assets(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     output = tmp_path / "output"
     site = tmp_path / "site"
@@ -72,20 +76,33 @@ def test_renderer_consumes_compact_contract_and_externalizes_assets(
         json.dumps({"universe": {"rows": 6_824}}),
         encoding="utf-8",
     )
+    cached_prices = pd.DataFrame(
+        {"Close": [4.0, 4.2, 8.4]},
+        index=pd.to_datetime(["2026-09-03", "2026-09-04", "2026-09-05"]),
+    )
+    monkeypatch.setattr(
+        "institution_scanner.publication_renderer._load_cache",
+        lambda _ticker: cached_prices,
+    )
 
     result = build_web_report(output_dir=output, site_dir=site)
 
     page = result.index_path.read_text(encoding="utf-8")
+    style_asset = f"report-{PUBLIC_PAGE_VERSION}.css"
+    script_asset = f"report-{PUBLIC_PAGE_VERSION}.js"
     assert result.report_date == "2026-09-04"
     assert "先看风险与执行许可" in page
     assert "READY" in page
     assert "510300.SH" in page
+    assert '<th title="截至报告日最近30个交易日收盘走势">TREND</th>' in page
+    assert 'class="trend-chart trend-up"' in page
+    assert 'aria-label="近2个交易日走势：上涨 +5.0%"' in page
     assert "Unused399" not in page
     assert "legacy-xxxx" not in page
-    assert 'href="assets/report-v114.css"' in page
-    assert 'src="assets/report-v114.js"' in page
-    assert (site / "assets" / "report-v114.css").is_file()
-    assert (site / "assets" / "report-v114.js").is_file()
+    assert f'href="assets/{style_asset}"' in page
+    assert f'src="assets/{script_asset}"' in page
+    assert (site / "assets" / style_asset).is_file()
+    assert (site / "assets" / script_asset).is_file()
     assert (site / "reports" / "index.html").is_file()
 
 

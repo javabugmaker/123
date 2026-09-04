@@ -1,4 +1,4 @@
-# v114 A 股研究简报 / GitHub Pages
+# v115 A 股研究简报 / GitHub Pages
 
 InstitutionScanner 在正式扫描与 DAILY 校验完成后生成公开安全的静态研究简报。页面只负责解释已经落地的决策结果，不重新评分、排名或判断交易资格。
 
@@ -21,12 +21,14 @@ InstitutionScanner 在正式扫描与 DAILY 校验完成后生成公开安全的
 - `index.html`：最新研究简报；
 - `reports/YYYY-MM-DD.html`：不可变的日期归档；
 - `reports/index.html`：历史索引；
-- `assets/report-v114.css`、`assets/report-v114.js`：当前页和历史页共享的静态资源；
+- `assets/report-v115.css`、`assets/report-v115.js`：当前页和历史页共享的静态资源；
 - `performance.html`、`backtest.html`：有相应数据时生成的独立审计页。
 
 页面首屏固定回答六个问题：市场处于什么状态、有多少 READY / CAUTIOUS / OBSERVE、数据截至哪天，以及执行容量按多大订单估算。模型版本、运行状态与证据覆盖默认收在诊断区。
 
-页面不嵌入 `AllResults` 宽表或 TickFlow 行情缓存，因此历史归档不会再为每个日期复制整套 K 线和长版本字段。
+研究候选表恢复 `TREND` 列：它读取本地 TickFlow 行情缓存，截取不晚于报告日的最近 30 个交易日收盘价，并渲染为紧凑 SVG 走势线。A 股颜色约定为红涨绿跌；缓存缺失时显示 `—`，不会阻断报告生成，也不会影响评分和排名。
+
+页面不嵌入 `AllResults` 宽表或整套 TickFlow 行情缓存；每个候选只写入一条轻量 SVG 走势线，因此历史归档仍保持紧凑。
 
 ## 自动发布与权限
 
