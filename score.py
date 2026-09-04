@@ -1,10 +1,9 @@
-"""v95 scoring policy facade.
+"""v113 scoring policy facade.
 
 ``score_core`` contains the stable feature/entry implementation. This facade
-keeps style labels descriptive, keeps TriggerScore orthogonal to setup trend,
-uses one volatility-contraction definition for filters/scoring, shares the
-continuous breakout-price evidence used by the execution integrity gate, and
-installs the canonical v95+ score runtime composition.
+keeps style labels descriptive, TriggerScore orthogonal to setup trend, uses one
+volatility-contraction definition, and composes score runtime semantics through
+the canonical ``institution_scanner`` package.
 """
 
 from __future__ import annotations
@@ -17,8 +16,8 @@ import pandas as pd
 import config as _config
 import score_threshold_migration_v95 as _threshold_migration_v95
 
-# analytics_core imports score before signal_lifecycle. Publish the migrated
-# constants now so lifecycle_core reads the canonical thresholds on first load.
+# analytics_core imports score before signal_lifecycle. Publish migrated
+# constants now so lifecycle_core reads canonical thresholds on first load.
 _threshold_migration_v95.install(_config)
 
 import score_core as _core  # noqa: E402
@@ -48,7 +47,6 @@ def _finite_values(series: pd.Series) -> np.ndarray:
 
 
 def _continuous_breakout_price_points(clearance_pct: float) -> float:
-    """Map resistance clearance to the canonical continuous price component."""
     component, _ = smooth_breakout_price_component(
         np.asarray([clearance_pct], dtype=np.float64)
     )
@@ -107,10 +105,7 @@ def trigger_event_score(df: pd.DataFrame) -> float:
 
 def score_ticker(df: pd.DataFrame, is_etf: bool = False):
     """Run one cache-safe scoring transaction, then replace TriggerScore."""
-    # Compatibility modules are still importable and a few historically install
-    # themselves at import time. Repair only if such an import displaced the
-    # canonical v95+ public bindings; the normal hot path is identity checks.
-    _score_runtime_v97.ensure()
+    _canonical_score_runtime.ensure(_core, _raw_score_runtime, _score_scale)
     acceleration = sys.modules.get("score_acceleration_v79")
     clear_cache = getattr(acceleration, "clear_thread_score_cache", None)
     if callable(clear_cache):
@@ -145,8 +140,18 @@ _core.score_volatility = score_volatility
 _core.trigger_event_score = trigger_event_score
 _core.score_ticker = score_ticker
 
-import score_runtime_v97 as _score_runtime_v97  # noqa: E402
+import score_acceleration_v79 as _raw_score_runtime  # noqa: E402
+import score_endpoint_acceleration_v79 as _score_endpoint  # noqa: E402
+import score_scale_migration_v95 as _score_scale  # noqa: E402
+import score_weight_cache_v79 as _score_weight_cache  # noqa: E402
+from institution_scanner import score_runtime as _canonical_score_runtime  # noqa: E402
 
-_score_runtime_v97.install()
+_canonical_score_runtime.install(
+    _core,
+    _raw_score_runtime,
+    _score_endpoint,
+    _score_weight_cache,
+    _score_scale,
+)
 
 sys.modules[__name__] = _core
