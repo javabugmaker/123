@@ -16,8 +16,7 @@ import pandas as pd
 
 from fundamental_data import fundamental_data_path
 from fundamental_quality import calculate_quality, load_fundamental_data
-
-from .quality_policy import EvidenceStatus
+from institution_scanner.quality_policy import EvidenceStatus
 
 
 QUALITY_PROVENANCE_COLUMNS = (
