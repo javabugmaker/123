@@ -19,6 +19,7 @@ def _record(
     *,
     quarter: int,
     profit: float,
+    roe: float = 12.0,
 ) -> dict[str, object]:
     return {
         "Ticker": "600000.SH",
@@ -27,7 +28,7 @@ def _record(
         "AnnouncementDate": announcement,
         "ReportYear": int(period[:4]),
         "ReportQuarter": quarter,
-        "ROE": 12.0,
+        "ROE": roe,
         "GrossMargin": 42.0,
         "NetProfit": profit,
         "Revenue": profit * 4,
@@ -50,12 +51,30 @@ def test_latest_completed_period_does_not_treat_september_as_finished_early() ->
 def test_summary_uses_only_reports_announced_by_the_requested_date() -> None:
     records = pd.DataFrame(
         [
-            _record("2026-06-30", "2026-08-28", quarter=2, profit=250.0),
-            _record("2026-09-30", "2026-10-30", quarter=3, profit=390.0),
-            _record("2025-12-31", "2026-03-28", quarter=4, profit=300.0),
-            _record("2024-12-31", "2025-03-28", quarter=4, profit=220.0),
-            _record("2023-12-31", "2024-03-28", quarter=4, profit=180.0),
-            _record("2022-12-31", "", quarter=4, profit=9999.0),
+            _record(
+                "2026-06-30",
+                "2026-08-28",
+                quarter=2,
+                profit=250.0,
+                roe=5.5,
+            ),
+            _record(
+                "2026-09-30",
+                "2026-10-30",
+                quarter=3,
+                profit=390.0,
+                roe=8.0,
+            ),
+            _record(
+                "2025-12-31",
+                "2026-03-28",
+                quarter=4,
+                profit=300.0,
+                roe=14.0,
+            ),
+            _record("2024-12-31", "2025-03-28", quarter=4, profit=220.0, roe=12.0),
+            _record("2023-12-31", "2024-03-28", quarter=4, profit=180.0, roe=10.0),
+            _record("2022-12-31", "", quarter=4, profit=9999.0, roe=99.0),
         ]
     )
 
@@ -75,11 +94,22 @@ def test_summary_uses_only_reports_announced_by_the_requested_date() -> None:
     ).iloc[0]
 
     assert before_release["LatestReportPeriod"] == "2026-06-30"
+    assert before_release["ROE"] == 5.5
+    assert before_release["InterimROE"] == 5.5
+    assert before_release["LatestAnnualROE"] == 14.0
+    assert before_release["LatestAnnualROEPeriod"] == "2025-12-31"
+    assert before_release["ROEHardGateValue"] == 14.0
+    assert before_release["ROEHardGateSource"] == "LATEST_ANNUAL_ROE"
     assert before_release["NetProfitLatest"] == 250.0
     assert before_release["FundamentalDataStatus"] == "AWAITING_RELEASE"
+
     assert on_release["LatestReportPeriod"] == "2026-09-30"
     assert on_release["LatestAnnouncementDate"] == "2026-10-30"
     assert on_release["LatestReportType"] == "三季报"
+    assert on_release["ROE"] == 8.0
+    assert on_release["InterimROE"] == 8.0
+    assert on_release["LatestAnnualROE"] == 14.0
+    assert on_release["ROEHardGateValue"] == 14.0
     assert on_release["NetProfitLatest"] == 390.0
     assert on_release["NetProfitY1"] == 300.0
     assert on_release["NetProfitY2"] == 220.0
@@ -87,11 +117,29 @@ def test_summary_uses_only_reports_announced_by_the_requested_date() -> None:
     assert on_release["FundamentalDataStatus"] == "CURRENT"
 
 
+def test_annual_report_can_supply_its_own_hard_gate_roe() -> None:
+    records = pd.DataFrame(
+        [_record("2025-12-31", "2026-03-28", quarter=4, profit=300.0, roe=14.0)]
+    )
+    row = build_fundamental_summary(
+        records,
+        empty_summary_frame(),
+        ["600000.SH"],
+        {"600000.SH": "银行"},
+        as_of=date(2026, 3, 28),
+    ).iloc[0]
+
+    assert row["LatestReportType"] == "年报"
+    assert pd.isna(row["InterimROE"])
+    assert row["LatestAnnualROE"] == 14.0
+    assert row["ROEHardGateValue"] == 14.0
+
+
 def test_partial_new_annual_history_is_not_replaced_by_legacy_values() -> None:
     records = pd.DataFrame(
         [
-            _record("2026-09-30", "2026-10-30", quarter=3, profit=390.0),
-            _record("2025-12-31", "2026-03-28", quarter=4, profit=300.0),
+            _record("2026-09-30", "2026-10-30", quarter=3, profit=390.0, roe=8.0),
+            _record("2025-12-31", "2026-03-28", quarter=4, profit=300.0, roe=14.0),
         ]
     )
     legacy = pd.DataFrame(
@@ -120,11 +168,12 @@ def test_partial_new_annual_history_is_not_replaced_by_legacy_values() -> None:
     assert row["NetProfitY1"] == 300.0
     assert pd.isna(row["NetProfitY2"])
     assert pd.isna(row["NetProfitY3"])
+    assert row["LatestAnnualROE"] == 14.0
 
 
 def test_old_baostock_report_records_are_explicitly_legacy_after_migration() -> None:
     records = pd.DataFrame(
-        [_record("2026-06-30", "2026-08-28", quarter=2, profit=250.0)]
+        [_record("2026-06-30", "2026-08-28", quarter=2, profit=250.0, roe=5.5)]
     )
     records["Provider"] = "baostock"
 
