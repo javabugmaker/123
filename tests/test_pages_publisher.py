@@ -12,7 +12,22 @@ def _completed(args: list[str], returncode: int = 0) -> subprocess.CompletedProc
     return subprocess.CompletedProcess(args, returncode, stdout="", stderr="")
 
 
-def test_ssh_origin_prefers_public_https_transport() -> None:
+def test_ssh_origin_prefers_configured_origin_transport() -> None:
+    remote = "git@github.com:javabugmaker/123.git"
+
+    candidates = pages_publisher.publication_remote_candidates(remote)
+
+    assert [(item.label, item.url) for item in candidates] == [
+        ("configured origin", remote),
+        ("HTTPS", "https://github.com/javabugmaker/123.git"),
+    ]
+    assert pages_publisher.github_pages_url(remote) == (
+        "https://javabugmaker.github.io/123/"
+    )
+
+
+def test_https_transport_forced_by_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INSTITUTION_SCANNER_WEB_GIT_TRANSPORT", "https")
     remote = "git@github.com:javabugmaker/123.git"
 
     candidates = pages_publisher.publication_remote_candidates(remote)
@@ -21,12 +36,9 @@ def test_ssh_origin_prefers_public_https_transport() -> None:
         ("HTTPS", "https://github.com/javabugmaker/123.git"),
         ("configured origin", remote),
     ]
-    assert pages_publisher.github_pages_url(remote) == (
-        "https://javabugmaker.github.io/123/"
-    )
 
 
-def test_clone_falls_back_after_https_timeout(
+def test_clone_falls_back_after_configured_origin_timeout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -44,7 +56,7 @@ def test_clone_falls_back_after_https_timeout(
     ) -> subprocess.CompletedProcess[str]:
         del cwd, timeout, allow
         calls.append(args[-2])
-        if args[-2].startswith("https://"):
+        if args[-2].startswith("git@github.com:"):
             raise subprocess.TimeoutExpired(args, 90)
         Path(args[-1]).mkdir(parents=True)
         return _completed(args)
@@ -58,14 +70,77 @@ def test_clone_falls_back_after_https_timeout(
         timeout=90,
     )
 
-    assert selected.label == "configured origin"
+    assert selected.label == "HTTPS"
     assert calls == [
-        "https://github.com/javabugmaker/123.git",
         "git@github.com:javabugmaker/123.git",
+        "https://github.com/javabugmaker/123.git",
     ]
 
 
-def test_push_falls_back_to_configured_origin(
+def test_clone_retires_leftover_dir_before_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    candidates = pages_publisher.publication_remote_candidates(
+        "git@github.com:javabugmaker/123.git"
+    )
+    retired: list[Path] = []
+
+    def fake_retire(worktree: Path) -> None:
+        retired.append(worktree)
+        worktree.mkdir(exist_ok=True)  # simulate a leftover clone dir
+
+    def fake_run_git(
+        args: list[str],
+        *,
+        cwd: Path | None = None,
+        timeout: int,
+        allow: tuple[int, ...] = (0,),
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd, timeout, allow
+        if args[-2].startswith("git@github.com:"):
+            raise subprocess.TimeoutExpired(args, 90)
+        if Path(args[-1]).exists():
+            raise RuntimeError(f"destination {args[-1]} already exists")
+        Path(args[-1]).mkdir(parents=True)
+        return _completed(args)
+
+    monkeypatch.setattr(pages_publisher, "_retire_worktree", fake_retire)
+    monkeypatch.setattr(pages_publisher, "_run_git", fake_run_git)
+
+    selected = pages_publisher._clone_branch(
+        candidates,
+        "gh-pages",
+        tmp_path / "site",
+        timeout=90,
+    )
+
+    assert selected.label == "HTTPS"
+    assert len(retired) == 2
+
+
+def test_retire_worktree_quarantines_locked_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stale = tmp_path / "site"
+    stale.mkdir()
+    (stale / "file.txt").write_text("x", encoding="utf-8")
+
+    def locked_rmtree(_path: object) -> None:
+        raise OSError("locked on Windows")
+
+    monkeypatch.setattr(pages_publisher.shutil, "rmtree", locked_rmtree)
+
+    pages_publisher._retire_worktree(stale)
+
+    assert not stale.exists()
+    leftovers = list(tmp_path.iterdir())
+    assert len(leftovers) == 1
+    assert leftovers[0].name.startswith("site.stale-")
+
+
+def test_push_falls_back_to_https(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -89,8 +164,8 @@ def test_push_falls_back_to_configured_origin(
             return _completed(args)
         if args[0] == "push":
             push_urls.append(active_url)
-            if active_url.startswith("https://"):
-                raise RuntimeError("credentials unavailable")
+            if active_url.startswith("git@github.com:"):
+                raise RuntimeError("ssh transport down")
         return _completed(args)
 
     monkeypatch.setattr(pages_publisher, "_run_git", fake_run_git)
@@ -102,10 +177,10 @@ def test_push_falls_back_to_configured_origin(
         timeout=90,
     )
 
-    assert selected.label == "configured origin"
+    assert selected.label == "HTTPS"
     assert push_urls == [
-        "https://github.com/javabugmaker/123.git",
         "git@github.com:javabugmaker/123.git",
+        "https://github.com/javabugmaker/123.git",
     ]
 
 

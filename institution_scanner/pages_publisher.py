@@ -75,14 +75,38 @@ def github_pages_url(remote: str) -> str:
     return f"https://{owner}.github.io/{name}/"
 
 
+def _has_configured_origin(remote: str, https_remote: str) -> bool:
+    return bool(remote.strip()) and remote.rstrip("/") != https_remote.rstrip("/")
+
+
 def publication_remote_candidates(remote: str) -> tuple[GitRemoteCandidate, ...]:
-    """Prefer HTTPS, retaining the configured origin as an auth fallback."""
+    """Return transport candidates, preferring the configured origin (SSH).
+
+    The configured origin is usually ``git@github.com:...`` (SSH), which keeps
+    working on machines where HTTPS to github.com is firewalled --- exactly the
+    state that makes an HTTPS-first order time out the clone and only stumble
+    onto a working transport after a long delay (or fail on a leftover dir).
+    The credential-free public HTTPS URL is retained as a fallback.  Set the
+    environment variable ``INSTITUTION_SCANNER_WEB_GIT_TRANSPORT=https`` to
+    force the legacy HTTPS-first order.
+    """
     https_remote = github_https_remote(remote)
     if not https_remote:
         return ()
-    candidates = [GitRemoteCandidate("HTTPS", https_remote)]
-    if remote.rstrip("/") != https_remote.rstrip("/"):
-        candidates.append(GitRemoteCandidate("configured origin", remote))
+    https_candidate = GitRemoteCandidate("HTTPS", https_remote)
+    configured = GitRemoteCandidate("configured origin", remote)
+    prefer = os.environ.get(
+        "INSTITUTION_SCANNER_WEB_GIT_TRANSPORT", ""
+    ).strip().lower()
+    if prefer in {"http", "https"}:
+        candidates = [https_candidate]
+        if _has_configured_origin(remote, https_remote):
+            candidates.append(configured)
+    else:
+        candidates = (
+            [configured] if _has_configured_origin(remote, https_remote) else []
+        )
+        candidates.append(https_candidate)
     return tuple(candidates)
 
 
@@ -155,6 +179,27 @@ def _branch_exists(
     raise RuntimeError("WEB_REPORT_REMOTE_UNREACHABLE: " + "; ".join(errors))
 
 
+def _retire_worktree(worktree: Path) -> None:
+    """Remove a stale clone dir, or quarantine it if files are locked.
+
+    A clone killed by timeout can leave locked files that ``shutil.rmtree``
+    cannot delete on Windows, which then makes the next transport fail with
+    ``destination path already exists``.  Move the leftover aside so the next
+    candidate can clone into a fresh empty directory.
+    """
+    if not worktree.exists():
+        return
+    try:
+        shutil.rmtree(worktree)
+        return
+    except OSError:
+        pass
+    try:
+        worktree.rename(Path(str(worktree) + f".stale-{os.getpid()}"))
+    except OSError:
+        pass
+
+
 def _clone_branch(
     candidates: Sequence[GitRemoteCandidate],
     branch: str,
@@ -164,7 +209,7 @@ def _clone_branch(
 ) -> GitRemoteCandidate:
     errors: list[str] = []
     for candidate in candidates:
-        shutil.rmtree(worktree, ignore_errors=True)
+        _retire_worktree(worktree)
         try:
             _run_git(
                 [
