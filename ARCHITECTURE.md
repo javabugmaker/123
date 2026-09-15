@@ -225,12 +225,26 @@ generated `gh-pages` worktree is no longer tracked on `main`.
 The remaining giant compatibility modules are shrink-only. CI guards their size
 ceiling so new logic cannot accumulate in them:
 
-- `analytics_core.py` <= 160 KB
-- `report_core.py` <= 105 KB
-- `gui_core.py` <= 105 KB
-- `gui.py` <= 100 KB
-- `scanner.py` <= 80 KB
-- `signal_lifecycle_core.py` <= 70 KB
+- `analytics_core.py` <= 145,000 B
+- `report_core.py` <= 95,000 B
+- `gui_core.py` <= 105,000 B
+- `gui.py` <= 98,000 B
+- `scanner.py` <= 2,048 B
+- `signal_lifecycle_core.py` <= 56,000 B
+
+**These ceilings live in code, not here.** The authoritative table is
+`_SIZE_BUDGETS` in `tests/test_architecture_growth.py`; this list is a summary
+and must be updated whenever a ceiling moves. `scanner.py` is the cautionary
+tale: it was hollowed out into a 941 B facade by the T1 layering while its
+ceiling stayed at 80 KB for months, leaving 79 KB of headroom that no change
+could ever consume. `test_size_budgets_are_not_vacuous` now fails when any
+budget exceeds its module by more than 4,096 B, so a stale ceiling is caught
+even when the file keeps shrinking.
+
+Every root-level `.py` above 20,000 B must also have a budget
+(`test_every_large_root_module_has_a_budget`), including frozen overlays: a
+frozen patch is still a file somebody can edit, and `web_report_v84.py` grew by
+1,588 B in three commits.
 
 Future extraction moves pure services/view models into the canonical package and
 then lowers these ceilings. GUI and Pages development should prefer subtraction

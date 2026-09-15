@@ -53,4 +53,7 @@ jobs:
         shell: pwsh
         run: |
           python -m compileall -q institution_scanner
-          python -c "import main, daily_pipeline, web_report_v81"
+          # gui_v85 is the entry point README tells desktop users to run, so it
+          # has to be importable on Windows even though CI never opens a window
+          # (module import is side-effect free; main() sits behind __main__).
+          python -c "import main, daily_pipeline, web_report_v81, gui_v85"

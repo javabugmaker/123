@@ -2785,3 +2785,66 @@ F401。删除前先查了三类外部取用：
     写下来的东西"。判据要用**增长**而不是**大小**。
 20. **闸门要防"装饰性存在"** —— 预算远大于文件、断言永远为真、锚点是 HEAD，
     三者都是"看起来有闸门"。判据是：**它今天能不能失败？**
+
+## 27. 交付形态确定后的重新排序：给日更发布链路装护栏
+
+用户确认交付物是 GitHub Pages（<https://javabugmaker.github.io/123/>），
+源码在 <https://github.com/javabugmaker/123/>。这一个信息改变了整个待办的排序。
+
+### 27.1 「不发包」是个结构结论，不是偷懒
+
+原计划有一条"补 `[project]` 打包元数据"。**否掉了**，理由比"现在没有"更硬：
+271 个入库 `.py` 里 **122 个在仓库根级**，包里只有 `institution_scanner/`。
+从包目录构建的 wheel 会**缺掉扫描器的大部分实现**（根级 `main.py` → `scanner`
+→ `analytics` → `report` 这条 facade 链不在包内），`pip install` 后必然 ImportError。
+所以加 `[project]` 不是补元数据，而是要先做完 T5 的 overlay 收敛——
+大工程，且与"发布静态站点"这个目标无关。已在 `pyproject.toml` 顶部写明理由。
+
+### 27.2 排序变化的理由
+
+Pages 站点的唯一生产者是 `daily_pipeline.py`（`daily-pages.yml:61` 每交易日执行）。
+它此前：**CI 里天天真跑、本地 217 个测试零覆盖、`.staging` 原子切换零测试**。
+也就是说"本地全绿"和"网站能出得来"之间没有任何联系。这一条被提到最前。
+
+### 27.3 新增 `tests/test_daily_pipeline_publication.py`（8 用例）
+
+沿用 `assembly_manifest.capture_subprocess` 的隔离范式：**`import daily_pipeline`
+会传递导入 `main`，在 pytest 进程内装一遍 overlay，之后每个断言看到的都不是原样。**
+所以行为断言全部放在子进程探针 `tests/daily_publication_probe.py` 里跑，
+pytest 只负责对探针吐回的 JSON 下断言。
+
+锁住的四条性质：
+
+| 性质 | 用例 |
+| --- | --- |
+| 运行期只写 `output/.staging/<RunId>`，canonical 不被碰 | `test_runtime_writers_are_redirected_and_restored`（7 个写入属性全被重定向且还原） |
+| 失败必须按字节还原发布集 | `test_transaction_rollback_restores_the_published_set`、`test_a_failed_run_leaves_the_published_site_untouched` |
+| `LatestRun.json` 只在成功后推进 | 同上（失败用例断言 `latest_run_unchanged`） |
+| 站点发布在激活之后，不是之前 | `test_activation_advances_latest_run_then_publishes_the_site` |
+
+反向验证 8 个故障全部咬住：回滚变空操作 / 不做运行前快照 / `LatestRun` 提前推进 /
+发布跳过原子 rename / staging 复用 run id / 空 staging 可发布 / 写入属性不还原 /
+发布原因被改。**两轮批量验证里每个故障都至少咬住过一次**（miss 会在不同注入之间
+漂移，见 27.5）。
+
+### 27.4 顺带纠正的两个判断
+
+1. **`LatestRun.json` 是"指针"不是"追加日志"** —— 核心 `_activate_run` 整体覆盖它，
+   facade 再叠 v113 字段。我最初写的断言是"保留上一版的键"，跑出来是 false。
+   **是断言错了，不是代码错了**：改成断言"指向新 run_dir 且带 provenance"。
+2. **README 里 `启动研究终端.bat` 的"缺文件"是误报** —— `git ls-files | grep '\.bat$'`
+   匹配不到，因为 **git 默认 `core.quotePath=true`，非 ASCII 路径被转义成
+   `"\345\220\257...bat"` 带引号结尾**。用 `git -c core.quotePath=false ls-files`
+   确认文件在库里，且是全库唯一的非 ASCII 文件名。
+
+### 27.5 新增的可复用做法
+
+21. **审计脚本用了 git 输出做文件名断言，必须先关 `core.quotePath`** ——
+    否则中文路径会静默漏掉，而且漏的方向是"报不存在"（看起来像缺陷）。
+    这是本项目第 7 次"审计工具被自己的假设绕过"。
+22. **本地沙箱会让 `subprocess.run(capture_output=True)` 报
+    `OSError: [WinError 6] 句柄无效`**，概率约 50%。已加只对 `OSError` 的重试
+    （不重试非零返回，避免掩盖真实失败）；加之前 2/4 红，加之后 5/5 绿。
+    **重试必须限定在传输层异常，不能重试业务失败。**
+23. **断言失败时先怀疑断言** —— 这次"LatestRun 保留旧键"就是断言假设错了。
+    判据：看代码是不是"故意这么写的"（核心覆盖 + facade 叠加 = 有意为之）。
