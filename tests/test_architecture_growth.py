@@ -105,10 +105,12 @@ _SIZE_BUDGETS = {
     "score_core.py": 44_289 + 1_024,
     "signal_lifecycle.py": 25_933 + 1_024,
     "signal_lifecycle_v51.py": 23_145 + 1_024,
-    "web_report_v84.py": 46_307 + 1_024,
-    "web_report_v85.py": 50_136 + 1_024,
-    "web_report_v93.py": 31_638 + 1_024,
 }
+# web_report_v84/v85/v93 budgets were removed together with the modules:
+# WEB_REPORT.md documents that the production path stopped chaining
+# v84/v85/v90/v93/v102/v102_1, and a runtime probe confirmed that importing
+# main + daily_pipeline + publish_web_report loads only web_report_v81.  The
+# six modules were 166 KB of unreachable code guarded by these three budgets.
 
 
 def test_new_versioned_overlays_must_not_be_added_at_repo_root() -> None:
