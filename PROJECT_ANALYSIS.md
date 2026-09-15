@@ -2416,9 +2416,8 @@ bs 与 ac 是否同一对象: False
 
 ### 23.8 本轮遗留
 
-1. **9 个黄金夹具仍未纳入 git**（`analytics_core_golden.json` 等）。
-   本轮又新增 1 个。新克隆没有基线，闸门会自我生成校验——自证清白的闸门等于没有闸门。
-   **建议单独提交一次**，与代码改动分开。
+1. ~~**9 个黄金夹具仍未纳入 git**~~ —— **已在提交 `25b4f46` 解决**：
+    `tests/fixtures/` 下 13 个夹具全部受版本控制（含本轮的 `report_core_golden.json`）。
 2. **T3 未动**：`report_core.py` 的 `validate_decision_integrity`（909 行）拆分。
    按 §22.5 的新指标，动手前必须先查它的**被重新赋值次数**，而不是看行数。
 3. 本次只搬了 16 个函数 / 14 KB。`analytics_core` 仍有 3,445 行，
@@ -2436,3 +2435,162 @@ bs 与 ac 是否同一对象: False
 5. **ruff 说"没用"不等于能删** —— overlay 通过模块属性读写，静态分析看不见。
 6. **反向验证 5 个闸门** —— 证明会咬，而不是证明没咬。
 7. **预算随代码移动** —— 否则腾出的空间会悄悄长回去。
+
+---
+
+## 24. T3′：把 report_core 的候选筛选簇搬进 institution_scanner.report_selection
+
+提交 `af5dcfd`。`report_core.py` 从 104,909 字节降到 91,784（2,422 → 2,080 行），
+预算从 105,000 收到 95,000。199 passed，干净树复验同样 199 passed。
+
+### 24.1 选簇：以依赖闭包为单位，而不是以行数
+
+上一轮的教训是"看着大就动手"：目标从 909 行缩到 579 行又缩到 300 行，每次都是
+搬进去之后才发现依赖不干净。所以这一轮先把侦察固化成工具
+`tests/recon_extraction_targets.py`，它以**传递依赖闭包**为单位评估：
+
+```
+python tests/recon_extraction_targets.py report_core \
+    --seed _apply_research_policy,_ensure_diversity_columns,_diversify_ranked_candidates,_institutional_tier
+
+闭包成员 (11): _apply_research_policy, _clean_group_key, _diversify_ranked_candidates,
+              _ensure_diversity_columns, _etf_theme_key, _institutional_tier, _policy_column,
+              _policy_text, _policy_truthy, _truthy, _vectorized_etf_research_policy
+合计 323 行
+依赖的被改符号（会脱离补丁）: 无
+闭包外还依赖的函数（会成环）: 无
+=> 该簇自洽，可以整体搬出
+```
+
+被排除的两个目标：`print_terminal_report`（依赖被 `report_determinism` 改写的
+`_rankable_results`）和 `refresh_candidate_exports`（闭包 20 个函数 / 1,542 行，
+含 909 行的 `validate_decision_integrity`）。
+
+工具带 `--selfcheck`：先把 5 个已知被改符号喂进去，扫不到就报错"扫描已失明"。
+这是第 6 次同类扫描被绕过后定下的规矩。
+
+### 24.2 两条独立的等价性证据
+
+| 证据 | 结果 |
+|---|---|
+| 源码级：与 `git show HEAD:report_core.py` 逐字比对 | 11 个函数中 **10 个完全相同**（13,008 字节） |
+| 运行时：63 个黄金用例重放 | **取值变化 0** |
+| provenance | 11 个迁到 `report_selection`，canary `_rankable_results` 未动 |
+
+唯一的偏差是 `_institutional_tier` 里 3 处阈值改为 `_config.X`，见 24.3。
+
+### 24.3 核心风险：阈值迁移依赖 import 顺序
+
+这是本轮最值钱的发现，而且它**不是**"某个 overlay 改了 report_core 的符号"那种
+已知模式，是一种新的：
+
+```
+config（未装配）      INSTITUTIONAL_TIER_A_SCORE = 35.0
+config（装配后）      INSTITUTIONAL_TIER_A_SCORE = 36.0825
+config_core（始终）   INSTITUTIONAL_TIER_A_SCORE = 35.0     <- config 与 config_core 不是同一个对象
+report_core 实际持有  36.0825
+```
+
+`score.py:21` 在导入时调用 `score_threshold_migration_v95.install(config)`，把
+35/30/25 改写成 36.0825/30.9278/25.7732。`report_core` 之所以持有迁移后的值，
+只是因为它的第 25 行 `from analytics import ...` 先于第 32 行 `from config import ...`
+执行——**一个 import 顺序的偶然**，注释里没人写过，代码里也看不出来。
+
+后果：新模块若按值 `from config import INSTITUTIONAL_TIER_A_SCORE`，就会固化成
+它自己被导入那一刻的快照。偏差 1.08 分，而 63 个用例里**只有 3 个**会察觉。
+
+对应措施三条：
+
+1. 新模块 `import config as _config`，在调用时读 `_config.X`（与 T2′ 的
+   `compute_volume_profile` 同一条规矩）。
+2. 语料里放三个落在迁移缝隙内的探针：`MIGRATION_PROBES = (35.5→B/A, 30.5→C/B,
+   25.4→D/C)`，每个在两套常量下返回不同档位。
+3. 两个闸门分别盯取值（`test_migration_probes_pin_the_migrated_thresholds`）和
+   绑定（`test_extracted_module_shares_the_migrated_thresholds`，拿 `report_core`
+   仍持有的旧快照与新模块解析到的值对比）。
+
+另外还有一个 corpus 守卫 `test_migration_probes_are_still_differential`：
+万一以后迁移系数改到某个探针不再跨边界，它会先红，避免留下一个"看着绿但什么都没守住"的探针。
+
+### 24.4 顺带抓出的一处既有重复
+
+`test_canonical_package_discipline::test_no_duplicated_function_bodies` 报：
+
+```
+publication_renderer.py:_truthy:181 == report_selection.py:_truthy:213
+```
+
+这个重复**早就存在**，但 `_truthy` 原先在仓库根目录的 `report_core.py` 里，而该闸门
+只扫 `institution_scanner/` 包内——跨过包边界的那一刻它才变得可见。按闸门要求沉到
+`institution_scanner/_common.py`（那模块的说明写的就是"每个助手此前都以 2-4 份逐字
+副本散落在包里"），`publication_renderer` 改为导入。
+
+**结论：包边界是闸门的一个盲区。** 每往包里搬一个符号，都可能暴露出根目录时代
+看不见的重复。这本身是把代码往包里搬的额外收益。
+
+### 24.5 反向验证：7 个闸门全部被证明会咬住
+
+注入违规 → 观察是否转红 → 还原（已确认无残留）。
+
+| 闸门 | 注入方式 | 结果 |
+|---|---|---|
+| 取值等价 | 把 `cluster_step` 乘 2 | 红 |
+| 字节预算 | 给 `report_selection.py` 追加 60 行 | 红 |
+| overlay 重绑定 | 插件把 `report_core._ensure_diversity_columns` 换成假函数 | 红 |
+| 阈值绑定 | 插件把 `config` 三个阈值回滚到 35/30/25 | 红 |
+| 迁移探针 | 同上 | 红 |
+| 共享归属 | 插件替换 `report_core._truthy` | 红 |
+| 语料守卫 | 把夹具里全部「D级等待确认」改成「B级观察」 | 红 |
+
+**过程中有 3 次注入本身是无效的**，值得记下来：
+
+1. 改罚分下限 `0.70 → 0.60`：语料里罚分最低只到 0.95，下限根本没被触到，
+   改动是个空操作。**注入前要先确认被改的代码路径真的会被语料走到。**
+2. 插件里直接 `import config` 后改阈值：`score.py` 的 `install()` 在其之后又跑了一次，
+   把值覆写回去。必须**先 `import report` 钉住装配**再改。
+3. 只改 `golden_report_core.py` 的语料而不重新采集：档位守卫读的是**夹具**，不是语料源码。
+   改语料不重采，守卫当然不红。
+
+也就是说，"闸门没咬住"有两种可能：闸门是假的，**或者注入是假的**。三种里有两种是后者。
+
+### 24.6 预算现状
+
+| 模块 | 当前 | 预算 | 余量 |
+|---|---|---|---|
+| `analytics_core.py` | 142,583 | 160,000 | 17,417 B ≈ 435 行 |
+| `report_core.py` | 91,784 | 95,000 | 3,216 B ≈ 80 行 |
+| `gui_core.py` | 104,866 | 105,000 | **134 B ≈ 3 行** |
+| `gui.py` | 94,033 | 100,000 | 5,967 B ≈ 149 行 |
+| `scanner_core.py` | 78,111 | 78,111 | **0** |
+| `signal_lifecycle_core.py` | 67,788 | 70,000 | 2,212 B ≈ 55 行 |
+| `institution_scanner/report_selection.py` | 16,963 | 16,963 | 0 |
+| `institution_scanner/backtest_statistics.py` | 17,969 | 17,969 | 0 |
+
+`report_core` 让出 13 KB，`gui_core` 现在是下一个窒息点（3 行）。
+
+### 24.7 本轮遗留
+
+1. **`gui_core` 只剩 3 行预算**，但 recon 工具还没扫过它。
+2. **T3′-2 未动**：`report_core` 还有约 1,219 行，其中
+   `validate_decision_integrity`（909 行，无分段注释）会撞
+   `FUNCTION_LINE_LIMIT`（150）。要先分段才能搬。
+3. **`analytics_core` 的 17,417 B 余量没有锁**：T2′ 之后预算停在 160,000 没往下收，
+   这笔腾出的空间理论上还能悄悄长回去。与"只减不增"的纪律不一致，
+   下一轮动 `analytics_core` 时应一并处理。
+4. **`_truthy` 在仓库里还有 4 份逐字副本**（`daily_pipeline_core`、
+   `web_report_v84`、`universe_snapshot_v82` 等）。它们在包外，闸门看不见；
+   搬进包里时会被自动拦下。
+
+### 24.8 新增的可复用做法
+
+8. **以依赖闭包为单位评估，不以行数** —— 否则目标会在动工后反复缩水。
+9. **侦察要固化成带自测的工具** —— 一次性脚本的结论无法复核，而且同类扫描
+   已经被绕过 6 次。
+10. **常量也可能被 overlay 改写** —— 已知模式是"函数被换"，这次是"`config` 的
+    常量被 `install()` 改写"。判断标准应该是"装配前后取值/字节码是否变化"，
+    而不是"它看起来像不像常量"。
+11. **探针用例要自带"仍然有效"的守卫** —— 否则迁移系数一改，探针就退化成普通用例。
+12. **反向验证失败时，先怀疑注入** —— 本轮 3 次无效注入里，2 次是被注入的代码
+    路径没被走到或随后被覆写。
+13. **包边界会暴露既有重复** —— 每搬一个符号进包，都可能被
+    `test_no_duplicated_function_bodies` 拦下，这是收益不是麻烦。
