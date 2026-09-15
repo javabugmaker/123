@@ -203,3 +203,57 @@ if "Above_HVN" in df.columns and "DistToHVN_Pct" in df.columns:
    我倾向 **(a)：回测应当复现实盘，而不是反过来**；若性能不可接受，再考虑 (c)。
 
 2. **B2 的标定闭环是否是有意设计？** 如果是有意的自适应机制，建议至少把 `ScoreCalibration.json` 纳入发布物清单（**已经在** `daily_pipeline_core.py:68/83`）并把其 hash 写进 provenance；如果是无意的，建议在 `accepted` 之外再加一个显式的总开关。
+
+---
+
+## 6. 处置结果（2026-09-15，已实施）
+
+采纳方案 **(a) 回测改为保留 VP**，提交 `153ff75`。
+
+### 6.1 改动
+
+| 文件 | 改动 |
+|---|---|
+| `config.py` | 新增 `BACKTEST_HISTORICAL_VOLUME_PROFILE`（默认 `True`，支持环境变量覆盖，便于无代码回滚） |
+| `backtest_profile_alignment_v95.py` | 改为读取该开关，不再硬编码 `False`；版本号升至 `v97.1`；**修正过期的文档字符串**（B5） |
+| `backtest_fastpath_v78.py` / `backtest_fastscore_v80.py` | 由硬编码 `include_volume_profile=False` 改为跟随 `profile.historical_volume_profile` |
+| `conditional_fill_v96.py` | 新增延迟读取的开关判定 |
+
+FAST 与 EXACT **同时**保留 VP，因此二者仍对齐，且都等于实盘。
+
+### 6.2 向量化未受影响
+
+- `final_score_series` 只被 `historical_backtest.py` 调用，而该处在 `_worker` 里显式设置
+  `_indicators.ENABLE_VOLUME_PROFILE = False`（全帧上算 VP 会构成前视），**本次未触碰**。
+- `backtest_vectorization_v98` 的向量化在**样本生成侧**（成交、退出、收益），
+  评分本来就是逐信号点的 `score_ticker`；它并不使用 `final_score_series`。
+- 本次没有把任何向量化代码改写成循环。VP 的 `compute_volume_profile` 内部本来就是
+  numpy 向量化（`np.digitize` + 广播）。
+
+### 6.3 性能实测（`_signal_evaluations`，1500 根合成帧）
+
+| 模式 | VP 关 | VP 开 | 增幅 | 5000 标的墙钟（6 进程） |
+|---|---:|---:|---:|---:|
+| EXACT | 1727 ms/标的 | 1788 ms/标的 | **+3.5%** | +51 s |
+| FAST | 545 ms/标的 | 589 ms/标的 | **+8.0%** | +36 s |
+
+判定：可接受。若未来成为瓶颈，优化方向是让 `compute_volume_profile` 只返回末端标量
+（现在它会把标量写满 504 行整列），而不是改写成滚动版本——滚动 VP 要对全部
+~1500 根 bar 计算，比只在 ~34 个信号点上算慢约 25 倍。
+
+### 6.4 验证
+
+- 新增 `tests/test_backtest_live_scoring_equivalence.py`（4 例）：
+  回测窗口重算 VP 后与实盘 structure 一致；不重算则必然偏离；并钉住 profile 配置本身。
+- **反向验证**：`BACKTEST_HISTORICAL_VOLUME_PROFILE=0` 时测试必须失败。
+  初版测试自己 monkeypatch 成 `True`，导致闸门空转，已修正（见下）。
+- 重捕获 `signal_lifecycle_golden`：12 行变更**全部只是 `DecisionPolicySignature`**，
+  分数/排名/信号零漂移 —— canary 证明了本次改动的数值影响范围。
+- 重捕获 `assembly_manifest`：86 → 86 步，差异仅为版本号 bump 与 4 处行号位移。
+- **229 tests / 0 failures / 0 errors**；`ruff check .` 全绿；干净克隆复现一致。
+
+### 6.5 本轮教训
+
+**初版测试是空转闸门。** 我在测试里先 `monkeypatch.setattr(config, ..., True)`
+再断言它为真，于是无论出厂值是多少都通过。这是本项目第 9 例"审计工具被自身假设绕过"。
+修正后改为断言出厂默认，反向验证（env=0）随即正确变红。
