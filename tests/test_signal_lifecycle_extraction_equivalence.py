@@ -58,6 +58,29 @@ EXTRACTED = ROOT / "institution_scanner" / "signal_attributes.py"
 
 
 def _pre_move_source() -> str:
+    """Read the pre-move file straight out of the object store.
+
+    Historical source is required because this gate proves a *mechanical* move:
+    comparing the new home against the working copy of the old home would
+    compare nothing at all once the move is done.  That dependence on history
+    makes the gate sensitive to clone depth -- ``actions/checkout`` defaults to
+    ``fetch-depth: 1``, which drops ``PRE_MOVE_COMMIT`` and used to fail here
+    with a bare ``CalledProcessError: exit status 128``.  Say what is missing
+    and how to fix it instead; skipping quietly is not an option, because a
+    gate that passes on shallow clones protects nothing.
+    """
+    probe = subprocess.run(
+        ["git", "cat-file", "-e", f"{PRE_MOVE_COMMIT}^{{commit}}"],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(
+            f"pre-move commit {PRE_MOVE_COMMIT} is not in this clone, so the "
+            "extraction cannot be compared against it. Fetch full history "
+            "(git fetch --unshallow) or use fetch-depth: 0 in actions/checkout."
+        )
     result = subprocess.run(
         ["git", "show", f"{PRE_MOVE_COMMIT}:signal_lifecycle_core.py"],
         cwd=str(ROOT),
