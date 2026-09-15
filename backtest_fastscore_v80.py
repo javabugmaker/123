@@ -600,7 +600,9 @@ def _legacy_endpoint(
         enriched,
         index,
         score_window=profile.score_window,
-        include_volume_profile=False,
+        include_volume_profile=bool(
+            getattr(profile, "historical_volume_profile", False)
+        ),
     )
     score = _core.score_ticker(scoring_frame, is_etf=is_etf)
     entry = _core.entry_point(

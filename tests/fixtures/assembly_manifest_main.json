@@ -12,7 +12,7 @@
     "analytics_core.ANALYTICS_RUNTIME_COMPOSITION_VERSION": "str:'2026-09-04-v113-canonical-analytics-bootstrap-v2'",
     "analytics_core.BACKTEST_BENCHMARK_ENTRY_BASIS": "str:'OPEN'",
     "analytics_core.BACKTEST_EXECUTION_MODEL": "str:'asset_fees_liquidity_immediate_open_waitpullback_zone5_benchmark_open_v4'",
-    "analytics_core.BACKTEST_PROFILE_ALIGNMENT_VERSION": "str:'2026-08-23-v97-504-window-hvn-diagnostic-reentrant-profile-v2'",
+    "analytics_core.BACKTEST_PROFILE_ALIGNMENT_VERSION": "str:'2026-09-15-v97.1-504-window-hvn-recomputed-reentrant-profile-v3'",
     "analytics_core.BACKTEST_RESONANCE_RUNTIME_VERSION": "str:'2026-08-23-v91-parent-resonance-vectorized-v1'",
     "analytics_core.BACKTEST_SPLIT_POLICY": "str:'purged_by_complete_60d_outcome_window_v1'",
     "analytics_core.BACKTEST_VECTORIZATION_VERSION": "str:'2026-08-23-v98-vectorized-execution-integrity-v1'",
@@ -576,7 +576,7 @@
         "analytics_core.ANALYTICS_RUNTIME_COMPOSITION_VERSION": "str:'2026-09-04-v113-canonical-analytics-bootstrap-v2'",
         "analytics_core.BACKTEST_BENCHMARK_ENTRY_BASIS": "str:'OPEN'",
         "analytics_core.BACKTEST_EXECUTION_MODEL": "str:'asset_fees_liquidity_immediate_open_waitpullback_zone5_benchmark_open_v4'",
-        "analytics_core.BACKTEST_PROFILE_ALIGNMENT_VERSION": "str:'2026-08-23-v97-504-window-hvn-diagnostic-reentrant-profile-v2'",
+        "analytics_core.BACKTEST_PROFILE_ALIGNMENT_VERSION": "str:'2026-09-15-v97.1-504-window-hvn-recomputed-reentrant-profile-v3'",
         "analytics_core.RANKING_ARCHITECTURE_VERSION": "str:'2026-08-21-v83-layered-research-execution-v1'",
         "analytics_core.SCORING_CONSISTENCY_VERSION": "str:'2026-08-23-v97-fast-exact-single-owner-consistency-v5'",
         "analytics_core._V51_BENCHMARK_ALIGNMENT_INSTALLED": "bool:True",
@@ -1044,7 +1044,7 @@
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:80",
-      "func": "backtest_fastpath_v78.py:397:install",
+      "func": "backtest_fastpath_v78.py:399:install",
       "module_level": false,
       "rebinds": {
         "analytics_core._signal_evaluations": "backtest_fastpath_v78._signal_evaluations",
@@ -1054,7 +1054,7 @@
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:81",
-      "func": "backtest_fastscore_v80.py:708:install",
+      "func": "backtest_fastscore_v80.py:710:install",
       "module_level": false,
       "rebinds": {
         "analytics_core._signal_evaluations": "backtest_fastscore_v80._signal_evaluations",
@@ -1093,7 +1093,7 @@
       "rebinds": {
         "analytics_core.BACKTEST_BENCHMARK_ENTRY_BASIS": "str:'OPEN'",
         "analytics_core.BACKTEST_EXECUTION_MODEL": "str:'asset_fees_liquidity_immediate_open_waitpullback_zone5_benchmark_open_v4'",
-        "analytics_core.BACKTEST_PROFILE_ALIGNMENT_VERSION": "str:'2026-08-23-v97-504-window-hvn-diagnostic-reentrant-profile-v2'",
+        "analytics_core.BACKTEST_PROFILE_ALIGNMENT_VERSION": "str:'2026-09-15-v97.1-504-window-hvn-recomputed-reentrant-profile-v3'",
         "analytics_core._V51_BENCHMARK_ALIGNMENT_INSTALLED": "bool:True",
         "analytics_core._backtest_one_ticker": "backtest_alignment.install_analytics_alignment.<locals>.aligned_one",
         "analytics_core._backtest_one_ticker_cached": "backtest_alignment.install_analytics_alignment.<locals>.aligned_cached",
@@ -1105,10 +1105,10 @@
     },
     {
       "call_site": "backtest_alignment.py:161",
-      "func": "backtest_profile_alignment_v95.py:39:install",
+      "func": "backtest_profile_alignment_v95.py:57:install",
       "module_level": false,
       "rebinds": {
-        "analytics_core.BACKTEST_PROFILE_ALIGNMENT_VERSION": "str:'2026-08-23-v97-504-window-hvn-diagnostic-reentrant-profile-v2'",
+        "analytics_core.BACKTEST_PROFILE_ALIGNMENT_VERSION": "str:'2026-09-15-v97.1-504-window-hvn-recomputed-reentrant-profile-v3'",
         "analytics_core._resolve_backtest_profile": "backtest_profile_alignment_v95._resolve_backtest_profile",
         "backtest_profile_alignment_v95._INSTALLED": "bool:True",
         "backtest_profile_alignment_v95._ORIGINAL_RESOLVE_PROFILE": "institution_scanner.backtest_profile._resolve_backtest_profile"
@@ -1117,7 +1117,7 @@
     },
     {
       "call_site": "backtest_alignment.py:170",
-      "func": "backtest_fastscore_v80.py:708:install",
+      "func": "backtest_fastscore_v80.py:710:install",
       "module_level": false,
       "rebinds": {},
       "seq": 63
@@ -1710,14 +1710,14 @@
     },
     {
       "call_site": "backtest_alignment.py:161",
-      "func": "backtest_profile_alignment_v95.py:39:install",
+      "func": "backtest_profile_alignment_v95.py:57:install",
       "module_level": false,
       "rebinds": {},
       "seq": 105
     },
     {
       "call_site": "backtest_alignment.py:170",
-      "func": "backtest_fastscore_v80.py:708:install",
+      "func": "backtest_fastscore_v80.py:710:install",
       "module_level": false,
       "rebinds": {},
       "seq": 106

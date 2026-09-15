@@ -348,7 +348,9 @@ def _signal_evaluations(
             enriched,
             index,
             score_window=profile.score_window,
-            include_volume_profile=False,
+            include_volume_profile=bool(
+                getattr(profile, "historical_volume_profile", False)
+            ),
         )
         historical_score = _core.score_ticker(scoring_frame, is_etf=is_etf)
         historical_entry = _core.entry_point(

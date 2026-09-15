@@ -51,6 +51,13 @@ def _finite(value: Any) -> float:
     return number if np.isfinite(number) else np.nan
 
 
+def _historical_volume_profile_enabled() -> bool:
+    """Read the switch late so tests can flip ``config`` after import."""
+    import config as _config
+
+    return bool(getattr(_config, "BACKTEST_HISTORICAL_VOLUME_PROFILE", True))
+
+
 def _score_entry_zone(
     enriched: pd.DataFrame,
     signal_index: int,
@@ -62,7 +69,7 @@ def _score_entry_zone(
         enriched,
         int(signal_index),
         score_window=max(252, int(score_window)),
-        include_volume_profile=False,
+        include_volume_profile=_historical_volume_profile_enabled(),
     )
     score = _core.score_ticker(historical, is_etf=is_etf)
     entry = _core.entry_point(

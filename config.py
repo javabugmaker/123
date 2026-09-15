@@ -27,6 +27,15 @@ FUNDAMENTAL_CHECKPOINT_EVERY: int = 100
 FUNDAMENTAL_MAX_IN_FLIGHT_FACTOR: int = 2
 BACKTEST_INCREMENTAL_TAIL_BARS: int = _RUNTIME.backtest_incremental_tail_bars
 
+# The historical scoring window drops the precomputed volume-profile columns and
+# only recomputes them when this is true.  score_structure consumes
+# Above_HVN / DistToHVN_Pct for up to 2 of its 15 points, so leaving it false
+# makes the backtest score a model that is missing a term the live scan still
+# applies.  Set it to false only to restore the pre-2026-09-15 behaviour.
+BACKTEST_HISTORICAL_VOLUME_PROFILE: bool = os.getenv(
+    "BACKTEST_HISTORICAL_VOLUME_PROFILE", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+
 # The Champion score signature is intentionally unchanged. These version bumps
 # describe data/decision semantics and engineering, not a new alpha model.
 SCORING_VERSION: str = (
