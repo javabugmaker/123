@@ -443,4 +443,29 @@ Pages 确认公开可读后重新审计，**推翻了 §6 原先的判断**：
 
 **明确不做的**：打包 / `[project]`（有意设计，见 §5.3 修正）、`gui_core` 拆分（余量 2,648 B 非阻塞）、27 个 plain 模块归属（纯可读性）、28 组重复体去重（改动面广，等语义锁装好）。
 
+### 8.4 已推送，但 CI 是既有红灯 —— 这才是 Pages 停更的真因
+
+19 个提交已推送（`ca5a36b..a99bfa6`），远程 `main` 与本地一致。但查 GitHub Actions 发现：
+
+| workflow | 触发点 | 结论 |
+|---|---|---|
+| `Static Quality` | `a99bfa6`（本次推送） | **failure** — 但 Ruff / Pyright / windows-smoke 全绿，只有 `Model and output contract regression`（即 `python -m pytest -q`）红 |
+| `Static Quality` | `ca5a36b`（09-10，"update"） | **failure** ← **早于本轮任何改动** |
+| `Static Quality` | 09-04 及更早 | 全部 success |
+| `Daily A-Share Pages` | `ca5a36b` | 09-11 / 09-14 / 09-15 **连续 failure** |
+
+结论：**CI 从 09-10 起就是红的，不是本轮引入**。`ca5a36b` 只改了两个文件
+（`institution_scanner/pages_publisher.py` +55、`tests/test_pages_publisher.py` +97），
+嫌疑范围很窄；`static-quality` 跑在 **ubuntu + Python 3.11**，而本地是
+**Windows + 3.13/3.14**，属平台差异。日志需认证下载（匿名 403），本地复现要
+Linux 环境（Dockerfile 是 `python:3.11-slim`，但本机无 Docker）。
+
+**这与 gh-pages 停在 09-04 直接对应**：`Daily A-Share Pages` 连续失败，就没有
+新的 artifact，`publish` 作业自然不推送。想让 Pages 恢复更新，必须先让这两个
+workflow 变绿 —— 这已是独立于重构的运维问题。
+
+> 排查提示：优先看 `test_pages_publisher.py` 里有没有依赖**本地 SSH/远程配置**
+> 的断言（`publication_remote_candidates` 的候选个数会随 remote 形态变化）。
+> 这是本项目第三次出现「闸门依赖机器环境」—— 前两次见 `d6d330e` 的修复。
+
 > **判断方法沉淀**：本轮两次用「运行时探测」推翻了静态分析的结论（web_report 链、v90 分支）。这个仓库是 monkey-patch 架构，**overlay 靠 import 副作用安装，静态 grep 既会漏报也会误报**。凡是「这个模块还有用吗」的问题，都应该起子进程 import 入口、再看 `sys.modules`，而不是 grep。
