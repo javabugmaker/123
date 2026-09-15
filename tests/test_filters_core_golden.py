@@ -24,7 +24,6 @@ Recapture with::
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 from golden_filters_core import (
@@ -35,21 +34,9 @@ from golden_filters_core import (
     load,
     plain,
 )
+from golden_match import same
 
 GOLDEN = load()
-
-
-def _same(left: Any, right: Any) -> bool:
-    """Structural equality that treats NaN as equal to itself."""
-    if isinstance(left, float) and isinstance(right, float):
-        if math.isnan(left) and math.isnan(right):
-            return True
-        return left == right
-    if isinstance(left, dict) and isinstance(right, dict):
-        return left.keys() == right.keys() and all(_same(left[k], right[k]) for k in left)
-    if isinstance(left, list) and isinstance(right, list):
-        return len(left) == len(right) and all(_same(a, b) for a, b in zip(left, right))
-    return left == right
 
 
 def _describe(value: Any) -> str:
@@ -95,7 +82,7 @@ def test_golden_output_matches_for_every_scenario() -> None:
         for field, expected_filter in expected_case["filters"].items():
             actual_filter = actual_case["filters"][field]
             for attribute in ("passed", "reason", "details"):
-                if not _same(actual_filter[attribute], expected_filter[attribute]):
+                if not same(actual_filter[attribute], expected_filter[attribute]):
                     mismatches.append(
                         f"{key}::{field}.{attribute}: "
                         f"{_describe(expected_filter[attribute])} -> "
@@ -135,6 +122,6 @@ def test_scenarios_are_deterministic() -> None:
         left, right = first[name], second[name]
         assert list(left.columns) == list(right.columns), f"{name}: columns drifted"
         for column in left.columns:
-            assert _same(
+            assert same(
                 plain(left[column].tolist()), plain(right[column].tolist())
             ), f"{name}.{column} is not deterministic across builds"

@@ -31,32 +31,8 @@ jobs:
         run: pyright
       - name: Pyright GUI strict
         run: pyright -p pyrightconfig.gui.json
-      # TEMPORARY DIAGNOSTIC: the gate has been red since ca5a36b (2026-09-10)
-      # on ubuntu/3.11 while staying green on Windows locally, and the job log
-      # is not readable anonymously.  Step *conclusions* and check-run
-      # *annotations* are readable, so the failure summary is republished as an
-      # annotation below.  Revert to a plain `python -m pytest -q` once fixed.
-      - name: Contract regression
-        run: |
-          set -o pipefail
-          python -m pytest -q --tb=short -rf 2>&1 | tee pytest-out.txt
-      - name: Publish failure summary as annotation
-        if: always()
-        run: |
-          cat > /tmp/dump_fail.py <<'PY'
-          import pathlib
-
-          text = ""
-          candidate = pathlib.Path("pytest-out.txt")
-          if candidate.exists():
-              text = candidate.read_text(errors="replace")
-          failed = [line for line in text.splitlines() if line.startswith("FAILED")]
-          summary = "\n".join(failed[:40]) if failed else "(no FAILED lines)"
-          msg = "FAILED_LINES:\n" + summary + "\n=====TAIL=====\n" + text[-2600:]
-          msg = msg.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-          print("::error::" + msg[:6000])
-          PY
-          python /tmp/dump_fail.py
+      - name: Model and output contract regression
+        run: python -m pytest -q
       - name: Compile
         run: python -m compileall -q .
 

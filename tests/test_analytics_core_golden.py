@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 
 import golden_analytics_core as golden
+from golden_match import same
 
 
 def test_fixture_matches_live_behaviour() -> None:
@@ -36,10 +37,15 @@ def test_fixture_matches_live_behaviour() -> None:
         "Case set drifted: "
         + ", ".join(sorted(set(actual["cases"]) ^ set(expected["cases"])))
     )
+    # Compared with ``golden_match.same`` rather than ``!=``: these values come
+    # out of scipy/numpy kernels, so the last one or two ULPs depend on the BLAS
+    # build and the CPU, not on this repository.  Bit-exact comparison made the
+    # gate red on GitHub Actions (ubuntu 24.04) while it stayed green on Windows
+    # for the same source.  See ``golden_match`` for the tolerance argument.
     mismatched = {
         label: (expected["cases"][label], actual["cases"][label])
         for label in sorted(expected["cases"])
-        if actual["cases"][label] != expected["cases"][label]
+        if not same(actual["cases"][label], expected["cases"][label])
     }
     assert not mismatched, "Behaviour changed for: " + ", ".join(sorted(mismatched))
 

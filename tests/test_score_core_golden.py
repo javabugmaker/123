@@ -28,24 +28,12 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from typing import Any
 
+from golden_match import same
 from golden_score_core import build_cases, capture, load
 
 GOLDEN = load()
 _MIN_CASES_PER_FUNCTION = 3
-
-
-def _same(left: Any, right: Any) -> bool:
-    if isinstance(left, dict) and isinstance(right, dict):
-        return left.keys() == right.keys() and all(_same(left[k], right[k]) for k in left)
-    if isinstance(left, list) and isinstance(right, list):
-        return len(left) == len(right) and all(_same(a, b) for a, b in zip(left, right))
-    if isinstance(left, bool) or isinstance(right, bool):
-        return left is right
-    if isinstance(left, float) and isinstance(right, float):
-        return left == right
-    return left == right
 
 
 def test_golden_output_matches_for_every_case() -> None:
@@ -64,7 +52,7 @@ def test_golden_output_matches_for_every_case() -> None:
             if expected.get("raised") != got.get("raised"):
                 mismatches.append(f"{key}: raised {expected.get('raised')} -> {got.get('raised')}")
             continue
-        if not _same(got.get("value"), expected.get("value")):
+        if not same(got.get("value"), expected.get("value")):
             mismatches.append(
                 f"{key}: {json.dumps(expected.get('value'), ensure_ascii=False)[:120]} -> "
                 f"{json.dumps(got.get('value'), ensure_ascii=False)[:120]}"
