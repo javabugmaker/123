@@ -2594,3 +2594,121 @@ publication_renderer.py:_truthy:181 == report_selection.py:_truthy:213
     路径没被走到或随后被覆写。
 13. **包边界会暴露既有重复** —— 每搬一个符号进包，都可能被
     `test_no_duplicated_function_bodies` 拦下，这是收益不是麻烦。
+
+---
+
+## 25. T4：把 signal_lifecycle_core 的属性簇搬进 institution_scanner.signal_attributes
+
+提交 `8732a1f`。`signal_lifecycle_core.py` 从 67,788 字节降到 52,565（腾出 15,223），
+预算从 70,000 收到 56,000；新模块 17,837 字节，纳入 `MODULE_BYTE_BUDGETS`。
+215 passed，干净克隆复验同样 215 passed（字节数与行尾在克隆里逐字节复现）。
+
+### 25.1 选簇：沿用 T3′ 的闭包口径
+
+```
+python tests/recon_extraction_targets.py signal_lifecycle_core --seed <17 个函数>
+闭包成员 (17)，合计 407 行 / 16,337 字节
+依赖的被改符号（会脱离补丁）: 无
+闭包外依赖: 无
+```
+
+三个符号故意留在原处，并作为 canary 一起冻结进夹具：
+
+| 符号 | 运行时解析到 | 留在原处的原因 |
+|---|---|---|
+| `_is_active` | `signal_lifecycle` | `signal_lifecycle.py` 直接给它赋值 |
+| `finalize_signal_ranking` | `runtime_v83._install_ranking_wrapper.<locals>.layered_finalize` | 装在闭包里，搬走等于复制 |
+| `strict_filter_override_mask` | `signal_lifecycle` | 同上 |
+
+### 25.2 本轮真正的发现：overlay 会"伸手进模块"取符号
+
+第一次尝试把 `_bool` 并进 `_common._truthy`（两者函数体逐字节相同，只有 docstring
+不同）。recon 全绿、源码比对全绿，但两个 canary 的值从真实值变成 `null`。原因：
+
+```python
+# signal_lifecycle.py:90
+passed_filters.map(_core._bool)
+```
+
+overlay 是**从模块对象上按属性取符号**，不是 `from ... import`。recon 通过比较
+`__module__` 判断"谁定义了它"，对这种耦合完全失明——`_bool` 从来没被 rebind，
+所以它不在任何"被改写的符号"清单里。
+
+结论：**重命名一个会被 overlay 按属性取用的符号，不是一次"提取"可以顺手做的事。**
+合并被撤回，17 个函数恢复成纯搬运（源码级 17/17 逐字节相同）。`_bool` / `_truthy`
+的重复仍然挂着，归入去重那一轮，届时连同 `signal_lifecycle.py` 的调用点一起改。
+
+顺带发现重复闸门的另一个盲区：`test_no_duplicated_function_bodies` 把 docstring
+也算进哈希，所以"逻辑相同、文档串不同"的两个函数会算出不同摘要。T3′ 抓到它那份
+是因为两边恰好都没写 docstring。
+
+### 25.3 两重等价性证明，都做成了常驻闸门
+
+| 证明 | 文件 | 锚点 |
+|---|---|---|
+| 源码级逐字节 | `tests/test_signal_lifecycle_extraction_equivalence.py` | 固定 SHA `cd63ffd` |
+| 运行时取值 | `tests/fixtures/signal_lifecycle_golden.json` + `tests/test_signal_lifecycle_golden.py` | 71 个用例，移动前后 0 变化 |
+
+**为什么锚定固定 SHA 而不是 HEAD**：提交之后，`HEAD:signal_lifecycle_core.py`
+里已经没有这 17 个函数了。比对 HEAD 等于拿新模块跟自己比，永远绿、证明不了任何事。
+这是"锚点选错会让闸门永远通过"的又一种形态——和"闸门没咬先怀疑注入"是同一类错误。
+
+### 25.4 反向验证（4 次注入，全部确认会咬）
+
+| 注入 | 咬住的闸门 |
+|---|---|
+| 改掉 `_bool` 接受的拼写（`是` 不再为真） | `test_fixture_matches_live_behaviour`：`bool/chinese` True→False |
+| 删掉 `signal_lifecycle_core` 对 `_bool` 的反向导出 | 同时咬住 4 个：取值、来源、canary 归属、reach-in 专用闸门 |
+| 给搬走的函数加一行注释 | 源码比对：`_number (202 -> 214 bytes)` |
+| 在新模块里夹带一个 `_stray_helper` | `test_the_new_home_defines_nothing_beyond_the_moved_set` |
+
+第一次和第二次注入都因为 **CRLF** 而没生效（`replace("...\n")` 匹配不到 `\r\n`）——
+"注入没生效"和"闸门没咬"表现一样，所以注入后必须断言替换次数。
+
+### 25.5 死导入：ruff 说没用，不等于能删
+
+搬走 17 个函数后，`signal_lifecycle_core` 有 9 个 `config` 常量和 `os`/`Path` 变成
+F401。删除前先查了三类外部取用：
+
+* `_core.<常量>` —— 只有 `analytics_core.py:41` 的注释和 `calibration_math_v96.py:228`
+  命中，但那个 `_core` 是 `analytics_core`，与本模块无关；
+* `signal_lifecycle.<常量>` —— 无（`signal_lifecycle.py` 结尾 `sys.modules[__name__] = _core`，
+  所以两者命名空间等价）；
+* `signal_lifecycle_v51.py:19` 的 `from signal_lifecycle_core import *` —— 本模块没有
+  `__all__`，星号导入会吃掉全部公有名；但该 overlay 用的是 `_config.X`，不依赖这里。
+
+确认无消费者后删除。常量闸门随之从"对照 `signal_lifecycle_core`"改成"对照 `config`"：
+原模块和提取模块的绑定方式完全相同，两者一致证明不了谁没过期；`config` 是活的值，
+才是能发现"提前快照"的参照。
+
+### 25.6 预算
+
+| 模块 | 现在 | 预算 | 余量 |
+|---|---|---|---|
+| `signal_lifecycle_core.py` | 52,565 | 56,000 | 3,435 B ≈ 86 行 |
+| `institution_scanner/signal_attributes.py` | 17,837 | 17,837 | 0 |
+| `analytics_core.py` | 142,583 | 160,000 | 17,417 B ≈ 435 行（仍未锁） |
+| `gui_core.py` | 104,866 | 105,000 | **134 B ≈ 3 行** |
+
+### 25.7 本轮遗留
+
+1. **`_bool` / `_truthy` 重复仍在**（且 `_truthy` 全仓库还有多份副本在包外）——
+   去重时要连同 `signal_lifecycle.py:90/95` 的调用点一起改，否则会再断一次。
+2. **`analytics_core` 的 17,417 B 余量仍未锁**（24.7 第 3 条的遗留，本轮未处理）。
+3. **5 个超阈模块没有预算**：`score_core` 44,289、`daily_pipeline_core` 42,270、
+   `downloader_core` 30,543、`main_core` 22,423、`filters_core` 21,967，全部超过项目
+   自己定的 20,000 B 门槛却没有进入任何预算表。
+4. **recon 看不见属性取用**：建议给它加一条"按 `mod.X` 形态扫描 overlay 源码"的能力，
+   否则下一轮提取还会靠 canary 撞运气。
+
+### 25.8 新增的可复用做法
+
+14. **提取就是提取，不要顺手去重/重命名** —— 重命名一个会被 overlay 按属性取用的
+    符号，会让所有基于 `__module__` 的侦察集体失明。
+15. **等价性证明的锚点必须是不可变 SHA** —— 比 HEAD 会在提交后退化成自我比较。
+16. **给"看不见的耦合"写专用闸门** —— canary 只能告诉你"坏了"，
+    `test_module_level_attribute_reachin_is_still_satisfied` 能告诉你"坏在哪"。
+17. **注入脚本要断言替换次数** —— CRLF 会让 `replace` 静默不匹配，
+    "注入失败"与"闸门没咬"的输出完全一样。
+18. **提取后清理死导入前，先查三类属性取用** —— 直接删除 vs `import *` 消费者
+    vs overlay 的 `_core.X`；本轮只有第三类真的存在过（在别的模块上）。
