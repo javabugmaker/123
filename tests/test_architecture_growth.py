@@ -22,7 +22,14 @@ _SIZE_BUDGETS = {
     # it untracked would turn 78 KB of debt invisible the moment the facade
     # shrank past its own gate.
     "scanner_core.py": 78_111,
-    "signal_lifecycle_core.py": 70_000,
+    # 70_000 -> 56_000 after the T4 extraction moved the 17-function
+    # per-signal attribute cluster into
+    # institution_scanner/signal_attributes.py (signal_lifecycle_core dropped
+    # ~67.8 KB -> 52,940 bytes on disk).  Same rule as report_core above: the
+    # budget has to come down with the code, or the 15 KB that were freed stay
+    # available for re-inflation and the extraction only relocated the debt.
+    # ~3 KB of headroom is left so ordinary fixes do not trip the gate.
+    "signal_lifecycle_core.py": 56_000,
 }
 
 

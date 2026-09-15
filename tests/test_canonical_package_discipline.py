@@ -76,6 +76,11 @@ MODULE_BYTE_BUDGETS: Final[dict[str, int]] = {
     # entry the 13 KB freed in report_core could re-inflate here unnoticed.
     # Also CRLF-measured, for the same reason.
     "report_selection.py": 16_963,
+    # Extracted from signal_lifecycle_core (T4).  Same reasoning as the two
+    # above: 17.8 KB is under LARGE_MODULE_THRESHOLD, so without an explicit
+    # entry the 15 KB freed in signal_lifecycle_core could re-inflate here
+    # unnoticed.  Also CRLF-measured, for the same reason.
+    "signal_attributes.py": 17_837,
     "fundamentals.py": 34_833,
     "fundamental_schema.py": 24_559,
     "performance_curve_web.py": 24_557,
