@@ -53,11 +53,14 @@ _SIZE_BUDGETS = {
     # down with it, otherwise the 13 KB that were freed stay available for
     # re-inflation and the extraction only moved the debt instead of retiring
     # it.  ~3 KB of headroom is left so ordinary fixes do not trip the gate.
-    "report_core.py": 95_000,
+    # 95_000 -> 91_752.  See the note on _normalized_size: 95_000 was frozen
+    # from a CRLF checkout, so it measured 5,296 bytes of slack -- more than
+    # MAX_BUDGET_SLACK allows.  Re-frozen at normalised size + 2 KiB.
+    "report_core.py": 91_752,
     "gui_core.py": 105_000,
-    # 100_000 -> 98_000: 5,967 bytes of slack is more than MAX_BUDGET_SLACK
-    # allows, i.e. more headroom than the gate can meaningfully police.
-    "gui.py": 98_000,
+    # 100_000 -> 94_018.  Same correction as report_core: 98_000 still left
+    # 6,030 bytes of slack once line endings stopped inflating the file.
+    "gui.py": 94_018,
     # 80_000 -> 2_048.  T1 turned this into a 941-byte facade
     # (``from scanner_core import *`` + ``sys.modules[__name__] = _core``) but
     # left the budget at its pre-extraction value: 79 KB of phantom headroom,
@@ -76,10 +79,13 @@ _SIZE_BUDGETS = {
     # budget has to come down with the code, or the 15 KB that were freed stay
     # available for re-inflation and the extraction only relocated the debt.
     # ~3 KB of headroom is left so ordinary fixes do not trip the gate.
-    "signal_lifecycle_core.py": 56_000,
+    # 56_000 -> 53_345: re-frozen at normalised size + 2 KiB, same correction
+    # as report_core and gui.py.
+    "signal_lifecycle_core.py": 53_345,
     # --- Brought under budget by test_every_large_root_module_has_a_budget ---
-    # Each is frozen at its CRLF checkout size plus 1 KiB, enough for an
-    # ordinary fix and small enough that trend growth is caught.  Versioned
+    # Each is frozen at its normalised (line-ending independent) size plus 1 KiB,
+    # enough for an ordinary fix and small enough that trend growth is caught.
+    # Versioned
     # overlays are included on purpose: "frozen patch" does not mean "not
     # edited" -- web_report_v84.py grew 1,588 bytes across 3 recent commits.
     "backtest_fastscore_v80.py": 34_098 + 1_024,
@@ -117,11 +123,27 @@ def test_new_versioned_overlays_must_not_be_added_at_repo_root() -> None:
     )
 
 
+def _normalized_size(path: Path) -> int:
+    """Byte size with CRLF and LF counted identically.
+
+    This is not cosmetic.  ``core.autocrlf`` is on for this repository, so a
+    file stored with LF in the index is checked out as CRLF with one extra byte
+    per line: ``analytics_core.py`` is 142,583 bytes in the index and 146,065 on
+    disk after a Windows checkout.  A budget frozen from one form is wrong in
+    the other -- 145,000 was green in the working copy and red in a fresh clone,
+    and the two CI runners (Linux LF, Windows CRLF) disagreed with each other.
+
+    Measuring the normalised bytes makes the number mean the same thing
+    everywhere, which is the only way a byte budget can be portable.
+    """
+    return len(path.read_bytes().replace(b"\r\n", b"\n"))
+
+
 def test_legacy_giant_modules_are_shrink_only() -> None:
     oversized = {
-        name: (ROOT / name).stat().st_size
+        name: _normalized_size(ROOT / name)
         for name, budget in _SIZE_BUDGETS.items()
-        if (ROOT / name).stat().st_size > budget
+        if _normalized_size(ROOT / name) > budget
     }
     assert not oversized, (
         "Legacy giant modules exceeded their shrink-only budgets; extract new "
@@ -146,13 +168,14 @@ def test_every_large_root_module_has_a_budget() -> None:
     missing = sorted(
         path.name
         for path in ROOT.glob("*.py")
-        if path.stat().st_size > ROOT_LARGE_MODULE_THRESHOLD and path.name not in _SIZE_BUDGETS
+        if _normalized_size(path) > ROOT_LARGE_MODULE_THRESHOLD
+        and path.name not in _SIZE_BUDGETS
     )
     assert not missing, (
         f"Root modules over {ROOT_LARGE_MODULE_THRESHOLD} bytes with no "
         "shrink-only budget. Either extract logic out of them, or add a budget "
-        "at (current size + 1 KiB) with a comment saying why it is allowed to "
-        "be this big: " + ", ".join(missing)
+        "at (current normalised size + 1 KiB) with a comment saying why it is "
+        "allowed to be this big: " + ", ".join(missing)
     )
 
 
@@ -171,7 +194,7 @@ def test_size_budgets_are_not_vacuous() -> None:
     vacuous = {
         name: f"{budget} vs {size}"
         for name, budget in _SIZE_BUDGETS.items()
-        if (size := (ROOT / name).stat().st_size) < budget - MAX_BUDGET_SLACK
+        if (size := _normalized_size(ROOT / name)) < budget - MAX_BUDGET_SLACK
     }
     assert not vacuous, (
         f"These budgets sit more than {MAX_BUDGET_SLACK} bytes above the file, "

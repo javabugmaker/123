@@ -128,11 +128,23 @@ def test_functions_stay_within_line_limit() -> None:
     )
 
 
+def _normalized_size(path: Path) -> int:
+    """Byte size counted identically for CRLF and LF.
+
+    ``core.autocrlf`` is on for this repository, so the same file measures
+    differently depending on how it was checked out -- one extra byte per line
+    on Windows.  Budgets here were frozen from a CRLF checkout, which left them
+    with *zero* headroom on Windows and a few hundred bytes on Linux.  Counting
+    normalised bytes keeps the number portable and keeps the headroom honest.
+    """
+    return len(path.read_bytes().replace(b"\r\n", b"\n"))
+
+
 def test_large_modules_are_shrink_only() -> None:
     oversized = {
         name: f"{size} > {budget}"
         for name, budget in sorted(MODULE_BYTE_BUDGETS.items())
-        if (size := (PACKAGE / name).stat().st_size) > budget
+        if (size := _normalized_size(PACKAGE / name)) > budget
     }
     assert not oversized, (
         "Canonical modules exceeded their shrink-only byte budgets; extract "
@@ -144,7 +156,7 @@ def test_every_large_module_has_a_budget() -> None:
     missing = sorted(
         path.name
         for path in _iter_package_modules()
-        if path.stat().st_size > LARGE_MODULE_THRESHOLD
+        if _normalized_size(path) > LARGE_MODULE_THRESHOLD
         and path.name not in MODULE_BYTE_BUDGETS
     )
     assert not missing, (
