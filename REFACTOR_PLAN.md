@@ -337,17 +337,20 @@ Phase 0 / 1 / 2 之间无依赖，可并行推进；建议 **Phase 0 → Phase 1
 | **`gui_core.py` 拆分**（104,866 B） | 先前以为是「134 B 窒息点」，归一化后实际余量 2,648 B ≈ 65 行，属普通优化而非阻塞项 | 字节预算逼近时 |
 | **27 个 plain 模块归属整理**（D10） | 职责梳理收益主要是可读性，不影响 A 股实盘适配 | 有明确痛点时 |
 | **28 组根重复体去重**（D11，含 `_bool` / `_truthy`） | 收益是整洁度；且这些重复体被多个 overlay 依赖，改动面广 | Phase 3 语义锁装好之后 |
-| **`experiment/five-factor-resonance-v90` 分支处置** | v90/v91 内容**已在 main**（`b2893cb` / `bf7f1ae`），分支仅剩 5 个独有提交，无功能风险 | 可随时删除，见 §6 |
+| **`experiment/five-factor-resonance-v90` 分支处置** | ~~待确认~~ **已于 2026-09-15 完成**：抢救测试后删除，见 §6 | — |
+| **打包 / 加 `[project]`**（D8，**评级修正**） | 复评后确认**这是有意设计，不是债**：`pyproject.toml` 开头注释已说明理由（交付形态是 Pages 站点，约 120 个模块仍在根目录，wheel 会缺大半扫描器）。真正的缺口只有一个：**没有 lock 文件**，依赖用范围约束（`pandas>=2.0,<3.0`）而非精确版本，构建不可逐位复现 | 需要「换机器能装出一模一样环境」时，加 `pip-compile` / `uv lock` 即可，不动打包形态 |
 
 ---
 
-## 6. 需要你补充的信息（两处，都会改变优先级）
+## 6. 两处待确认信息 —— 已答复并执行（2026-09-15）
 
-1. **GitHub Pages 站点是公开可读，还是仅自己可见？**
-   - 若**公开**：`web_report_v84/v85/v93`（约 128 KB、零行为测试）直接暴露在公网，**Phase 4 应提到 Phase 1 之后立即做**，D4/D5 升为 P0。
-   - 若**仅自己可见**：维持当前排序，D4 为 P1。
-2. **`experiment/five-factor-resonance-v90` 分支（`af66bf8`，5 个独有提交）如何处置？**
-   - v90/v91 内容已在 main，分支无功能价值。建议直接删除（我会先做 `git log` 比对确认无独有代码）。需要你确认。
+| 问题 | 答复 | 处置结果 |
+|---|---|---|
+| Pages 是否公开可读？ | **公开可读** | 触发 web_report 公网暴露面审计，结论见 §8.1 —— 与预期相反，真问题不是「公网出 bug」，而是那 6 个模块**根本不在执行路径上**。已删除 166 KB 死代码。 |
+| `experiment/five-factor-resonance-v90` 如何处置？ | **可以删** | 已删除（本地）。删除前比对发现：分支的 v90 实现确实已被 main 的向量化 v91 取代，但分支上 103 行行为测试**从未迁移**，main 上 `technical_resonance_v90` 零专属覆盖。已抢救为 `tests/test_technical_resonance_v91.py`（4 例全过 + 反向验证有效）后再删分支。 |
+| B2 标定闭环是否有意？ | **不清楚** | 按「默认它是有意的」处理。复评后确认：它是**有意设计**（见 §8.2），我此前的 P2 评级偏高。仅补了一个显式总开关。 |
+
+> **注**：删除分支前 `git cherry` 显示 5 个提交「不在 main」，但那是因为 main 上的 v91 是**重构后的向量化重写**（patch-id 不同），不是内容丢失。判断「代码是否已迁移」不能只看 `git cherry`，要比对公开符号与行为 —— 本次比对后发现所有符号都在 main 上（`compute_five_factor_resonance` / `attach_resonance_to_samples` / `summarize_resonance_samples` / `RESONANCE_VERSION`），且分支测试在 v91 上 4/4 通过。
 
 ---
 
@@ -380,4 +383,64 @@ grep -rn "次新\|新股\|listing_age\|listed_days" --include="*.py" .
 # 硬编码 300 / 21
 grep -rn "len(frame) < 300\|len(market) < 300\|len(frame) < 21" --include="*.py" .
 # → 9 处 300 + 1 处 21，见 §2 D2
+
+# 运行时判定「哪些根模块真的在执行路径上」（比 grep 可靠：overlay 靠 import 副作用安装）
+# 子进程 import main + daily_pipeline + publish_web_report + gui，再与根目录 *.py 求差集
+python -c "import sys;import main;import daily_pipeline;import publish_web_report;\
+print(sorted(m for m in sys.modules if m.startswith('web_report')))"
+# → ['web_report_v81']（v84/v85/v90/v93/v102/v102_1 一个都没加载）
 ```
+
+---
+
+## 8. 本轮执行结果（2026-09-15）
+
+### 8.1 web_report 公网暴露面审计 —— 结论与预期相反
+
+Pages 确认公开可读后重新审计，**推翻了 §6 原先的判断**：
+
+1. **公网产物无泄露**。发布的是 HTML，不含源码。用 8 类模式扫描（Windows 绝对路径 / 用户名 / API token / 邮箱 / Python traceback / 内网 IP / TODO / `Users\` 目录），唯一命中的是价格与成交量序列里的数字巧合（`1.31451`、成交量 `31451400`、`0.631451`），**不是用户名泄露**。
+   > 教训：对数值密集产物做正则扫描时，纯数字模式必然误报，必须看上下文再下结论。
+
+2. **真问题不是「公网出 bug」，而是那 6 个模块根本不在执行路径上。** 结构是一条单向遗赠链：
+   ```
+   web_report_v84 (46 KB) ← v102, v85
+   web_report_v85 (50 KB) ← v90
+   web_report_v90 (15 KB) ← v93
+   web_report_v93 (31 KB) ← v102
+   web_report_v102 (18 KB) ← v102_1
+   web_report_v102_1 (4 KB) ← 无人引用
+   ```
+   链顶端零引用，且没有任何环节被活入口 `web_report_v81` 触达。三重证据：
+   - 静态：全仓库 grep 零有效引用（唯一的「引用」是 `test_architecture_growth.py` 里的三条字节预算 —— **幽灵预算，保护着死代码**）；
+   - 运行时：子进程完整 import `main + daily_pipeline + publish_web_report` 后，`sys.modules` 里**只有 `web_report_v81`**；
+   - 文档：`WEB_REPORT.md:21` 明写「生产路径**不再串联** `web_report_v84/v85/v90/v93/v102/v102_1`」。
+
+3. **处置**：删除 6 个模块共 **166,026 字节**，根目录 122 → 116 模块；同步清理三条幽灵预算和 `pyproject.toml` 里指向已删 `web_report_v102.py` 的 `UP035` 豁免。全量 238/0/0，ruff 全绿。
+   **活着的 `web_report_v81` 只有 6.4 KB**，是薄编排层，实现已在 `institution_scanner/publication_renderer.py` 且已有测试。所以 **Phase 4（web_report 合并）实际已经完成，可以从路线图上划掉**，只是旧壳还留着 —— 本轮把壳清了。
+
+### 8.2 B2 标定闭环复评 —— 我此前的评级偏高
+
+原判 P2「潜在反馈环」。**复评后确认是有意设计，且防护比我写的更完整**：
+
+- `config_core.py:214` 注释原文：「A validated OOS calibration file may override these defaults」—— 明确的有意设计；
+- 加载器已有四重防护：`accepted` 标志 → 护栏区间（setup 0.45~0.70 / trigger 0.15~0.35 / exec 0.10~0.25）→ 和为 1 → 任何失败静默回落出厂常量；
+- `model_weight_signature()` **早就**把生效权重写进了 `analytics_core.py:1497` 与 `report_core.py:209` 的产出物 —— 所以「可见性」是我此前的**误判**，它一直可见。
+
+真正缺的只有一条：想整体关掉标定，只能删文件或改 `accepted`，**没有总开关**。已补 `MODEL_CALIBRATION_ENABLED`（默认开，行为不变），命名走 `MODEL_` 前缀从而自动进入 `decision_policy_payload` / `DecisionPolicySignature`，开关状态本身可追溯。
+
+### 8.3 剩余优化机会（按「可独立上线 + 风险可控」排序）
+
+| # | 机会 | 证据 | 收益 | 成本 / 风险 |
+|---|---|---|---|---|
+| **1** | **推送 17 个未推送提交** | `git rev-list --count origin/main..main` = 17 | **最高、零成本**。CI（`.github/workflows/daily-pages.yml`）只在推送后运行，所以 gh-pages 归档停在 **09-04（11 天前）** —— B1 修复、字节预算修正、三次重构**全都还没到公网** | 需你确认可以 push（会触发 CI 与 Pages 发布） |
+| **2** | **11 个远程分支清理** | `git branch -r` 见 `codex/*`、`audit/*`、`refactor/*` 等 | 降低误合并/误 checkout 概率；仓库可读性 | 需逐个确认无独有代码（照 §6 分支处置的流程做），约半天 |
+| **3** | **6 个临时诊断脚本迁出根目录** | 运行时探测 + 零引用：`_smoke_bt.py`、`debug_vec.py`、`diag_vec.py`、`diag_vec2.py`、`smoke_backtest.py`、`validate_vectorized.py`（共 12 KB） | 根目录 116 → 110；这些名字（`diag`/`debug`/`smoke`）会让人误以为是生产模块 | 低。建议移到 `tools/` 而非删除 —— 它们是你调向量化时可能还用的脚本。注意 `validate_vectorized.py` 被 `backtest_score_vectorized.py:10` 的注释引用，移动后要同步改注释 |
+| **4** | **Phase 2：硬编码 `300` / `21` 提为常量** | 9 处 `300` + 1 处 `21`（§2 D2） | 调窗口时不会漏改；A 股不同板块最优窗口可能不同 | 低。每处改动都能用现有 golden 锁住 |
+| **5** | **Phase 3：三个语义锁** | `conditional_fill_v96` / `technical_resonance_v90` / `score_acceleration_v79` | 防止 overlay 悄悄改语义 | 中。共振的锁本轮已补了一半（`test_technical_resonance_v91.py`） |
+| **6** | **依赖 lock 文件** | `requirements.txt` 用范围约束（`pandas>=2.0,<3.0`），无 lock | 换机器可复现；`akshare` 这类高频更新库尤其需要 | 低（`pip-compile` 或 `uv lock`），但会引入新工具链 |
+| **7** | **Phase 5 剩余：死分叉 + 依赖降级契约** | 见 §4 Phase 5 | — | 中 |
+
+**明确不做的**：打包 / `[project]`（有意设计，见 §5.3 修正）、`gui_core` 拆分（余量 2,648 B 非阻塞）、27 个 plain 模块归属（纯可读性）、28 组重复体去重（改动面广，等语义锁装好）。
+
+> **判断方法沉淀**：本轮两次用「运行时探测」推翻了静态分析的结论（web_report 链、v90 分支）。这个仓库是 monkey-patch 架构，**overlay 靠 import 副作用安装，静态 grep 既会漏报也会误报**。凡是「这个模块还有用吗」的问题，都应该起子进程 import 入口、再看 `sys.modules`，而不是 grep。
