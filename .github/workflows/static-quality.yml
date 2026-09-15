@@ -42,7 +42,11 @@ jobs:
         run: pyright -p pyrightconfig.gui.json
       - name: Model and output contract regression
         run: python -m pytest -q
-      - name: TEMP republish failure as annotation
+      # Zero cost on a green run.  On a red run it is the only way to read the
+      # failure without authenticated log access -- see the docstring of
+      # tools/dump_pytest_annotation.py, which is also how the golden-fixture
+      # false alarm was finally diagnosed.
+      - name: Republish failure as annotation
         if: failure()
         run: python tools/dump_pytest_annotation.py
       - name: Compile

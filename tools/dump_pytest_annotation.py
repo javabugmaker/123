@@ -1,13 +1,25 @@
-"""TEMPORARY diagnostic: republish a pytest failure as a check-run annotation.
+"""Republish a pytest failure as a check-run annotation.
 
-GitHub Actions job logs are not readable without authentication, but check-run
-*annotations* are.  This script runs the suite and re-emits the failure summary
-as ``::error::`` workflow commands, which makes the failing test names and
-tracebacks readable through the public API.
+Why this exists
+---------------
+GitHub Actions job logs require authentication to download, but check-run
+*annotations* are readable anonymously through the public API::
 
-It is wired into ``static-quality.yml`` behind ``if: failure()`` so it costs
-nothing on a green run.  Delete it, and the step that calls it, once the gate
-is consistently green -- it is scaffolding, not part of the product.
+    GET /repos/{owner}/{repo}/check-runs/{id}/annotations
+
+This script runs the suite and re-emits the failure summary as ``::error::``
+workflow commands, which puts the failing test names and tracebacks where they
+can be read without a token.  It is wired into ``static-quality.yml`` behind
+``if: failure()``, so on a green run it never executes.
+
+It earned its keep immediately: the gate was red for days and this was the only
+way to see that the three golden fixtures were failing on last-digit BLAS noise
+rather than on a real behaviour change.  It is also how an intermittent failure
+will be caught next time -- the gate has already flipped red and green on
+identical source once (runs #604 / #605).
+
+Delete it, and the step that calls it, whenever CI log access stops being a
+problem.  It is scaffolding, not part of the product.
 """
 
 from __future__ import annotations
@@ -34,7 +46,10 @@ def main() -> int:
     out = (proc.stdout or "") + (proc.stderr or "")
     failed = [line for line in out.splitlines() if line.startswith("FAILED")]
     summary = "\n".join(failed) if failed else "(no FAILED lines captured)"
-    _emit("PYTEST rc=%d\nFAILED:\n%s\n=====TAIL=====\n%s" % (proc.returncode, summary, out[-12000:]))
+    _emit(
+        "PYTEST rc=%d\nFAILED:\n%s\n=====TAIL=====\n%s"
+        % (proc.returncode, summary, out[-12000:])
+    )
     return 0
 
 

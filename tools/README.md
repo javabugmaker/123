@@ -22,6 +22,7 @@ python tools/validate_vectorized.py
 | `diag_vec.py` / `diag_vec2.py` / `debug_vec.py` | Compare vectorised vs scalar scoring on real cached frames. |
 | `smoke_backtest.py` | Timing smoke test over cached frames. |
 | `_smoke_bt.py` | Exercises `historical_backtest`'s private worker directly. |
+| `dump_pytest_annotation.py` | CI-only: reruns the suite and republishes the failure as a check-run annotation, which is readable without authenticated log access. Wired behind `if: failure()` in `static-quality.yml`. |
 
 Most read `cache/v4-tickflow-forward-volume-shares/*.parquet`, which is
 **not** in git — they are no-ops on a fresh clone until a scan has populated
