@@ -286,6 +286,3 @@ def install() -> None:
         setattr(analytics_core, "is_entry_tradeable", is_entry_tradeable)
         setattr(analytics_core, "resolve_exit_index", resolve_exit_index)
     _INSTALLED = True
-
-
-install()

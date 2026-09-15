@@ -736,6 +736,3 @@ def install() -> None:
     _core.clear_checkpoint = clear_checkpoint
     _core.run_scan = run_scan
     _INSTALLED = True
-
-
-install()

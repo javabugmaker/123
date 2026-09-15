@@ -21,6 +21,7 @@ import calibration_semantics_v102_1 as _calibration_semantics
 import calibration_weight_cache_v79 as _calibration_weight_cache
 import indicator_acceleration_v77 as _indicator_acceleration
 import model_calibration as _model_calibration
+import runtime_v83 as _runtime_v83
 import score_acceleration_v79 as _raw_score
 import score_core as _score_core
 import score_endpoint_acceleration_v79 as _score_endpoint
@@ -62,6 +63,10 @@ def install_pre_facade(core: Any) -> None:
     _indicator_acceleration.install()
     _cache_acceleration.install()
     _universe_cache_acceleration.install()
+    # Historically runtime_v83 self-installed at import time, immediately after
+    # the universe cache overlay; it also pulls in lifecycle_acceleration_v83.
+    # Owned explicitly here so the ordering is declared, not incidental.
+    _runtime_v83.install()
     _backtest_acceleration.install()
     _analytics_acceleration.install()
     _score_runtime.install(

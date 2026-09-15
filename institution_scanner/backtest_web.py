@@ -12,8 +12,6 @@ or position logic.
 
 from __future__ import annotations
 
-import html
-import json
 import os
 from contextlib import suppress
 from pathlib import Path
@@ -30,17 +28,8 @@ from institution_scanner.performance_curve_web import (  # noqa: F401
     _sample,
 )
 
-
-def _safe(value: object) -> str:
-    return html.escape("" if value is None else str(value), quote=True)
-
-
-def _read_payload(path: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+from ._common import escape_html as _safe
+from ._common import read_json_payload as _read_payload
 
 
 def _pct(value: object) -> str:
@@ -209,38 +198,3 @@ def write_backtest_page(page_path: Path, json_path: Path) -> Path:
         with suppress(OSError):
             temporary.unlink(missing_ok=True)
     return page_path
-
-
-def inject_backtest_into_html(path: Path, json_path: Path) -> bool:
-    detail_href = (
-        "../backtest.html"
-        if Path(path).parent.name == "reports"
-        else "backtest.html"
-    )
-    fragment = backtest_card_html(json_path, detail_href=detail_href)
-    if not fragment:
-        return False
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
-        return False
-    if 'id="historical-backtest-v1"' in text:
-        return True
-    markers = (
-        '<section id="score-bucket-calibration-v93"',
-        '<section id="what-changed-v93"',
-        "</main>",
-        "</body>",
-    )
-    for marker in markers:
-        position = text.find(marker)
-        if position >= 0:
-            text = text[:position] + fragment + text[position:]
-            break
-    else:
-        text += fragment
-    try:
-        path.write_text(text, encoding="utf-8")
-    except OSError:
-        return False
-    return True

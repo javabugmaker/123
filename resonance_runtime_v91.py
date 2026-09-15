@@ -167,6 +167,3 @@ def install() -> None:
     _core._ticker_backtest_rows = _ticker_backtest_rows_v91
     _core.BACKTEST_RESONANCE_RUNTIME_VERSION = RUNTIME_VERSION
     _INSTALLED = True
-
-
-install()

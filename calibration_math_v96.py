@@ -338,6 +338,3 @@ def install(analytics_module: Any) -> None:
     analytics_module.calibration_stability_stats = single_shrink_stability_stats
     analytics_module.CALIBRATION_MATH_VERSION = CALIBRATION_MATH_VERSION
     _INSTALLED = True
-
-
-install(_core)

@@ -10,18 +10,10 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Final
 
+from ._common import to_int as _integer
+from ._common import to_mapping as _mapping
+
 PIT_MATURITY_VERSION: Final = "2026-08-25-v108.7-pit-readiness-state-v1"
-
-
-def _integer(value: object) -> int:
-    try:
-        return max(0, int(float(value)))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _mapping(value: object) -> dict[str, object]:
-    return value if isinstance(value, dict) else {}
 
 
 def _date(value: object) -> date | None:

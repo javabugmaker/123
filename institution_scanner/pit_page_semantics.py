@@ -5,34 +5,14 @@ backtest sample, calibration weight, or publication eligibility.
 """
 from __future__ import annotations
 
-import html
-import json
-from pathlib import Path
 from typing import Any
+
+from ._common import escape_html as _safe
+from ._common import to_int as _integer
 
 PIT_PAGE_SEMANTICS_VERSION = "2026-08-24-v106.3-pit-warmup-page-semantics-v1"
 
 _HELDOUT_HEADING = "HELD-OUT SCORE CALIBRATION / 测试集评分分桶"
-
-
-def _safe(value: object) -> str:
-    return html.escape("" if value is None else str(value), quote=True)
-
-
-def _integer(value: object) -> int:
-    try:
-        return max(0, int(float(value)))
-    except (TypeError, ValueError):
-        return 0
-
-
-def read_backtest_summary(output_dir: Path) -> dict[str, Any]:
-    path = Path(output_dir) / "BacktestSummary.json"
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
 
 
 def _pit_counts(summary: dict[str, Any]) -> tuple[int, int, int]:

@@ -400,6 +400,3 @@ def install() -> None:
         return
     _core._signal_evaluations = _signal_evaluations
     _INSTALLED = True
-
-
-install()

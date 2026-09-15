@@ -15,6 +15,8 @@ from __future__ import annotations
 from typing import Any, Final
 
 from . import point_in_time_backtest as _pit
+from ._common import to_int as _integer
+from ._common import to_mapping as _mapping
 
 PIT_COUNT_REPAIR_VERSION: Final = (
     "2026-08-29-v106.5-pit-audit-provenance-v2"
@@ -22,17 +24,6 @@ PIT_COUNT_REPAIR_VERSION: Final = (
 _MODEL_SPLITS = ("train", "validation", "test")
 _INSTALLED = False
 _ORIGINAL_APPLY: Any = None
-
-
-def _integer(value: object) -> int:
-    try:
-        return max(0, int(float(value)))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _mapping(value: object) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
 
 
 def _summary_value(summary: Any, name: str, default: object = None) -> object:

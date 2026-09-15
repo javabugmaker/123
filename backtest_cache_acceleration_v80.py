@@ -315,6 +315,3 @@ def install() -> None:
     global _INSTALLED
     _core._backtest_one_ticker_cached = _backtest_one_ticker_cached
     _INSTALLED = True
-
-
-install()

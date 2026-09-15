@@ -20,6 +20,7 @@ from result_contract import (
     REQUIRED_TRADE_READY_COLUMNS,
 )
 
+from ._common import text_series as _text
 from .contracts import PRODUCTION_CONTRACT
 
 VERIFICATION_VERSION: Final = "2026-08-26-v109.6-artifact-surface-schema-v1"
@@ -39,13 +40,6 @@ def _numeric(frame: pd.DataFrame, column: str) -> pd.Series:
     if not isinstance(source, pd.Series):
         source = pd.Series(source, index=frame.index)
     return pd.to_numeric(source, errors="coerce").replace([np.inf, -np.inf], np.nan)
-
-
-def _text(frame: pd.DataFrame, column: str, default: str = "") -> pd.Series:
-    source = frame.get(column, pd.Series(default, index=frame.index, dtype=object))
-    if not isinstance(source, pd.Series):
-        source = pd.Series(source, index=frame.index)
-    return source.fillna(default).astype(str).str.strip()
 
 
 def _bool(frame: pd.DataFrame, column: str, default: bool = False) -> pd.Series:

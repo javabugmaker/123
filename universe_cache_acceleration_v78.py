@@ -84,6 +84,3 @@ def install() -> None:
     _downloader.get_price_limit_evidence = get_price_limit_evidence
     _downloader.clear_universe_cache_acceleration = clear_universe_cache_acceleration
     _INSTALLED = True
-
-
-install()

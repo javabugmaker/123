@@ -7,7 +7,6 @@ performance conclusion.
 """
 from __future__ import annotations
 
-import html
 import json
 import os
 import re
@@ -15,9 +14,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-
-def _safe(value: object) -> str:
-    return html.escape("" if value is None else str(value), quote=True)
+from ._common import escape_html as _safe
 
 
 def _num(value: object) -> float | None:

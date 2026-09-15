@@ -244,11 +244,6 @@ def parse_report_period(value: Any) -> ReportPeriod | None:
     return ReportPeriod(timestamp.year, quarter)
 
 
-def _date_text(value: Any) -> str:
-    parsed = pd.to_datetime(value, errors="coerce")
-    return "" if pd.isna(parsed) else pd.Timestamp(parsed).date().isoformat()
-
-
 def _date_series(values: pd.Series) -> pd.Series:
     parsed = pd.to_datetime(values, errors="coerce", format="mixed")
     return parsed.dt.strftime("%Y-%m-%d").fillna("")

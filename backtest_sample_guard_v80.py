@@ -39,6 +39,3 @@ def install() -> None:
     global _INSTALLED
     _sample._drawdown_percent = drawdown_percent
     _INSTALLED = True
-
-
-install()

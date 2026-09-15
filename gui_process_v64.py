@@ -128,6 +128,3 @@ def install() -> None:
     _core.terminate_process_tree = terminate_process_tree
     _core._popen_group_kwargs = _popen_group_kwargs
     _INSTALLED = True
-
-
-install()

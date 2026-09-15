@@ -478,6 +478,3 @@ def install() -> None:
     _core._apply_backtest_freshness = _apply_backtest_freshness
     _core.ANALYTICS_BULK_ACCELERATION_VERSION = ANALYTICS_BULK_ACCELERATION_VERSION
     _INSTALLED = True
-
-
-install()

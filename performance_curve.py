@@ -28,10 +28,14 @@ import pandas as pd
 from scipy.stats import spearmanr
 
 from config import OUTPUT_DIR
+from institution_scanner.performance_curve_contract import (
+    PERFORMANCE_CURVE_CSV_NAME,
+    PERFORMANCE_CURVE_JSON_NAME,
+)
 
 PERFORMANCE_CURVE_VERSION = "2026-08-28-v2-pit-model-health-benchmark"
-PERFORMANCE_CURVE_CSV = OUTPUT_DIR / "PerformanceCurve.csv"
-PERFORMANCE_CURVE_JSON = OUTPUT_DIR / "PerformanceCurve.json"
+PERFORMANCE_CURVE_CSV = OUTPUT_DIR / PERFORMANCE_CURVE_CSV_NAME
+PERFORMANCE_CURVE_JSON = OUTPUT_DIR / PERFORMANCE_CURVE_JSON_NAME
 PERFORMANCE_CURVE_MIN_MATURE_DATES = 20
 
 

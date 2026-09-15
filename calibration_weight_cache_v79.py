@@ -116,6 +116,3 @@ def install() -> None:
     global _INSTALLED
     _core.run_historical_backtest = run_historical_backtest
     _INSTALLED = True
-
-
-install()

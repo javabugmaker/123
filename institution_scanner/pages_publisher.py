@@ -9,6 +9,7 @@ the configured origin for the small authenticated push.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -194,10 +195,8 @@ def _retire_worktree(worktree: Path) -> None:
         return
     except OSError:
         pass
-    try:
+    with contextlib.suppress(OSError):
         worktree.rename(Path(str(worktree) + f".stale-{os.getpid()}"))
-    except OSError:
-        pass
 
 
 def _clone_branch(

@@ -7,6 +7,10 @@ from typing import Any
 
 import pandas as pd
 
+from institution_scanner.performance_curve_contract import (
+    PERFORMANCE_CURVE_CSV_NAME,
+    PERFORMANCE_CURVE_JSON_NAME,
+)
 from institution_scanner.performance_curve_integration import inject_into_html, safe_emit
 from institution_scanner.performance_curve_web import write_performance_page
 from performance_curve import curve_summary, write_performance_curve
@@ -33,8 +37,8 @@ def build_from_output_dir(output_dir: Path) -> dict[str, Any]:
         history = pd.read_csv(history_path, encoding="utf-8-sig", dtype={"Ticker": str})
         _, _, curve = write_performance_curve(
             history,
-            csv_path=root / "PerformanceCurve.csv",
-            json_path=root / "PerformanceCurve.json",
+            csv_path=root / PERFORMANCE_CURVE_CSV_NAME,
+            json_path=root / PERFORMANCE_CURVE_JSON_NAME,
         )
         summary = curve_summary(curve)
         summary["status"] = "READY" if not curve.empty else "EMPTY"
@@ -45,11 +49,11 @@ def build_from_output_dir(output_dir: Path) -> dict[str, Any]:
 
 
 def after_page_build(page_path: Path, output_dir: Path) -> bool:
-    return inject_into_html(Path(page_path), Path(output_dir) / "PerformanceCurve.json")
+    return inject_into_html(Path(page_path), Path(output_dir) / PERFORMANCE_CURVE_JSON_NAME)
 
 
 def build_detail_page(site_dir: Path, output_dir: Path) -> Path:
     return write_performance_page(
         Path(site_dir) / "performance.html",
-        Path(output_dir) / "PerformanceCurve.json",
+        Path(output_dir) / PERFORMANCE_CURVE_JSON_NAME,
     )

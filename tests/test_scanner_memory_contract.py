@@ -6,7 +6,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_scan_worker_consumes_raw_frame_ownership() -> None:
-    source = (ROOT / "scanner.py").read_text(encoding="utf-8")
+    # The scan implementation lives in scanner_core: scanner.py is a facade that
+    # re-publishes it, so the memory contract is asserted against the core.
+    source = (ROOT / "scanner_core.py").read_text(encoding="utf-8")
 
     assert "del downloaded" in source
     assert "frame = downloaded_frames.pop(ticker)" in source

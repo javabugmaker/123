@@ -1,0 +1,4034 @@
+{
+  "captured_with": {
+    "numpy": "2.5.3",
+    "pandas": "3.0.5",
+    "python": "3.13.14"
+  },
+  "cases": {
+    "accumulation_new_lows_320::market_cap_missing": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.8
+          },
+          "passed": true,
+          "reason": "AD Slope=0.800000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.15,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.150 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 19.85,
+            "low": 17.82,
+            "range_pct": 10.79
+          },
+          "passed": true,
+          "reason": "Range 10.8% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": false,
+          "reason": "市值数据不可用"
+        },
+        "min_price": {
+          "details": {
+            "close": 18.0
+          },
+          "passed": true,
+          "reason": "收盘价 18.00 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 9000000.0,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 9,000,000 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -879000000.0,
+            "obv_now": -879000000.0,
+            "price_low": 18.0,
+            "price_now": 18.0,
+            "prior_obv_low": -609000000.0,
+            "prior_price_low": 19.13
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 320
+          },
+          "passed": true,
+          "reason": "320 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "consecutive_days": 70,
+            "current_ratio": 1.59,
+            "max_consecutive": 70
+          },
+          "passed": true,
+          "reason": "Volume accumulation: 70 consecutive days (need 20), peak 70"
+        }
+      },
+      "passed_count": 8
+    },
+    "accumulation_new_lows_320::market_cap_ok": {
+      "all_passed": true,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.8
+          },
+          "passed": true,
+          "reason": "AD Slope=0.800000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.15,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.150 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 19.85,
+            "low": 17.82,
+            "range_pct": 10.79
+          },
+          "passed": true,
+          "reason": "Range 10.8% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": 80000000000.0
+          },
+          "passed": true,
+          "reason": "市值 80,000,000,000 元 >= 最低市值 100,000,000 元"
+        },
+        "min_price": {
+          "details": {
+            "close": 18.0
+          },
+          "passed": true,
+          "reason": "收盘价 18.00 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 9000000.0,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 9,000,000 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -879000000.0,
+            "obv_now": -879000000.0,
+            "price_low": 18.0,
+            "price_now": 18.0,
+            "prior_obv_low": -609000000.0,
+            "prior_price_low": 19.13
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 320
+          },
+          "passed": true,
+          "reason": "320 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "consecutive_days": 70,
+            "current_ratio": 1.59,
+            "max_consecutive": 70
+          },
+          "passed": true,
+          "reason": "Volume accumulation: 70 consecutive days (need 20), peak 70"
+        }
+      },
+      "passed_count": 9
+    },
+    "accumulation_new_lows_320::no_market_cap": {
+      "all_passed": true,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.8
+          },
+          "passed": true,
+          "reason": "AD Slope=0.800000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.15,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.150 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 19.85,
+            "low": 17.82,
+            "range_pct": 10.79
+          },
+          "passed": true,
+          "reason": "Range 10.8% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": true,
+          "reason": "ETF不要求市值数据"
+        },
+        "min_price": {
+          "details": {
+            "close": 18.0
+          },
+          "passed": true,
+          "reason": "收盘价 18.00 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 9000000.0,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 9,000,000 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -879000000.0,
+            "obv_now": -879000000.0,
+            "price_low": 18.0,
+            "price_now": 18.0,
+            "prior_obv_low": -609000000.0,
+            "prior_price_low": 19.13
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 320
+          },
+          "passed": true,
+          "reason": "320 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "consecutive_days": 70,
+            "current_ratio": 1.59,
+            "max_consecutive": 70
+          },
+          "passed": true,
+          "reason": "Volume accumulation: 70 consecutive days (need 20), peak 70"
+        }
+      },
+      "passed_count": 9
+    },
+    "bear_trend_600::market_cap_missing": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": -1.1
+          },
+          "passed": false,
+          "reason": "AD Slope=-1.100000 <= 0"
+        },
+        "bear_market": {
+          "details": {
+            "decline_pct": -60.86,
+            "ma200_declining": true,
+            "ma200_now": 24.56,
+            "ma200_slope_pct": -6.71,
+            "pct_below_ma200": -18.09,
+            "price_below_ma200": true,
+            "price_lookback": 51.39,
+            "price_now": 20.12
+          },
+          "passed": true,
+          "reason": "Bear market confirmed"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": -0.18,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": false
+          },
+          "passed": false,
+          "reason": "CMF=-0.180 not positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 21.99,
+            "low": 19.91,
+            "range_pct": 9.8
+          },
+          "passed": true,
+          "reason": "Range 9.8% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": false,
+          "reason": "市值数据不可用"
+        },
+        "min_price": {
+          "details": {
+            "close": 20.115080682162425
+          },
+          "passed": true,
+          "reason": "收盘价 20.12 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 3966451.0477520665,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 3,966,451 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -1067705648.0,
+            "obv_now": -1067705648.0,
+            "price_low": 20.12,
+            "price_now": 20.12,
+            "prior_obv_low": -1053658519.0,
+            "prior_price_low": 21.32
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 600
+          },
+          "passed": true,
+          "reason": "600 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 0.9,
+            "vol_ma120": 3960375.1591691105,
+            "vol_ma20": 3546447.1022829204
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=3,546,447, VolMA120=3,960,375)"
+        }
+      },
+      "passed_count": 6
+    },
+    "bear_trend_600::market_cap_ok": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": -1.1
+          },
+          "passed": false,
+          "reason": "AD Slope=-1.100000 <= 0"
+        },
+        "bear_market": {
+          "details": {
+            "decline_pct": -60.86,
+            "ma200_declining": true,
+            "ma200_now": 24.56,
+            "ma200_slope_pct": -6.71,
+            "pct_below_ma200": -18.09,
+            "price_below_ma200": true,
+            "price_lookback": 51.39,
+            "price_now": 20.12
+          },
+          "passed": true,
+          "reason": "Bear market confirmed"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": -0.18,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": false
+          },
+          "passed": false,
+          "reason": "CMF=-0.180 not positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 21.99,
+            "low": 19.91,
+            "range_pct": 9.8
+          },
+          "passed": true,
+          "reason": "Range 9.8% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": 80000000000.0
+          },
+          "passed": true,
+          "reason": "市值 80,000,000,000 元 >= 最低市值 100,000,000 元"
+        },
+        "min_price": {
+          "details": {
+            "close": 20.115080682162425
+          },
+          "passed": true,
+          "reason": "收盘价 20.12 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 3966451.0477520665,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 3,966,451 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -1067705648.0,
+            "obv_now": -1067705648.0,
+            "price_low": 20.12,
+            "price_now": 20.12,
+            "prior_obv_low": -1053658519.0,
+            "prior_price_low": 21.32
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 600
+          },
+          "passed": true,
+          "reason": "600 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 0.9,
+            "vol_ma120": 3960375.1591691105,
+            "vol_ma20": 3546447.1022829204
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=3,546,447, VolMA120=3,960,375)"
+        }
+      },
+      "passed_count": 7
+    },
+    "bear_trend_600::no_market_cap": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": -1.1
+          },
+          "passed": false,
+          "reason": "AD Slope=-1.100000 <= 0"
+        },
+        "bear_market": {
+          "details": {
+            "decline_pct": -60.86,
+            "ma200_declining": true,
+            "ma200_now": 24.56,
+            "ma200_slope_pct": -6.71,
+            "pct_below_ma200": -18.09,
+            "price_below_ma200": true,
+            "price_lookback": 51.39,
+            "price_now": 20.12
+          },
+          "passed": true,
+          "reason": "Bear market confirmed"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": -0.18,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": false
+          },
+          "passed": false,
+          "reason": "CMF=-0.180 not positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 21.99,
+            "low": 19.91,
+            "range_pct": 9.8
+          },
+          "passed": true,
+          "reason": "Range 9.8% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": true,
+          "reason": "ETF不要求市值数据"
+        },
+        "min_price": {
+          "details": {
+            "close": 20.115080682162425
+          },
+          "passed": true,
+          "reason": "收盘价 20.12 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 3966451.0477520665,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 3,966,451 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -1067705648.0,
+            "obv_now": -1067705648.0,
+            "price_low": 20.12,
+            "price_now": 20.12,
+            "prior_obv_low": -1053658519.0,
+            "prior_price_low": 21.32
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 600
+          },
+          "passed": true,
+          "reason": "600 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 0.9,
+            "vol_ma120": 3960375.1591691105,
+            "vol_ma20": 3546447.1022829204
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=3,546,447, VolMA120=3,960,375)"
+        }
+      },
+      "passed_count": 7
+    },
+    "bull_trend_300::market_cap_missing": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 1.4
+          },
+          "passed": true,
+          "reason": "AD Slope=1.400000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.22,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.220 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 39.22,
+            "low": 32.25,
+            "range_pct": 19.21
+          },
+          "passed": true,
+          "reason": "Range 19.2% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": false,
+          "reason": "市值数据不可用"
+        },
+        "min_price": {
+          "details": {
+            "close": 38.832061896596244
+          },
+          "passed": true,
+          "reason": "收盘价 38.83 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 1088836646.0,
+            "obv_now": 1205881908.0,
+            "price_low": 35.8,
+            "price_now": 38.83,
+            "prior_obv_low": 967789240.0,
+            "prior_price_low": 31.45
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price 38.83 not near recent low 35.80"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 7
+    },
+    "bull_trend_300::market_cap_ok": {
+      "all_passed": true,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 1.4
+          },
+          "passed": true,
+          "reason": "AD Slope=1.400000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.22,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.220 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 39.22,
+            "low": 32.25,
+            "range_pct": 19.21
+          },
+          "passed": true,
+          "reason": "Range 19.2% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": 80000000000.0
+          },
+          "passed": true,
+          "reason": "市值 80,000,000,000 元 >= 最低市值 100,000,000 元"
+        },
+        "min_price": {
+          "details": {
+            "close": 38.832061896596244
+          },
+          "passed": true,
+          "reason": "收盘价 38.83 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 1088836646.0,
+            "obv_now": 1205881908.0,
+            "price_low": 35.8,
+            "price_now": 38.83,
+            "prior_obv_low": 967789240.0,
+            "prior_price_low": 31.45
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price 38.83 not near recent low 35.80"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 8
+    },
+    "bull_trend_300::no_market_cap": {
+      "all_passed": true,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 1.4
+          },
+          "passed": true,
+          "reason": "AD Slope=1.400000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.22,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.220 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 39.22,
+            "low": 32.25,
+            "range_pct": 19.21
+          },
+          "passed": true,
+          "reason": "Range 19.2% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": true,
+          "reason": "ETF不要求市值数据"
+        },
+        "min_price": {
+          "details": {
+            "close": 38.832061896596244
+          },
+          "passed": true,
+          "reason": "收盘价 38.83 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 1088836646.0,
+            "obv_now": 1205881908.0,
+            "price_low": 35.8,
+            "price_now": 38.83,
+            "prior_obv_low": 967789240.0,
+            "prior_price_low": 31.45
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price 38.83 not near recent low 35.80"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 8
+    },
+    "close_at_min_price_boundary_300::market_cap_missing": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.2
+          },
+          "passed": true,
+          "reason": "AD Slope=0.200000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.05,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.050 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 5.35,
+            "low": 4.41,
+            "range_pct": 18.92
+          },
+          "passed": true,
+          "reason": "Range 18.9% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": false,
+          "reason": "市值数据不可用"
+        },
+        "min_price": {
+          "details": {
+            "close": 5.0
+          },
+          "passed": true,
+          "reason": "收盘价 5.00 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -1201991428.0,
+            "obv_now": -1198100947.0,
+            "price_low": 4.45,
+            "price_now": 5.0,
+            "prior_obv_low": -1085395435.0,
+            "prior_price_low": 5.17
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price 5.00 not near recent low 4.45"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 7
+    },
+    "close_at_min_price_boundary_300::market_cap_ok": {
+      "all_passed": true,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.2
+          },
+          "passed": true,
+          "reason": "AD Slope=0.200000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.05,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.050 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 5.35,
+            "low": 4.41,
+            "range_pct": 18.92
+          },
+          "passed": true,
+          "reason": "Range 18.9% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": 80000000000.0
+          },
+          "passed": true,
+          "reason": "市值 80,000,000,000 元 >= 最低市值 100,000,000 元"
+        },
+        "min_price": {
+          "details": {
+            "close": 5.0
+          },
+          "passed": true,
+          "reason": "收盘价 5.00 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -1201991428.0,
+            "obv_now": -1198100947.0,
+            "price_low": 4.45,
+            "price_now": 5.0,
+            "prior_obv_low": -1085395435.0,
+            "prior_price_low": 5.17
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price 5.00 not near recent low 4.45"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 8
+    },
+    "close_at_min_price_boundary_300::no_market_cap": {
+      "all_passed": true,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.2
+          },
+          "passed": true,
+          "reason": "AD Slope=0.200000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.05,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.050 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 5.35,
+            "low": 4.41,
+            "range_pct": 18.92
+          },
+          "passed": true,
+          "reason": "Range 18.9% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": true,
+          "reason": "ETF不要求市值数据"
+        },
+        "min_price": {
+          "details": {
+            "close": 5.0
+          },
+          "passed": true,
+          "reason": "收盘价 5.00 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -1201991428.0,
+            "obv_now": -1198100947.0,
+            "price_low": 4.45,
+            "price_now": 5.0,
+            "prior_obv_low": -1085395435.0,
+            "prior_price_low": 5.17
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price 5.00 not near recent low 4.45"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 8
+    },
+    "dirty_values_300::market_cap_missing": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.2
+          },
+          "passed": true,
+          "reason": "AD Slope=0.200000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.05,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.050 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 32.11,
+            "low": -2.97,
+            "range_pct": 115.3
+          },
+          "passed": false,
+          "reason": "Range 115.3% > 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": false,
+          "reason": "市值数据不可用"
+        },
+        "min_price": {
+          "details": {},
+          "passed": false,
+          "reason": "最新收盘价无效"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient valid data for OBV divergence"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 5
+    },
+    "dirty_values_300::market_cap_ok": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.2
+          },
+          "passed": true,
+          "reason": "AD Slope=0.200000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.05,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.050 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 32.11,
+            "low": -2.97,
+            "range_pct": 115.3
+          },
+          "passed": false,
+          "reason": "Range 115.3% > 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": 80000000000.0
+          },
+          "passed": true,
+          "reason": "市值 80,000,000,000 元 >= 最低市值 100,000,000 元"
+        },
+        "min_price": {
+          "details": {},
+          "passed": false,
+          "reason": "最新收盘价无效"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient valid data for OBV divergence"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 6
+    },
+    "dirty_values_300::no_market_cap": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.2
+          },
+          "passed": true,
+          "reason": "AD Slope=0.200000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.05,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.050 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 32.11,
+            "low": -2.97,
+            "range_pct": 115.3
+          },
+          "passed": false,
+          "reason": "Range 115.3% > 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": true,
+          "reason": "ETF不要求市值数据"
+        },
+        "min_price": {
+          "details": {},
+          "passed": false,
+          "reason": "最新收盘价无效"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient valid data for OBV divergence"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 6
+    },
+    "empty::market_cap_missing": {
+      "raised": "IndexError"
+    },
+    "empty::market_cap_ok": {
+      "raised": "IndexError"
+    },
+    "empty::no_market_cap": {
+      "raised": "IndexError"
+    },
+    "flat_range_300::market_cap_missing": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.01
+          },
+          "passed": true,
+          "reason": "AD Slope=0.010000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.02,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.020 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 19.09,
+            "low": 16.93,
+            "range_pct": 12.01
+          },
+          "passed": true,
+          "reason": "Range 12.0% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": false,
+          "reason": "市值数据不可用"
+        },
+        "min_price": {
+          "details": {
+            "close": 17.140941185338622
+          },
+          "passed": true,
+          "reason": "收盘价 17.14 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -29247639.0,
+            "obv_now": -21267020.0,
+            "price_low": 17.1,
+            "price_now": 17.14,
+            "prior_obv_low": -27652321.0,
+            "prior_price_low": 17.1
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 7
+    },
+    "flat_range_300::market_cap_ok": {
+      "all_passed": true,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.01
+          },
+          "passed": true,
+          "reason": "AD Slope=0.010000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.02,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.020 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 19.09,
+            "low": 16.93,
+            "range_pct": 12.01
+          },
+          "passed": true,
+          "reason": "Range 12.0% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": 80000000000.0
+          },
+          "passed": true,
+          "reason": "市值 80,000,000,000 元 >= 最低市值 100,000,000 元"
+        },
+        "min_price": {
+          "details": {
+            "close": 17.140941185338622
+          },
+          "passed": true,
+          "reason": "收盘价 17.14 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -29247639.0,
+            "obv_now": -21267020.0,
+            "price_low": 17.1,
+            "price_now": 17.14,
+            "prior_obv_low": -27652321.0,
+            "prior_price_low": 17.1
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 8
+    },
+    "flat_range_300::no_market_cap": {
+      "all_passed": true,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.01
+          },
+          "passed": true,
+          "reason": "AD Slope=0.010000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.02,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.020 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 19.09,
+            "low": 16.93,
+            "range_pct": 12.01
+          },
+          "passed": true,
+          "reason": "Range 12.0% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": true,
+          "reason": "ETF不要求市值数据"
+        },
+        "min_price": {
+          "details": {
+            "close": 17.140941185338622
+          },
+          "passed": true,
+          "reason": "收盘价 17.14 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -29247639.0,
+            "obv_now": -21267020.0,
+            "price_low": 17.1,
+            "price_now": 17.14,
+            "prior_obv_low": -27652321.0,
+            "prior_price_low": 17.1
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 8
+    },
+    "missing_indicator_columns::market_cap_missing": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {},
+          "passed": false,
+          "reason": "AD Slope not computed"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {},
+          "passed": false,
+          "reason": "CMF not computed"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 20.36,
+            "low": 18.79,
+            "range_pct": 7.94
+          },
+          "passed": true,
+          "reason": "Range 7.9% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": false,
+          "reason": "市值数据不可用"
+        },
+        "min_price": {
+          "details": {
+            "close": 19.83853055321993
+          },
+          "passed": true,
+          "reason": "收盘价 19.84 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 247364726.0,
+            "obv_now": 268739140.0,
+            "price_low": 19.75,
+            "price_now": 19.84,
+            "prior_obv_low": 210944559.0,
+            "prior_price_low": 18.91
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": false,
+            "atr_contracting": false,
+            "atr_ratio": NaN,
+            "available_components": 0,
+            "bb_contracting": false,
+            "bb_percentile": NaN,
+            "bb_ratio": NaN,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": false,
+          "reason": "波动收缩数据不足"
+        },
+        "volume_accumulation": {
+          "details": {},
+          "passed": false,
+          "reason": "Volume MAs not computed"
+        }
+      },
+      "passed_count": 4
+    },
+    "missing_indicator_columns::market_cap_ok": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {},
+          "passed": false,
+          "reason": "AD Slope not computed"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {},
+          "passed": false,
+          "reason": "CMF not computed"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 20.36,
+            "low": 18.79,
+            "range_pct": 7.94
+          },
+          "passed": true,
+          "reason": "Range 7.9% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": 80000000000.0
+          },
+          "passed": true,
+          "reason": "市值 80,000,000,000 元 >= 最低市值 100,000,000 元"
+        },
+        "min_price": {
+          "details": {
+            "close": 19.83853055321993
+          },
+          "passed": true,
+          "reason": "收盘价 19.84 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 247364726.0,
+            "obv_now": 268739140.0,
+            "price_low": 19.75,
+            "price_now": 19.84,
+            "prior_obv_low": 210944559.0,
+            "prior_price_low": 18.91
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": false,
+            "atr_contracting": false,
+            "atr_ratio": NaN,
+            "available_components": 0,
+            "bb_contracting": false,
+            "bb_percentile": NaN,
+            "bb_ratio": NaN,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": false,
+          "reason": "波动收缩数据不足"
+        },
+        "volume_accumulation": {
+          "details": {},
+          "passed": false,
+          "reason": "Volume MAs not computed"
+        }
+      },
+      "passed_count": 5
+    },
+    "missing_indicator_columns::no_market_cap": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {},
+          "passed": false,
+          "reason": "AD Slope not computed"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {},
+          "passed": false,
+          "reason": "CMF not computed"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 20.36,
+            "low": 18.79,
+            "range_pct": 7.94
+          },
+          "passed": true,
+          "reason": "Range 7.9% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": true,
+          "reason": "ETF不要求市值数据"
+        },
+        "min_price": {
+          "details": {
+            "close": 19.83853055321993
+          },
+          "passed": true,
+          "reason": "收盘价 19.84 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4022073.5539051774,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,022,074 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 247364726.0,
+            "obv_now": 268739140.0,
+            "price_low": 19.75,
+            "price_now": 19.84,
+            "prior_obv_low": 210944559.0,
+            "prior_price_low": 18.91
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": false,
+            "atr_contracting": false,
+            "atr_ratio": NaN,
+            "available_components": 0,
+            "bb_contracting": false,
+            "bb_percentile": NaN,
+            "bb_ratio": NaN,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": false,
+          "reason": "波动收缩数据不足"
+        },
+        "volume_accumulation": {
+          "details": {},
+          "passed": false,
+          "reason": "Volume MAs not computed"
+        }
+      },
+      "passed_count": 5
+    },
+    "obv_divergence_320::market_cap_missing": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.3
+          },
+          "passed": true,
+          "reason": "AD Slope=0.300000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.05,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.050 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 24.24,
+            "low": 18.61,
+            "range_pct": 26.26
+          },
+          "passed": false,
+          "reason": "Range 26.3% > 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": false,
+          "reason": "市值数据不可用"
+        },
+        "min_price": {
+          "details": {
+            "close": 18.8
+          },
+          "passed": true,
+          "reason": "收盘价 18.80 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 3000000.0,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 3,000,000 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -456000000.0,
+            "obv_now": -456000000.0,
+            "price_low": 18.8,
+            "price_now": 18.8,
+            "prior_obv_low": -546000000.0,
+            "prior_price_low": 19.0
+          },
+          "passed": true,
+          "reason": "OBV Bullish Divergence detected"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 320
+          },
+          "passed": true,
+          "reason": "320 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 0.4,
+            "vol_ma120": 2500000.0,
+            "vol_ma20": 1000000.0
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=1,000,000, VolMA120=2,500,000)"
+        }
+      },
+      "passed_count": 7
+    },
+    "obv_divergence_320::market_cap_ok": {
+      "all_passed": true,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.3
+          },
+          "passed": true,
+          "reason": "AD Slope=0.300000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.05,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.050 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 24.24,
+            "low": 18.61,
+            "range_pct": 26.26
+          },
+          "passed": false,
+          "reason": "Range 26.3% > 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": 80000000000.0
+          },
+          "passed": true,
+          "reason": "市值 80,000,000,000 元 >= 最低市值 100,000,000 元"
+        },
+        "min_price": {
+          "details": {
+            "close": 18.8
+          },
+          "passed": true,
+          "reason": "收盘价 18.80 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 3000000.0,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 3,000,000 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -456000000.0,
+            "obv_now": -456000000.0,
+            "price_low": 18.8,
+            "price_now": 18.8,
+            "prior_obv_low": -546000000.0,
+            "prior_price_low": 19.0
+          },
+          "passed": true,
+          "reason": "OBV Bullish Divergence detected"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 320
+          },
+          "passed": true,
+          "reason": "320 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 0.4,
+            "vol_ma120": 2500000.0,
+            "vol_ma20": 1000000.0
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=1,000,000, VolMA120=2,500,000)"
+        }
+      },
+      "passed_count": 8
+    },
+    "obv_divergence_320::no_market_cap": {
+      "all_passed": true,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.3
+          },
+          "passed": true,
+          "reason": "AD Slope=0.300000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.05,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.050 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 24.24,
+            "low": 18.61,
+            "range_pct": 26.26
+          },
+          "passed": false,
+          "reason": "Range 26.3% > 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": true,
+          "reason": "ETF不要求市值数据"
+        },
+        "min_price": {
+          "details": {
+            "close": 18.8
+          },
+          "passed": true,
+          "reason": "收盘价 18.80 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 3000000.0,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 3,000,000 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": -456000000.0,
+            "obv_now": -456000000.0,
+            "price_low": 18.8,
+            "price_now": 18.8,
+            "prior_obv_low": -546000000.0,
+            "prior_price_low": 19.0
+          },
+          "passed": true,
+          "reason": "OBV Bullish Divergence detected"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 320
+          },
+          "passed": true,
+          "reason": "320 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 0.4,
+            "vol_ma120": 2500000.0,
+            "vol_ma20": 1000000.0
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=1,000,000, VolMA120=2,500,000)"
+        }
+      },
+      "passed_count": 8
+    },
+    "one_year_boundary_252::market_cap_missing": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.5
+          },
+          "passed": true,
+          "reason": "AD Slope=0.500000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.1,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.100 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 29.21,
+            "low": 26.48,
+            "range_pct": 9.67
+          },
+          "passed": true,
+          "reason": "Range 9.7% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": false,
+          "reason": "市值数据不可用"
+        },
+        "min_price": {
+          "details": {
+            "close": 28.573878510988617
+          },
+          "passed": true,
+          "reason": "收盘价 28.57 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 3985428.1815727423,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 3,985,428 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 328651230.0,
+            "obv_now": 351366838.0,
+            "price_low": 28.06,
+            "price_now": 28.57,
+            "prior_obv_low": 269844189.0,
+            "prior_price_low": 26.73
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 252
+          },
+          "passed": true,
+          "reason": "252 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 0.9,
+            "vol_ma120": 3974677.3948589717,
+            "vol_ma20": 3579605.6008683383
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=3,579,606, VolMA120=3,974,677)"
+        }
+      },
+      "passed_count": 7
+    },
+    "one_year_boundary_252::market_cap_ok": {
+      "all_passed": true,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.5
+          },
+          "passed": true,
+          "reason": "AD Slope=0.500000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.1,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.100 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 29.21,
+            "low": 26.48,
+            "range_pct": 9.67
+          },
+          "passed": true,
+          "reason": "Range 9.7% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": 80000000000.0
+          },
+          "passed": true,
+          "reason": "市值 80,000,000,000 元 >= 最低市值 100,000,000 元"
+        },
+        "min_price": {
+          "details": {
+            "close": 28.573878510988617
+          },
+          "passed": true,
+          "reason": "收盘价 28.57 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 3985428.1815727423,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 3,985,428 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 328651230.0,
+            "obv_now": 351366838.0,
+            "price_low": 28.06,
+            "price_now": 28.57,
+            "prior_obv_low": 269844189.0,
+            "prior_price_low": 26.73
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 252
+          },
+          "passed": true,
+          "reason": "252 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 0.9,
+            "vol_ma120": 3974677.3948589717,
+            "vol_ma20": 3579605.6008683383
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=3,579,606, VolMA120=3,974,677)"
+        }
+      },
+      "passed_count": 8
+    },
+    "one_year_boundary_252::no_market_cap": {
+      "all_passed": true,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.5
+          },
+          "passed": true,
+          "reason": "AD Slope=0.500000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.1,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.100 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 29.21,
+            "low": 26.48,
+            "range_pct": 9.67
+          },
+          "passed": true,
+          "reason": "Range 9.7% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": true,
+          "reason": "ETF不要求市值数据"
+        },
+        "min_price": {
+          "details": {
+            "close": 28.573878510988617
+          },
+          "passed": true,
+          "reason": "收盘价 28.57 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 3985428.1815727423,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 3,985,428 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 328651230.0,
+            "obv_now": 351366838.0,
+            "price_low": 28.06,
+            "price_now": 28.57,
+            "prior_obv_low": 269844189.0,
+            "prior_price_low": 26.73
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 252
+          },
+          "passed": true,
+          "reason": "252 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 0.9,
+            "vol_ma120": 3974677.3948589717,
+            "vol_ma20": 3579605.6008683383
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=3,579,606, VolMA120=3,974,677)"
+        }
+      },
+      "passed_count": 8
+    },
+    "short_history_50::market_cap_missing": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.5
+          },
+          "passed": true,
+          "reason": "AD Slope=0.500000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.1,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.100 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 21.49,
+            "low": 20.03,
+            "range_pct": 7.11
+          },
+          "passed": true,
+          "reason": "Range 7.1% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": false,
+          "reason": "市值数据不可用"
+        },
+        "min_price": {
+          "details": {
+            "close": 21.279878277170543
+          },
+          "passed": true,
+          "reason": "收盘价 21.28 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4188733.93110134,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,188,734 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for OBV divergence"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 50
+          },
+          "passed": false,
+          "reason": "50 bars < 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 1,
+            "bb_contracting": false,
+            "bb_percentile": NaN,
+            "bb_ratio": NaN,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for volume check"
+        }
+      },
+      "passed_count": 6
+    },
+    "short_history_50::market_cap_ok": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.5
+          },
+          "passed": true,
+          "reason": "AD Slope=0.500000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.1,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.100 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 21.49,
+            "low": 20.03,
+            "range_pct": 7.11
+          },
+          "passed": true,
+          "reason": "Range 7.1% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": 80000000000.0
+          },
+          "passed": true,
+          "reason": "市值 80,000,000,000 元 >= 最低市值 100,000,000 元"
+        },
+        "min_price": {
+          "details": {
+            "close": 21.279878277170543
+          },
+          "passed": true,
+          "reason": "收盘价 21.28 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4188733.93110134,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,188,734 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for OBV divergence"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 50
+          },
+          "passed": false,
+          "reason": "50 bars < 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 1,
+            "bb_contracting": false,
+            "bb_percentile": NaN,
+            "bb_ratio": NaN,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for volume check"
+        }
+      },
+      "passed_count": 7
+    },
+    "short_history_50::no_market_cap": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.5
+          },
+          "passed": true,
+          "reason": "AD Slope=0.500000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.1,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.100 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 21.49,
+            "low": 20.03,
+            "range_pct": 7.11
+          },
+          "passed": true,
+          "reason": "Range 7.1% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": true,
+          "reason": "ETF不要求市值数据"
+        },
+        "min_price": {
+          "details": {
+            "close": 21.279878277170543
+          },
+          "passed": true,
+          "reason": "收盘价 21.28 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 4188733.93110134,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": true,
+          "reason": "AvgVol 4,188,734 >= MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for OBV divergence"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 50
+          },
+          "passed": false,
+          "reason": "50 bars < 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 1,
+            "bb_contracting": false,
+            "bb_percentile": NaN,
+            "bb_ratio": NaN,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for volume check"
+        }
+      },
+      "passed_count": 7
+    },
+    "thin_volume_300::market_cap_missing": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.6
+          },
+          "passed": true,
+          "reason": "AD Slope=0.600000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.12,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.120 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 27.01,
+            "low": 24.24,
+            "range_pct": 10.59
+          },
+          "passed": true,
+          "reason": "Range 10.6% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": false,
+          "reason": "市值数据不可用"
+        },
+        "min_price": {
+          "details": {
+            "close": 26.740472209290264
+          },
+          "passed": true,
+          "reason": "收盘价 26.74 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 1000.0,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": false,
+          "reason": "AvgVol 1,000 < MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 128000.0,
+            "obv_now": 135000.0,
+            "price_low": 26.12,
+            "price_now": 26.74,
+            "prior_obv_low": 108000.0,
+            "prior_price_low": 24.24
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.0,
+            "vol_ma120": 1000.0,
+            "vol_ma20": 1000.0
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=1,000, VolMA120=1,000)"
+        }
+      },
+      "passed_count": 6
+    },
+    "thin_volume_300::market_cap_ok": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.6
+          },
+          "passed": true,
+          "reason": "AD Slope=0.600000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.12,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.120 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 27.01,
+            "low": 24.24,
+            "range_pct": 10.59
+          },
+          "passed": true,
+          "reason": "Range 10.6% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": 80000000000.0
+          },
+          "passed": true,
+          "reason": "市值 80,000,000,000 元 >= 最低市值 100,000,000 元"
+        },
+        "min_price": {
+          "details": {
+            "close": 26.740472209290264
+          },
+          "passed": true,
+          "reason": "收盘价 26.74 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 1000.0,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": false,
+          "reason": "AvgVol 1,000 < MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 128000.0,
+            "obv_now": 135000.0,
+            "price_low": 26.12,
+            "price_now": 26.74,
+            "prior_obv_low": 108000.0,
+            "prior_price_low": 24.24
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.0,
+            "vol_ma120": 1000.0,
+            "vol_ma20": 1000.0
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=1,000, VolMA120=1,000)"
+        }
+      },
+      "passed_count": 7
+    },
+    "thin_volume_300::no_market_cap": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.6
+          },
+          "passed": true,
+          "reason": "AD Slope=0.600000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.12,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.120 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 27.01,
+            "low": 24.24,
+            "range_pct": 10.59
+          },
+          "passed": true,
+          "reason": "Range 10.6% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": true,
+          "reason": "ETF不要求市值数据"
+        },
+        "min_price": {
+          "details": {
+            "close": 26.740472209290264
+          },
+          "passed": true,
+          "reason": "收盘价 26.74 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "avg_volume_60": 1000.0,
+            "liquidity_basis": "shares_fallback",
+            "turnover_observations": 0
+          },
+          "passed": false,
+          "reason": "AvgVol 1,000 < MIN_VOLUME 200,000"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 128000.0,
+            "obv_now": 135000.0,
+            "price_low": 26.12,
+            "price_now": 26.74,
+            "prior_obv_low": 108000.0,
+            "prior_price_low": 24.24
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.0,
+            "vol_ma120": 1000.0,
+            "vol_ma20": 1000.0
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=1,000, VolMA120=1,000)"
+        }
+      },
+      "passed_count": 7
+    },
+    "turnover_healthy_300::market_cap_missing": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.6
+          },
+          "passed": true,
+          "reason": "AD Slope=0.600000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.12,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.120 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 27.01,
+            "low": 24.24,
+            "range_pct": 10.59
+          },
+          "passed": true,
+          "reason": "Range 10.6% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": false,
+          "reason": "市值数据不可用"
+        },
+        "min_price": {
+          "details": {
+            "close": 26.740472209290264
+          },
+          "passed": true,
+          "reason": "收盘价 26.74 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "fallback_min_volume_shares": 200000,
+            "liquidity_basis": "turnover_cny",
+            "median_turnover_60": 80000000.0,
+            "turnover_observations": 60
+          },
+          "passed": true,
+          "reason": "60日成交额中位数 80,000,000 元 >= 最低 2,500,000 元"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 523208312.0,
+            "obv_now": 554246709.0,
+            "price_low": 26.12,
+            "price_now": 26.74,
+            "prior_obv_low": 449865099.0,
+            "prior_price_low": 24.24
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 7
+    },
+    "turnover_healthy_300::market_cap_ok": {
+      "all_passed": true,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.6
+          },
+          "passed": true,
+          "reason": "AD Slope=0.600000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.12,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.120 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 27.01,
+            "low": 24.24,
+            "range_pct": 10.59
+          },
+          "passed": true,
+          "reason": "Range 10.6% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": 80000000000.0
+          },
+          "passed": true,
+          "reason": "市值 80,000,000,000 元 >= 最低市值 100,000,000 元"
+        },
+        "min_price": {
+          "details": {
+            "close": 26.740472209290264
+          },
+          "passed": true,
+          "reason": "收盘价 26.74 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "fallback_min_volume_shares": 200000,
+            "liquidity_basis": "turnover_cny",
+            "median_turnover_60": 80000000.0,
+            "turnover_observations": 60
+          },
+          "passed": true,
+          "reason": "60日成交额中位数 80,000,000 元 >= 最低 2,500,000 元"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 523208312.0,
+            "obv_now": 554246709.0,
+            "price_low": 26.12,
+            "price_now": 26.74,
+            "prior_obv_low": 449865099.0,
+            "prior_price_low": 24.24
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 8
+    },
+    "turnover_healthy_300::no_market_cap": {
+      "all_passed": true,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.6
+          },
+          "passed": true,
+          "reason": "AD Slope=0.600000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.12,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.120 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 27.01,
+            "low": 24.24,
+            "range_pct": 10.59
+          },
+          "passed": true,
+          "reason": "Range 10.6% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": true,
+          "reason": "ETF不要求市值数据"
+        },
+        "min_price": {
+          "details": {
+            "close": 26.740472209290264
+          },
+          "passed": true,
+          "reason": "收盘价 26.74 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "fallback_min_volume_shares": 200000,
+            "liquidity_basis": "turnover_cny",
+            "median_turnover_60": 80000000.0,
+            "turnover_observations": 60
+          },
+          "passed": true,
+          "reason": "60日成交额中位数 80,000,000 元 >= 最低 2,500,000 元"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 523208312.0,
+            "obv_now": 554246709.0,
+            "price_low": 26.12,
+            "price_now": 26.74,
+            "prior_obv_low": 449865099.0,
+            "prior_price_low": 24.24
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 8
+    },
+    "turnover_thin_300::market_cap_missing": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.6
+          },
+          "passed": true,
+          "reason": "AD Slope=0.600000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.12,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.120 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 27.01,
+            "low": 24.24,
+            "range_pct": 10.59
+          },
+          "passed": true,
+          "reason": "Range 10.6% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": false,
+          "reason": "市值数据不可用"
+        },
+        "min_price": {
+          "details": {
+            "close": 26.740472209290264
+          },
+          "passed": true,
+          "reason": "收盘价 26.74 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "fallback_min_volume_shares": 200000,
+            "liquidity_basis": "turnover_cny",
+            "median_turnover_60": 1000000.0,
+            "turnover_observations": 60
+          },
+          "passed": false,
+          "reason": "60日成交额中位数 1,000,000 元 < 最低 2,500,000 元"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 523208312.0,
+            "obv_now": 554246709.0,
+            "price_low": 26.12,
+            "price_now": 26.74,
+            "prior_obv_low": 449865099.0,
+            "prior_price_low": 24.24
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 6
+    },
+    "turnover_thin_300::market_cap_ok": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.6
+          },
+          "passed": true,
+          "reason": "AD Slope=0.600000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.12,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.120 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 27.01,
+            "low": 24.24,
+            "range_pct": 10.59
+          },
+          "passed": true,
+          "reason": "Range 10.6% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": 80000000000.0
+          },
+          "passed": true,
+          "reason": "市值 80,000,000,000 元 >= 最低市值 100,000,000 元"
+        },
+        "min_price": {
+          "details": {
+            "close": 26.740472209290264
+          },
+          "passed": true,
+          "reason": "收盘价 26.74 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "fallback_min_volume_shares": 200000,
+            "liquidity_basis": "turnover_cny",
+            "median_turnover_60": 1000000.0,
+            "turnover_observations": 60
+          },
+          "passed": false,
+          "reason": "60日成交额中位数 1,000,000 元 < 最低 2,500,000 元"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 523208312.0,
+            "obv_now": 554246709.0,
+            "price_low": 26.12,
+            "price_now": 26.74,
+            "prior_obv_low": 449865099.0,
+            "prior_price_low": 24.24
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 7
+    },
+    "turnover_thin_300::no_market_cap": {
+      "all_passed": false,
+      "filters": {
+        "ad_slope": {
+          "details": {
+            "ad_slope": 0.6
+          },
+          "passed": true,
+          "reason": "AD Slope=0.600000 > 0"
+        },
+        "bear_market": {
+          "details": {},
+          "passed": false,
+          "reason": "Insufficient history for bear market check"
+        },
+        "cmf_positive": {
+          "details": {
+            "cmf": 0.12,
+            "cmf_20d_change": 0.0,
+            "cmf_improving": false,
+            "cmf_positive": true
+          },
+          "passed": true,
+          "reason": "CMF=0.120 positive, 20d change=+0.000"
+        },
+        "consolidation": {
+          "details": {
+            "consolidation_days": 45,
+            "high": 27.01,
+            "low": 24.24,
+            "range_pct": 10.59
+          },
+          "passed": true,
+          "reason": "Range 10.6% <= 20.0% threshold"
+        },
+        "min_market_cap": {
+          "details": {
+            "market_cap": null
+          },
+          "passed": true,
+          "reason": "ETF不要求市值数据"
+        },
+        "min_price": {
+          "details": {
+            "close": 26.740472209290264
+          },
+          "passed": true,
+          "reason": "收盘价 26.74 元，要求范围 5.00-800.00 元"
+        },
+        "min_volume": {
+          "details": {
+            "fallback_min_volume_shares": 200000,
+            "liquidity_basis": "turnover_cny",
+            "median_turnover_60": 1000000.0,
+            "turnover_observations": 60
+          },
+          "passed": false,
+          "reason": "60日成交额中位数 1,000,000 元 < 最低 2,500,000 元"
+        },
+        "obv_divergence": {
+          "details": {
+            "obv_low": 523208312.0,
+            "obv_now": 554246709.0,
+            "price_low": 26.12,
+            "price_now": 26.74,
+            "prior_obv_low": 449865099.0,
+            "prior_price_low": 24.24
+          },
+          "passed": false,
+          "reason": "No OBV divergence — price/OBV lows do not confirm accumulation"
+        },
+        "sufficient_history": {
+          "details": {
+            "bars": 300
+          },
+          "passed": true,
+          "reason": "300 bars >= 252 minimum"
+        },
+        "volatility_contraction": {
+          "details": {
+            "atr_compressing": true,
+            "atr_contracting": true,
+            "atr_ratio": 0.75,
+            "available_components": 2,
+            "bb_contracting": false,
+            "bb_percentile": 1.0,
+            "bb_ratio": 1.0,
+            "hv_contracting": false,
+            "hv_ratio": NaN
+          },
+          "passed": true,
+          "reason": "Volatility contraction: ATR=True, BB=False, HV=False"
+        },
+        "volume_accumulation": {
+          "details": {
+            "ratio": 1.1,
+            "vol_ma120": 4031375.1028914535,
+            "vol_ma20": 4444484.064183893
+          },
+          "passed": false,
+          "reason": "Volume accumulation not active today (VolMA20=4,444,484, VolMA120=4,031,375)"
+        }
+      },
+      "passed_count": 7
+    }
+  },
+  "config_snapshot": {
+    "AD_SLOPE_LOOKBACK": 30,
+    "ATR_COMPRESSION_LOOKBACK": 60,
+    "BB_WIDTH_COMPRESSION_LOOKBACK": 60,
+    "BEAR_DECLINE_PCT": -20.0,
+    "BEAR_LOOKBACK_YEARS": 2,
+    "BEAR_MA200_DECLINING_DAYS": 40,
+    "CMF_THRESHOLD": 0.0,
+    "CONSOLIDATION_DAYS": 45,
+    "CONSOLIDATION_MAX_RANGE_PCT": 20.0,
+    "MAX_PRICE": 800.0,
+    "MIN_MARKET_CAP": 100000000.0,
+    "MIN_PRICE": 5.0,
+    "MIN_VOLUME": 200000,
+    "OBV_DIVERGENCE_LOOKBACK": 60,
+    "VOLUME_ACCUM_MIN_DAYS": 20,
+    "VOLUME_ACCUM_RATIO": 1.2
+  },
+  "note": "Golden output of filters_core.run_all_filters after the v79 facade has been imported. Regenerate with `python tests/golden_filters_core.py` ONLY after reviewing the diff: this file is the regression contract for a zero-coverage module.",
+  "schema": 1
+}

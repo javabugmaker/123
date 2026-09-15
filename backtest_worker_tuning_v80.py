@@ -94,6 +94,3 @@ def install() -> None:
     if current is _LEGACY_RESOLVE_PROFILE or current is resolve_backtest_profile:
         _core._resolve_backtest_profile = resolve_backtest_profile
     _INSTALLED = True
-
-
-install()

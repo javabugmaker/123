@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import csv
-import html
-import json
 import os
 from collections import Counter
 from dataclasses import dataclass
@@ -17,6 +15,8 @@ import pandas as pd
 
 from downloader import _load_cache
 
+from ._common import escape_html as _safe
+from ._common import read_json_payload as _read_json
 from .page_version import PUBLIC_PAGE_VERSION, PUBLIC_PAGE_VERSION_ID
 from .publication_assets import PUBLICATION_CSS, PUBLICATION_JS
 
@@ -34,18 +34,6 @@ class WebReportResult:
     page_url: str = ""
     published: bool = False
     publish_message: str = ""
-
-
-def _safe(value: object) -> str:
-    return html.escape("" if value is None else str(value), quote=True)
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
 
 
 def published_source_dir(output_dir: Path) -> Path:

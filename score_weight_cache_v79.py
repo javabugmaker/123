@@ -36,6 +36,3 @@ def install() -> None:
     _score._model_component_weights = model_component_weights
     _score.invalidate_model_weight_cache = invalidate_model_weight_cache
     _INSTALLED = True
-
-
-install()

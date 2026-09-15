@@ -190,6 +190,3 @@ def install() -> None:
         return
     _core._backtest_one_ticker_cached = _backtest_one_ticker_cached
     _INSTALLED = True
-
-
-install()

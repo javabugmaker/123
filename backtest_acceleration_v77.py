@@ -126,6 +126,3 @@ def install() -> None:
     _core.market_cache_state = market_cache_state
     _core.market_prefix_matches = market_prefix_matches
     _INSTALLED = True
-
-
-install()

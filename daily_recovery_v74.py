@@ -201,6 +201,3 @@ def install() -> None:
         "2026-08-19-v74-pid-aware-outer-transaction-recovery-v1"
     )
     _INSTALLED = True
-
-
-install()

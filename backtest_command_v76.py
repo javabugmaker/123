@@ -176,6 +176,3 @@ def install() -> None:
     )
     _main.CALIBRATION_MATH_VERSION = _calibration_math.CALIBRATION_MATH_VERSION
     _INSTALLED = True
-
-
-install()

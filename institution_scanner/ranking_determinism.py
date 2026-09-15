@@ -14,6 +14,8 @@ import pandas as pd
 
 import ranking_architecture_v83 as _legacy
 
+from ._common import text_series as _text
+
 RANKING_ARCHITECTURE_VERSION = _legacy.RANKING_ARCHITECTURE_VERSION
 RANKING_DETERMINISM_VERSION: Final = (
     "2026-08-25-v107-ticker-stable-exact-tie-ranking-v1"
@@ -24,13 +26,6 @@ _STATE_PRIORITY = {
     "OBSERVE": 2,
     "BLOCKED": 3,
 }
-
-
-def _text(frame: pd.DataFrame, column: str, default: str = "") -> pd.Series:
-    source = frame.get(column, pd.Series(default, index=frame.index, dtype=object))
-    if not isinstance(source, pd.Series):
-        source = pd.Series(source, index=frame.index)
-    return source.fillna(default).astype(str).str.strip()
 
 
 def _stable_ordinal_rank(

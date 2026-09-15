@@ -9,15 +9,14 @@ from __future__ import annotations
 
 from typing import Final
 
+from ._common import to_int as _integer
+from ._common import to_mapping as _mapping
+
 PERFORMANCE_HEALTH_VERSION: Final = "2026-08-25-v108.3-comparable-runtime-health-v1"
 _MAX_UNIVERSE_DELTA_RATIO: Final = 0.05
 _MAX_CACHE_HIT_DELTA: Final = 0.25
 _REGRESSION_RATIO: Final = 1.30
 _IMPROVEMENT_RATIO: Final = 0.85
-
-
-def _mapping(value: object) -> dict[str, object]:
-    return value if isinstance(value, dict) else {}
 
 
 def _number(value: object) -> float:
@@ -26,13 +25,6 @@ def _number(value: object) -> float:
     except (TypeError, ValueError):
         return 0.0
     return parsed if parsed >= 0.0 else 0.0
-
-
-def _integer(value: object) -> int:
-    try:
-        return max(0, int(float(value)))
-    except (TypeError, ValueError):
-        return 0
 
 
 def _metric(current: float, previous: float) -> dict[str, float | None]:

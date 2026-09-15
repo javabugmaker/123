@@ -22,6 +22,7 @@ from typing import Any, Final
 import numpy as np
 import pandas as pd
 
+from ._common import text_series as _text
 from .contracts import (
     CHALLENGER_CONTRACT,
     CONTRACT_VERSION,
@@ -74,20 +75,6 @@ def _first_numeric(
         if name in frame.columns:
             return _numeric(frame, name, default)
     return pd.Series(default, index=frame.index, dtype=float)
-
-
-def _text(
-    frame: pd.DataFrame,
-    column: str,
-    default: str = "",
-) -> pd.Series:
-    source = frame.get(
-        column,
-        pd.Series(default, index=frame.index, dtype=object),
-    )
-    if not isinstance(source, pd.Series):
-        source = pd.Series(source, index=frame.index)
-    return source.fillna(default).astype(str).str.strip()
 
 
 def _weighted_axis_score(

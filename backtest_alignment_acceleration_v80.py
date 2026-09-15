@@ -274,6 +274,3 @@ def install() -> None:
     _alignment.align_benchmark_returns = align_benchmark_returns
     _alignment.clear_benchmark_alignment_cache = clear_benchmark_alignment_cache
     _INSTALLED = True
-
-
-install()

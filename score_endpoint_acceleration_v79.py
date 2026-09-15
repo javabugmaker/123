@@ -268,6 +268,3 @@ def install() -> None:
     _score.breakout_score = breakout_score
     _score.execution_quality_score = execution_quality_score
     _INSTALLED = True
-
-
-install()

@@ -128,6 +128,3 @@ def install() -> None:
     _score._score_dimensions_available = _score_dimensions_available
     _score.score_volume = score_volume
     _INSTALLED = True
-
-
-install()

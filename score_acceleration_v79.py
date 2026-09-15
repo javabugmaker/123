@@ -550,6 +550,3 @@ def install() -> None:
     _score.entry_point = entry_point
     _vol.evaluate_volatility_contraction = evaluate_volatility_contraction
     _INSTALLED = True
-
-
-install()

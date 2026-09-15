@@ -12,6 +12,10 @@ _SIZE_BUDGETS = {
     "gui_core.py": 105_000,
     "gui.py": 100_000,
     "scanner.py": 80_000,
+    # Extracted from scanner.py (T1).  The budget moved with the code: leaving
+    # it untracked would turn 78 KB of debt invisible the moment the facade
+    # shrank past its own gate.
+    "scanner_core.py": 78_111,
     "signal_lifecycle_core.py": 70_000,
 }
 

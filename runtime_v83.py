@@ -49,6 +49,3 @@ def install() -> None:
     # analytics_core imports finalize_signal_ranking by value before this module
     # is loaded, so it needs its own idempotent wrapper for post-backtest paths.
     _install_ranking_wrapper(analytics_core)
-
-
-install()

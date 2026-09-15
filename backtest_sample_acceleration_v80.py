@@ -415,6 +415,3 @@ def install() -> None:
     global _INSTALLED
     _core._backtest_one_ticker = _backtest_one_ticker
     _INSTALLED = True
-
-
-install()

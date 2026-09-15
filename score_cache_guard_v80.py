@@ -110,6 +110,3 @@ def install() -> None:
     _v79.entry_point = entry_point
     _score.entry_point = entry_point
     _INSTALLED = True
-
-
-install()

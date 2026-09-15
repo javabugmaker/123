@@ -264,9 +264,6 @@ def install() -> None:
     _INSTALLED = True
 
 
-install()
-
-
 def acceleration_status() -> dict[str, Any]:
     return {
         "installed": bool(_INSTALLED),

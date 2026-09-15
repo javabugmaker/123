@@ -107,6 +107,3 @@ def install() -> None:
     if analytics_core is not None:
         setattr(analytics_core, "point_in_time_eligibility", point_in_time_eligibility)
     _INSTALLED = True
-
-
-install()

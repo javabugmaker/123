@@ -98,6 +98,3 @@ def install() -> None:
         setattr(analytics_core, "market_cache_state", market_cache_state)
         setattr(analytics_core, "market_prefix_matches", market_prefix_matches)
     _INSTALLED = True
-
-
-install()

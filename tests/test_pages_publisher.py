@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -88,7 +89,7 @@ def test_clone_retires_leftover_dir_before_fallback(
 
     def fake_retire(worktree: Path) -> None:
         retired.append(worktree)
-        worktree.mkdir(exist_ok=True)  # simulate a leftover clone dir
+        shutil.rmtree(worktree, ignore_errors=True)
 
     def fake_run_git(
         args: list[str],
@@ -99,6 +100,7 @@ def test_clone_retires_leftover_dir_before_fallback(
     ) -> subprocess.CompletedProcess[str]:
         del cwd, timeout, allow
         if args[-2].startswith("git@github.com:"):
+            Path(args[-1]).mkdir(parents=True, exist_ok=True)
             raise subprocess.TimeoutExpired(args, 90)
         if Path(args[-1]).exists():
             raise RuntimeError(f"destination {args[-1]} already exists")
