@@ -65,7 +65,12 @@ MODULE_BYTE_BUDGETS: Final[dict[str, int]] = {
     # but these are 17.5 KB of statistics helpers that used to sit inside a
     # saturated giant.  The budget moves with the code: without an entry here,
     # analytics_core's freed 14 KB could quietly re-inflate in its new home.
-    "backtest_statistics.py": 17_523,
+    #
+    # Measured on a *checkout*, i.e. with CRLF line endings (core.autocrlf).
+    # An earlier 17_523 was frozen from an LF working copy and turned the gate
+    # red on a clean clone by 446 bytes.  Budgets are byte counts of what is on
+    # disk, so they must be frozen from the same line endings a clone produces.
+    "backtest_statistics.py": 17_969,
     "fundamentals.py": 34_833,
     "fundamental_schema.py": 24_559,
     "performance_curve_web.py": 24_557,

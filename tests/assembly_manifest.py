@@ -370,6 +370,28 @@ def _write(path: Path, payload: Any) -> None:
     )
 
 
+def _pin_universe_cache() -> None:
+    """Make the manifest independent of whether this machine has run before.
+
+    ``universe_cache_acceleration_v78.install()`` sets ``_LAST_FILE_STATE`` to
+    ``_file_state()``, which returns ``None`` when
+    ``cache/_tickflow_universe.json`` is missing -- the same value the module
+    already holds, so the before/after diff sees no change and records no
+    rebind.  On a warm machine the file exists and the rebind is recorded.
+
+    Same code, two different manifests.  That was caught by exporting a commit
+    with ``git archive`` and running the suite on the clean tree: four entry
+    points went red purely because the cache directory was absent.
+
+    The fix is to pin the precondition, not the expectation -- otherwise the
+    fixture silently means "whatever this machine happens to look like".
+    """
+    path = ROOT / "cache" / "_tickflow_universe.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text('{"stocks": []}', encoding="utf-8")
+
+
 def capture_subprocess(entry_point: str) -> dict[str, Any]:
     """Run :func:`capture` for *entry_point* in a fresh interpreter.
 
@@ -382,6 +404,8 @@ def capture_subprocess(entry_point: str) -> dict[str, Any]:
     """
     import subprocess  # noqa: PLC0415
     import tempfile  # noqa: PLC0415
+
+    _pin_universe_cache()
 
     with tempfile.TemporaryDirectory() as tmp:
         target = Path(tmp) / "manifest.json"
