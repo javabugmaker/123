@@ -443,29 +443,100 @@ Pages 确认公开可读后重新审计，**推翻了 §6 原先的判断**：
 
 **明确不做的**：打包 / `[project]`（有意设计，见 §5.3 修正）、`gui_core` 拆分（余量 2,648 B 非阻塞）、27 个 plain 模块归属（纯可读性）、28 组重复体去重（改动面广，等语义锁装好）。
 
-### 8.4 已推送，但 CI 是既有红灯 —— 这才是 Pages 停更的真因
+### 8.4 CI 红灯 —— 已定位并修复，两个彼此独立的根因
 
-19 个提交已推送（`ca5a36b..a99bfa6`），远程 `main` 与本地一致。但查 GitHub Actions 发现：
+上一版这里写的是「CI 从 09-10 起就是红的，原因未知」。现在查清了，**不是一个
+红灯，是两个叠在一起的**，而且第二个从来没绿过。
 
-| workflow | 触发点 | 结论 |
+**定位手段（可复用）**：Actions 日志匿名访问返回 403，本机没有 `gh`、没有
+Docker，`wsl.exe` 被沙箱策略拦截。但 GitHub 有两个东西是**匿名可读**的：
+
+1. job 的 `steps[].conclusion` —— 能看出失败发生在哪一步；
+2. check-run 的 **annotations** —— `GET /repos/{o}/{r}/check-runs/{id}/annotations`。
+
+于是用 workflow 命令 `::error::<文本>` 把 pytest 的失败摘要**复写成
+annotation**，就能匿名读回来。换行用 `%0A` 转义。这个办法在本轮三次迭代里
+每次都拿到了完整失败信息，比二分 step 快得多。
+
+#### 根因 1：三个 golden 闸门用位级相等比较浮点（真凶，09-10 起红）
+
+```
+FAILED tests/test_analytics_core_golden.py::test_fixture_matches_live_behaviour
+FAILED tests/test_filters_core_golden.py::test_golden_output_matches_for_every_scenario
+FAILED tests/test_score_core_golden.py::test_golden_output_matches_for_every_case
+```
+
+diff 全是末位噪声：
+
+```
+score_volatility[etf_like]: 3.494920656917694 -> 3.4949206569177194   (相对差 ~7e-15)
+total:                     23.41711159456133  -> 23.417111594561334
+```
+
+**位级相等取决于 BLAS 内核、CPU 向量宽度和 numpy/scipy 构建，不是本仓库代码
+的性质。** 同一份源码在 Windows（本地）上是绿的，在 ubuntu-24.04 + numpy
+2.4.6 / scipy 1.17.1 上是红的。所以这三个「行为漂移」其实什么都没漂。
+
+修复（`87136c5`）：
+
+* 新增 `tests/golden_match.py`：结构化比较器，`rel_tol=1e-9` / `abs_tol=1e-12`，
+  NaN 自相等，bool 按 identity 比（否则 `True == 1` 会让判定变成计数）。
+  容差比实测噪声宽 6 个数量级，比这些 fixture 要抓的最小语义改动紧 5 个数量级。
+* 三个闸门改走该比较器，不再各自维护 `_same`。
+* 新增 `tests/test_golden_match.py`（9 项）从两头钉住容差，并钉住三个闸门必须
+  真正经由 `golden_match` 比较 —— 防止以后改回 `==`，让红灯从侧门回来。
+
+反向验证（证明松化后仍会咬）：
+
+* fixture 注入 1e-6 相对漂移 → score 与 analytics 双双变红，还原 → 绿；
+* `REL_TOL` 改成 `1e-3`（过松）或 `0`（回到位级）→ 契约测试变红，还原 → 绿。
+
+> 教训：这是「闸门依赖机器环境」的**第四次**（前三次见 `d6d330e` / `7b22750`
+> / `a7251bc`）。凡是冻结浮点输出的 fixture，都必须显式写明容差从哪来 ——
+> 否则它守的不是代码，是 CPU。
+
+#### 根因 2：浅克隆丢了历史提交（这个测试在 CI 上从来没绿过）
+
+修掉根因 1 之后，CI 暴露出第二个：
+
+```
+ERROR at setup of test_every_moved_function_is_byte_identical
+CalledProcessError: 'git show cd63ffd:signal_lifecycle_core.py' exit status 128
+```
+
+`tests/test_signal_lifecycle_extraction_equivalence.py` 要证明
+`signal_lifecycle_core` → `institution_scanner.signal_attributes` 是**机械搬运**
+（逐函数字节相同），只能拿搬运前的源文件比对，所以要从对象库读历史提交
+`cd63ffd`。但 `actions/checkout` 默认 `fetch-depth: 1`，会丢掉这个提交。
+
+同一个仓库的 `daily-pages.yml` **早就固定了 `fetch-depth: 0`**，只有
+`static-quality.yml` 漏了 —— 所以这个闸门在本地和日更流水线里能过，在质量
+门禁里从没过过。
+
+修复（`5a4c824`）：
+
+* `static-quality` 的 checkout 加 `fetch-depth: 0`，并在注释里写明原因，避免
+  以后被当成多余配置删掉。
+* 测试加预检：提交不在对象库时抛带补救办法的 `RuntimeError`，而不是裸的
+  exit 128。**这里刻意不做 skip** —— 在浅克隆上安静跳过，等于这个闸门在 CI
+  上什么也没守住（正是本项目反复出现的「空转闸门」缺陷类）。
+
+#### 当前状态与遗留风险
+
+| run | commit | 结论 |
 |---|---|---|
-| `Static Quality` | `a99bfa6`（本次推送） | **failure** — 但 Ruff / Pyright / windows-smoke 全绿，只有 `Model and output contract regression`（即 `python -m pytest -q`）红 |
-| `Static Quality` | `ca5a36b`（09-10，"update"） | **failure** ← **早于本轮任何改动** |
-| `Static Quality` | 09-04 及更早 | 全部 success |
-| `Daily A-Share Pages` | `ca5a36b` | 09-11 / 09-14 / 09-15 **连续 failure** |
+| #597 | `ca5a36b` | failure（根因 1） |
+| #602 | `87136c5` | failure（根因 1 已修，暴露根因 2） |
+| #604 | `5a4c824` | failure ← **根因 2 已修，却仍然红，原因未取证** |
+| #605 | `144513a` | **success** |
 
-结论：**CI 从 09-10 起就是红的，不是本轮引入**。`ca5a36b` 只改了两个文件
-（`institution_scanner/pages_publisher.py` +55、`tests/test_pages_publisher.py` +97），
-嫌疑范围很窄；`static-quality` 跑在 **ubuntu + Python 3.11**，而本地是
-**Windows + 3.13/3.14**，属平台差异。日志需认证下载（匿名 403），本地复现要
-Linux 环境（Dockerfile 是 `python:3.11-slim`，但本机无 Docker）。
+**不能因为 #605 绿了就宣布修好。** #604 与 #605 之间只差一个诊断脚本和一个
+`if: failure()` 步骤，逻辑上不该改变测试结果 —— 这意味着要么 #604 是某个
+**间歇性失败**（网络依赖 / 计时 / 并发），要么还有第三个原因没露出来。
+下一步：移除诊断脚手架后再跑一次确认；若再次变红，用同一套 annotation 办法
+取证，不猜。
 
-**这与 gh-pages 停在 09-04 直接对应**：`Daily A-Share Pages` 连续失败，就没有
-新的 artifact，`publish` 作业自然不推送。想让 Pages 恢复更新，必须先让这两个
-workflow 变绿 —— 这已是独立于重构的运维问题。
-
-> 排查提示：优先看 `test_pages_publisher.py` 里有没有依赖**本地 SSH/远程配置**
-> 的断言（`publication_remote_candidates` 的候选个数会随 remote 形态变化）。
-> 这是本项目第三次出现「闸门依赖机器环境」—— 前两次见 `d6d330e` 的修复。
-
-> **判断方法沉淀**：本轮两次用「运行时探测」推翻了静态分析的结论（web_report 链、v90 分支）。这个仓库是 monkey-patch 架构，**overlay 靠 import 副作用安装，静态 grep 既会漏报也会误报**。凡是「这个模块还有用吗」的问题，都应该起子进程 import 入口、再看 `sys.modules`，而不是 grep。
+> **方法论沉淀**：本轮两次用「运行时探测」推翻静态分析的结论（web_report 链、
+> v90 分支）。这个仓库是 monkey-patch 架构，**overlay 靠 import 副作用安装，
+> 静态 grep 既会漏报也会误报**。凡是「这个模块还有用吗」的问题，都应该起子进程
+> import 入口、再看 `sys.modules`，而不是 grep。
