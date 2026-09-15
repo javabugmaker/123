@@ -8,7 +8,13 @@ _VERSION_RE = re.compile(r"(?:^|_)v(\d+)(?:_|\.py$)", re.IGNORECASE)
 _ROOT_VERSION_CEILING = 102
 _SIZE_BUDGETS = {
     "analytics_core.py": 160_000,
-    "report_core.py": 105_000,
+    # 105_000 -> 95_000 after the T3' extraction moved the 11-function
+    # candidate-selection cluster into institution_scanner/report_selection.py
+    # (report_core dropped 104,909 -> 91,926 bytes).  The budget has to come
+    # down with it, otherwise the 13 KB that were freed stay available for
+    # re-inflation and the extraction only moved the debt instead of retiring
+    # it.  ~3 KB of headroom is left so ordinary fixes do not trip the gate.
+    "report_core.py": 95_000,
     "gui_core.py": 105_000,
     "gui.py": 100_000,
     "scanner.py": 80_000,

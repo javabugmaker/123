@@ -68,3 +68,13 @@ def read_json_payload(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _truthy(value: object) -> bool:
+    """Coerce a loosely-typed cell to a boolean.
+
+    Exports, CSV round-trips and HTML forms all render booleans as text, and
+    the accepted spellings must stay in one place: a fix to one copy of this
+    predicate previously left the other three behind.
+    """
+    return str(value).strip().lower() in {"true", "1", "yes", "y", "是"}

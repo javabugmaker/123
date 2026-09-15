@@ -1,0 +1,2189 @@
+{
+  "captured_with": {
+    "numpy": "2.5.1",
+    "pandas": "2.3.3",
+    "python": "3.14.6"
+  },
+  "cases": {
+    "apply_research_policy/candidates": {
+      "value": {
+        "__frame__": {
+          "columns": [
+            "Ticker",
+            "Name",
+            "IsETF",
+            "AssetType",
+            "Industry",
+            "Sector",
+            "ModelClassification",
+            "ETFTheme",
+            "RankingScore",
+            "CrossAssetScore",
+            "RankingEligibility",
+            "ETFTrackingKey",
+            "ThemeCluster",
+            "HardGatePassed",
+            "UniverseEligible",
+            "PassedFilters",
+            "HardGateFailedNames",
+            "ResearchEligible",
+            "ResearchExclusionReason"
+          ],
+          "index": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ],
+          "rows": [
+            [
+              "510300.SH",
+              "沪深300ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              "宽基指数",
+              "沪深300",
+              50.0,
+              49.0,
+              "观察",
+              "",
+              "",
+              true,
+              true,
+              true,
+              "",
+              true,
+              ""
+            ],
+            [
+              "510500.SH",
+              "中证500ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              "宽基指数",
+              "中证500",
+              65.150525,
+              45.59449,
+              "观察",
+              "",
+              "",
+              true,
+              true,
+              true,
+              "",
+              true,
+              ""
+            ],
+            [
+              "159001.SZ",
+              "货币ETF",
+              true,
+              "ETF",
+              "现金管理",
+              "现金管理",
+              "货币",
+              "货币",
+              63.744439,
+              37.955181,
+              "风险过滤",
+              "",
+              "",
+              true,
+              true,
+              true,
+              "",
+              false,
+              "ETF现金管理产品排除：货币ETF"
+            ],
+            [
+              "512880.SH",
+              "证券ETF",
+              true,
+              "ETF",
+              "",
+              "金融",
+              "",
+              "",
+              47.318323,
+              31.863351,
+              "观察",
+              "",
+              "",
+              true,
+              true,
+              true,
+              "",
+              true,
+              ""
+            ],
+            [
+              "588000.SH",
+              "科创50ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              "科创板",
+              "科创50",
+              33.822765,
+              31.929174,
+              "观察",
+              "",
+              "",
+              true,
+              true,
+              true,
+              "",
+              true,
+              ""
+            ],
+            [
+              "513100.SH",
+              "纳指ETF",
+              true,
+              "ETF",
+              "海外",
+              "海外",
+              "",
+              "",
+              38.005814,
+              38.102838,
+              "观察",
+              "",
+              "",
+              true,
+              true,
+              true,
+              "",
+              true,
+              ""
+            ],
+            [
+              "600519.SH",
+              "贵州茅台",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              "核心资产",
+              "",
+              55.296203,
+              45.712236,
+              "观察",
+              "",
+              "",
+              true,
+              true,
+              true,
+              "",
+              true,
+              ""
+            ],
+            [
+              "000858.SZ",
+              "五粮液",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              "核心资产",
+              "",
+              66.79886,
+              48.998728,
+              "观察",
+              "",
+              "",
+              true,
+              true,
+              true,
+              "",
+              true,
+              ""
+            ],
+            [
+              "601318.SH",
+              "中国平安",
+              false,
+              "stock",
+              "保险",
+              "金融",
+              "低估值",
+              "",
+              59.943592,
+              45.475162,
+              "观察",
+              "",
+              "",
+              true,
+              true,
+              true,
+              "",
+              true,
+              ""
+            ],
+            [
+              "600036.SH",
+              "招商银行",
+              false,
+              "stock",
+              "银行",
+              "金融",
+              "",
+              "",
+              42.22189,
+              37.808103,
+              "风险过滤",
+              "",
+              "",
+              true,
+              true,
+              true,
+              "",
+              true,
+              ""
+            ],
+            [
+              "300750.SZ",
+              "宁德时代",
+              false,
+              "stock",
+              "电池",
+              "新能源",
+              "成长",
+              "",
+              33.000166,
+              31.799828,
+              "观察",
+              "",
+              "",
+              false,
+              true,
+              true,
+              "流动性不足",
+              false,
+              "硬准入失败：流动性不足"
+            ],
+            [
+              "002594.SZ",
+              "比亚迪",
+              false,
+              "stock",
+              "汽车",
+              "新能源",
+              "成长",
+              "",
+              42.355993,
+              31.99728,
+              "观察",
+              "",
+              "",
+              true,
+              true,
+              false,
+              "",
+              true,
+              ""
+            ]
+          ]
+        }
+      }
+    },
+    "apply_research_policy/empty": {
+      "value": {
+        "__frame__": {
+          "columns": [
+            "Ticker",
+            "Name",
+            "IsETF",
+            "AssetType",
+            "ResearchEligible",
+            "ResearchExclusionReason"
+          ],
+          "index": [],
+          "rows": []
+        }
+      }
+    },
+    "apply_research_policy/legacy": {
+      "value": {
+        "__frame__": {
+          "columns": [
+            "Ticker",
+            "Name",
+            "IsETF",
+            "AssetType",
+            "UniverseEligible",
+            "PassedFilters",
+            "ResearchEligible",
+            "ResearchExclusionReason"
+          ],
+          "index": [
+            0,
+            1,
+            2
+          ],
+          "rows": [
+            [
+              "600000.SH",
+              "甲",
+              false,
+              "stock",
+              true,
+              true,
+              true,
+              ""
+            ],
+            [
+              "600001.SH",
+              "乙",
+              false,
+              "stock",
+              false,
+              true,
+              true,
+              ""
+            ],
+            [
+              "600002.SH",
+              "丙",
+              false,
+              "stock",
+              true,
+              false,
+              true,
+              ""
+            ]
+          ]
+        }
+      }
+    },
+    "apply_research_policy/sparse": {
+      "value": {
+        "__frame__": {
+          "columns": [
+            "Ticker",
+            "Name",
+            "IsETF",
+            "AssetType",
+            "Industry",
+            "Sector",
+            "RankingScore",
+            "RankingEligibility",
+            "ResearchEligible",
+            "ResearchExclusionReason"
+          ],
+          "index": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ],
+          "rows": [
+            [
+              "510300.SH",
+              "沪深300ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              50.0,
+              "观察",
+              true,
+              ""
+            ],
+            [
+              "510500.SH",
+              "中证500ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              65.150525,
+              "观察",
+              true,
+              ""
+            ],
+            [
+              "159001.SZ",
+              "货币ETF",
+              true,
+              "ETF",
+              "现金管理",
+              "现金管理",
+              63.744439,
+              "风险过滤",
+              false,
+              "ETF分类排除：货币现金管理"
+            ],
+            [
+              "512880.SH",
+              "证券ETF",
+              true,
+              "ETF",
+              "",
+              "金融",
+              47.318323,
+              "观察",
+              true,
+              ""
+            ],
+            [
+              "588000.SH",
+              "科创50ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              33.822765,
+              "观察",
+              true,
+              ""
+            ],
+            [
+              "513100.SH",
+              "纳指ETF",
+              true,
+              "ETF",
+              "海外",
+              "海外",
+              38.005814,
+              "观察",
+              true,
+              ""
+            ],
+            [
+              "600519.SH",
+              "贵州茅台",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              55.296203,
+              "观察",
+              true,
+              ""
+            ],
+            [
+              "000858.SZ",
+              "五粮液",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              66.79886,
+              "观察",
+              true,
+              ""
+            ],
+            [
+              "601318.SH",
+              "中国平安",
+              false,
+              "stock",
+              "保险",
+              "金融",
+              59.943592,
+              "观察",
+              true,
+              ""
+            ],
+            [
+              "600036.SH",
+              "招商银行",
+              false,
+              "stock",
+              "银行",
+              "金融",
+              42.22189,
+              "风险过滤",
+              true,
+              ""
+            ],
+            [
+              "300750.SZ",
+              "宁德时代",
+              false,
+              "stock",
+              "电池",
+              "新能源",
+              33.000166,
+              "观察",
+              true,
+              ""
+            ],
+            [
+              "002594.SZ",
+              "比亚迪",
+              false,
+              "stock",
+              "汽车",
+              "新能源",
+              42.355993,
+              "观察",
+              true,
+              ""
+            ]
+          ]
+        }
+      }
+    },
+    "clean_group_key/blank": {
+      "value": ""
+    },
+    "clean_group_key/nan": {
+      "value": ""
+    },
+    "clean_group_key/nat": {
+      "value": ""
+    },
+    "clean_group_key/none": {
+      "value": ""
+    },
+    "clean_group_key/number": {
+      "value": "123"
+    },
+    "clean_group_key/pd_na": {
+      "value": ""
+    },
+    "clean_group_key/text_nan": {
+      "value": ""
+    },
+    "clean_group_key/text_none": {
+      "value": ""
+    },
+    "clean_group_key/value": {
+      "value": "银行"
+    },
+    "diversify/empty": {
+      "value": {
+        "__frame__": {
+          "columns": [
+            "Ticker",
+            "Name",
+            "IsETF",
+            "AssetType"
+          ],
+          "index": [],
+          "rows": []
+        }
+      }
+    },
+    "diversify/full": {
+      "value": {
+        "__frame__": {
+          "columns": [
+            "Ticker",
+            "Name",
+            "IsETF",
+            "AssetType",
+            "Industry",
+            "Sector",
+            "ModelClassification",
+            "ETFTheme",
+            "RankingScore",
+            "CrossAssetScore",
+            "RankingEligibility",
+            "ETFTrackingKey",
+            "ThemeCluster",
+            "HardGatePassed",
+            "UniverseEligible",
+            "PassedFilters",
+            "HardGateFailedNames",
+            "ResearchDiversityPenalty",
+            "ResearchPoolRank"
+          ],
+          "index": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rows": [
+            [
+              "000858.SZ",
+              "五粮液",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              "核心资产",
+              "",
+              66.79886,
+              48.998728,
+              "观察",
+              "",
+              "大消费",
+              true,
+              true,
+              true,
+              "",
+              1.0,
+              1
+            ],
+            [
+              "510500.SH",
+              "中证500ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              "宽基指数",
+              "中证500",
+              65.150525,
+              45.59449,
+              "观察",
+              "中证500",
+              "宽基指数",
+              true,
+              true,
+              true,
+              "",
+              1.0,
+              2
+            ],
+            [
+              "601318.SH",
+              "中国平安",
+              false,
+              "stock",
+              "保险",
+              "金融",
+              "低估值",
+              "",
+              59.943592,
+              45.475162,
+              "观察",
+              "",
+              "金融",
+              true,
+              true,
+              true,
+              "",
+              1.0,
+              3
+            ],
+            [
+              "600519.SH",
+              "贵州茅台",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              "核心资产",
+              "",
+              55.296203,
+              45.712236,
+              "观察",
+              "",
+              "大消费",
+              true,
+              true,
+              true,
+              "",
+              0.95,
+              4
+            ],
+            [
+              "510300.SH",
+              "沪深300ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              "宽基指数",
+              "沪深300",
+              50.0,
+              49.0,
+              "观察",
+              "沪深300",
+              "宽基指数",
+              true,
+              true,
+              true,
+              "",
+              0.95,
+              5
+            ],
+            [
+              "512880.SH",
+              "证券ETF",
+              true,
+              "ETF",
+              "",
+              "金融",
+              "",
+              "券商",
+              47.318323,
+              31.863351,
+              "观察",
+              "证券",
+              "金融",
+              true,
+              true,
+              true,
+              "",
+              0.95,
+              6
+            ]
+          ]
+        }
+      }
+    },
+    "diversify/limit_zero": {
+      "value": {
+        "__frame__": {
+          "columns": [
+            "Ticker",
+            "Name",
+            "IsETF",
+            "AssetType",
+            "Industry",
+            "Sector",
+            "ModelClassification",
+            "ETFTheme",
+            "RankingScore",
+            "CrossAssetScore",
+            "RankingEligibility",
+            "ETFTrackingKey",
+            "ThemeCluster",
+            "HardGatePassed",
+            "UniverseEligible",
+            "PassedFilters",
+            "HardGateFailedNames"
+          ],
+          "index": [],
+          "rows": []
+        }
+      }
+    },
+    "diversify/one_per_industry": {
+      "value": {
+        "__frame__": {
+          "columns": [
+            "Ticker",
+            "Name",
+            "IsETF",
+            "AssetType",
+            "Industry",
+            "Sector",
+            "ModelClassification",
+            "ETFTheme",
+            "RankingScore",
+            "CrossAssetScore",
+            "RankingEligibility",
+            "ETFTrackingKey",
+            "ThemeCluster",
+            "HardGatePassed",
+            "UniverseEligible",
+            "PassedFilters",
+            "HardGateFailedNames",
+            "ResearchDiversityPenalty",
+            "ResearchPoolRank"
+          ],
+          "index": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rows": [
+            [
+              "000858.SZ",
+              "五粮液",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              "核心资产",
+              "",
+              66.79886,
+              48.998728,
+              "观察",
+              "",
+              "大消费",
+              true,
+              true,
+              true,
+              "",
+              1.0,
+              1
+            ],
+            [
+              "510500.SH",
+              "中证500ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              "宽基指数",
+              "中证500",
+              65.150525,
+              45.59449,
+              "观察",
+              "中证500",
+              "宽基指数",
+              true,
+              true,
+              true,
+              "",
+              1.0,
+              2
+            ],
+            [
+              "601318.SH",
+              "中国平安",
+              false,
+              "stock",
+              "保险",
+              "金融",
+              "低估值",
+              "",
+              59.943592,
+              45.475162,
+              "观察",
+              "",
+              "金融",
+              true,
+              true,
+              true,
+              "",
+              1.0,
+              3
+            ],
+            [
+              "510300.SH",
+              "沪深300ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              "宽基指数",
+              "沪深300",
+              50.0,
+              49.0,
+              "观察",
+              "沪深300",
+              "宽基指数",
+              true,
+              true,
+              true,
+              "",
+              0.95,
+              4
+            ],
+            [
+              "512880.SH",
+              "证券ETF",
+              true,
+              "ETF",
+              "",
+              "金融",
+              "",
+              "券商",
+              47.318323,
+              31.863351,
+              "观察",
+              "证券",
+              "金融",
+              true,
+              true,
+              true,
+              "",
+              0.95,
+              5
+            ],
+            [
+              "002594.SZ",
+              "比亚迪",
+              false,
+              "stock",
+              "汽车",
+              "新能源",
+              "成长",
+              "",
+              42.355993,
+              31.99728,
+              "观察",
+              "",
+              "新能源",
+              true,
+              true,
+              false,
+              "",
+              1.0,
+              6
+            ]
+          ]
+        }
+      }
+    },
+    "diversify/one_per_theme": {
+      "value": {
+        "__frame__": {
+          "columns": [
+            "Ticker",
+            "Name",
+            "IsETF",
+            "AssetType",
+            "Industry",
+            "Sector",
+            "ModelClassification",
+            "ETFTheme",
+            "RankingScore",
+            "CrossAssetScore",
+            "RankingEligibility",
+            "ETFTrackingKey",
+            "ThemeCluster",
+            "HardGatePassed",
+            "UniverseEligible",
+            "PassedFilters",
+            "HardGateFailedNames",
+            "ResearchDiversityPenalty",
+            "ResearchPoolRank"
+          ],
+          "index": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rows": [
+            [
+              "000858.SZ",
+              "五粮液",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              "核心资产",
+              "",
+              66.79886,
+              48.998728,
+              "观察",
+              "",
+              "大消费",
+              true,
+              true,
+              true,
+              "",
+              1.0,
+              1
+            ],
+            [
+              "510500.SH",
+              "中证500ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              "宽基指数",
+              "中证500",
+              65.150525,
+              45.59449,
+              "观察",
+              "中证500",
+              "宽基指数",
+              true,
+              true,
+              true,
+              "",
+              1.0,
+              2
+            ],
+            [
+              "601318.SH",
+              "中国平安",
+              false,
+              "stock",
+              "保险",
+              "金融",
+              "低估值",
+              "",
+              59.943592,
+              45.475162,
+              "观察",
+              "",
+              "金融",
+              true,
+              true,
+              true,
+              "",
+              1.0,
+              3
+            ],
+            [
+              "600519.SH",
+              "贵州茅台",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              "核心资产",
+              "",
+              55.296203,
+              45.712236,
+              "观察",
+              "",
+              "大消费",
+              true,
+              true,
+              true,
+              "",
+              0.95,
+              4
+            ],
+            [
+              "510300.SH",
+              "沪深300ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              "宽基指数",
+              "沪深300",
+              50.0,
+              49.0,
+              "观察",
+              "沪深300",
+              "宽基指数",
+              true,
+              true,
+              true,
+              "",
+              0.95,
+              5
+            ],
+            [
+              "512880.SH",
+              "证券ETF",
+              true,
+              "ETF",
+              "",
+              "金融",
+              "",
+              "券商",
+              47.318323,
+              31.863351,
+              "观察",
+              "证券",
+              "金融",
+              true,
+              true,
+              true,
+              "",
+              0.95,
+              6
+            ]
+          ]
+        }
+      }
+    },
+    "diversify/prepared": {
+      "value": {
+        "__frame__": {
+          "columns": [
+            "Ticker",
+            "Name",
+            "IsETF",
+            "AssetType",
+            "Industry",
+            "Sector",
+            "ModelClassification",
+            "ETFTheme",
+            "RankingScore",
+            "CrossAssetScore",
+            "RankingEligibility",
+            "ETFTrackingKey",
+            "ThemeCluster",
+            "HardGatePassed",
+            "UniverseEligible",
+            "PassedFilters",
+            "HardGateFailedNames",
+            "ResearchDiversityPenalty",
+            "ResearchPoolRank"
+          ],
+          "index": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "rows": [
+            [
+              "000858.SZ",
+              "五粮液",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              "核心资产",
+              "",
+              66.79886,
+              48.998728,
+              "观察",
+              "",
+              "大消费",
+              true,
+              true,
+              true,
+              "",
+              1.0,
+              1
+            ],
+            [
+              "510500.SH",
+              "中证500ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              "宽基指数",
+              "中证500",
+              65.150525,
+              45.59449,
+              "观察",
+              "中证500",
+              "宽基指数",
+              true,
+              true,
+              true,
+              "",
+              1.0,
+              2
+            ],
+            [
+              "601318.SH",
+              "中国平安",
+              false,
+              "stock",
+              "保险",
+              "金融",
+              "低估值",
+              "",
+              59.943592,
+              45.475162,
+              "观察",
+              "",
+              "金融",
+              true,
+              true,
+              true,
+              "",
+              1.0,
+              3
+            ],
+            [
+              "600519.SH",
+              "贵州茅台",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              "核心资产",
+              "",
+              55.296203,
+              45.712236,
+              "观察",
+              "",
+              "大消费",
+              true,
+              true,
+              true,
+              "",
+              0.95,
+              4
+            ],
+            [
+              "510300.SH",
+              "沪深300ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              "宽基指数",
+              "沪深300",
+              50.0,
+              49.0,
+              "观察",
+              "沪深300",
+              "宽基指数",
+              true,
+              true,
+              true,
+              "",
+              0.95,
+              5
+            ],
+            [
+              "512880.SH",
+              "证券ETF",
+              true,
+              "ETF",
+              "",
+              "金融",
+              "",
+              "券商",
+              47.318323,
+              31.863351,
+              "观察",
+              "证券",
+              "金融",
+              true,
+              true,
+              true,
+              "",
+              0.95,
+              6
+            ]
+          ]
+        }
+      }
+    },
+    "diversify/sparse": {
+      "value": {
+        "__frame__": {
+          "columns": [
+            "Ticker",
+            "Name",
+            "IsETF",
+            "AssetType",
+            "Industry",
+            "Sector",
+            "RankingScore",
+            "RankingEligibility",
+            "ETFTheme",
+            "ETFTrackingKey",
+            "ThemeCluster",
+            "ResearchDiversityPenalty",
+            "ResearchPoolRank"
+          ],
+          "index": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "rows": [
+            [
+              "000858.SZ",
+              "五粮液",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              66.79886,
+              "观察",
+              "",
+              "",
+              "大消费",
+              1.0,
+              1
+            ],
+            [
+              "510500.SH",
+              "中证500ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              65.150525,
+              "观察",
+              "中证500",
+              "中证500",
+              "宽基指数",
+              1.0,
+              2
+            ],
+            [
+              "601318.SH",
+              "中国平安",
+              false,
+              "stock",
+              "保险",
+              "金融",
+              59.943592,
+              "观察",
+              "",
+              "",
+              "金融",
+              1.0,
+              3
+            ],
+            [
+              "600519.SH",
+              "贵州茅台",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              55.296203,
+              "观察",
+              "",
+              "",
+              "大消费",
+              0.95,
+              4
+            ],
+            [
+              "510300.SH",
+              "沪深300ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              50.0,
+              "观察",
+              "沪深300",
+              "沪深300",
+              "宽基指数",
+              0.95,
+              5
+            ]
+          ]
+        }
+      }
+    },
+    "ensure_diversity_columns/candidates": {
+      "value": {
+        "__frame__": {
+          "columns": [
+            "Ticker",
+            "Name",
+            "IsETF",
+            "AssetType",
+            "Industry",
+            "Sector",
+            "ModelClassification",
+            "ETFTheme",
+            "RankingScore",
+            "CrossAssetScore",
+            "RankingEligibility",
+            "ETFTrackingKey",
+            "ThemeCluster",
+            "HardGatePassed",
+            "UniverseEligible",
+            "PassedFilters",
+            "HardGateFailedNames"
+          ],
+          "index": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ],
+          "rows": [
+            [
+              "510300.SH",
+              "沪深300ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              "宽基指数",
+              "沪深300",
+              50.0,
+              49.0,
+              "观察",
+              "沪深300",
+              "宽基指数",
+              true,
+              true,
+              true,
+              ""
+            ],
+            [
+              "510500.SH",
+              "中证500ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              "宽基指数",
+              "中证500",
+              65.150525,
+              45.59449,
+              "观察",
+              "中证500",
+              "宽基指数",
+              true,
+              true,
+              true,
+              ""
+            ],
+            [
+              "159001.SZ",
+              "货币ETF",
+              true,
+              "ETF",
+              "现金管理",
+              "现金管理",
+              "货币",
+              "货币",
+              63.744439,
+              37.955181,
+              "风险过滤",
+              "货币",
+              "货币现金管理",
+              true,
+              true,
+              true,
+              ""
+            ],
+            [
+              "512880.SH",
+              "证券ETF",
+              true,
+              "ETF",
+              "",
+              "金融",
+              "",
+              "券商",
+              47.318323,
+              31.863351,
+              "观察",
+              "证券",
+              "金融",
+              true,
+              true,
+              true,
+              ""
+            ],
+            [
+              "588000.SH",
+              "科创50ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              "科创板",
+              "科创50",
+              33.822765,
+              31.929174,
+              "观察",
+              "科创50",
+              "宽基指数",
+              true,
+              true,
+              true,
+              ""
+            ],
+            [
+              "513100.SH",
+              "纳指ETF",
+              true,
+              "ETF",
+              "海外",
+              "海外",
+              "",
+              "纳指",
+              38.005814,
+              38.102838,
+              "观察",
+              "纳指",
+              "海外",
+              true,
+              true,
+              true,
+              ""
+            ],
+            [
+              "600519.SH",
+              "贵州茅台",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              "核心资产",
+              "",
+              55.296203,
+              45.712236,
+              "观察",
+              "",
+              "大消费",
+              true,
+              true,
+              true,
+              ""
+            ],
+            [
+              "000858.SZ",
+              "五粮液",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              "核心资产",
+              "",
+              66.79886,
+              48.998728,
+              "观察",
+              "",
+              "大消费",
+              true,
+              true,
+              true,
+              ""
+            ],
+            [
+              "601318.SH",
+              "中国平安",
+              false,
+              "stock",
+              "保险",
+              "金融",
+              "低估值",
+              "",
+              59.943592,
+              45.475162,
+              "观察",
+              "",
+              "金融",
+              true,
+              true,
+              true,
+              ""
+            ],
+            [
+              "600036.SH",
+              "招商银行",
+              false,
+              "stock",
+              "银行",
+              "金融",
+              "",
+              "",
+              42.22189,
+              37.808103,
+              "风险过滤",
+              "",
+              "金融",
+              true,
+              true,
+              true,
+              ""
+            ],
+            [
+              "300750.SZ",
+              "宁德时代",
+              false,
+              "stock",
+              "电池",
+              "新能源",
+              "成长",
+              "",
+              33.000166,
+              31.799828,
+              "观察",
+              "",
+              "新能源",
+              false,
+              true,
+              true,
+              "流动性不足"
+            ],
+            [
+              "002594.SZ",
+              "比亚迪",
+              false,
+              "stock",
+              "汽车",
+              "新能源",
+              "成长",
+              "",
+              42.355993,
+              31.99728,
+              "观察",
+              "",
+              "新能源",
+              true,
+              true,
+              false,
+              ""
+            ]
+          ]
+        }
+      }
+    },
+    "ensure_diversity_columns/sparse": {
+      "value": {
+        "__frame__": {
+          "columns": [
+            "Ticker",
+            "Name",
+            "IsETF",
+            "AssetType",
+            "Industry",
+            "Sector",
+            "RankingScore",
+            "RankingEligibility",
+            "ETFTheme",
+            "ETFTrackingKey",
+            "ThemeCluster"
+          ],
+          "index": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ],
+          "rows": [
+            [
+              "510300.SH",
+              "沪深300ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              50.0,
+              "观察",
+              "沪深300",
+              "沪深300",
+              "宽基指数"
+            ],
+            [
+              "510500.SH",
+              "中证500ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              65.150525,
+              "观察",
+              "中证500",
+              "中证500",
+              "宽基指数"
+            ],
+            [
+              "159001.SZ",
+              "货币ETF",
+              true,
+              "ETF",
+              "现金管理",
+              "现金管理",
+              63.744439,
+              "风险过滤",
+              "货币现金管理",
+              "货币",
+              "货币现金管理"
+            ],
+            [
+              "512880.SH",
+              "证券ETF",
+              true,
+              "ETF",
+              "",
+              "金融",
+              47.318323,
+              "观察",
+              "券商",
+              "证券",
+              "金融"
+            ],
+            [
+              "588000.SH",
+              "科创50ETF",
+              true,
+              "ETF",
+              "宽基",
+              "宽基",
+              33.822765,
+              "观察",
+              "科创50",
+              "科创50",
+              "宽基指数"
+            ],
+            [
+              "513100.SH",
+              "纳指ETF",
+              true,
+              "ETF",
+              "海外",
+              "海外",
+              38.005814,
+              "观察",
+              "纳指",
+              "纳指",
+              "海外"
+            ],
+            [
+              "600519.SH",
+              "贵州茅台",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              55.296203,
+              "观察",
+              "",
+              "",
+              "大消费"
+            ],
+            [
+              "000858.SZ",
+              "五粮液",
+              false,
+              "stock",
+              "白酒",
+              "消费",
+              66.79886,
+              "观察",
+              "",
+              "",
+              "大消费"
+            ],
+            [
+              "601318.SH",
+              "中国平安",
+              false,
+              "stock",
+              "保险",
+              "金融",
+              59.943592,
+              "观察",
+              "",
+              "",
+              "金融"
+            ],
+            [
+              "600036.SH",
+              "招商银行",
+              false,
+              "stock",
+              "银行",
+              "金融",
+              42.22189,
+              "风险过滤",
+              "",
+              "",
+              "金融"
+            ],
+            [
+              "300750.SZ",
+              "宁德时代",
+              false,
+              "stock",
+              "电池",
+              "新能源",
+              33.000166,
+              "观察",
+              "",
+              "",
+              "新能源"
+            ],
+            [
+              "002594.SZ",
+              "比亚迪",
+              false,
+              "stock",
+              "汽车",
+              "新能源",
+              42.355993,
+              "观察",
+              "",
+              "",
+              "新能源"
+            ]
+          ]
+        }
+      }
+    },
+    "etf_theme_key/asset_type_only": {
+      "value": "沪深300"
+    },
+    "etf_theme_key/etf_row": {
+      "value": "券商"
+    },
+    "etf_theme_key/stock_row": {
+      "value": ""
+    },
+    "policy_column/duplicate_index": {
+      "value": {
+        "__series__": [
+          "ETF",
+          "stock",
+          "ETF"
+        ]
+      }
+    },
+    "policy_column/missing": {
+      "value": {
+        "__series__": [
+          "fallback",
+          "fallback",
+          "fallback",
+          "fallback",
+          "fallback",
+          "fallback",
+          "fallback",
+          "fallback",
+          "fallback",
+          "fallback",
+          "fallback",
+          "fallback"
+        ]
+      }
+    },
+    "policy_column/present": {
+      "value": {
+        "__series__": [
+          "ETF",
+          "ETF",
+          "ETF",
+          "ETF",
+          "ETF",
+          "ETF",
+          "stock",
+          "stock",
+          "stock",
+          "stock",
+          "stock",
+          "stock"
+        ]
+      }
+    },
+    "policy_text/empty": {
+      "value": {
+        "__series__": []
+      }
+    },
+    "policy_text/mixed": {
+      "value": {
+        "__series__": [
+          "银行",
+          "",
+          "",
+          "",
+          "",
+          "ETF"
+        ]
+      }
+    },
+    "policy_truthy/empty": {
+      "value": {
+        "__ndarray__": []
+      }
+    },
+    "policy_truthy/mixed": {
+      "value": {
+        "__ndarray__": [
+          true,
+          true,
+          true,
+          false,
+          false,
+          true
+        ]
+      }
+    },
+    "rankable_results/mixed": {
+      "value": [
+        "600000.SH",
+        "600002.SH"
+      ]
+    },
+    "tier/a_full": {
+      "value": "A级机构启动"
+    },
+    "tier/a_recency_out": {
+      "value": "C级价值观察"
+    },
+    "tier/a_volume_unconfirmed": {
+      "value": "C级价值观察"
+    },
+    "tier/a_volume_via_filter_details": {
+      "value": "A级机构启动"
+    },
+    "tier/b": {
+      "value": "B级观察"
+    },
+    "tier/c": {
+      "value": "C级价值观察"
+    },
+    "tier/d": {
+      "value": "D级等待确认"
+    },
+    "tier/etf_never_downgraded": {
+      "value": "A级机构启动"
+    },
+    "tier/fallback_final_score": {
+      "value": "B级观察"
+    },
+    "tier/fallback_total": {
+      "value": "B级观察"
+    },
+    "tier/probe_gap_a": {
+      "value": "B级观察"
+    },
+    "tier/probe_gap_b": {
+      "value": "C级价值观察"
+    },
+    "tier/probe_gap_c": {
+      "value": "D级等待确认"
+    },
+    "tier/quality_downgrade_a_to_b": {
+      "value": "B级观察"
+    },
+    "tier/quality_downgrade_b_to_c": {
+      "value": "C级价值观察"
+    },
+    "tier/trap": {
+      "value": "D级陷阱池"
+    },
+    "tier/trap_etf_ignored": {
+      "value": "A级机构启动"
+    },
+    "tier/trap_nan_risk": {
+      "value": "A级机构启动"
+    },
+    "truthy/chinese": {
+      "value": true
+    },
+    "truthy/empty": {
+      "value": false
+    },
+    "truthy/false": {
+      "value": false
+    },
+    "truthy/int_one": {
+      "value": true
+    },
+    "truthy/none": {
+      "value": false
+    },
+    "truthy/one": {
+      "value": true
+    },
+    "truthy/true": {
+      "value": true
+    },
+    "truthy/upper": {
+      "value": true
+    },
+    "truthy/zero": {
+      "value": false
+    },
+    "vectorized_policy/candidates": {
+      "value": [
+        {
+          "__ndarray__": [
+            true,
+            true,
+            false,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ]
+        },
+        {
+          "__ndarray__": [
+            "",
+            "",
+            "ETF现金管理产品排除：货币ETF",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            ""
+          ]
+        }
+      ]
+    },
+    "vectorized_policy/none_are_etf": {
+      "value": [
+        {
+          "__ndarray__": [
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ]
+        },
+        {
+          "__ndarray__": [
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            ""
+          ]
+        }
+      ]
+    },
+    "vectorized_policy/sparse": {
+      "value": [
+        {
+          "__ndarray__": [
+            true,
+            true,
+            false,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+          ]
+        },
+        {
+          "__ndarray__": [
+            "",
+            "",
+            "ETF分类排除：货币现金管理",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            ""
+          ]
+        }
+      ]
+    }
+  },
+  "function_provenance": {
+    "_apply_research_policy": "institution_scanner.report_selection._apply_research_policy",
+    "_clean_group_key": "institution_scanner.report_selection._clean_group_key",
+    "_diversify_ranked_candidates": "institution_scanner.report_selection._diversify_ranked_candidates",
+    "_ensure_diversity_columns": "institution_scanner.report_selection._ensure_diversity_columns",
+    "_etf_theme_key": "institution_scanner.report_selection._etf_theme_key",
+    "_institutional_tier": "institution_scanner.report_selection._institutional_tier",
+    "_policy_column": "institution_scanner.report_selection._policy_column",
+    "_policy_text": "institution_scanner.report_selection._policy_text",
+    "_policy_truthy": "institution_scanner.report_selection._policy_truthy",
+    "_rankable_results": "institution_scanner.report_determinism.install.<locals>.rankable_results",
+    "_truthy": "institution_scanner._common._truthy",
+    "_vectorized_etf_research_policy": "institution_scanner.report_selection._vectorized_etf_research_policy"
+  },
+  "functions": [
+    "_institutional_tier",
+    "_policy_column",
+    "_policy_text",
+    "_policy_truthy",
+    "_vectorized_etf_research_policy",
+    "_apply_research_policy",
+    "_clean_group_key",
+    "_etf_theme_key",
+    "_ensure_diversity_columns",
+    "_diversify_ranked_candidates",
+    "_truthy",
+    "_rankable_results"
+  ],
+  "late_bound_names": [
+    "INSTITUTIONAL_TIER_A_SCORE",
+    "INSTITUTIONAL_TIER_B_SCORE",
+    "INSTITUTIONAL_TIER_C_SCORE"
+  ],
+  "migration_probes": [
+    {
+      "legacy": "A级机构启动",
+      "migrated": "B级观察",
+      "score": 35.5
+    },
+    {
+      "legacy": "B级观察",
+      "migrated": "C级价值观察",
+      "score": 30.5
+    },
+    {
+      "legacy": "C级价值观察",
+      "migrated": "D级等待确认",
+      "score": 25.4
+    }
+  ],
+  "move_candidates": [
+    "_institutional_tier",
+    "_policy_column",
+    "_policy_text",
+    "_policy_truthy",
+    "_vectorized_etf_research_policy",
+    "_apply_research_policy",
+    "_clean_group_key",
+    "_etf_theme_key",
+    "_ensure_diversity_columns",
+    "_diversify_ranked_candidates"
+  ],
+  "note": "Golden output of report_core's candidate-selection cluster, captured AFTER the report facade has been imported so the production assembly is in place. Recapture with `python tests/golden_report_core.py` ONLY after reviewing the diff.",
+  "patched_canaries": [
+    "_rankable_results"
+  ],
+  "schema": 1,
+  "shared_moves": [
+    "_truthy"
+  ]
+}

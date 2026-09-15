@@ -71,6 +71,11 @@ MODULE_BYTE_BUDGETS: Final[dict[str, int]] = {
     # red on a clean clone by 446 bytes.  Budgets are byte counts of what is on
     # disk, so they must be frozen from the same line endings a clone produces.
     "backtest_statistics.py": 17_969,
+    # Extracted from report_core (T3').  Same reasoning as backtest_statistics
+    # above: 17 KB is under LARGE_MODULE_THRESHOLD, so without an explicit
+    # entry the 13 KB freed in report_core could re-inflate here unnoticed.
+    # Also CRLF-measured, for the same reason.
+    "report_selection.py": 16_963,
     "fundamentals.py": 34_833,
     "fundamental_schema.py": 24_559,
     "performance_curve_web.py": 24_557,

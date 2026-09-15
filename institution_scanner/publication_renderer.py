@@ -15,6 +15,7 @@ import pandas as pd
 
 from downloader import _load_cache
 
+from ._common import _truthy
 from ._common import escape_html as _safe
 from ._common import read_json_payload as _read_json
 from .page_version import PUBLIC_PAGE_VERSION, PUBLIC_PAGE_VERSION_ID
@@ -176,10 +177,6 @@ def _sparkline_svg(
         f'<polyline class="trend-line" points="{polyline}"/>'
         f'<circle class="trend-dot" cx="{end_x:.1f}" cy="{end_y:.1f}" r="2.1"/></svg>'
     )
-
-
-def _truthy(value: object) -> bool:
-    return str(value).strip().lower() in {"true", "1", "yes", "y", "是"}
 
 
 def _first(row: dict[str, str], *names: str) -> str:
