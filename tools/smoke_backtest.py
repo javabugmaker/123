@@ -1,13 +1,15 @@
 import glob
 import logging
 import os
+import pathlib
 import sys
 import time
 import warnings
 
 warnings.filterwarnings("ignore")
 logging.getLogger("institution_scanner.score").setLevel(50)
-sys.path.insert(0, r"d:\python1\1\InstitutionScanner-main")
+_ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_ROOT))
 import numpy as np
 import pandas as pd
 
@@ -15,7 +17,7 @@ import indicators as ind
 from institution_scanner.backtest_score_vectorized import final_score_series
 
 ind.ENABLE_VOLUME_PROFILE = False
-BASE = r"d:\python1\1\InstitutionScanner-main\cache\v4-tickflow-forward-volume-shares"
+BASE = str(_ROOT / "cache" / "v4-tickflow-forward-volume-shares")
 fs = sorted(glob.glob(os.path.join(BASE, "*.parquet")))
 fs = [f for f in fs if os.path.splitext(os.path.basename(f))[0].endswith((".SH", ".SZ"))]
 print("universe files:", len(fs))

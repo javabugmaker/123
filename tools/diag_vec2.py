@@ -1,6 +1,7 @@
 import glob
 import logging
 import os
+import pathlib
 import sys
 import warnings
 
@@ -8,13 +9,14 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 logging.getLogger("institution_scanner.score").setLevel(50)
-sys.path.insert(0, r"d:\python1\1\InstitutionScanner-main")
+_ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_ROOT))
 import indicators as ind
 import institution_scanner.backtest_score_vectorized as V
 import score_core as sc
 
 ind.ENABLE_VOLUME_PROFILE = False
-BASE = r"d:\python1\1\InstitutionScanner-main\cache\v4-tickflow-forward-volume-shares"
+BASE = str(_ROOT / "cache" / "v4-tickflow-forward-volume-shares")
 _by = {os.path.basename(x): x for x in sorted(glob.glob(os.path.join(BASE, "*.parquet")))}
 
 def sub_scores(df):

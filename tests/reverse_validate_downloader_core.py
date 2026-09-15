@@ -19,8 +19,12 @@ import pathlib
 import subprocess
 import sys
 
-ROOT = pathlib.Path(r"D:\python1\1\InstitutionScanner-main")
-PY = r"C:\Users\31451\.workbuddy-ai\binaries\python\envs\default\Scripts\python.exe"
+# Derived, not hardcoded: this repository is public, so a literal
+# ``C:\Users\<name>\...`` path would publish a developer's account name, and a
+# literal ROOT would break the script on every other checkout.  The sibling
+# reverse-validation scripts already do it this way.
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+PY = sys.executable
 TEST = "tests/test_downloader_core_golden.py"
 
 CORE = ROOT / "downloader_core.py"

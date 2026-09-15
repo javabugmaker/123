@@ -7,7 +7,7 @@ one pass instead of re-running the scalar scorer ~57 times per ticker.
 The scoring SEMANTICS are identical to ``institution_scanner.score_core``; only
 the evaluation strategy is different (array/rolling operations over the whole
 frame instead of a Python loop over growing sub-frames).  Keep the two in sync
-by running ``validate_vectorized.py`` after any change to either module.
+by running ``tools/validate_vectorized.py`` after any change to either module.
 """
 
 from __future__ import annotations
