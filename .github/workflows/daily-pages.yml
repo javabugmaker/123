@@ -122,4 +122,13 @@ jobs:
 
       - name: Publish immutable verified artifact
         shell: bash
-        run: python -m institution_scanner.publish_site output/web_report
+        run: |
+          set -o pipefail
+          python -m institution_scanner.publish_site output/web_report 2>&1 | tee publish-out.txt
+      # The publish step has been failing in ~5s on the scheduled runs (see
+      # REFACTOR_PLAN §8.5) and the job log is not readable without
+      # authentication, so the output is teed and republished as an annotation.
+      - name: Republish publish failure as annotation
+        if: failure()
+        shell: bash
+        run: python tools/dump_log_annotation.py publish-out.txt

@@ -433,7 +433,7 @@ Pages 确认公开可读后重新审计，**推翻了 §6 原先的判断**：
 
 | # | 机会 | 证据 | 收益 | 成本 / 风险 |
 |---|---|---|---|---|
-| **1** | **推送 17 个未推送提交** | `git rev-list --count origin/main..main` = 17 | **最高、零成本**。CI（`.github/workflows/daily-pages.yml`）只在推送后运行，所以 gh-pages 归档停在 **09-04（11 天前）** —— B1 修复、字节预算修正、三次重构**全都还没到公网** | 需你确认可以 push（会触发 CI 与 Pages 发布） |
+| **1** | ~~**推送 17 个未推送提交**~~ | `git rev-list --count origin/main..main` = 17 | **已完成**（本轮共推送 24 个提交）。⚠️ **我原先的理由写错了**：这里曾写「gh-pages 归档停在 09-04」，实际查 `gh-pages` 分支，其提交一直到 **2026-09-15**，公网内容是最新的一天也没落下（说明你本地 GUI 一直在正常发布）。推送本身仍然该做，但**它不是 Pages 更新的前提** | 已完成 |
 | **2** | **11 个远程分支清理** | `git branch -r` 见 `codex/*`、`audit/*`、`refactor/*` 等 | 降低误合并/误 checkout 概率；仓库可读性 | 需逐个确认无独有代码（照 §6 分支处置的流程做），约半天 |
 | **3** | **6 个临时诊断脚本迁出根目录** | 运行时探测 + 零引用：`_smoke_bt.py`、`debug_vec.py`、`diag_vec.py`、`diag_vec2.py`、`smoke_backtest.py`、`validate_vectorized.py`（共 12 KB） | 根目录 116 → 110；这些名字（`diag`/`debug`/`smoke`）会让人误以为是生产模块 | 低。建议移到 `tools/` 而非删除 —— 它们是你调向量化时可能还用的脚本。注意 `validate_vectorized.py` 被 `backtest_score_vectorized.py:10` 的注释引用，移动后要同步改注释 |
 | **4** | **Phase 2：硬编码 `300` / `21` 提为常量** | 9 处 `300` + 1 处 `21`（§2 D2） | 调窗口时不会漏改；A 股不同板块最优窗口可能不同 | 低。每处改动都能用现有 golden 锁住 |
@@ -540,3 +540,50 @@ CalledProcessError: 'git show cd63ffd:signal_lifecycle_core.py' exit status 128
 > v90 分支）。这个仓库是 monkey-patch 架构，**overlay 靠 import 副作用安装，
 > 静态 grep 既会漏报也会误报**。凡是「这个模块还有用吗」的问题，都应该起子进程
 > import 入口、再看 `sys.modules`，而不是 grep。
+
+### 8.5 Daily A-Share Pages：compute 成功、publish 5 秒失败（待取证）
+
+**先更正我在 §8.3 / 上一版的错误判断。** 我曾写「gh-pages 归档停在 09-04，
+所以 B1 修复和三次重构全都还没到公网」。查 `gh-pages` 分支的提交列表，它一直
+到 **2026-09-15**（`report: research briefing 2026-09-15`），09-07/08/09/10/11/
+14/15 都在 —— **公网内容是当天最新的，一次也没落下**。本地 `output/web_report/
+reports/` 同样有 09-11 / 09-14 / 09-15，说明是你本地 GUI 在发。推送该做，但它
+从来不是 Pages 更新的前提。
+
+那么 `Daily A-Share Pages` 的红灯是什么？看 run #16（`34971404175`，commit
+`ca5a36b`）：
+
+| job | 耗时 | 结论 |
+|---|---|---|
+| `compute-and-verify` | 40m 47s | **成功**，产出 artifact `verified-pages-site`（33.8 KB） |
+| `publish` | **5s** | **失败** |
+
+失败步骤是 `Publish immutable verified artifact`，即
+`python -m institution_scanner.publish_site output/web_report`，页面上唯一的
+错误文本是 `Process completed with exit code 1`。
+
+**5 秒说明是快速前置失败，不是克隆或推送超时。** 候选原因：
+
+1. `_report_date()` 在 `reports/` 下找不到 `????-??-??.html` → 抛
+   `WEB_REPORT_ARCHIVE_MISSING`；
+2. `index.html` 缺失 → `WEB_REPORT_SITE_MISSING`；
+3. `_branch_exists()` 的 `git ls-remote` 鉴权失败，返回码 128 不在
+   `allow=(0, 2)` 内 → 两个候选都失败后抛 `WEB_REPORT_REMOTE_UNREACHABLE`。
+
+已排除：`.nojekyll` 缺失（本地产出里有，且 `publication_renderer.py:461` 会写，
+上传 artifact 时也带了 `include-hidden-files: true`）。
+
+**已装取证**：publish 步骤改为 `tee publish-out.txt`，并在 `if: failure()` 下用
+`tools/dump_log_annotation.py` 把日志复写成 annotation —— 明天 07:40 UTC 的定时
+运行会自动把真正的错误吐出来。不想等的话，在 Actions 页面用
+`Run workflow`（该 workflow 开了 `workflow_dispatch`）手动触发一次即可，约 40
+分钟后就有结果。
+
+**影响评估**：因为本地一直在发布，这个失败**不影响公网内容**，属于冗余自动化
+坏了。但它每天白烧 40 分钟 Actions 时长却什么也发不出去，值得修。
+
+> 顺带：该仓库的 workflow 列表里有十几个一次性遗留工作流
+> （`apply_decision_gui_v24`、`apply_gui_clean_v25`、`apply-performance-v2`、
+> `apply_research_integrity_v23` ……），外加一个 `cleanup-merged-branches`。
+> 这些「apply 某次改动」型工作流是一次性脚本，留着只会让人误判当前交付链路，
+> 建议归档删除（与 §8.3 #2 的分支清理一起做）。
