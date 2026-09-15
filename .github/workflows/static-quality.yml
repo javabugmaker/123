@@ -32,7 +32,27 @@ jobs:
       - name: Pyright GUI strict
         run: pyright -p pyrightconfig.gui.json
       - name: Model and output contract regression
-        run: python -m pytest -q
+        run: |
+          set -o pipefail
+          python -m pytest -q --tb=short -rf 2>&1 | tee pytest-out.txt
+      - name: TEMP publish failure summary as annotation
+        if: always()
+        run: |
+          cat > /tmp/dump_fail.py <<'PYEOF'
+          import pathlib
+
+          p = pathlib.Path("pytest-out.txt")
+          text = p.read_text(errors="replace") if p.exists() else "(no output)"
+          failed = [l for l in text.splitlines() if l.startswith("FAILED")]
+          diffs = [l for l in text.splitlines() if " -> " in l][:25]
+          msg = "FAILED://n" + ("\n".join(failed[:40]) or "(none)")
+          msg += "\n=====DIFFS=====\n" + "\n".join(diffs)
+          msg += "\n=====TAIL=====\n" + text[-3000:]
+          msg = msg.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          for start in range(0, len(msg), 5000):
+              print("::error::" + msg[start:start + 5000])
+          PYEOF
+          python /tmp/dump_fail.py
       - name: Compile
         run: python -m compileall -q .
 
