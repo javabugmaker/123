@@ -8,6 +8,7 @@ All tunable parameters live here so no magic numbers appear in application code.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -218,6 +219,19 @@ MODEL_TRIGGER_WEIGHT: Final[float] = 0.25
 MODEL_EXECUTION_WEIGHT: Final[float] = 0.15
 # Fundamental quality is an execution gate/confidence input, not unvalidated alpha.
 MODEL_QUALITY_WEIGHT: Final[float] = 0.00
+
+# The OOS calibration override is intentional and already defended three ways:
+# the file needs ``accepted: true``, the weights must sit inside the guard rails
+# above and sum to one, and any failure falls back to the constants shipped
+# here.  ``score_core.model_weight_signature`` already publishes the effective
+# weights, so a live override is visible in every report.  This switch exists
+# only as an explicit master off-ramp: set it to false to pin the model to the
+# constants above regardless of what ``ScoreCalibration.json`` contains, which
+# is the fastest way to test whether a result depends on calibration at all.
+MODEL_CALIBRATION_ENABLED: bool = os.getenv(
+    "MODEL_CALIBRATION_ENABLED", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+
 GLOBAL_CALIBRATION_MIN_SAMPLES: Final[int] = 30
 GLOBAL_CALIBRATION_MAX_WEIGHT: Final[float] = 0.15
 # Historical signals are sampled more frequently than their 60-day evaluation

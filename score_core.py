@@ -132,9 +132,21 @@ def invalidate_model_weight_cache() -> None:
     _MODEL_WEIGHT_CACHE_STATE = None
 
 
+def _model_calibration_enabled() -> bool:
+    """Read the master switch late so tests can flip ``config`` after import."""
+    import config as _config
+
+    return bool(getattr(_config, "MODEL_CALIBRATION_ENABLED", True))
+
+
 def _model_component_weights() -> tuple[float, float, float]:
     global _MODEL_WEIGHT_CACHE, _MODEL_WEIGHT_CACHE_STATE
     defaults = (MODEL_SETUP_WEIGHT, MODEL_TRIGGER_WEIGHT, MODEL_EXECUTION_WEIGHT)
+    if not _model_calibration_enabled():
+        # Pin the model to the shipped constants.  The cache is left alone: if
+        # the switch is turned back on, the mtime/size check below still sees
+        # the calibration file and reloads it.
+        return defaults
     path = OUTPUT_DIR / "ScoreCalibration.json"
     state = _model_weight_file_state(path)
     if _MODEL_WEIGHT_CACHE is not None and state == _MODEL_WEIGHT_CACHE_STATE:
