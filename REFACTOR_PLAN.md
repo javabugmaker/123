@@ -810,3 +810,58 @@ signal 且带 entry_signal 的行。
 **下一步 #2**：把 cap 与 `split_policy` 下沉回 `analytics_core` 的
 `_weighted_profit_factor` / `BacktestSummary.to_dict`，确认 golden 无数值漂移后删除
 v94 —— 现在有闸门了，这一步才是安全的。
+
+### 9.5 #4 运行时判定结果：不是「能删 4 个」，而是「5 个重绑定目标是顺序依赖的输家」
+
+**方法**：AST 解析每个 overlay 的 `install()`，抽出 `<module>.<attr> = <值>`；再起子
+进程导入生产入口，把**意图值**与**实际解析值**比对（调用比身份、常量比值）。
+
+> 第一版判定有两处假阳性，已修正：① 字符串常量没有 `__module__`，一律被误判成
+> 「被覆盖」；② `backtest_alignment._LEGACY_PRICE_ON_DATE` **本来就该指向原函数**，
+> 指到原函数恰恰说明补丁生效了。所以必须比对「意图」而不是只看归属模块。
+
+| overlay | 生效 / 被覆盖 | 判定 |
+|---|---|---|
+| `backtest_acceleration_v77` | 2 / 0 | 完全生效 |
+| `analytics_acceleration_v77` | 4 / 0 | 完全生效 |
+| `backtest_fastscore_v80` | 1 / 0 | 完全生效 |
+| `backtest_alignment_acceleration_v80` | 3 / 1（该 1 条为误判） | 完全生效 |
+| `backtest_vectorization_v98` | 5 / 2 | 部分生效 |
+| `backtest_cache_acceleration_v80` | 0 / 1 | install 补丁被覆盖 |
+| `backtest_sample_acceleration_v80` | 0 / 1 | install 补丁被覆盖 |
+| `backtest_fastpath_v78` | 0 / 1 | install 补丁被覆盖 |
+| `backtest_incremental_v78` | 0 / 1 | install 补丁被覆盖 |
+
+#### 但「补丁被覆盖」≠ 模块可删 —— 逐个查直接引用后，4 个候选一个都不能删
+
+| 候选 | 仍然被谁用 |
+|---|---|
+| `backtest_cache_acceleration_v80` | 被 `backtest_acceleration_v77` import |
+| `backtest_sample_acceleration_v80` | 被 `backtest_acceleration_v77` / `backtest_sample_guard_v80` / **`backtest_vectorization_v98`** import（v98 改它的 `_backtest_one_ticker`，那条补丁是**生效**的） |
+| `backtest_fastpath_v78` | `analytics_runtime.py:80` **显式调用 `install()`**，且登记在 `runtime_inventory.py` |
+| `backtest_incremental_v78` | 被 `backtest_acceleration_v77` import |
+
+#### 真正有价值的结论：5 个重绑定目标是「顺序依赖的输家」
+
+| 争议目标 | 当前胜者 | 输家 |
+|---|---|---|
+| `analytics_core._backtest_one_ticker` | `backtest_alignment.install_analytics_alignment.<locals>.aligned_one` | `sample_acceleration_v80`、`vectorization_v98` |
+| `analytics_core._backtest_one_ticker_cached` | `institution_scanner.point_in_time_backtest.install.<locals>.pit_cached` | `cache_acceleration_v80`、`incremental_v78` |
+| `analytics_core._signal_evaluations` | `backtest_fastscore_v80._signal_evaluations` | `fastpath_v78` |
+| `backtest_fastscore_v80._fast_score_matrix` | `scoring_consistency_v94._fast_score_matrix` | `vectorization_v98` |
+
+这带来两个方向的真实风险：
+
+1. **改了没用**：有人去编辑 `cache_acceleration_v80` / `incremental_v78` /
+   `fastpath_v78`，会以为自己在改生产行为，实际上一个字节都没生效。
+2. **顺序一变就换执行器**：`_backtest_one_ticker` 现在是 alignment 的包装，但只要
+   import 顺序改变，就会悄悄换成 v98 或 v80 的实现 —— **没有任何东西会报错**，
+   而回测结果会整体改变。
+
+#### 建议的下一步（不是删，是锁）
+
+加一条**「胜者锁」**测试：导入生产入口后，断言这 4 个争议符号解析到预期实现。
+一旦有人改动装载顺序或新增 overlay，测试立刻变红，而不是让回测悄悄换一套执行器。
+
+> 实现注意：本机 3.14 解释器加载不了 `_overlapped`，in-process `import main` 会失败，
+> 所以这条锁要像 `test_assembly_manifest` 那样走**子进程 + 打桩**。CI 是 3.11，不受影响。
