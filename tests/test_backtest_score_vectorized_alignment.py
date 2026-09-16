@@ -37,6 +37,66 @@ def _load_unpatched_exact_scorer() -> ModuleType:
 
 EXACT_SCORE = _load_unpatched_exact_scorer()
 
+#: Vectorised component key -> the ``ScoreBreakdown`` attribute it must equal.
+#:
+#: ``score_core`` is the specification (§10.6 decision 3); the vectorised module
+#: is an *implementation* of it and answers to it.  Naming them apart here is the
+#: only thing tying the two together -- the modules share zero function names, so
+#: nothing else in the codebase expresses "these two compute the same thing".
+SCALAR_FIELDS: dict[str, str] = {
+    "final": "final_score",
+    "base": "base_score",
+    "trigger": "trigger_score",
+    "execution": "execution_score",
+    "breakout": "breakout_score",
+    "trap": "value_trap_risk",
+    "coverage": "indicator_coverage",
+}
+
+#: Component keys the vectorised path exposes that have **no** scalar
+#: counterpart.  Each entry must say why, and the reason has to be checkable.
+VECTOR_ONLY_KEYS: dict[str, str] = {
+    "exec_raw": (
+        "raw execution before the coverage scale and the 0..100 clamp "
+        "(backtest_score_vectorized.py:945 builds ``execution`` from it). The "
+        "scalar path only ever exposes the covered+clamped form, so there is "
+        "nothing to compare it to. It is locked indirectly: ``execution`` is "
+        "asserted bit-exact against ``execution_score``, and on a frame with "
+        "missing dimensions the two differ (69.26 vs 78.71 at coverage 0.6), so "
+        "a drift confined to the pre-coverage stage cannot hide here."
+    ),
+}
+
+#: ``score_core`` function -> its vectorised counterpart.  Kept explicit rather
+#: than inferred: the two modules share no names, so inference is impossible.
+SCALAR_TO_VECTORISED: dict[str, str] = {
+    "score_trend": "_trend",
+    "score_volume": "_volume",
+    "score_accumulation": "_accumulation",
+    "score_volatility": "_volatility",
+    "score_structure": "_structure",
+    "value_trap_risk": "_value_trap",
+    "breakout_score": "_breakout",
+    "execution_quality_score": "_entry_execution",
+    "score_ticker": "final_score_series",
+}
+
+#: Private helpers in the vectorised module that are *not* score components.
+VECTOR_HELPERS = frozenset(
+    {
+        "_component_weights",
+        "_col",
+        "_ffill",
+        "_valid_lag",
+        "_valid_rolling",
+        "_valid_trailing_run",
+        "_ret",
+        "_roll",
+        "_roll_shift",
+        "_clampc",
+    }
+)
+
 
 def _enriched_frame(*, seed: int, rows: int = 900) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
@@ -85,20 +145,12 @@ def _assert_scalar_parity(frame: pd.DataFrame, *, is_etf: bool) -> None:
         set(range(251, len(frame), 10))
         | {329, 330, 331, 339, 340, 341, 719, 720, 721}
     )
-    fields = {
-        "final": "final_score",
-        "base": "base_score",
-        "trigger": "trigger_score",
-        "execution": "execution_score",
-        "breakout": "breakout_score",
-        "trap": "value_trap_risk",
-    }
     for position in positions:
         scalar = EXACT_SCORE.score_ticker(
             frame.iloc[: position + 1],
             is_etf=is_etf,
         )
-        for vector_name, scalar_name in fields.items():
+        for vector_name, scalar_name in SCALAR_FIELDS.items():
             np.testing.assert_allclose(
                 float(vectorized[vector_name][position]),
                 float(getattr(scalar, scalar_name)),
@@ -111,6 +163,22 @@ def _assert_scalar_parity(frame: pd.DataFrame, *, is_etf: bool) -> None:
             )
 
 
+def _frame_with_missing_dimensions(seed: int = 1) -> pd.DataFrame:
+    """A frame where whole indicator dimensions are unavailable.
+
+    Needed because the ordinary corpus is *degenerate* for coverage: every
+    indicator is present, so ``indicator_coverage`` is 1.0 everywhere and an
+    assertion on it could not fail.  Setting the trend and accumulation inputs
+    to NaN drives it to 0.6, which is what makes the coverage lock real -- the
+    same reasoning as ``_enriched_frame``'s deliberate zero-turnover gaps.
+    """
+    frame = _enriched_frame(seed=seed)
+    for column in ("MA200", "OBV", "AD", "AD_Slope", "CMF", "MFI"):
+        if column in frame.columns:
+            frame[column] = float("nan")
+    return frame
+
+
 def test_fast_score_matches_exact_after_zero_turnover_indicator_gaps() -> None:
     logging.getLogger("institution_scanner.score").setLevel(logging.ERROR)
     _assert_scalar_parity(_enriched_frame(seed=1), is_etf=False)
@@ -119,3 +187,83 @@ def test_fast_score_matches_exact_after_zero_turnover_indicator_gaps() -> None:
 def test_fast_score_applies_exact_etf_style_and_price_precision() -> None:
     logging.getLogger("institution_scanner.score").setLevel(logging.ERROR)
     _assert_scalar_parity(_enriched_frame(seed=2), is_etf=True)
+
+
+def test_fast_score_matches_exact_with_degraded_indicator_coverage() -> None:
+    """Same parity, on a frame where coverage is not the trivial 1.0."""
+    logging.getLogger("institution_scanner.score").setLevel(logging.ERROR)
+    _assert_scalar_parity(_frame_with_missing_dimensions(seed=1), is_etf=False)
+
+
+def test_coverage_gate_is_not_vacuous() -> None:
+    """Guard the corpus, not the code.
+
+    The whole point of ``_frame_with_missing_dimensions`` is that coverage is
+    below 1.  If a future edit to ``indicators`` makes every dimension available
+    again, the coverage assertion above would silently become unfalsifiable.
+    """
+    logging.getLogger("institution_scanner.score").setLevel(logging.ERROR)
+    frame = _frame_with_missing_dimensions(seed=1)
+    vectorized = final_score_series(frame, is_etf=False, return_components=True)
+    assert float(vectorized["coverage"][-1]) < 1.0, (
+        "the degraded corpus reports full indicator coverage; the coverage "
+        "assertion in the parity test can no longer fail"
+    )
+
+
+def test_every_component_key_is_declared() -> None:
+    """A new component key must be declared before it can exist.
+
+    The gap this closes: ``final_score_series`` returned ``coverage`` and
+    ``exec_raw`` and the parity test asserted neither, because the fields dict
+    listed six names by hand.  A seventh component would have shipped silently.
+    """
+    logging.getLogger("institution_scanner.score").setLevel(logging.ERROR)
+    frame = _enriched_frame(seed=1)
+    actual = set(final_score_series(frame, is_etf=False, return_components=True))
+    declared = set(SCALAR_FIELDS) | set(VECTOR_ONLY_KEYS)
+    assert actual == declared, (
+        "component keys changed; declare each new one as either an aligned "
+        f"scalar field or an exempted vector-only key: undeclared="
+        f"{sorted(actual - declared)} stale={sorted(declared - actual)}"
+    )
+
+
+def test_every_exempted_key_states_a_reason() -> None:
+    """An exemption with no written justification is how drift gets laundered."""
+    for key, reason in VECTOR_ONLY_KEYS.items():
+        assert len(reason) > 60, f"exemption for {key!r} has no real justification"
+
+
+def test_every_vectorised_function_is_declared() -> None:
+    """No private function may appear in the vectorised module unannounced.
+
+    Adding a score component there without declaring it in
+    ``SCALAR_TO_VECTORISED`` is exactly the silent-divergence case: the parity
+    test only checks the keys it was told about.
+    """
+    module = importlib.import_module("institution_scanner.backtest_score_vectorized")
+    private = {
+        name
+        for name in vars(module)
+        if name.startswith("_") and callable(getattr(module, name))
+    }
+    declared = set(SCALAR_TO_VECTORISED.values()) | VECTOR_HELPERS
+    undeclared = private - declared
+    assert not undeclared, (
+        "undeclared private callables in the vectorised scoring module; each one "
+        "is either a score component (declare its scalar counterpart) or a "
+        f"helper (add it to VECTOR_HELPERS): {sorted(undeclared)}"
+    )
+
+
+def test_the_scalar_counterparts_all_exist() -> None:
+    """The mapping must point at real functions on both sides."""
+    module = importlib.import_module("institution_scanner.backtest_score_vectorized")
+    for scalar_name, vector_name in SCALAR_TO_VECTORISED.items():
+        assert hasattr(EXACT_SCORE, scalar_name), (
+            f"score_core no longer defines {scalar_name}; the mapping is stale"
+        )
+        assert hasattr(module, vector_name), (
+            f"the vectorised module no longer defines {vector_name}"
+        )
