@@ -436,8 +436,19 @@ Pages 确认公开可读后重新审计，**推翻了 §6 原先的判断**：
 | **1** | ~~**推送 17 个未推送提交**~~ | `git rev-list --count origin/main..main` = 17 | **已完成**（本轮共推送 24 个提交）。⚠️ **我原先的理由写错了**：这里曾写「gh-pages 归档停在 09-04」，实际查 `gh-pages` 分支，其提交一直到 **2026-09-15**，公网内容是最新的一天也没落下（说明你本地 GUI 一直在正常发布）。推送本身仍然该做，但**它不是 Pages 更新的前提** | 已完成 |
 | **2** | **11 个远程分支清理** | `git branch -r` 见 `codex/*`、`audit/*`、`refactor/*` 等 | 降低误合并/误 checkout 概率；仓库可读性 | 需逐个确认无独有代码（照 §6 分支处置的流程做），约半天 |
 | **3** | **6 个临时诊断脚本迁出根目录** | 运行时探测 + 零引用：`_smoke_bt.py`、`debug_vec.py`、`diag_vec.py`、`diag_vec2.py`、`smoke_backtest.py`、`validate_vectorized.py`（共 12 KB） | 根目录 116 → 110；这些名字（`diag`/`debug`/`smoke`）会让人误以为是生产模块 | 低。建议移到 `tools/` 而非删除 —— 它们是你调向量化时可能还用的脚本。注意 `validate_vectorized.py` 被 `backtest_score_vectorized.py:10` 的注释引用，移动后要同步改注释 |
-| **4** | **Phase 2：硬编码 `300` / `21` 提为常量** | 9 处 `300` + 1 处 `21`（§2 D2） | 调窗口时不会漏改；A 股不同板块最优窗口可能不同 | 低。每处改动都能用现有 golden 锁住 |
-| **5** | **Phase 3：三个语义锁** | `conditional_fill_v96` / `technical_resonance_v90` / `score_acceleration_v79` | 防止 overlay 悄悄改语义 | 中。共振的锁本轮已补了一半（`test_technical_resonance_v91.py`） |
+| **4** | **Phase 2：21 日窗口常量化**（`300` 部分见下方更正） | `21` 散落在 **6 个模块 12+ 处**：`score_core` 6 处、`score.py` 3 处、`score_endpoint_acceleration_v79` 5 处、`analytics_core` 3 处、`scanner_core` 2 处、`backtest_score_vectorized` 3 处。而 `config_core` 里**同是 21** 已有 `ROC_PERIOD` / `CMF_PERIOD` / `RSI_PERIODS` | 调窗口今天要改 12 处；更糟的是两个 overlay 会**悄悄保留旧值**（正属你最在意的隐蔽断裂）。A 股不同板块最优窗口可能不同 | 低。全被现有 golden / 向量化对齐测试锁住 |
+| **5** | **Phase 3：剩下的两个语义锁** | `conditional_fill_v96` / `score_acceleration_v79`（`technical_resonance_v90` 的锁已由 `test_technical_resonance_v91.py` 补齐） | 防止 overlay 悄悄改语义 | 中 |
+
+> **更正我自己上一轮的一处误报**：§2 D2 / 旧版 #4 写「9 处 `300` 硬编码」——
+> 那是把「**沪深300**」这个指数专有名词和 `("300","301")` 创业板代码前缀也算进去了。
+> 排除二者后，真正的最小样本长度判据 `len(frame) < 300` 是 **7 处**，且其中 5 处
+> 分布在 `backtest_*_v80` / `v98` / `conditional_fill_v96` 等 overlay 里各写一遍。
+> 所以这里的真问题不是"魔法数"，而是**同一判据跨 overlay 重复**，治法应是收敛
+> 到一处判据函数，而不是简单提个常量。
+
+> **analytics_core 的提取已经完成**（`institution_scanner/backtest_statistics.py`
+> 17,969 B，16 个 helper 全在里面，`test_analytics_core_golden.py` 8 项绿）。
+> 别再把它排进待办。
 | **6** | **依赖 lock 文件** | `requirements.txt` 用范围约束（`pandas>=2.0,<3.0`），无 lock | 换机器可复现；`akshare` 这类高频更新库尤其需要 | 低（`pip-compile` 或 `uv lock`），但会引入新工具链 |
 | **7** | **Phase 5 剩余：死分叉 + 依赖降级契约** | 见 §4 Phase 5 | — | 中 |
 
