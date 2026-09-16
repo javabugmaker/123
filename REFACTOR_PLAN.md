@@ -707,3 +707,65 @@ reports/` 同样有 09-11 / 09-14 / 09-15，说明是你本地 GUI 在发。推�
 > 不出来。
 
 本地 **254 项 0 失败 0 错误**，ruff 全过。
+
+## 9. 分析与回测子系统专项审视（2026-09-16）
+
+方法：起子进程 import `main` + `daily_pipeline` + `historical_backtest`，再看
+`sys.modules`，而不是 grep。包内模块要按**带点名**（`institution_scanner.X`）判定，
+否则会全部误报成"未加载"。
+
+### 9.1 结构实测
+
+**分析（5 个模块，全部在跑）**
+
+| 模块 | 字节 | 备注 |
+|---|---|---|
+| `analytics_core.py` | 142,671 | 3483 行 / 43 个顶层定义，全仓最大 |
+| `analytics_acceleration_v77.py` | 17,550 | 加速 overlay |
+| `analytics.py` | 16,270 | facade |
+| `analytics_runtime.py` | 4,858 | 包内 |
+| `analytics_compat_v97.py` | 1,775 | 兼容层 |
+
+`analytics_core` 里**回测四大件就占 1513 行**：`apply_backtest_ranking` 526、
+`run_historical_backtest` 523、`_backtest_one_ticker` 261、`_ticker_backtest_rows` 203。
+
+**回测（22 个模块，21 个同时装载）**
+
+| 类别 | 模块 |
+|---|---|
+| 性能 overlay（8 个） | `acceleration_v77`、`alignment_acceleration_v80`、`cache_acceleration_v80`、`sample_acceleration_v80`、`fastpath_v78`、`fastscore_v80`(34 KB)、`vectorization_v98`(42 KB)、`incremental_v78` |
+| 完整性 overlay（2 个） | `math_integrity_v94`、`rank_integrity_v82` |
+| 生产激活（1 个） | `production_activation_v93` |
+| 其它 | `alignment`、`command_v76`、`sample_guard_v80`、`worker_tuning_v80`、`profile_alignment_v95`、`historical_backtest`、包内 `backtest_statistics`/`backtest_web`/`backtest_observability`/`backtest_profile` |
+
+> `institution_scanner/backtest_score_vectorized.py`（34 KB）在导入期**未出现在
+> `sys.modules`** —— 但它是 `historical_backtest.py:117` 的**函数内懒加载**，
+> **不是死代码**。判定死活必须看导入方式，不能只看导入期快照。
+
+### 9.2 核心判断：这里的技术债不是「代码多」，是「补丁叠补丁」
+
+最有力的证据是两个 `*_integrity_*` overlay：
+
+- `backtest_math_integrity_v94.install()` 先存下
+  `_ORIGINAL_WEIGHTED_PROFIT_FACTOR` / `_ORIGINAL_SUMMARY_TO_DICT`，再把
+  `_core._weighted_profit_factor` 和 `BacktestSummary.to_dict` 换成自己的版本 ——
+  这是**包一层修 bug**，不是改源头。
+- `backtest_rank_integrity_v82` 装一个 "single recency ranking guard"。
+
+即：某个加速 overlay 改坏了数值 → 不去修源头，而是**再叠一个 overlay 来纠正**。
+每叠一层，真实行为就离源码更远，而一次回测的结果由 **21 个同时装载的模块**共同
+决定。这才是这个子系统真正的风险，比行数多严重得多。
+
+### 9.3 优化清单（按 价值 / 风险 排序）
+
+| # | 事项 | 证据 | 收益 | 风险 |
+|---|---|---|---|---|
+| **1** | **先给 `_weighted_profit_factor` / `BacktestSummary.to_dict` 装语义锁** | v94 改的这两个函数**没有专属闸门**，analytics golden 的 16 个函数不含它们 | 做 #2 的前置；没有它，#2 就是盲改 | 低 |
+| **2** | **把 v94 的修正下沉回源头，然后删掉 v94** | v94 存了 `_ORIGINAL_*`，证明是包装而非替代 | 少一层 overlay；回测数值的"唯一真相"回到源码 | 中（须先做 #1，再 golden 比对） |
+| **3** | **拆 `analytics_core` 的回测四大件（1513 行）** | 两个 500+ 行函数；已有成功先例：`backtest_statistics`（16 helper / 18 KB）就是这么搬出去的，golden + provenance 闸门现成 | 单函数从 526 行降到可审规模；预算压力缓解（现仅剩 2.4 KB） | 低-中（沿用同一套闸门逐函数搬） |
+| **4** | **收敛 8 个性能 overlay** | 需先做**运行时判定**：哪些仍生效。参照已发现的 `score_acceleration_v79` 有 4 个函数被 v95/v80 盖掉 | 每退役一个，少一层不确定性 | 低（只删确认不生效的） |
+| **5** | **FAST / EXACT 双轨的口径显式化并锁住** | `fastscore_v80` 34 KB；输出列里有 `SmoothTriggerApproximate`，说明存在"近似"分支；现有 `test_backtest_score_vectorized_alignment` 在测对齐 | 明确列出 FAST 与 EXACT 允许在哪些列不同、容差多少，防止近似悄悄扩散 | 低 |
+| **6** | **跨 overlay 重复判据收敛** | 已实证：`len(frame) < 300` 在 5 个 overlay 里各写一遍（`backtest_*_v80` ×3、`vectorization_v98`、`conditional_fill_v96`） | 一处判据，改了不会漏 | 低 |
+
+**暂缓**：GUI 拆分（每天在用且无测试覆盖）；分支 / 遗留 workflow 清理（不可逆，
+需先打 `archive/<branch>` tag）。
