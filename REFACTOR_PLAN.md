@@ -1146,6 +1146,67 @@ result["SmoothTriggerApproximate"] = trigger.ge(99.999)
 闸门：`tests/test_ranking_architecture_smooth_trigger.py`（4 项）——三类用例各一，
 外加「无代码消费者」一条。若日后有人开始消费这列，或修好判据，都会在这里红。
 
+### 9.11 侦察：`report_core` 的存活图——与 `scanner_core` 完全相反（2026-09-16）
+
+`report_core.py` 2090 行 / 24 个顶层定义，是仅次于 `scanner_core` 的第二大覆盖真空。
+照 §10.14 的规矩先做存活图，结论与 `scanner_core` **相反**：
+
+| | `scanner_core` | `report_core` |
+|---|---|---|
+| 顶层定义 | 21 | 24 |
+| 死代码 | 约 950 行（53%） | **0 行（0%）** |
+| overlay 形态 | **替换**（`run_scan` 828 行被闭包顶掉） | **回调**（每层都调下一层） |
+
+#### 三层装配链
+
+```
+report_core.py   2090 行   实现
+  ↑ report_v51.py  213 行  覆盖 _results_to_dataframe、装 report_determinism，然后 sys.modules 自替换
+  ↑ report.py      423 行  覆盖 _results_to_dataframe 与 export_all，然后 sys.modules 自替换
+```
+
+两个包装层都以 `sys.modules[__name__] = _core` 收尾，所以 import 之后
+`report`、`report_v51`、`report_core` 是**同一个模块对象**（子进程实测三者皆 True）。
+
+#### 为什么一个死符号都没有
+
+每层在覆盖之前**先把下一层存起来，然后调用它**：
+
+* `report_v51.py:24` 存 `_legacy_results_to_dataframe`，`:57` 调用它
+* `report.py:31` 存（此时已是 v51 版），`:72` 调用它；`:32`/`:379` 对 `export_all` 同样处理
+
+所以 `report_core` 那份 326 行的 `_results_to_dataframe` 是**最内层的调用**，
+每跑一次必到——它是被**扩展**，不是被**顶替**。这与 `run_scan` 的命运截然不同。
+
+被 overlay 接管的只有两个符号（实测 `__code__.co_filename`）：
+`_results_to_dataframe` → `report.py`，`_rankable_results` → `report_determinism.py`。
+
+#### 生产入口（跨模块引用）8 个
+
+| 符号 | 行数 | 引用者 |
+|---|---|---|
+| `refresh_candidate_exports` | 209 | 9 个模块 |
+| `_results_to_dataframe` | 326 | `report_selection` |
+| `export_all` | 101 | `main_core` / `scan_service` / `publication_guard_v65` |
+| `print_terminal_report` | 42 | `main_core` |
+| `_atomic_write_csv` / `_atomic_write_parquet` | 8 / 10 | 8 个模块 |
+| `print_scan_summary` | 10 | `main_core` |
+| `_rankable_results` | 23 | `report_determinism` / `report_selection` |
+
+#### 结论与下一步
+
+24 个定义全部可达 → 这里的补测试**不会打在死代码上**，价值高于 `scanner_core`。
+缺口在**深度**而非存活：`validate_decision_integrity`（527-1439，**912 行，占模块 44%**）
+在生产路径上，`_decision_projection` 调它，但**零直接测试**。
+另有 19 个符号既无生产直接引用名、也无测试引用。
+
+闸门：`tests/test_report_core_provenance.py`（5 项）——三层链塌缩、每层回调下一层、
+原版仍是最内层调用、24 个定义全部可达、两个被接管符号的归属。
+
+**待你定**：要不要给 `validate_decision_integrity` 的 912 行铺行为测试。
+它是纯 DataFrame 进出、无 IO、无时间依赖，可测性远好于 `scan_single_from_df`
+（381 行就要 1–2 天），但 912 行仍是相当大的一块。
+
 ## 10. 评分与回测逻辑：我的重构建议（2026-09-16 意见稿）
 
 这一节是**意见**，不是已完成的工作。所有判断都附了实测数据，取向问题单列在 §10.6。
