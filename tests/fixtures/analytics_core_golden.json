@@ -7787,6 +7787,66 @@
         "samples": 0
       }
     },
+    "quality_multiplier/all_available": {
+      "value": {
+        "__series__": [
+          1.0,
+          0.85,
+          1.0,
+          1.0,
+          1.0,
+          0.95
+        ]
+      }
+    },
+    "quality_multiplier/hard_data_column": {
+      "value": {
+        "__series__": [
+          1.0,
+          0.85,
+          0.95,
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "quality_multiplier/hard_data_incomplete": {
+      "value": {
+        "__series__": [
+          0.95,
+          0.85,
+          0.95,
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "quality_multiplier/missing_columns": {
+      "value": {
+        "__series__": [
+          0.95,
+          0.95,
+          0.95,
+          0.95,
+          1.0,
+          0.95
+        ]
+      }
+    },
+    "quality_multiplier/reconstructed": {
+      "value": {
+        "__series__": [
+          1.0,
+          0.85,
+          0.95,
+          1.0,
+          1.0,
+          0.95
+        ]
+      }
+    },
     "spearman/constant_target": {
       "value": 0.0
     },
@@ -8008,6 +8068,7 @@
     "_bucket_rows": "analytics_core._bucket_rows",
     "_candidate_endpoint_matrix": "institution_scanner.backtest_statistics._candidate_endpoint_matrix",
     "_date_balanced_weights": "backtest_math_integrity_v94.date_balanced_evidence_weights",
+    "_decision_quality_multiplier": "institution_scanner.backtest_statistics._decision_quality_multiplier",
     "_entry_date_equal_weight_stats": "institution_scanner.backtest_statistics._entry_date_equal_weight_stats",
     "_spearman": "institution_scanner.backtest_statistics._spearman",
     "_weighted_arrays": "institution_scanner.backtest_statistics._weighted_arrays",
@@ -8033,6 +8094,7 @@
     "_candidate_endpoint_matrix",
     "_benchmark_regime",
     "_benchmark_regime_components",
+    "_decision_quality_multiplier",
     "_date_balanced_weights",
     "_bucket_rows"
   ],
@@ -8050,7 +8112,8 @@
     "_backtest_scoring_window",
     "_candidate_endpoint_matrix",
     "_benchmark_regime",
-    "_benchmark_regime_components"
+    "_benchmark_regime_components",
+    "_decision_quality_multiplier"
   ],
   "note": "Golden output of analytics_core's backtest statistics helpers, captured AFTER the analytics facade has been imported so the production assembly is in place. Recapture with `python tests/golden_analytics_core.py` ONLY after reviewing the diff.",
   "patched_canaries": [

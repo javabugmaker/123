@@ -104,6 +104,46 @@ def _sample_frame_without_weights() -> pd.DataFrame:
     return _sample_frame().drop(columns=["sample_weight"])
 
 
+def _quality_frame(hard_data_column: list[str] | None = None) -> pd.DataFrame:
+    """Six rows, one per branch of ``_decision_quality_multiplier``.
+
+    Row by row: clean pass / gate fails / quality evidence unavailable /
+    not applicable / ETF (never applicable) / report metadata missing.  The
+    last three only differ in inputs an estimator could legitimately be
+    refactored to read differently, which is exactly why they are pinned.
+    """
+    frame = pd.DataFrame(
+        {
+            "QualityApplicable": ["true", "true", "true", "false", "true", "true"],
+            "QualityGate": ["true", "false", "true", "true", "true", "true"],
+            "QualityProfile": ["GENERAL"] * 5 + ["FINANCIAL"],
+            "ROE": [12.0, 12.0, 12.0, 12.0, 12.0, 12.0],
+            "NetProfitY1": [1.0] * 6,
+            "NetProfitY2": [2.0] * 6,
+            "NetProfitY3": [3.0] * 6,
+            "IndustryGrossMarginPercentile": [50.0] * 6,
+            "FundamentalProvider": ["akshare"] * 6,
+            "LatestReportPeriod": ["2024Q1"] * 5 + [""],
+            "LatestAnnouncementDate": ["2024-04-01"] * 5 + [""],
+            "FundamentalDataStatus": ["CURRENT"] * 6,
+            "IsETF": [False, False, False, False, True, False],
+        }
+    )
+    if hard_data_column is not None:
+        # The short-circuit branch: an explicit completeness flag overrides the
+        # ROE / margin / report-metadata reconstruction below it.  Passing the
+        # values in (rather than hard-coding one list here) lets the corpus prove
+        # the flag is *read*: row 5 is incomplete by reconstruction but complete
+        # by this column, so the two branches must return different numbers.
+        frame["QualityHardDataComplete"] = hard_data_column
+    return frame
+
+
+def _quality_flags(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """The two keyword arguments ``_decision_quality_multiplier`` takes."""
+    return frame["IsETF"], pd.Series([True, True, False, True, True, True])
+
+
 def _ohlc_frame(rows: int = 90, drift: float = 0.0015) -> pd.DataFrame:
     """A deterministic OHLCV frame long enough for the 60-bar regime gates."""
     index = pd.date_range("2024-01-02", periods=rows, freq="D")
@@ -193,6 +233,7 @@ MOVE_CANDIDATES = (
     "_candidate_endpoint_matrix",
     "_benchmark_regime",
     "_benchmark_regime_components",
+    "_decision_quality_multiplier",
 )
 
 #: Captured but deliberately NOT moved.  ``backtest_math_integrity_v94:166``
@@ -214,6 +255,11 @@ def build_cases() -> list[tuple[str, str, tuple[Any, ...], dict[str, Any]]]:
     sample = _sample_frame()
     sample_plain = _sample_frame_without_weights()
     enriched = _enriched_frame()
+    quality = _quality_frame()
+    quality_hard = _quality_frame(hard_data_column=["true"] * 6)
+    quality_hard_partial = _quality_frame(hard_data_column=["false"] + ["true"] * 5)
+    q_etf, q_available = _quality_flags(quality)
+    h_etf, h_available = _quality_flags(quality_hard)
 
     cases: list[tuple[str, str, tuple[Any, ...], dict[str, Any]]] = [
         # --- weighted estimator family -------------------------------------
@@ -268,6 +314,16 @@ def build_cases() -> list[tuple[str, str, tuple[Any, ...], dict[str, Any]]]:
         ("benchmark_regime/empty", "_benchmark_regime", ({},), {}),
         ("benchmark_regime_components/uptrend", "_benchmark_regime_components", ({"BM": _ohlc_frame(120, 0.004)}, "风险偏好", "seed"), {}),
         ("benchmark_regime_components/downtrend", "_benchmark_regime_components", ({"BM": _ohlc_frame(120, -0.004)}, "风险规避", "seed"), {}),
+        # --- decision quality multiplier -----------------------------------
+        # Both completeness branches are covered: the reconstruction from ROE /
+        # margin / report metadata, and the short-circuit
+        # ``QualityHardDataComplete`` column that replaces it.  A refactor that
+        # changed only one of them would otherwise pass.
+        ("quality_multiplier/reconstructed", "_decision_quality_multiplier", (quality,), {"is_etf": q_etf, "quality_available": q_available}),
+        ("quality_multiplier/hard_data_column", "_decision_quality_multiplier", (quality_hard,), {"is_etf": h_etf, "quality_available": h_available}),
+        ("quality_multiplier/hard_data_incomplete", "_decision_quality_multiplier", (quality_hard_partial,), {"is_etf": h_etf, "quality_available": h_available}),
+        ("quality_multiplier/all_available", "_decision_quality_multiplier", (quality,), {"is_etf": q_etf, "quality_available": pd.Series([True] * len(quality))}),
+        ("quality_multiplier/missing_columns", "_decision_quality_multiplier", (quality[["IsETF"]].copy(),), {"is_etf": q_etf, "quality_available": q_available}),
     ]
     return cases
 

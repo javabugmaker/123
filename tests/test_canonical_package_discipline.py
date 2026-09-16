@@ -70,7 +70,13 @@ MODULE_BYTE_BUDGETS: Final[dict[str, int]] = {
     # An earlier 17_523 was frozen from an LF working copy and turned the gate
     # red on a clean clone by 446 bytes.  Budgets are byte counts of what is on
     # disk, so they must be frozen from the same line endings a clone produces.
-    "backtest_statistics.py": 17_969,
+    #
+    # 17_969 -> 21_867 under §9.3 #3: ``_decision_quality_multiplier``
+    # (114 lines) moved here from analytics_core.  The budget moves with the
+    # code -- that is the mechanism that stops the 3.9 KB freed in
+    # analytics_core from quietly re-inflating in its new home.  Refrozen at
+    # the post-move size, so from here on this module is shrink-only again.
+    "backtest_statistics.py": 21_867,
     # Extracted from report_core (T3').  Same reasoning as backtest_statistics
     # above: 17 KB is under LARGE_MODULE_THRESHOLD, so without an explicit
     # entry the 13 KB freed in report_core could re-inflate here unnoticed.

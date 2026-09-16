@@ -46,7 +46,12 @@ _SIZE_BUDGETS = {
     # the freed space stayed available for re-inflation -- the extraction moved
     # the debt without retiring it.  Same rule as report_core and
     # signal_lifecycle_core below; this is the last of the three.
-    "analytics_core.py": 145_000,
+    # 145_000 -> 142_000.  §9.3 #3 moved ``_decision_quality_multiplier``
+    # (114 lines) into institution_scanner.backtest_statistics and the file
+    # dropped 143,359 -> 139,796 bytes.  The budget follows it down: leaving it
+    # at 145,000 would have banked the freed space for re-inflation, which is
+    # the exact defect this gate was written to catch.
+    "analytics_core.py": 142_000,
     # 105_000 -> 95_000 after the T3' extraction moved the 11-function
     # candidate-selection cluster into institution_scanner/report_selection.py
     # (report_core dropped 104,909 -> 91,926 bytes).  The budget has to come

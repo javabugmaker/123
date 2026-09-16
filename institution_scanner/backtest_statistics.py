@@ -1,4 +1,4 @@
-"""Backtest statistics helpers extracted from ``analytics_core``.
+"""Backtest statistics and decision-quality helpers extracted from ``analytics_core``.
 
 These 16 helpers are pure (or pure-enough) estimators that sat inside the
 3837-line ``analytics_core``, which has 5 lines of byte budget left.  They were
@@ -53,6 +53,9 @@ from config import (
     BACKTEST_NORMAL_WEIGHT,
     BACKTEST_SCORE_WINDOW_BARS,
     ENABLE_VOLUME_PROFILE,
+    QUALITY_MULTIPLIER_FAIL,
+    QUALITY_MULTIPLIER_PASS,
+    QUALITY_MULTIPLIER_UNKNOWN,
 )
 
 logger = logging.getLogger("institution_scanner.analytics")
@@ -444,3 +447,128 @@ def _entry_date_equal_weight_stats(sample_frame: pd.DataFrame) -> dict[str, Any]
         "maximum_drawdown_20d": float(daily["drawdown20"].min()),
         "maximum_drawdown_60d": float(daily["drawdown60"].min()),
     }
+
+
+def _decision_quality_multiplier(
+    frame: pd.DataFrame,
+    *,
+    is_etf: pd.Series,
+    quality_available: pd.Series,
+) -> pd.Series:
+    """Reproduce Fundamental Gate multiplier semantics after backtesting.
+
+    Moved out of ``analytics_core`` under the golden gate (§9.3 #3).  Safe to
+    move for two reasons, both re-checked by
+    ``test_move_candidates_are_not_patched_by_any_overlay``: no overlay rebinds
+    the name on ``analytics_core``, and the three ``QUALITY_MULTIPLIER_*``
+    constants it reads are defined only in ``config_core`` -- nothing patches
+    them at runtime, so importing them by value here cannot freeze a stale
+    value the way ``compute_volume_profile`` would.
+    """
+    quality_applicable = (
+        frame.get("QualityApplicable", pd.Series(~is_etf, index=frame.index))
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .isin({"true", "1", "yes", "y", "是"})
+        & ~is_etf
+    )
+    quality_gate = (
+        frame.get("QualityGate", pd.Series(True, index=frame.index))
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .isin({"true", "1", "yes", "y", "是"})
+    )
+    if "QualityHardDataComplete" in frame:
+        hard_data_complete = (
+            frame["QualityHardDataComplete"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .isin({"true", "1", "yes", "y", "是"})
+        )
+    else:
+        quality_profile = (
+            frame.get("QualityProfile", pd.Series("GENERAL", index=frame.index))
+            .fillna("GENERAL")
+            .astype(str)
+            .str.upper()
+        )
+        roe_available = pd.to_numeric(
+            frame.get("ROE", pd.Series(np.nan, index=frame.index)),
+            errors="coerce",
+        ).notna()
+        profit_available = pd.concat(
+            [
+                pd.to_numeric(
+                    frame.get(column, pd.Series(np.nan, index=frame.index)),
+                    errors="coerce",
+                ).notna()
+                for column in ("NetProfitY1", "NetProfitY2", "NetProfitY3")
+            ],
+            axis=1,
+        ).all(axis=1)
+        margin_available = pd.to_numeric(
+            frame.get(
+                "IndustryGrossMarginPercentile",
+                pd.Series(np.nan, index=frame.index),
+            ),
+            errors="coerce",
+        ).notna()
+        margin_required = ~quality_profile.isin(
+            {"FINANCIAL", "DEFENSIVE", "ETF"}
+        )
+        provider_name = (
+            frame.get("FundamentalProvider", pd.Series("", index=frame.index))
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+        )
+        metadata_required = provider_name.ne("") & provider_name.ne("legacy-cache")
+        report_metadata_available = (
+            frame.get("LatestReportPeriod", pd.Series("", index=frame.index))
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .ne("")
+            & frame.get(
+                "LatestAnnouncementDate",
+                pd.Series("", index=frame.index),
+            )
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .ne("")
+        )
+        report_status_usable = (
+            frame.get(
+                "FundamentalDataStatus",
+                pd.Series("MISSING", index=frame.index),
+            )
+            .fillna("MISSING")
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            .isin({"CURRENT", "AWAITING_RELEASE"})
+        )
+        hard_data_complete = (
+            roe_available
+            & profit_available
+            & (~margin_required | margin_available)
+            & (~metadata_required | (report_metadata_available & report_status_usable))
+        )
+    hard_gate_fail = quality_applicable & ~quality_gate
+    quality_uncertain = quality_applicable & (
+        ~quality_available | ~hard_data_complete
+    )
+    return pd.Series(
+        np.select(
+            [~quality_applicable, hard_gate_fail, quality_uncertain],
+            [1.0, QUALITY_MULTIPLIER_FAIL, QUALITY_MULTIPLIER_UNKNOWN],
+            default=QUALITY_MULTIPLIER_PASS,
+        ),
+        index=frame.index,
+        dtype=float,
+    )

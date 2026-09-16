@@ -959,3 +959,66 @@ v94 —— 现在有闸门了，这一步才是安全的。
 
 **没有**。生产路径上 v94 一直是生效的（§9.5 判定 2/0），下沉前后数值一致。
 真正的差异在于：现在**不装 v94 也对**。
+
+### 9.8 #3 第一阶段：搬 `_decision_quality_multiplier`（2026-09-16）
+
+**结论**：搬了一个函数，`analytics_core` 从 143,359 降到 **139,796 字节**，
+预算余量从 1,641 回到 **5,204 字节**。装配清单**零变化**——这本身就是「搬移没有
+改变装配」的证据。
+
+#### 为什么先做「整函数搬移」而不是切 526 行的 `apply_backtest_ranking`
+
+先做了静态筛查：把全仓库所有 `<alias>.<attr> = ...`（alias 含 `_core` /
+`analytics_core` / `analytics` / `analytics_module` …）的赋值目标抽出来，
+再和装配清单的 `final` 求并集，得到「被 overlay 重绑定的符号」全集。
+
+结论是**四大件一个都不能整搬**：
+
+| 函数 | 行数 | 被谁重绑定 |
+|---|---|---|
+| `apply_backtest_ranking` | 526 | `analytics.py` |
+| `run_historical_backtest` | 523 | `backtest_alignment` / `production_activation_v93` / `calibration_weight_cache_v79` / `point_in_time_backtest` |
+| `_backtest_one_ticker` | 261 | 5 个模块 |
+| `_ticker_backtest_rows` | 203 | `analytics.py` / `resonance_runtime_v91` |
+
+它们都是 §9.6 胜者锁盯着的符号。整搬等于把 overlay 的目标换掉，补丁会静默失效。
+所以第一阶段只搬**没有任何 overlay 重绑定**的整函数，剩下的留给后续切片。
+
+未绑且 ≥40 行的候选共 5 个：`_decision_quality_multiplier`(114)、
+`refresh_research_outcomes`(100)、`write_research_reports`(96)、
+`_enrich_one_result`(93)、`_bucket_rows`(55)。
+`_bucket_rows` 排除——它调 `_date_balanced_weights`，那是 golden 记录在案的
+patched canary。本次搬了 `_decision_quality_multiplier`（四大件之一
+`apply_backtest_ranking` 的直接下属、无模块内依赖）。
+
+#### 验证流程（照 golden 既有工序）
+
+1. **搬移前**先给 golden 语料加 5 个用例并捕获，冻结行为。
+   语料刻意覆盖两条完备性分支：从 ROE / 毛利率 / 报告元数据**重建**，
+   以及 `QualityHardDataComplete` 列**短路**。第 6 行按重建判据是「不完整」，
+   按显式列是「完整」——两条分支必须返回不同值，否则语料就是空的。
+   5 个用例取值两两不同（已核对）。
+2. 搬移，然后**逐用例比对**：50 个用例取值全部一致，只有 `function_provenance`
+   从 `analytics_core._decision_quality_multiplier` 变成
+   `institution_scanner.backtest_statistics._decision_quality_multiplier`。
+3. 反向验证：在**搬移后的**实现里把 `QUALITY_MULTIPLIER_UNKNOWN` 改成 `FAIL`，
+   golden 立刻红；还原后绿。
+
+#### 被两个体积闸门咬了一次——都是对的
+
+| 闸门 | 报什么 | 处置 |
+|---|---|---|
+| `test_size_budgets_are_not_vacuous` | `analytics_core.py` 预算 145,000 离文件 139,796 有 5,204 字节，超过 4,096 上限 | 预算 **145,000 → 142,000**。闸门的设计意图就是「文件缩了预算必须跟着降」，否则腾出的空间还能被重新填回去 |
+| `test_large_modules_are_shrink_only` | `backtest_statistics.py` 21,867 > 预算 17,969 | 预算 **17,969 → 21,867**，按该表既定机制「预算跟着代码走」，并写清理由；重新冻结后本模块恢复只减不增 |
+
+顺带：`QUALITY_MULTIPLIER_*` 三个常量在 `analytics_core` 里再无引用，已随函数
+一起移走（确认过没有 overlay 读 `_core.QUALITY_MULTIPLIER_*`，所有调用方都从
+`config` 导入）。它们只在 `config_core` 定义、无人运行时打补丁，所以在提取模块里
+按值导入是安全的——这点和 `compute_volume_profile` 必须晚绑定恰恰相反。
+
+#### 剩余候选
+
+`refresh_research_outcomes`（依赖 `_load_benchmark_frames`，得一起搬或留）、
+`write_research_reports`（无依赖，最省事）、`_enrich_one_result`（连同
+`_breakout_quality_factor` / `_stage_label`）。以及四大件内部的切片——那需要
+逐段读 526 行 `apply_backtest_ranking`，单独一轮做。

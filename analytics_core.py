@@ -56,9 +56,9 @@ from config import (
     INSTITUTIONAL_TIER_WAIT_LABEL,
     MODEL_QUALITY_WEIGHT,
     OUTPUT_DIR,
-    QUALITY_MULTIPLIER_FAIL,
-    QUALITY_MULTIPLIER_PASS,
-    QUALITY_MULTIPLIER_UNKNOWN,
+    # QUALITY_MULTIPLIER_* moved out with _decision_quality_multiplier; nothing
+    # reads them off analytics_core (every caller imports them from config), so
+    # the import went with the function rather than becoming an F401 noqa.
     SCAN_THREADS,
     SECTOR_CONFIRMATION_INDUSTRY_WEIGHT,
     SECTOR_CONFIRMATION_MIN_FACTOR,
@@ -91,6 +91,7 @@ from institution_scanner.backtest_statistics import (
     _benchmark_regime,
     _benchmark_regime_components,
     _candidate_endpoint_matrix,
+    _decision_quality_multiplier,
     _entry_date_equal_weight_stats,
     _finite_float,
     _safe_return,
@@ -2168,121 +2169,6 @@ def _apply_backtest_freshness(
     result["BacktestFreshnessStatus"] = statuses
     result["BacktestFreshnessReason"] = reasons
     return result
-
-def _decision_quality_multiplier(
-    frame: pd.DataFrame,
-    *,
-    is_etf: pd.Series,
-    quality_available: pd.Series,
-) -> pd.Series:
-    """Reproduce Fundamental Gate multiplier semantics after backtesting."""
-    quality_applicable = (
-        frame.get("QualityApplicable", pd.Series(~is_etf, index=frame.index))
-        .astype(str)
-        .str.strip()
-        .str.lower()
-        .isin({"true", "1", "yes", "y", "是"})
-        & ~is_etf
-    )
-    quality_gate = (
-        frame.get("QualityGate", pd.Series(True, index=frame.index))
-        .astype(str)
-        .str.strip()
-        .str.lower()
-        .isin({"true", "1", "yes", "y", "是"})
-    )
-    if "QualityHardDataComplete" in frame:
-        hard_data_complete = (
-            frame["QualityHardDataComplete"]
-            .astype(str)
-            .str.strip()
-            .str.lower()
-            .isin({"true", "1", "yes", "y", "是"})
-        )
-    else:
-        quality_profile = (
-            frame.get("QualityProfile", pd.Series("GENERAL", index=frame.index))
-            .fillna("GENERAL")
-            .astype(str)
-            .str.upper()
-        )
-        roe_available = pd.to_numeric(
-            frame.get("ROE", pd.Series(np.nan, index=frame.index)),
-            errors="coerce",
-        ).notna()
-        profit_available = pd.concat(
-            [
-                pd.to_numeric(
-                    frame.get(column, pd.Series(np.nan, index=frame.index)),
-                    errors="coerce",
-                ).notna()
-                for column in ("NetProfitY1", "NetProfitY2", "NetProfitY3")
-            ],
-            axis=1,
-        ).all(axis=1)
-        margin_available = pd.to_numeric(
-            frame.get(
-                "IndustryGrossMarginPercentile",
-                pd.Series(np.nan, index=frame.index),
-            ),
-            errors="coerce",
-        ).notna()
-        margin_required = ~quality_profile.isin(
-            {"FINANCIAL", "DEFENSIVE", "ETF"}
-        )
-        provider_name = (
-            frame.get("FundamentalProvider", pd.Series("", index=frame.index))
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.lower()
-        )
-        metadata_required = provider_name.ne("") & provider_name.ne("legacy-cache")
-        report_metadata_available = (
-            frame.get("LatestReportPeriod", pd.Series("", index=frame.index))
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .ne("")
-            & frame.get(
-                "LatestAnnouncementDate",
-                pd.Series("", index=frame.index),
-            )
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .ne("")
-        )
-        report_status_usable = (
-            frame.get(
-                "FundamentalDataStatus",
-                pd.Series("MISSING", index=frame.index),
-            )
-            .fillna("MISSING")
-            .astype(str)
-            .str.strip()
-            .str.upper()
-            .isin({"CURRENT", "AWAITING_RELEASE"})
-        )
-        hard_data_complete = (
-            roe_available
-            & profit_available
-            & (~margin_required | margin_available)
-            & (~metadata_required | (report_metadata_available & report_status_usable))
-        )
-    hard_gate_fail = quality_applicable & ~quality_gate
-    quality_uncertain = quality_applicable & (
-        ~quality_available | ~hard_data_complete
-    )
-    return pd.Series(
-        np.select(
-            [~quality_applicable, hard_gate_fail, quality_uncertain],
-            [1.0, QUALITY_MULTIPLIER_FAIL, QUALITY_MULTIPLIER_UNKNOWN],
-            default=QUALITY_MULTIPLIER_PASS,
-        ),
-        index=frame.index,
-        dtype=float,
-    )
 
 
 def apply_backtest_ranking(summary: BacktestSummary, top_n: int = 50) -> None:
