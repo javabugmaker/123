@@ -1784,3 +1784,142 @@ canonical 闸门锁着分类。删代码只省行数，不减风险。
 #### 待你定
 
 是否接受 A；若选 B，需要你确认「老集成可以改为抛异常」这一行为变更。
+
+### 9.12 `daily_pipeline_core` 存活图与行为闸门（2026-09-16）
+
+第三个覆盖真空侦察完成。**1051 行、27 个顶层定义、0 死代码**——与 `report_core`
+同型，与 `scanner_core` 相反。未改任何生产代码。
+
+#### 三层装配链，全部是回调式
+
+```
+daily_pipeline_core.py          1051 行   实现
+  ↑ daily_recovery_v74.py        203 行   install() 由 daily_pipeline.py:29 调用
+  ↑ daily_pipeline.py            317 行   自身也重绑定（304-307）
+  ↑ daily_live_freshness_v101.py          install(_core) 由 daily_pipeline.py:312 调用
+```
+
+每层都是「先存下层 → 调用它 → 再绑名字」：
+
+* `daily_recovery_v74.py:24-25` 存、`:64` 与 `:190` 调、`:197-199` 绑；
+* `daily_pipeline.py:31-34` 存、`:182 / 216 / 232 / 276` 调、`:304-307` 绑；
+* `daily_live_freshness_v101.py:48-51` 存、`:59 / 77 / 90 / 127` 调、`:151-154` 绑。
+
+实测归属（子进程，`__code__.co_filename`）：
+
+| 符号 | 链（外 → 内） |
+|---|---|
+| `run_daily_pipeline` | v101 → recovery → core |
+| `_write_manifest` | v101 → daily_pipeline → core |
+| `_quality_gate_errors` | v101 → daily_pipeline → core |
+| `_final_output_errors` | v101 → core |
+| `_csv_profile` / `_activate_run` | daily_pipeline → core |
+| `_begin_transaction` | recovery → core |
+
+**core 原版始终是链的最内层**，所以 1051 行没有一个符号被顶替。这正是它与
+`run_scan` 828 行（被闭包顶掉 → 死）的分野。
+
+> **侦察时漏掉了第三层**：按 `daily_pipeline_core` 做 grep 只找到 2 个 importer，
+> 因为 v101 是**通过参数**拿到 core 的（`install(core)`），文件里根本不出现模块名。
+> **找装配层要看 `install(...)` 的调用点，不能只 grep 模块名。**
+
+#### 方法更新：可达性分析的根判定
+
+沿用 `report_core` 那套（顶层定义为节点、函数内引用为边、跨模块引用为根、BFS 求补集），
+但根判定收紧了一处：**只认通过真实 `daily_pipeline_core` 别名访问的符号**。
+
+不收紧会造假根——`institution_scanner/publication_renderer.py:18` 的
+`from ._common import _truthy` 与 `report_selection.py`、`report_core.py` 的同名引用
+都会被算成「生产入口」。收紧后根从 14 个降到 11 个，27 个定义仍然全部可达。
+
+第二条：**overlay 捕获 legacy 有两种形态**，只看一种会断链。
+
+* 定义在 `install()` 内部（v101）→ 存在**闭包单元**，走 `co_freevars`；
+* 定义在模块作用域（daily_pipeline、recovery）→ 存在**模块全局** `co_names`。
+
+第三条（反向验证挖出来的）：匹配 legacy 名字要用 `co_freevars / co_names`，
+**不能用 `__globals__`**。后者只证明「模块捕获过这个引用」——把调用点删掉，
+`__globals__` 里那个名字还在，链照样接得上，闸门就空转了。见下方 case C。
+
+#### 三项发现（均未改）
+
+**1. `QualityApplicable` 在同一列上默认值相反（潜在，当前不可达）**
+
+`_csv_profile:200-202` 读 `row.get("QualityApplicable", True)`，
+`_decision_snapshot:567` 读 `row.get("QualityApplicable", False)`。
+
+列缺失时：前者把每只有效股票都算进「质量闸门适用数」（`quality_gate_pass_rate`
+的分母），后者把同一批全判为「不适用」（`fundamental_hard_data_incomplete` 恒 0）。
+实测确认：裸 CSV 下 profile 给 3/3、snapshot 给全 False；列存在时两者一致（3 / 全 True）。
+
+**当前不可达**——真实 `AllResults.csv` 表头含 `QualityApplicable`（第 73 列）。
+`csv.DictReader` 对缺字段的行填 `None` 而非「键不存在」，所以默认值只在**整列不在表头**
+时才生效。归类为潜在口径分叉，与 `scanner_core` 那处 ticker 归一化同类：**未改，
+用测试锁现状**（改它会改动已发布的两处统计口径）。
+
+**2. `_rollback_transaction` 的异常元组只有一个类型宽**
+
+`daily_pipeline_core.py:439` 只捕 `FileNotFoundError`。实测注入：
+
+| 注入 | 结果 |
+|---|---|
+| `FileNotFoundError` | 吞掉（说明该分支确实生效，非空转） |
+| `PermissionError` | **逃逸** |
+| `OSError` | **逃逸** |
+
+逃逸的后果：`run_daily_pipeline` 的 `except Exception`（:995）在 :1001 调回滚，
+回滚抛出后该块中断——`PublicationStatus.json` 不会被标记 `failed`，函数以 traceback
+终止而非 `return 2`。但 `finally`（:1020）仍清 staging，事务日志也留着给下次恢复。
+
+**未改**：把元组放宽会把「响亮崩溃」变成「安静返回 2，且规范文件没恢复」，
+后者更难查。这是取向问题，归你。
+
+**3. `cold_start` 表达式冗余但等价**
+
+`:525` 的 `bool(A and A != B) or not A` 在 `B = PIPELINE_VERSION` 非空时恒等于 `A != B`。
+四种输入（空 / 旧版本 / 同版本 / 键缺失）实测与化简形式完全一致。**空改动，未改**。
+闸门的作用是：将来谁要化简它，这条断言证明化简是免费的。
+
+#### 只写不读的字段（诊断 / 归档类，非缺陷）
+
+排除 `cache / output / tests` 后，以下字段在代码里 0 处消费：
+`archive_hashes_sha256`、`archive_immutable`、`publish_status`、`cache_warning`、
+`top_blockers`、`upgraded_examples` / `downgraded_examples`、`scan_checkpoint_discarded`。
+
+它们只随 `DailyRunSummary.json` / `RunManifest.json` / `PublicationStatus.json`
+导出给人看，与 `SmoothTriggerApproximate` 同类——**不是死代码，未改**。
+
+#### 闸门 19 项
+
+* `tests/test_daily_pipeline_core_assembly.py`（6 项）：门面与 `sys.modules` 条目
+  都塌缩到 core、七条链逐层比对、每条链都抵达 core 且不回访、27 个定义全部可达、
+  根判定能区分 lookalike 与真引用、两处 integrity version 已装载。
+* `tests/test_daily_pipeline_core_contract.py`（13 项）：上述三项发现各 1-4 条，
+  外加两个发布闸门（`_quality_gate_errors` 6 类下限 + 相对跌幅 + flag 短路；
+  `_final_output_errors` 空文件 / 新鲜度 / RunId 不一致，以及
+  **空文件是硬错误，关掉 quality_gates 也不放行**）。
+
+反向验证三项全部咬合（`tests/reverse_validate_daily_pipeline.py`）：
+
+| case | 注入 | 结果 |
+|---|---|---|
+| A | 往 core 加一个无人调用的定义 | 可达性闸门红 |
+| B | 把 `QualityApplicable` 默认 True 改成 False | 分叉闸门红 |
+| C | 删掉 `daily_pipeline._write_manifest` 对 legacy 的调用 | 链闸门红 |
+
+case C 第一轮是**绿的**——它逼出了上面「不能用 `__globals__` 匹配 legacy」这条修正。
+
+#### 三个模块的对照
+
+| | `scanner_core` | `report_core` | `daily_pipeline_core` |
+|---|---|---|---|
+| 顶层定义 | 21 | 24 | 27 |
+| 死代码 | 约 950 行（53%） | 0 | 0 |
+| overlay 形态 | 替换 | 回调 | 回调 |
+| 装配层数 | 1 | 2 | 3 |
+
+**可复用判据不变：overlay 是替换式还是回调式，决定下层死不死。做存活图先看这个。**
+
+#### 待你定
+
+发现 2（`_rollback_transaction` 异常元组）要不要放宽。
