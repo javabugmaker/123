@@ -155,6 +155,11 @@ AD_SLOPE_LOOKBACK: int = 30  # AD slope must be positive over N days
 # Volatility Contraction
 ATR_COMPRESSION_LOOKBACK: int = 60  # ATR must decline over this many days
 BB_WIDTH_COMPRESSION_LOOKBACK: int = 60
+# 20 日阻力 / 量能 / 动量窗口。写成 21 而不是 20，是因为代码里统一用
+# ``iloc[-N:-1]`` 表示「往前数 N-1 根、不含当根」。这一个数同时决定突破
+# 阻力位、量能基线和动量门槛，所以所有用到它的地方都必须读这一处：否则
+# 调窗口时两个 overlay 会悄悄保留旧值，而没有任何东西会报错。
+BREAKOUT_LOOKBACK_BARS: int = 21
 
 
 # ======================================================================

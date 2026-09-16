@@ -157,15 +157,26 @@ def main(argv: list[str]) -> int:
             print(f"[DRY]  {name}:{lineno} would remove {target}")
             continue
 
+        # Same defect class as reverse_validate_downloader_core.py: a ``return``
+        # inside ``finally`` discards the exception it is cleaning up, and
+        # reading ``problems`` before it is assigned would mask that exception
+        # with a NameError while leaving the file in its edited state.  Restore
+        # explicitly instead -- on a raised error first, then on a dirty verify.
+        problems: list[str] = []
+        restore_ok = True
         try:
             write(path, edited)
             problems = verify(baseline)
-        finally:
-            if problems:
-                write(path, original)
-                if read(path) != original:
-                    print(f"[FATAL] {name} 还原失败！")
-                    return 1
+        except BaseException:
+            write(path, original)
+            raise
+        if problems:
+            write(path, original)
+            if read(path) != original:
+                print(f"[FATAL] {name} 还原失败！")
+                restore_ok = False
+        if not restore_ok:
+            return 1
 
         if problems:
             blocked.append((f"{name}:{lineno}", problems[0]))

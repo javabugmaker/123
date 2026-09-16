@@ -146,9 +146,9 @@ def breakout_score(df: pd.DataFrame) -> float:
     if _score._is_finite(ma200) and price > ma200:
         points += 10.0
 
-    if len(close_valid) >= 21:
-        resistance = float(np.max(high_valid[-21:-1]))
-        vol20 = float(np.mean(volume_valid[-21:-1]))
+    if len(close_valid) >= _score.BREAKOUT_LOOKBACK_BARS:
+        resistance = float(np.max(high_valid[-_score.BREAKOUT_LOOKBACK_BARS:-1]))
+        vol20 = float(np.mean(volume_valid[-_score.BREAKOUT_LOOKBACK_BARS:-1]))
         vol_now = float(volume_valid[-1])
         if _score._is_finite(resistance) and price > resistance:
             points += 25.0
@@ -214,8 +214,8 @@ def execution_quality_score(
         else price - effective_atr
     )
     resistance = (
-        float(np.max(high[-21:-1]))
-        if len(high) >= 21
+        float(np.max(high[-_score.BREAKOUT_LOOKBACK_BARS:-1]))
+        if len(high) >= _score.BREAKOUT_LOOKBACK_BARS
         else price + effective_atr * 2.0
     )
     stop = float(entry.get("stop", np.nan)) if entry else np.nan

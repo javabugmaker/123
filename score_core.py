@@ -27,6 +27,7 @@ from config import (
     AD_SLOPE_LOOKBACK,
     BB_WIDTH_COMPRESSION_LOOKBACK,
     BREAKOUT_CONFIRM_MIN_VOLUME_RATIO,
+    BREAKOUT_LOOKBACK_BARS,
     CONSOLIDATION_DAYS,
     CONSOLIDATION_MAX_RANGE_PCT,
     LOG_DIR,
@@ -642,9 +643,9 @@ def breakout_score(df: pd.DataFrame) -> float:
         points += 15.0 if price > ma20 > ma50 else 8.0 if price > ma20 else 0.0
     if _is_finite(ma200) and price > ma200:
         points += 10.0
-    if len(close) >= 21 and len(high) >= 21 and len(volume.dropna()) >= 21:
-        resistance = high.iloc[-21:-1].max()
-        vol20 = volume.iloc[-21:-1].mean()
+    if len(close) >= BREAKOUT_LOOKBACK_BARS and len(high) >= BREAKOUT_LOOKBACK_BARS and len(volume.dropna()) >= BREAKOUT_LOOKBACK_BARS:
+        resistance = high.iloc[-BREAKOUT_LOOKBACK_BARS:-1].max()
+        vol20 = volume.iloc[-BREAKOUT_LOOKBACK_BARS:-1].mean()
         vol_now = volume.iloc[-1]
         if _is_finite(resistance) and price > resistance:
             points += 25.0
@@ -746,12 +747,12 @@ def entry_point(
     ma20, ma50 = _latest(df, "MA20"), _latest(df, "MA50")
     rsi = _latest(df, "RSI14")
     resistance = (
-        float(high.iloc[-21:-1].max()) if len(high.dropna()) >= 21 else price
+        float(high.iloc[-BREAKOUT_LOOKBACK_BARS:-1].max()) if len(high.dropna()) >= BREAKOUT_LOOKBACK_BARS else price
     )
     resistance = tradable_price(resistance)
     support = float(low.iloc[-20:].min()) if len(low.dropna()) >= 20 else price
     volume_history = pd.to_numeric(
-        _series(df, "Volume").iloc[-21:-1], errors="coerce"
+        _series(df, "Volume").iloc[-BREAKOUT_LOOKBACK_BARS:-1], errors="coerce"
     ).replace([np.inf, -np.inf], np.nan)
     vol20 = (
         float(volume_history.mean())
@@ -1030,7 +1031,7 @@ def execution_quality_score(
         return 0.0
     effective_atr = atr if _is_finite(atr) and atr > 0 else price * 0.03
     support = float(low.dropna().iloc[-20:].min()) if len(low.dropna()) >= 20 else price - effective_atr
-    resistance = float(high.dropna().iloc[-21:-1].max()) if len(high.dropna()) >= 21 else price + effective_atr * 2.0
+    resistance = float(high.dropna().iloc[-BREAKOUT_LOOKBACK_BARS:-1].max()) if len(high.dropna()) >= BREAKOUT_LOOKBACK_BARS else price + effective_atr * 2.0
     stop = float(entry.get("stop", np.nan)) if entry else np.nan
     if not _is_finite(stop):
         stop = max(support - effective_atr, 0.0)

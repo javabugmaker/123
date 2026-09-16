@@ -18,6 +18,7 @@ import pandas as pd
 from config import (
     AD_SLOPE_LOOKBACK,
     BB_WIDTH_COMPRESSION_LOOKBACK,
+    BREAKOUT_LOOKBACK_BARS,
     CONSOLIDATION_MAX_RANGE_PCT,
     SCORING_WEIGHTS,
     VOLUME_ACCUM_MIN_DAYS,
@@ -632,7 +633,7 @@ def _breakout(
     vol20 = _roll_shift(volume, 20, "mean", 1)
     vol_now = vol_ff
 
-    cond_br = (vc3 >= 21) & np.isfinite(resist) & (price > resist)
+    cond_br = (vc3 >= BREAKOUT_LOOKBACK_BARS) & np.isfinite(resist) & (price > resist)
     pts += np.where(cond_br, 25.0, 0.0)
     pts += np.where(cond_br & (vol20 > 0) & (vol_now >= vol20 * 1.5), 15.0, 0.0)
 
@@ -712,8 +713,8 @@ def _entry_execution(
 
     # entry_point rounds resistance to 2dp; execution_quality_score does not.
     res_entry = np.round(res, int(price_decimals))
-    resistance_entry = np.where(hvc >= 21, res_entry, price)
-    resistance_exec = np.where(hvc >= 21, res, price + eff_atr * 2.0)
+    resistance_entry = np.where(hvc >= BREAKOUT_LOOKBACK_BARS, res_entry, price)
+    resistance_exec = np.where(hvc >= BREAKOUT_LOOKBACK_BARS, res, price + eff_atr * 2.0)
     support_entry = np.where(lvc >= 20, sup_entry, price)
     support_exec = np.where(lvc >= 20, sup_exec, price - eff_atr)
 

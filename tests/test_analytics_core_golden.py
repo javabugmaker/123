@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 
 import golden_analytics_core as golden
+import pandas as pd
 from golden_match import same
 
 
@@ -197,4 +198,49 @@ def test_canaries_never_enter_the_extracted_module() -> None:
     bucket = provenance["_bucket_rows"]
     assert bucket.startswith(golden.STAY_HOME + "."), (
         f"_bucket_rows resolves to {bucket}, not {golden.STAY_HOME}"
+    )
+
+
+def _window_probe_frame() -> pd.DataFrame:
+    """Flat OHLCV whose close sits *above* the flat high, plus one spike.
+
+    With the shared window at 21, ``iloc[-21:-1]`` stops one bar short of the
+    spike, so ``prior_high`` is the flat level and ``close >= prior_high`` holds.
+    Widening to 22 pulls the spike in, ``prior_high`` jumps above the close and
+    the verdict flips -- that is what makes the 21/22 boundary observable.
+    """
+    rows = 60
+    frame = pd.DataFrame(
+        {
+            "Open": [99.5] * rows,
+            "High": [99.0] * rows,
+            "Low": [98.0] * rows,
+            "Close": [100.0] * rows,
+            "Volume": [1_000_000.0] * rows,
+        },
+        index=pd.date_range("2024-01-02", periods=rows, freq="D"),
+    )
+    frame.iloc[-22, frame.columns.get_loc("High")] = 130.0
+    return frame
+
+
+def test_breakout_window_reads_the_shared_constant(monkeypatch) -> None:
+    """``_breakout_quality_factor`` must read the window from config, not a literal.
+
+    It is the only reader of the shared window left in ``analytics_core`` and it
+    is deliberately *not* in the golden fixture, so a literal left behind here
+    would survive every other gate: widening the constant would silently fail to
+    reach it while the rest of the codebase moved.  Widening must change output.
+    """
+    core = importlib.import_module("analytics_core")
+    assert core.BREAKOUT_LOOKBACK_BARS == 21, (
+        "the probe spike sits 22 bars back on purpose; move it if the window "
+        "shipped value changes"
+    )
+    frame = _window_probe_frame()
+    baseline = core._breakout_quality_factor(frame)
+    monkeypatch.setattr(core, "BREAKOUT_LOOKBACK_BARS", 22)
+    assert core._breakout_quality_factor(frame) != baseline, (
+        "widening BREAKOUT_LOOKBACK_BARS did not change _breakout_quality_factor; "
+        "the helper is reading a literal instead of the shared constant"
     )

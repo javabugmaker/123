@@ -598,3 +598,71 @@ reports/` 同样有 09-11 / 09-14 / 09-15，说明是你本地 GUI 在发。推�
 > `apply_research_integrity_v23` ……），外加一个 `cleanup-merged-branches`。
 > 这些「apply 某次改动」型工作流是一次性脚本，留着只会让人误判当前交付链路，
 > 建议归档删除（与 §8.3 #2 的分支清理一起做）。
+
+### 8.6 本轮（09-16）：两处 `finally` 修复 + 21 日窗口常量化
+
+#### A. 两处 `return` in `finally` —— 并更正我上一轮的严重性判断
+
+我上一轮把 `tests/reverse_validate_downloader_core.py:156` 说成「必现空转闸门、
+会撒谎」，**说高了**。最小复现的结果：
+
+| 情形 | 行为 |
+|---|---|
+| 还原**成功** | 异常正常抛出 → **不会产生假绿** |
+| 还原**失败** | `return 1` 吞掉异常；但退出码仍是 1（红的） |
+
+所以真实影响是「**掩盖错误原因 + 中断后续注入**」，而不是假绿。仍然值得修
+（另外 Python 3.14 会给 `SyntaxWarning: 'return' in a 'finally' block`），但它
+配不上「必现」两个字。
+
+`tests/_strip_module_level_installs.py` 那个**才是真问题**：`problems` 只在
+`verify()` 里赋值，`write()` 先抛异常时 `finally` 里的 `if problems:` 变成
+`UnboundLocalError`——**既掩盖原始错误，又不还原文件**（源码会留在被改动状态）。
+已改为预置 `problems = []`，并在 `except` 里显式还原后重抛。
+
+> 顺带发现：`_strip_module_level_installs.py` 现在 4 个目标**全部 SKIP**
+> （`line 181 past EOF (178 lines)`）——它硬编码的行号在我前几轮删代码后已
+> 失效，**当前什么也没验证**（0 保留 / 0 阻断 / 4 跳过）。又一个空转闸门，待修。
+
+#### B. 21 日窗口常量化：20 处字面量 → 1 个常量
+
+新增 `config_core.BREAKOUT_LOOKBACK_BARS: int = 21`。`BREAKOUT_` 已在策略签名
+前缀里，所以它自动进入 `decision_policy_signature` —— 这是**正确**的：它确实
+影响突破阻力位、量能基线和动量门槛。
+
+接线（全部用带断言的补丁脚本，24 个锚点各命中恰好 1 次）：
+
+| 模块 | 处数 | 取值方式 |
+|---|---|---|
+| `score_core.py` | 7 | `from config import` |
+| `score.py` | 3 | `_config.` |
+| `score_endpoint_acceleration_v79.py` | 5 | **`_score.`**（该 overlay 原本没有 config import，走它已导入的 `_score`，避免改动装载顺序） |
+| `analytics_core.py` | 3 | `from config import` |
+| `institution_scanner/backtest_score_vectorized.py` | 3 | `from config import` |
+
+`scanner_core.py:615-616` 的 `recent_return_20d` **故意不动**：那是展示用的 20 日
+涨幅指标，不是决策阈值，并进决策常量反而混淆语义。
+
+**反向验证**：常量改成 22 → **4 个测试变红**（`score_core` golden、
+`signal_lifecycle` golden、2 个向量化对齐测试）；还原 → 绿。证明 20 处真的接上
+了，不是替换了个寂寞。
+
+**golden 重捕**：`signal_lifecycle_golden.json` 12 行变化。逐列比对确认
+**只有 `DecisionPolicySignature` 一列变**（`dfe59777…` → `5e456ea8…`），
+其余 180+ 列、12 行完全一致。
+
+#### C. 补上一个实测出来的盲区
+
+反向验证时发现：`analytics_core._breakout_quality_factor` **不在 golden fixture
+里**——我改的那 3 处没有闸门看着（它是 `analytics_core.py:483` 的活调用，不是
+死代码）。
+
+新增 `test_breakout_window_reads_the_shared_constant`：构造一个「收盘价高于平盘
+高点、且 -22 根处有一根尖峰」的探针 frame。窗口 21 时 `iloc[-21:-1]` 取不到尖
+峰、`prior_high` 是平盘值；窗口 22 时尖峰进入、`prior_high` 抬到收盘价之上，判据
+翻转。
+
+反向验证：把函数里的常量换回字面量 `21` → 测试**变红**，且报的正是那句
+「helper is reading a literal instead of the shared constant」；还原 → 绿。
+
+本地 **248 项全绿、0 失败、0 错误**，ruff 全过。

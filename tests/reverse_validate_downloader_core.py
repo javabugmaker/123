@@ -145,16 +145,23 @@ def main() -> int:
             print(f"[SKIP] {tag} {label}: 锚点命中 {count} 次（应为 1），无法注入")
             skipped.append(tag)
             continue
+        restore_ok = True
         try:
             write(path, original.replace(old_e, new_e, 1))
             rc = run_test()
         finally:
-            restored = read(path)
+            # Deliberately no ``return`` in this block.  A ``return`` inside
+            # ``finally`` discards any in-flight exception, and since ``rc``
+            # would never have been assigned the outer ``if rc == 0`` branch is
+            # unreachable -- a crashed validation run used to be reported as
+            # "抓到 (GOOD)".  A gate whose self-check cannot fail is worse than
+            # no gate, so let the exception propagate and decide afterwards.
             write(path, original)
             if read(path) != original:
                 print(f"[FATAL] {tag} 还原失败！文件仍被改动：{path}")
-                return 1
-            del restored
+                restore_ok = False
+        if not restore_ok:
+            return 1
         if rc == 0:
             print(f"[BAD]  {tag} {label}: *** NOT CAUGHT ***")
             missed.append(tag)

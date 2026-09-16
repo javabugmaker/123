@@ -60,16 +60,16 @@ def trigger_event_score(df: pd.DataFrame) -> float:
     high = _core._series(df, "High").to_numpy(dtype=np.float64, copy=False)
     volume = _core._series(df, "Volume").to_numpy(dtype=np.float64, copy=False)
     valid = np.isfinite(close) & np.isfinite(high) & np.isfinite(volume)
-    if np.count_nonzero(valid) < 21:
+    if np.count_nonzero(valid) < _config.BREAKOUT_LOOKBACK_BARS:
         return 0.0
 
     close_valid = close[valid]
     high_valid = high[valid]
     volume_valid = volume[valid]
     price = float(close_valid[-1])
-    resistance = float(np.max(high_valid[-21:-1]))
+    resistance = float(np.max(high_valid[-_config.BREAKOUT_LOOKBACK_BARS:-1]))
     volume_now = float(volume_valid[-1])
-    volume_baseline = float(np.mean(volume_valid[-21:-1]))
+    volume_baseline = float(np.mean(volume_valid[-_config.BREAKOUT_LOOKBACK_BARS:-1]))
     points = 0.0
 
     if resistance > 0.0:

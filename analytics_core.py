@@ -47,6 +47,7 @@ from config import (
     BACKTEST_SCORE_WINDOW_BARS,
     BACKTEST_SIGNAL_COOLDOWN_DAYS,
     BACKTEST_STOCK_COMMISSION_RATE,
+    BREAKOUT_LOOKBACK_BARS,
     ENABLE_VOLUME_PROFILE,
     GLOBAL_CALIBRATION_MAX_WEIGHT,
     GLOBAL_CALIBRATION_MIN_SAMPLES,
@@ -349,7 +350,7 @@ def _load_benchmark_frames(source: str) -> dict[str, pd.DataFrame]:
 
 
 def _breakout_quality_factor(frame: pd.DataFrame) -> float:
-    if len(frame) < 21 or not {"Close", "High", "Low", "Volume"}.issubset(
+    if len(frame) < BREAKOUT_LOOKBACK_BARS or not {"Close", "High", "Low", "Volume"}.issubset(
         frame.columns
     ):
         return 1.0
@@ -358,8 +359,8 @@ def _breakout_quality_factor(frame: pd.DataFrame) -> float:
     high = float(recent["High"])
     low = float(recent["Low"])
     volume = float(recent["Volume"])
-    prior_high = float(frame["High"].iloc[-21:-1].max())
-    volume_average = float(frame["Volume"].iloc[-21:-1].mean())
+    prior_high = float(frame["High"].iloc[-BREAKOUT_LOOKBACK_BARS:-1].max())
+    volume_average = float(frame["Volume"].iloc[-BREAKOUT_LOOKBACK_BARS:-1].mean())
     if (
         not all(
             np.isfinite(value)
