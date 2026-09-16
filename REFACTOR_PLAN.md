@@ -1107,6 +1107,45 @@ patched canary。本次搬了 `_decision_quality_multiplier`（四大件之一
 教训：**这个仓库不要用 `git stash`**。要临时回退就用「先把文件内容存到内存、
 `git show HEAD:<file>` 写回、测完再写回原内容」——即后面实际采用的方式。
 
+### 9.10 #5 侦察：`SmoothTriggerApproximate` 的判据与真实截断不一致（2026-09-16，未改）
+
+§9.3 #5 关心的是「近似悄悄扩散」。落在 `ranking_architecture_v83.py:240`：
+
+```python
+result["SmoothTriggerApproximate"] = trigger.ge(99.999)
+```
+
+而真正的截断发生在 227-231 行 `smooth_trigger = np.clip(trigger + trigger_delta, 0, 100)`，
+条件是 `trigger + trigger_delta` 越出 `[0, 100]`。**两者不是一回事**，实测双向都错：
+
+| | trigger | 未截断 delta | 真实截断 | 发布分数 | 标记 |
+|---|---|---|---|---|---|
+| 误报 | 100 | −12.21 | 否（87.79，离上限 12 分） | 87.79 | **True** |
+| 漏报 | 95 | +10.71 | 是（105.71，被削掉 5.71） | 100.0 | **False** |
+| 基线 | 92 | 0.00 | 否 | 92.0 | False（一致） |
+
+`trigger_delta = (smooth_price − legacy_price) * (0.75 + 0.25 * coverage)`，
+两个分量函数（`execution_integrity_v87.py:47/58`）的值域决定 delta 约在
+`[−12.25, +10.75]`，所以两类偏差都是可达输入，不是理论构造。
+
+**为什么漏报从输出上看不出来**：237-239 行的 `SmoothTriggerDelta` 是
+`smooth_trigger − trigger`，即**截断之后**的差值，永远不可能暴露截断。
+上表 `trigger=95` 那行显示 `+5.0`，实际被削掉的是 10.71。
+测试因此直接调用两个生产分量函数重算未截断 delta，而不是照抄公式。
+
+**未改，列为需你确认**，三条理由：
+
+1. 这列**只写不读**——全仓（排除 cache/output/tests）仅 `ranking_architecture_v83.py`
+   一处出现，没有代码消费它，只随 CSV 导出给人看（`test_the_column_has_no_code_consumer` 守着）。
+   所以偏差目前是**诊断性**的，不影响任何决策；这也是它能活到今天的原因。
+2. 正确条件取决于 `Approximate` 当初想表达什么。引入提交 `93777ca` 只写了
+   "a smooth breakout shadow"，`stamp_layered_ranking` 的 docstring 只说
+   "without changing production decisions"，均无规格说明。
+3. 改它会改变已发布的 CSV 列。
+
+闸门：`tests/test_ranking_architecture_smooth_trigger.py`（4 项）——三类用例各一，
+外加「无代码消费者」一条。若日后有人开始消费这列，或修好判据，都会在这里红。
+
 ## 10. 评分与回测逻辑：我的重构建议（2026-09-16 意见稿）
 
 这一节是**意见**，不是已完成的工作。所有判断都附了实测数据，取向问题单列在 §10.6。
