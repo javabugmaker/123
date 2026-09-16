@@ -1923,3 +1923,95 @@ case C 第一轮是**绿的**——它逼出了上面「不能用 `__globals__` 
 #### 待你定
 
 发现 2（`_rollback_transaction` 异常元组）要不要放宽。
+
+### 9.13 `lifecycle_acceleration_v83`：替换式 overlay + 两处实测分叉（2026-09-16）
+
+挑零测试模块时选中它：412 行、四个生产入口全部装载、**零专属测试**。它是 v83 家族，
+而上一轮 `SmoothTriggerApproximate` 的判据偏差正出在 `ranking_architecture_v83`，
+加速层是静默漂移的高发区。
+
+#### 它是替换式，不是回调式 → 268 行原版已死
+
+`install()`（`lifecycle_acceleration_v83.py:404-412`）把原版存进
+`core._v83_legacy_enrich_signal_lifecycle`（:409），然后**从不调用它**——新的
+`enrich_signal_lifecycle`（:203）用 `core._period_scores` / `_opportunity_score` /
+`_stage` / `validate_signal_consistency` / `finalize_signal_ranking` 重写了一遍。
+
+清单 `final` 与子进程实测一致：
+
+```
+signal_lifecycle.enrich_signal_lifecycle              = _build_enricher.<locals>.enrich_signal_lifecycle
+signal_lifecycle._v83_legacy_enrich_signal_lifecycle  = signal_lifecycle_core.enrich_signal_lifecycle
+```
+
+`_v83_legacy_enrich_signal_lifecycle` 全仓**只写不读**（AST 按 Load/Store 分类确认）。
+于是 `signal_lifecycle_core.py:1001-1268` 的 **268 行**成为死代码——这是
+`scanner_core` 那个模式第一次出现在这个家族（前三个模块都是回调式）。
+
+> **陷阱**：`:400` 把 `enrich_signal_lifecycle.__module__` 伪造成 `core.__name__`，
+> 所以装配清单把它记成 `signal_lifecycle_core._build_enricher`。必须看
+> `co_filename` 才知道它其实在 `lifecycle_acceleration_v83.py`。
+
+#### 两处实测分叉（都与文档声明冲突）
+
+模块 docstring 声称 "Ranking, persistence columns and signal semantics stay
+identical to the stable engine"。拿同一帧分别跑两个实现：
+
+| 场景 | 原版 | v83 |
+|---|---|---|
+| **空历史**（首次运行） | 正常 | **`KeyError: ['BenchmarkReturn20D','BenchmarkReturn60D'] not in index`** |
+| **同日重跑**（TradeDate 已在历史里） | `BenchmarkReturn20D` = 0.35 **保留** | **抹成 NaN** |
+| 前一交易日历史（对照） | 0.35 | 0.35 一致 |
+
+**根因**：v83 的 snapshot（:301-366）**没有** `BenchmarkReturn20D` /
+`BenchmarkReturn60D` 两列，它的 `outcome_columns`（:368-373）也只有 4 个。
+而 `HISTORY_COLUMNS`（`signal_lifecycle_core.py:44-73`）**包含**这两列，两者最后
+都写 `history[HISTORY_COLUMNS]`：
+
+* 空历史 → `history = snapshot` → 缺列 → KeyError；
+* 同日重跑 → concat 后 `drop_duplicates(keep="last")` 让新行顶掉旧行，而 v83 的新行
+  根本没有这两列，原版则靠 `outcome_columns` 的 drop+merge **把旧值搬回来**。
+
+**可达性**：`daily_pipeline_core._prepare_staging` 只在 `SignalHistory.csv`
+**已存在**时才把它 seed 进 staging（`_STAGING_SEED_FILES`），所以空历史在
+DAILY 的隔离目录里是真实可发生的；同日重跑更是每天都在发生。
+
+**这不是无人消费的诊断字段**：`analytics_core.py:787` 往历史写
+`BenchmarkReturn{horizon}D`，`performance_curve.py:151/156` 按
+`prefix="BenchmarkReturn"` 读。抹掉的是性能曲线真在用的数据。
+
+对照组是故意留的——没有它，上面两条会读成「v83 到处都错」，而实际只有前一交易日
+场景完全一致。`Return20D` 在三个场景里两版都一致，说明偏差**只**落在那两个
+benchmark 列。
+
+#### 未改，三条理由
+
+1. 修它会改变**已落盘的历史内容**（benchmark 收益率从「重跑即丢失」变成「保留」），
+   不属于「无可见差异的缺陷修复」。
+2. 但**崩溃那条**与 `load_checkpoint` 那次同类，倾向修。
+3. 两处一起修最省事：snapshot 补两列 + `outcome_columns` 补两项即可。
+
+已验证该补丁有效（反向验证 case A 实测）：补上之后空历史不再抛异常，同日重跑
+`BenchmarkReturn20D` 恢复为 0.35，与稳定引擎一致。
+
+#### 闸门 7 项 + 反向验证
+
+`tests/test_lifecycle_v83_parity.py`（7 项）+ `tests/lifecycle_v83_parity_probe.py`。
+探针在子进程里跑：v83 的 `install()` 会改写传进去的模块，而稳定原版只在装载前可见。
+帧取真实 `AllResults.csv` 样本——一致性对照只要求 A/B 输入相同，不受旧 run
+schema 过期影响。
+
+反向验证（`tests/reverse_validate_lifecycle_v83.py`）两项全部咬合：
+
+| case | 注入 | 结果 |
+|---|---|---|
+| A | 把修复真正打进去（补两列 + outcome_columns） | 崩溃 / 抹除 / 静态三闸门全红 |
+| B | 让 `install()` 读一次 legacy | 只写不读闸门红 |
+
+case A 的价值在于：它同时证明「修复方案可行」。将来真要修，这三条闸门会先红，
+迫使你显式更新断言而不是静默改变行为。
+
+#### 待你定
+
+是否按 case A 的补丁修 v83（两条分叉一起修，约 12 行；`lifecycle_acceleration_v83.py`
+不在字节预算表内，改动不受限）。
