@@ -18,7 +18,6 @@ import pandas as pd
 
 import analytics_core as _core
 import backtest_acceleration_v77 as _backtest_acceleration
-import score_acceleration_v77 as _score_acceleration
 
 ANALYTICS_BULK_ACCELERATION_VERSION = (
     "2026-08-23-v97-refinement-freshness-bulk-v1"
@@ -472,7 +471,6 @@ def install() -> None:
     if _INSTALLED:
         return
     _backtest_acceleration.install()
-    _score_acceleration.install()
     _core.enrich_results = enrich_results
     _core._select_exact_refinement_pool = _select_exact_refinement_pool
     _core._apply_backtest_freshness = _apply_backtest_freshness

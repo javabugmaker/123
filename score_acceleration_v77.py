@@ -1,4 +1,25 @@
-"""v77 scoring hot-path acceleration without changing score formulas."""
+"""v77 scoring hot-path acceleration without changing score formulas.
+
+RETIRED 2026-09-16 -- no longer on the production path.
+=====================================================
+This module is kept on disk per the project's retirement convention (see
+``institution_scanner.runtime_inventory.RETIRED_FROM_PRODUCTION_PATH``, where it
+is now listed alongside ``score_runtime_v97``).  **Nothing imports it any more**:
+``analytics_acceleration_v77.install()`` used to call ``install()`` here, and
+that call is gone.
+
+It was retired because both of its patches were order-dependent losers:
+
+* ``_score_dimensions_available`` -> overwritten by ``score_acceleration_v79``
+* ``score_volume``                -> overwritten by ``score_scale_migration_v95``
+
+so its 10 KB read like the implementation of scoring while computing nothing.
+Production behaviour was verified unchanged by probing all four core entry
+points before and after the removal; see REFACTOR_PLAN §10.7.
+
+Do not "restore" it without re-reading §10.7: the lock that keeps it out is
+``test_scoring_chain_winners.test_the_retired_v77_layer_stays_out_of_the_import_graph``.
+"""
 
 from __future__ import annotations
 

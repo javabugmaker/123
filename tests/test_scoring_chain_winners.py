@@ -76,12 +76,14 @@ _EXPECTED_WINNERS = {
 #: Overlays that *also* install the name but lose the race, from the static scan
 #: in §10.2.  Asserting they lost is what makes the positive lock non-vacuous: a
 #: probe that returned nonsense module names would otherwise satisfy nothing.
+#:
+#: ``score_acceleration_v77`` used to be listed here for both names.  It is gone
+#: because it is retired (S2): ``analytics_acceleration_v77.install()`` no longer
+#: calls it, so it is never even imported -- see
+#: ``test_the_retired_v77_layer_stays_out_of_the_import_graph``.  Keeping it in
+#: this dict would leave an assertion that can no longer fail.
 _LOSERS = {
-    "score_core._score_dimensions_available": ("score_acceleration_v77",),
-    "score_core.score_volume": (
-        "score_acceleration_v77",
-        "score_acceleration_v79",
-    ),
+    "score_core.score_volume": ("score_acceleration_v79",),
     "score_core.score_accumulation": ("score_acceleration_v79",),
     "score_core.score_structure": ("score_acceleration_v79",),
     "score_core.entry_point": ("score_acceleration_v79",),
@@ -118,6 +120,10 @@ for module_name, attr in targets:
         out[f"{module_name}.{attr}"] = getattr(obj, "__module__", None) or repr(obj)[:80]
     except Exception as exc:
         out[f"{module_name}.{attr}"] = f"<error {type(exc).__name__}: {exc}>"
+
+# S2: score_acceleration_v77 is retired.  It must not even be imported -- if it
+# is, somebody re-added the install() call in analytics_acceleration_v77.
+out["_retired_v77_imported"] = "score_acceleration_v77" in sys.modules
 print("@@@" + json.dumps(out))
 '''
 
@@ -151,13 +157,21 @@ def _probe() -> dict[str, str]:
     )
 
 
+#: Probe keys that are not ``module.attribute`` winners.
+_AUX_KEYS = frozenset({"_retired_v77_imported"})
+
+
 @pytest.fixture(scope="module")
 def winners() -> dict[str, str]:
     resolved = _probe()
-    assert set(resolved) == set(_EXPECTED_WINNERS), (
+    assert set(resolved) == set(_EXPECTED_WINNERS) | _AUX_KEYS, (
         f"probe covered {sorted(resolved)}, expected {sorted(_EXPECTED_WINNERS)}"
     )
-    broken = {k: v for k, v in resolved.items() if v.startswith("<error")}
+    broken = {
+        k: v
+        for k, v in resolved.items()
+        if k not in _AUX_KEYS and v.startswith("<error")
+    }
     assert not broken, f"probe could not resolve: {broken}"
     return resolved
 
@@ -185,6 +199,24 @@ def test_the_losing_overlays_really_did_lose(
             f"{symbol} is now served by {loser}, which the static scan recorded "
             "as an order-dependent loser"
         )
+
+
+def test_the_retired_v77_layer_stays_out_of_the_import_graph(
+    winners: dict[str, str],
+) -> None:
+    """S2: ``score_acceleration_v77`` is retired, so it must never be imported.
+
+    Both of its patches (``_score_dimensions_available``, ``score_volume``) were
+    order-dependent losers -- v79 and v95 install the same names afterwards.  The
+    module was therefore only ever a misleading source: 10 KB that a reader would
+    take for the implementation of scoring.  It is now unreachable (see
+    ``RETIRED_FROM_PRODUCTION_PATH``); this keeps it that way.
+    """
+    assert winners["_retired_v77_imported"] is False, (
+        "score_acceleration_v77 is imported again; either its install() call "
+        "came back in analytics_acceleration_v77, or it is retired for real -- "
+        "in which case drop this lock in the same commit"
+    )
 
 
 def test_score_core_is_not_the_implementation_in_production() -> None:

@@ -221,12 +221,10 @@
     "scanner_resume_v59._INSTALLED": "bool:True",
     "scanner_resume_v59._contract_payload": "institution_scanner.checkpoint_inputs.install.<locals>.contract_payload",
     "scanner_resume_v59.run_scan": "institution_scanner.scan_resume_boundary.install.<locals>.run_scan",
-    "score._score_dimensions_available": "score_acceleration_v79._score_dimensions_available",
     "score.entry_point": "score_cache_guard_v80.entry_point",
     "score.score_accumulation": "score_scale_migration_v95.score_accumulation",
     "score.score_structure": "score_scale_migration_v95.score_structure",
     "score.score_volume": "score_scale_migration_v95.score_volume",
-    "score_acceleration_v77._INSTALLED": "bool:True",
     "score_acceleration_v79._INSTALLED": "bool:True",
     "score_acceleration_v79._V95_SCORE_SCALE_OVERLAY_HOOKED": "bool:True",
     "score_acceleration_v79.entry_point": "score_cache_guard_v80.entry_point",
@@ -295,9 +293,9 @@
     "volatility_state.evaluate_volatility_contraction": "score_acceleration_v79.evaluate_volatility_contraction"
   },
   "format": 1,
-  "install_calls": 126,
+  "install_calls": 125,
   "module_level_calls": 27,
-  "rebound_symbols": 292,
+  "rebound_symbols": 290,
   "steps": [
     {
       "call_site": "downloader_v51.py:154",
@@ -630,7 +628,6 @@
         "indicators.wilder_average": "indicator_acceleration_v77.wilder_average",
         "institution_scanner.analytics_runtime._PRE_INSTALLED": "bool:True",
         "institution_scanner.backtest_profile._ORIGINAL_RESOLVE_PROFILE": "backtest_worker_tuning_v80.resolve_backtest_profile",
-        "score_acceleration_v77._INSTALLED": "bool:True",
         "scoring_consistency_v94._INSTALLED": "bool:True",
         "scoring_consistency_v94._ORIGINAL_FAST_SCORE_MATRIX": "backtest_vectorization_v98._fast_score_matrix",
         "signal_lifecycle.LIFECYCLE_ACCELERATION_VERSION": "str:'2026-08-21-v83-vectorized-lifecycle-history-v1'",
@@ -858,24 +855,19 @@
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:71",
-      "func": "analytics_acceleration_v77.py:470:install",
+      "func": "analytics_acceleration_v77.py:469:install",
       "module_level": false,
       "rebinds": {
         "analytics_acceleration_v77._INSTALLED": "bool:True",
         "analytics_core.ANALYTICS_BULK_ACCELERATION_VERSION": "str:'2026-08-23-v97-refinement-freshness-bulk-v1'",
         "analytics_core._apply_backtest_freshness": "analytics_acceleration_v77._apply_backtest_freshness",
         "analytics_core._select_exact_refinement_pool": "analytics_acceleration_v77._select_exact_refinement_pool",
-        "analytics_core.enrich_results": "analytics_acceleration_v77.enrich_results",
-        "score._score_dimensions_available": "score_acceleration_v77._score_dimensions_available",
-        "score.score_volume": "score_acceleration_v77.score_volume",
-        "score_acceleration_v77._INSTALLED": "bool:True",
-        "score_core._score_dimensions_available": "score_acceleration_v77._score_dimensions_available",
-        "score_core.score_volume": "score_acceleration_v77.score_volume"
+        "analytics_core.enrich_results": "analytics_acceleration_v77.enrich_results"
       },
       "seq": 36
     },
     {
-      "call_site": "analytics_acceleration_v77.py:474",
+      "call_site": "analytics_acceleration_v77.py:473",
       "func": "backtest_acceleration_v77.py:106:install",
       "module_level": false,
       "rebinds": {},
@@ -962,52 +954,32 @@
       "seq": 48
     },
     {
-      "call_site": "analytics_acceleration_v77.py:475",
-      "func": "score_acceleration_v77.py:124:install",
-      "module_level": false,
-      "rebinds": {
-        "score._score_dimensions_available": "score_acceleration_v77._score_dimensions_available",
-        "score.score_volume": "score_acceleration_v77.score_volume",
-        "score_acceleration_v77._INSTALLED": "bool:True",
-        "score_core._score_dimensions_available": "score_acceleration_v77._score_dimensions_available",
-        "score_core.score_volume": "score_acceleration_v77.score_volume"
-      },
-      "seq": 49
-    },
-    {
       "call_site": "institution_scanner/analytics_runtime.py:72",
       "func": "institution_scanner/score_runtime.py:12:install",
       "module_level": false,
-      "rebinds": {
-        "score._score_dimensions_available": "score_acceleration_v79._score_dimensions_available",
-        "score.score_volume": "score_scale_migration_v95.score_volume",
-        "score_core._score_dimensions_available": "score_acceleration_v79._score_dimensions_available",
-        "score_core.score_volume": "score_scale_migration_v95.score_volume"
-      },
-      "seq": 50
+      "rebinds": {},
+      "seq": 49
     },
     {
       "call_site": "score_scale_migration_v95.py:134",
       "func": "score_acceleration_v79.py:537:install",
       "module_level": false,
       "rebinds": {
-        "score._score_dimensions_available": "score_acceleration_v79._score_dimensions_available",
         "score.score_accumulation": "score_acceleration_v79.score_accumulation",
         "score.score_structure": "score_acceleration_v79.score_structure",
         "score.score_volume": "score_acceleration_v79.score_volume",
-        "score_core._score_dimensions_available": "score_acceleration_v79._score_dimensions_available",
         "score_core.score_accumulation": "score_acceleration_v79.score_accumulation",
         "score_core.score_structure": "score_acceleration_v79.score_structure",
         "score_core.score_volume": "score_acceleration_v79.score_volume"
       },
-      "seq": 51
+      "seq": 50
     },
     {
       "call_site": "institution_scanner/score_runtime.py:21",
       "func": "score_endpoint_acceleration_v79.py:264:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 52
+      "seq": 51
     },
     {
       "call_site": "score_scale_migration_v95.py:134",
@@ -1021,21 +993,21 @@
         "score_core.score_structure": "score_acceleration_v79.score_structure",
         "score_core.score_volume": "score_acceleration_v79.score_volume"
       },
-      "seq": 53
+      "seq": 52
     },
     {
       "call_site": "institution_scanner/score_runtime.py:22",
       "func": "score_weight_cache_v79.py:34:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 54
+      "seq": 53
     },
     {
       "call_site": "institution_scanner/score_runtime.py:23",
       "func": "score_scale_migration_v95.py:141:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 55
+      "seq": 54
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:79",
@@ -1045,7 +1017,7 @@
         "analytics_core.run_historical_backtest": "calibration_weight_cache_v79.run_historical_backtest",
         "calibration_weight_cache_v79._INSTALLED": "bool:True"
       },
-      "seq": 56
+      "seq": 55
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:80",
@@ -1055,7 +1027,7 @@
         "analytics_core._signal_evaluations": "backtest_fastpath_v78._signal_evaluations",
         "backtest_fastpath_v78._INSTALLED": "bool:True"
       },
-      "seq": 57
+      "seq": 56
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:81",
@@ -1066,7 +1038,7 @@
         "backtest_fastscore_v80._INSTALLED": "bool:True",
         "backtest_fastscore_v80._LEGACY_SIGNAL_EVALUATIONS": "backtest_fastpath_v78._signal_evaluations"
       },
-      "seq": 58
+      "seq": 57
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:82",
@@ -1077,7 +1049,7 @@
         "analytics_core._resolve_backtest_profile": "institution_scanner.backtest_profile._resolve_backtest_profile",
         "institution_scanner.backtest_profile._ORIGINAL_RESOLVE_PROFILE": "backtest_worker_tuning_v80.resolve_backtest_profile"
       },
-      "seq": 59
+      "seq": 58
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:83",
@@ -1089,7 +1061,7 @@
         "scoring_consistency_v94._INSTALLED": "bool:True",
         "scoring_consistency_v94._ORIGINAL_FAST_SCORE_MATRIX": "backtest_vectorization_v98._fast_score_matrix"
       },
-      "seq": 60
+      "seq": 59
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:84",
@@ -1106,7 +1078,7 @@
         "analytics_core._resolve_backtest_profile": "backtest_profile_alignment_v95._resolve_backtest_profile",
         "analytics_core.run_historical_backtest": "backtest_alignment.install_analytics_alignment.<locals>.aligned_run"
       },
-      "seq": 61
+      "seq": 60
     },
     {
       "call_site": "backtest_alignment.py:161",
@@ -1118,21 +1090,21 @@
         "backtest_profile_alignment_v95._INSTALLED": "bool:True",
         "backtest_profile_alignment_v95._ORIGINAL_RESOLVE_PROFILE": "institution_scanner.backtest_profile._resolve_backtest_profile"
       },
-      "seq": 62
+      "seq": 61
     },
     {
       "call_site": "backtest_alignment.py:170",
       "func": "backtest_fastscore_v80.py:710:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 63
+      "seq": 62
     },
     {
       "call_site": "backtest_alignment.py:177",
       "func": "scoring_consistency_v94.py:254:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 64
+      "seq": 63
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:85",
@@ -1143,7 +1115,7 @@
         "analytics_core._v82_single_recency_guard_original": "runtime_v83._install_ranking_wrapper.<locals>.layered_finalize",
         "analytics_core.finalize_signal_ranking": "backtest_rank_integrity_v82.install_single_recency_ranking_guard.<locals>.guarded_finalize"
       },
-      "seq": 65
+      "seq": 64
     },
     {
       "call_site": "analytics.py:449",
@@ -1209,7 +1181,7 @@
         "institution_scanner.reliability.pd": "institution_scanner.postprocess_performance.pandas",
         "model_calibration._prepare_samples": "backtest_math_integrity_v94.install.<locals>.prepare_samples"
       },
-      "seq": 66
+      "seq": 65
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:97",
@@ -1270,7 +1242,7 @@
         "institution_scanner.reliability.pd": "institution_scanner.postprocess_performance.pandas",
         "model_calibration._prepare_samples": "backtest_math_integrity_v94.install.<locals>.prepare_samples"
       },
-      "seq": 67
+      "seq": 66
     },
     {
       "call_site": "backtest_math_integrity_v94.py:133",
@@ -1323,7 +1295,7 @@
         "institution_scanner.reliability.annotate_shadow_model": "institution_scanner.ranking_determinism.install_reliability.<locals>.stable_shadow_ranks",
         "institution_scanner.reliability.pd": "institution_scanner.postprocess_performance.pandas"
       },
-      "seq": 68
+      "seq": 67
     },
     {
       "call_site": "analytics_compat_v97.py:32",
@@ -1342,7 +1314,7 @@
         "institution_scanner.point_in_time_backtest._ORIGINAL_RUN": "backtest_alignment.install_analytics_alignment.<locals>.aligned_run",
         "institution_scanner.point_in_time_backtest._ORIGINAL_VERIFIED": "analytics_core._verified_point_in_time_frame"
       },
-      "seq": 69
+      "seq": 68
     },
     {
       "call_site": "analytics_compat_v97.py:33",
@@ -1355,7 +1327,7 @@
         "institution_scanner.point_in_time_backtest._PIT_COUNT_REPAIR_V1065_INSTALLED": "bool:True",
         "institution_scanner.point_in_time_backtest.apply_summary_pit_scope": "institution_scanner.pit_counts.install.<locals>.repaired_apply_summary_pit_scope"
       },
-      "seq": 70
+      "seq": 69
     },
     {
       "call_site": "analytics_compat_v97.py:34",
@@ -1365,7 +1337,7 @@
         "analytics_core.PIT_MATURITY_VERSION": "str:'2026-08-25-v108.7-pit-readiness-state-v1'",
         "analytics_core._PIT_MATURITY_V1087_INSTALLED": "bool:True"
       },
-      "seq": 71
+      "seq": 70
     },
     {
       "call_site": "analytics_compat_v97.py:35",
@@ -1378,7 +1350,7 @@
         "calibration_governance_v102._INSTALLED": "bool:True",
         "calibration_governance_v102._ORIGINAL_APPLY": "analytics_core.apply_backtest_ranking"
       },
-      "seq": 72
+      "seq": 71
     },
     {
       "call_site": "analytics_compat_v97.py:36",
@@ -1391,7 +1363,7 @@
         "calibration_semantics_v102_1._INSTALLED": "bool:True",
         "calibration_semantics_v102_1._ORIGINAL_APPLY": "calibration_governance_v102.install.<locals>.governed_apply_backtest_ranking"
       },
-      "seq": 73
+      "seq": 72
     },
     {
       "call_site": "analytics_compat_v97.py:37",
@@ -1406,7 +1378,7 @@
         "institution_scanner.reliability._INSTALLED": "bool:True",
         "institution_scanner.reliability._ORIGINAL_APPLY": "calibration_semantics_v102_1.install.<locals>.narrative_aligned_apply_backtest_ranking"
       },
-      "seq": 74
+      "seq": 73
     },
     {
       "call_site": "analytics_compat_v97.py:38",
@@ -1417,7 +1389,7 @@
         "institution_scanner.reliability._RANKING_DETERMINISM_V107_INSTALLED": "bool:True",
         "institution_scanner.reliability.annotate_shadow_model": "institution_scanner.ranking_determinism.install_reliability.<locals>.stable_shadow_ranks"
       },
-      "seq": 75
+      "seq": 74
     },
     {
       "call_site": "analytics_compat_v97.py:39",
@@ -1432,7 +1404,7 @@
         "institution_scanner.reliability.POSTPROCESS_FRAME_PERFORMANCE_VERSION": "str:'2026-08-25-v106.6-wide-frame-defragmentation-v1'",
         "institution_scanner.reliability.pd": "institution_scanner.postprocess_performance.pandas"
       },
-      "seq": 76
+      "seq": 75
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:98",
@@ -1445,63 +1417,63 @@
         "calibration_math_v96._INSTALLED": "bool:True",
         "calibration_math_v96._ORIGINAL_LEGACY_APPLY": "institution_scanner.reliability.install.<locals>.reliability_annotated_apply_backtest_ranking"
       },
-      "seq": 77
+      "seq": 76
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:103",
       "func": "institution_scanner/point_in_time_backtest.py:373:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 78
+      "seq": 77
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:104",
       "func": "institution_scanner/pit_counts.py:151:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 79
+      "seq": 78
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:105",
       "func": "institution_scanner/pit_maturity.py:88:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 80
+      "seq": 79
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:106",
       "func": "calibration_governance_v102.py:325:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 81
+      "seq": 80
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:107",
       "func": "calibration_semantics_v102_1.py:73:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 82
+      "seq": 81
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:108",
       "func": "institution_scanner/reliability.py:602:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 83
+      "seq": 82
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:109",
       "func": "institution_scanner/ranking_determinism.py:100:install_reliability",
       "module_level": false,
       "rebinds": {},
-      "seq": 84
+      "seq": 83
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:110",
       "func": "institution_scanner/postprocess_performance.py:57:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 85
+      "seq": 84
     },
     {
       "call_site": "report_v51.py:212",
@@ -1512,7 +1484,7 @@
         "report_core._REPORT_DETERMINISM_V107_INSTALLED": "bool:True",
         "report_core._rankable_results": "institution_scanner.report_determinism.install.<locals>.rankable_results"
       },
-      "seq": 86
+      "seq": 85
     },
     {
       "call_site": "scan_service.py:18",
@@ -1538,7 +1510,7 @@
         "scanner_resume_v59._contract_payload": "institution_scanner.checkpoint_inputs.install.<locals>.contract_payload",
         "scanner_resume_v59.run_scan": "institution_scanner.scan_resume_boundary.install.<locals>.run_scan"
       },
-      "seq": 87
+      "seq": 86
     },
     {
       "call_site": "institution_scanner/scan_runtime.py:40",
@@ -1559,7 +1531,7 @@
         "scanner_core.save_checkpoint": "scanner_resume_v59.save_checkpoint",
         "scanner_resume_v59._INSTALLED": "bool:True"
       },
-      "seq": 88
+      "seq": 87
     },
     {
       "call_site": "institution_scanner/scan_runtime.py:41",
@@ -1568,7 +1540,7 @@
       "rebinds": {
         "scanner_resume_v59._contract_payload": "institution_scanner.checkpoint_inputs.install.<locals>.contract_payload"
       },
-      "seq": 89
+      "seq": 88
     },
     {
       "call_site": "institution_scanner/scan_runtime.py:42",
@@ -1581,7 +1553,7 @@
         "scanner_core.run_scan": "institution_scanner.scan_resume_boundary.install.<locals>.run_scan",
         "scanner_resume_v59.run_scan": "institution_scanner.scan_resume_boundary.install.<locals>.run_scan"
       },
-      "seq": 90
+      "seq": 89
     },
     {
       "call_site": "backtest_command_v76.py:33",
@@ -1595,7 +1567,7 @@
         "resonance_runtime_v91._INSTALLED": "bool:True",
         "resonance_runtime_v91._PREVIOUS_TICKER_BACKTEST_ROWS": "analytics._ticker_backtest_rows"
       },
-      "seq": 91
+      "seq": 90
     },
     {
       "call_site": "backtest_command_v76.py:34",
@@ -1611,7 +1583,7 @@
         "main_core.PRODUCTION_BACKTEST_ACTIVATION_VERSION": "str:'2026-08-23-v97-provisional-pit-conditional-fill-capability-v6'",
         "main_core.run_historical_backtest": "institution_scanner.point_in_time_backtest.install.<locals>.run_historical_backtest"
       },
-      "seq": 92
+      "seq": 91
     },
     {
       "call_site": "backtest_command_v76.py:35",
@@ -1621,7 +1593,7 @@
         "analytics.PERFORMANCE_ENGINE_VERSION": "str:'2026-08-20-v80-vectorized-backtest-workstation-v1'",
         "analytics_core.PERFORMANCE_ENGINE_VERSION": "str:'2026-08-20-v80-vectorized-backtest-workstation-v1'"
       },
-      "seq": 93
+      "seq": 92
     },
     {
       "call_site": "backtest_math_integrity_v94.py:133",
@@ -1631,98 +1603,98 @@
         "analytics.PERFORMANCE_ENGINE_VERSION": "str:'2026-08-20-v80-vectorized-backtest-workstation-v1'",
         "analytics_core.PERFORMANCE_ENGINE_VERSION": "str:'2026-08-20-v80-vectorized-backtest-workstation-v1'"
       },
-      "seq": 94
+      "seq": 93
     },
     {
       "call_site": "analytics_compat_v97.py:32",
       "func": "institution_scanner/point_in_time_backtest.py:373:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 95
+      "seq": 94
     },
     {
       "call_site": "analytics_compat_v97.py:33",
       "func": "institution_scanner/pit_counts.py:151:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 96
+      "seq": 95
     },
     {
       "call_site": "analytics_compat_v97.py:34",
       "func": "institution_scanner/pit_maturity.py:88:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 97
+      "seq": 96
     },
     {
       "call_site": "analytics_compat_v97.py:35",
       "func": "calibration_governance_v102.py:325:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 98
+      "seq": 97
     },
     {
       "call_site": "analytics_compat_v97.py:36",
       "func": "calibration_semantics_v102_1.py:73:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 99
+      "seq": 98
     },
     {
       "call_site": "analytics_compat_v97.py:37",
       "func": "institution_scanner/reliability.py:602:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 100
+      "seq": 99
     },
     {
       "call_site": "analytics_compat_v97.py:38",
       "func": "institution_scanner/ranking_determinism.py:100:install_reliability",
       "module_level": false,
       "rebinds": {},
-      "seq": 101
+      "seq": 100
     },
     {
       "call_site": "analytics_compat_v97.py:39",
       "func": "institution_scanner/postprocess_performance.py:57:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 102
+      "seq": 101
     },
     {
       "call_site": "backtest_command_v76.py:36",
       "func": "calibration_math_v96.py:319:install",
       "module_level": true,
       "rebinds": {},
-      "seq": 103
+      "seq": 102
     },
     {
       "call_site": "main.py:31",
       "func": "backtest_alignment.py:180:install_analytics_alignment",
       "module_level": true,
       "rebinds": {},
-      "seq": 104
+      "seq": 103
     },
     {
       "call_site": "backtest_alignment.py:161",
       "func": "backtest_profile_alignment_v95.py:57:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 105
+      "seq": 104
     },
     {
       "call_site": "backtest_alignment.py:170",
       "func": "backtest_fastscore_v80.py:710:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 106
+      "seq": 105
     },
     {
       "call_site": "backtest_alignment.py:177",
       "func": "scoring_consistency_v94.py:254:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 107
+      "seq": 106
     },
     {
       "call_site": "main.py:32",
@@ -1736,105 +1708,105 @@
         "main_core._legacy_cmd_backtest": "main_core.cmd_backtest",
         "main_core.cmd_backtest": "backtest_command_v76.cmd_backtest"
       },
-      "seq": 108
+      "seq": 107
     },
     {
       "call_site": "backtest_command_v76.py:161",
       "func": "resonance_runtime_v91.py:157:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 109
+      "seq": 108
     },
     {
       "call_site": "backtest_command_v76.py:162",
       "func": "backtest_production_activation_v93.py:241:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 110
+      "seq": 109
     },
     {
       "call_site": "backtest_command_v76.py:163",
       "func": "backtest_math_integrity_v94.py:128:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 111
+      "seq": 110
     },
     {
       "call_site": "backtest_math_integrity_v94.py:133",
       "func": "analytics_compat_v97.py:28:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 112
+      "seq": 111
     },
     {
       "call_site": "analytics_compat_v97.py:32",
       "func": "institution_scanner/point_in_time_backtest.py:373:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 113
+      "seq": 112
     },
     {
       "call_site": "analytics_compat_v97.py:33",
       "func": "institution_scanner/pit_counts.py:151:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 114
+      "seq": 113
     },
     {
       "call_site": "analytics_compat_v97.py:34",
       "func": "institution_scanner/pit_maturity.py:88:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 115
+      "seq": 114
     },
     {
       "call_site": "analytics_compat_v97.py:35",
       "func": "calibration_governance_v102.py:325:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 116
+      "seq": 115
     },
     {
       "call_site": "analytics_compat_v97.py:36",
       "func": "calibration_semantics_v102_1.py:73:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 117
+      "seq": 116
     },
     {
       "call_site": "analytics_compat_v97.py:37",
       "func": "institution_scanner/reliability.py:602:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 118
+      "seq": 117
     },
     {
       "call_site": "analytics_compat_v97.py:38",
       "func": "institution_scanner/ranking_determinism.py:100:install_reliability",
       "module_level": false,
       "rebinds": {},
-      "seq": 119
+      "seq": 118
     },
     {
       "call_site": "analytics_compat_v97.py:39",
       "func": "institution_scanner/postprocess_performance.py:57:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 120
+      "seq": 119
     },
     {
       "call_site": "backtest_command_v76.py:164",
       "func": "calibration_math_v96.py:319:install",
       "module_level": false,
       "rebinds": {},
-      "seq": 121
+      "seq": 120
     },
     {
       "call_site": "main.py:33",
       "func": "institution_scanner/postprocess_performance.py:57:install",
       "module_level": true,
       "rebinds": {},
-      "seq": 122
+      "seq": 121
     },
     {
       "call_site": "main.py:34",
@@ -1846,7 +1818,7 @@
         "backtest_command_v76._LEGACY_CMD_BACKTEST": "institution_scanner.export_batch.install.<locals>.batched_legacy",
         "backtest_command_v76._materialize_resonance_stage": "institution_scanner.export_batch.install.<locals>.batched_materialize"
       },
-      "seq": 123
+      "seq": 122
     },
     {
       "call_site": "daily_pipeline.py:29",
@@ -1859,7 +1831,7 @@
         "daily_pipeline_core.run_daily_pipeline": "daily_recovery_v74.run_daily_pipeline",
         "daily_recovery_v74._INSTALLED": "bool:True"
       },
-      "seq": 124
+      "seq": 123
     },
     {
       "call_site": "daily_pipeline.py:312",
@@ -1873,7 +1845,7 @@
         "daily_pipeline_core._write_manifest": "daily_live_freshness_v101.install.<locals>.write_manifest",
         "daily_pipeline_core.run_daily_pipeline": "daily_live_freshness_v101.install.<locals>.run_daily_pipeline"
       },
-      "seq": 125
+      "seq": 124
     }
   ]
 }

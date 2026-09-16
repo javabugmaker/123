@@ -34,6 +34,7 @@ RETIRED_FROM_PRODUCTION_PATH: Final[tuple[str, ...]] = (
     "analytics_compat_v97",
     "backtest_profile_alignment_v95",
     "score_runtime_v97",
+    "score_acceleration_v77",
     "checkpoint_inputs_v59",
     "scanner_resume_v68",
 )

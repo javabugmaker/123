@@ -1186,11 +1186,18 @@ patched canary。本次搬了 `_decision_quality_multiplier`（四大件之一
 
 ### 10.6 需要你拍板的取向问题
 
-1. **`DecisionPolicySignature` 该不该继续把整条版本链哈希进去？**
-   现在有 185 个版本常量，最长的一条 14 段 / 296 字符
-   （`v51-…-v50-…-v49-…-v48-…-v47-…`），全都进了负载。后果是**任何改动都会改变签名**，
-   签名因此失去了「这次是不是真的换了策略」的判别力。改成只哈希几个顶层语义版本号
-   能修好这个，但本身是一次对外变更。
+1. **`DecisionPolicySignature` 该不该继续把版本串哈希进去？**
+
+   > **2026-09-16 实测更正**：上面原本写「185 个版本常量、最长 296 字符、全都进了负载」，
+   > 这条是错的。实测：`config` 上 `*_VERSION` 共 **37** 个，其中只有 **9** 个进策略负载
+   > （负载共 162 个名字），长度 37~52 字符，是 `…-v80-tradeability-sample-array-v1`
+   > 这种**单段**标签，不是多段历史链。真正长的账本 `PIPELINE_VERSION`（2022 字符）、
+   > `OUTPUT_CONTRACT_VERSION`（1133）、`DECISION_INTEGRITY_VERSION`（609）**不在负载里**，
+   > 动不了签名；`BACKTEST_PROVENANCE_VERSION`（926）本来就被 `_POLICY_EXCLUDED_NAMES` 排除。
+   >
+   > 所以「任何改动都会改变签名」仍成立，但元凶不是超长版本链，而是**这 9 个标签每次
+   > 打补丁都会变**。已经按 S6 处理（见 §10.7）：签名保持包罗万象，另加一个只看参数的
+   > `DecisionPolicyParameterDigest`。是否进一步收窄签名本身，仍要你拍板。
 2. **FAST 与 EXACT 的近似边界怎么定？**
    FAST 用 252 窗口 + 40 天冷却 + 5 天候选间隔，EXACT 用 504 窗口。这是有意的设计，
    我不动。但「允许在哪些列不同、容差多少」得你来定——这正是没做完的 #5 缺的那一半。
@@ -1198,3 +1205,32 @@ patched canary。本次搬了 `_decision_quality_multiplier`（四大件之一
    它是现在唯一人类可读的公式表述（向量化那份是 numpy 向量式，很难读）。我倾向
    **保留并强化它为「规范 / 参考实现」**，让向量化那份对它负责。但如果你打算以后
    直接维护向量化版本，那 `score_core` 就该明确降级为文档——两条路都行，得选一条。
+
+### 10.7 执行状态（2026-09-16）
+
+| # | 建议 | 状态 | commit |
+|---|---|---|---|
+| **S1** | 评分链胜者锁（10 行冻结成断言） | ✅ | `25a433a` |
+| **S2** | 退役 `score_acceleration_v77` | ✅ | 本轮 |
+| **S3** | FAST/EXACT 对齐扩到全分量 + 显式映射表 | ✅ | `6b22872` |
+| **S6** | 版本串与 `DecisionPolicySignature` 解耦 | ✅ | `1ef2f9e` |
+| S4 | 回测「样本集 / 权重」做成显式数据流 | 待做 | — |
+| S5 | 评分公式抽成单一声明式描述 | 待做 | — |
+| S7 | 明确校准的输入快照边界 | 待做 | — |
+
+**S2 的做法（沿用项目既有的退役惯例，不删文件）**：`score_runtime_v97` 的先例是
+「停止装载 + 登记到 `institution_scanner.runtime_inventory.RETIRED_FROM_PRODUCTION_PATH`，
+文件保留」。所以这次只摘掉 `analytics_acceleration_v77.install()` 里的
+`_score_acceleration.install()` 及其 import，把模块登记为退役。
+
+**S2 的验证（改动前后各探测一次，逐一比对）**：
+
+* 4 个核心入口（scanner / main / daily_pipeline / scan_service）下，
+  `score_core` 与 `score` 上 4 个受影响的符号**胜者全部不变**
+  （`_score_dimensions_available` → v79，`score_volume` → v95），且
+  `score_acceleration_v77` 不再出现在 `sys.modules` 里；
+* 装配清单 `install()` 调用数 124→123（daily_pipeline 126→125，scan_service 91→90，
+  scanner 86→85），消失的那一步正是 `score_acceleration_v77.py:124:install`；
+* 4 份清单的 `final` **0 处值变化**——只有 `score_acceleration_v77._INSTALLED`
+  和 `score._score_dimensions_available` 两个键消失（后者因为再没有一步去改它，
+  而 `score` 与 `score_core` 是同一个模块对象，值仍是 v79 的）。
