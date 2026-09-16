@@ -769,3 +769,44 @@ reports/` 同样有 09-11 / 09-14 / 09-15，说明是你本地 GUI 在发。推�
 
 **暂缓**：GUI 拆分（每天在用且无测试覆盖）；分支 / 遗留 workflow 清理（不可逆，
 需先打 `archive/<branch>` tag）。
+
+### 9.4 #1 已完成：backtest_math_integrity_v94 语义锁（2026-09-16）
+
+先查清 v94 到底打了什么补丁。它一共改 5 处，**其中两处是数学、三处是接线**：
+
+| 补丁 | 性质 |
+|---|---|
+| `analytics_core._weighted_profit_factor` 把 `+inf` 截断到 `PROFIT_FACTOR_SCORE_CAP` | **数学** |
+| `analytics_core.BacktestSummary.to_dict` 补 `split_policy` | **数学** |
+| `model_calibration._prepare_samples` 追加 `calibration_weight` | 接线 |
+| `analytics.calibration_details_for_frame` 过滤 peer prior | 接线 |
+| 发布 `PRODUCTION_BACKTEST_MATH_VERSION` / 两个常量 | 接线 |
+
+原始 `_weighted_profit_factor` 在全胜样本（有盈利、无亏损）时返回 `float("inf")`，
+而 `+inf` 不是合法 JSON —— 序列化后变成 `null`。这正是 v94 存在的理由。
+
+**新增 `tests/test_backtest_math_integrity_v94.py`（8 项）**，锁规则：
+全胜样本封顶且**能通过 JSON 往返**、有限盈亏比原样透传、空样本仍是 NaN、
+summary 必须披露 `split_policy`、install 发布契约、`PROVISIONAL` 打 0.25 折、
+**拥挤日最多一个单位影响力**（同日权重归一到 1）、peer prior 只保留 level 含
+signal 且带 entry_signal 的行。
+
+**六条反向验证全部会咬**（逐个改坏 v94）：去掉 `+inf` 截断、把 cap 从 3.0 抬到
+100、summary 不披露 split_policy、PROVISIONAL 不打折、同日重叠不归一、peer prior
+不要求 signal level。
+
+> **过程中修正了一条软断言**：`assert result == installed.PROFIT_FACTOR_SCORE_CAP`
+> 在常量被改成任何值时都仍然为绿 —— 光比对常量等于没锁。补了一条
+> `assert installed.PROFIT_FACTOR_SCORE_CAP == 3.0`，把数字本身也钉住（理由写进
+> 注释：ranking 的饱和值就是 3.0，这里不一致就会互相矛盾）。**凡是「断言等于某个
+> 常量」的写法，都要自问：常量被改时这条还绿吗？**
+
+> fixture 故意**不做拆卸**：v94 没有 `uninstall()`，而生产的两个入口
+> （`backtest_command_v76:35`、`analytics_runtime:97`）也都是装上就不拆的，拆了反而
+> 让测试进程不像生产。全量跑完确认无交叉污染。
+
+本地 **262 项 0 失败 0 错误**，ruff 全过。
+
+**下一步 #2**：把 cap 与 `split_policy` 下沉回 `analytics_core` 的
+`_weighted_profit_factor` / `BacktestSummary.to_dict`，确认 golden 无数值漂移后删除
+v94 —— 现在有闸门了，这一步才是安全的。
