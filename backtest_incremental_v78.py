@@ -45,7 +45,7 @@ def _backtest_one_ticker_cached(
 ) -> tuple[list[dict[str, Any]], bool]:
     del benchmark_signature
     frame = _core._load_cache(ticker, source)
-    if frame is None or len(frame) < 300:
+    if not _core._has_backtest_history(frame):
         return (
             _core._backtest_one_ticker(
                 ticker,

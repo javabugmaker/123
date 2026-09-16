@@ -1022,3 +1022,87 @@ patched canary。本次搬了 `_decision_quality_multiplier`（四大件之一
 `write_research_reports`（无依赖，最省事）、`_enrich_one_result`（连同
 `_breakout_quality_factor` / `_stage_label`）。以及四大件内部的切片——那需要
 逐段读 526 行 `apply_backtest_ranking`，单独一轮做。
+
+### 9.9 #6 已完成：收敛 `len(frame) < 300` 的 7 处重复（2026-09-16）
+
+**结论**：判据收敛到一处，但过程中撞出一个**真实的对外可见行为变化**——
+`DecisionPolicySignature` 变了。这不是事故，是闸门在正常工作，下面有完整交代。
+
+#### 是 7 处，不是 5 处
+
+原清单写「5 个 overlay」。实际清点：
+
+| 模块 | 变量 |
+|---|---|
+| `analytics_core._backtest_one_ticker` | `frame` |
+| `analytics_core._signal_evaluations` | `frame` |
+| `backtest_cache_acceleration_v80` | `frame` |
+| `backtest_incremental_v78` | `frame` |
+| `backtest_sample_acceleration_v80` | `frame` |
+| `backtest_vectorization_v98` | `frame` |
+| `conditional_fill_v96._load_enriched` | `market` |
+
+5 个 overlay 之外，`analytics_core` 自己还有 2 处——那 2 处才是 overlay 的原型。
+
+**先确认它们是不是同一条判据**：逐处读上下文后确认是。都是「缓存 K 线不足
+300 根就不做富化 / 回测」，理由一致——指标在短历史下没有定义，宁可跳过也不要
+在残缺历史上算出一个数。所以合并是**口径统一**，不是把不同判断硬捏在一起。
+
+#### 落地
+
+* `config_core.BACKTEST_MIN_HISTORY_BARS = 300`（进 BACKTEST 策略常量族）；
+* `analytics_core._has_backtest_history(frame)` —— 唯一的判据实现；
+* 7 处全部改调它（overlay 走 `_core._has_backtest_history`，晚绑定，不 by-value 导入）。
+
+#### 闸门 `tests/test_backtest_history_threshold.py`（10 项）
+
+设计要点：**光有行为测试抓不住这个缺陷**——缺陷的形态是「同一条规则有第二份拷贝」，
+行为测试只测其中一份。所以装了静态 + 行为两道：
+
+* 静态：AST 扫全仓库生产模块，找 `len(<x>) < 300` 字面量（用 AST 而非正则，
+  因为这句话在两处注释里是故意保留的）。再逐个确认 6 个模块都真的引用了 helper
+  ——只检查「全仓库存在一处 helper」会被「5 个 overlay 各留一份私货」骗过去。
+* 行为：299 / 300 / 301 的边界、None、空帧；常量只有一份定义
+  （`analytics_core.BACKTEST_MIN_HISTORY_BARS is config_core.BACKTEST_MIN_HISTORY_BARS`）。
+
+反向验证四条全咬：
+
+| 破坏方式 | 结果 |
+|---|---|
+| 在某个 overlay 里恢复字面量 | 红（3 项，静态两道 + 逐个位点那道） |
+| 常量改成 400 | 红（边界 + 单一定义） |
+| 边界 `>=` 改成 `>`（差一） | 红（边界） |
+| overlay 不走 `_core.` 前缀（改成 by-value 导入） | 红（晚绑定那道） |
+| 还原 | 绿 |
+
+#### 预期行为差异：`DecisionPolicySignature` 会变
+
+合并后 `test_signal_lifecycle_golden` 红了，报 `finalize_ranking/canary` 不一致。
+查下来只差一列：`DecisionPolicySignature`
+`5e456ea8e2ea140cdae3e737` → `5c94079806c7278264ebd331`。
+
+机制在 `result_contract.decision_policy_payload()`：它枚举 `dir(config)`，把
+`_POLICY_NAMES` 里或以 `_POLICY_PREFIXES`（含 `BACKTEST_`）开头的常量全部纳入
+策略负载再取 SHA-256。而 `_POLICY_EXCLUDED_NAMES` 排除的是**不影响决策**的运维参数
+（缓存开关、分块大小、进程数、进度间隔）。
+
+`BACKTEST_MIN_HISTORY_BARS` 决定一支票是否参与回测，是决策参数，**本就应该进签名**。
+所以这不是要绕过去的噪声——阈值从「散落在 7 处的硬编码 300」变成「一个已发布的
+策略参数」，签名理应改变。已按文档流程重捕获 golden，逐条核对：71 个用例里
+**只有 `finalize_ranking/canary` 变，且只变签名一列**，provenance 无变化。
+
+**对外影响**：下一次跑批产出的 `DecisionPolicySignature` 会与历史报告不同，
+下游按签名做「策略是否变更」比对的逻辑会触发一次。这是预期内的、一次性的。
+
+#### 过程中的一个事故（已处理）
+
+判定 canary 失败原因时用了 `git stash push`，它**损毁了 `.git`**：`refs/` 目录和
+`objects/pack/*.pack` 都没了，git 此后报 "not a git repository"。
+
+处置：远程 `main` 与本地 HEAD 同为 `f5abf3c`，**已提交的工作零丢失**；
+重克隆恢复 `.git`，`git reset --mixed HEAD` 重建索引。替换 `.git` 后
+`git status` 曾把 61 个文件报成已修改——实际是索引 stat 全失效，
+`git diff` 为空、`git add` 进暂存区后 diff 也为空，确认为纯噪声，无内容差异。
+
+教训：**这个仓库不要用 `git stash`**。要临时回退就用「先把文件内容存到内存、
+`git show HEAD:<file>` 写回、测完再写回原内容」——即后面实际采用的方式。

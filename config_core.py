@@ -257,6 +257,13 @@ BACKTEST_CHUNK_SIZE: Final[int] = 4
 BACKTEST_FAST_CHUNK_SIZE: Final[int] = 12
 BACKTEST_PROGRESS_INTERVAL: Final[int] = 25
 BACKTEST_INCREMENTAL_TAIL_BARS: Final[int] = 900
+# A cached OHLCV frame shorter than this is not enriched or backtested at all:
+# every indicator the backtest reads needs enough history to be defined, so a
+# short frame produces silently meaningless numbers rather than obviously empty
+# ones.  Seven call sites used to spell ``len(frame) < 300`` independently (see
+# REFACTOR_PLAN §9.3 #6); they now all go through
+# ``analytics_core._has_backtest_history``, and this is the one number.
+BACKTEST_MIN_HISTORY_BARS: Final[int] = 300
 INDICATOR_INCREMENTAL_LOOKBACK_BARS: Final[int] = 620
 BACKTEST_CACHE_ENABLED: Final[bool] = True
 INDICATOR_CACHE_ENABLED: Final[bool] = True

@@ -329,7 +329,7 @@ def _load_enriched(
     frame: pd.DataFrame | None = None,
 ) -> pd.DataFrame | None:
     market = frame if frame is not None else _core._load_cache(ticker, source)
-    if market is None or len(market) < 300:
+    if not _core._has_backtest_history(market):
         return None
     raw_path = _core._cache_path(ticker, source)
     enriched, _hit = _core.load_or_compute_indicators(

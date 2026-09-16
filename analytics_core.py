@@ -34,6 +34,7 @@ from config import (
     BACKTEST_INCREMENTAL_TAIL_BARS,
     BACKTEST_MAX_EXIT_DELAY_DAYS,
     BACKTEST_MAX_PROCESSES,
+    BACKTEST_MIN_HISTORY_BARS,
     BACKTEST_MIN_SAMPLES_FOR_RANKING,
     BACKTEST_NEUTRAL_SCORE,
     # Unused *in this file* since the backtest statistics helpers moved to
@@ -343,6 +344,22 @@ def _weighted_profit_factor(values: pd.Series, weights: pd.Series) -> float:
         # held-out sample would serialise to ``null``; saturate instead.
         return float(PROFIT_FACTOR_SCORE_CAP)
     return float("nan")
+
+
+def _has_backtest_history(frame: pd.DataFrame | None) -> bool:
+    """One judgement, one place: does a cached frame carry enough history?
+
+    Seven call sites across analytics_core and five root overlays used to spell
+    ``frame is None or len(frame) < 300`` independently (§9.3 #6).  They all
+    meant the same thing -- below this many bars the indicators the backtest
+    reads are not fully defined, so the frame is skipped rather than scored on
+    partial history.  Divergence would have been invisible: each copy would
+    keep working, just at a different threshold.
+
+    Overlays reach this as ``_core._has_backtest_history`` so they see any
+    later change to the rule without touching their own source.
+    """
+    return frame is not None and len(frame) >= BACKTEST_MIN_HISTORY_BARS
 
 
 def _load_benchmark_frames(source: str) -> dict[str, pd.DataFrame]:
@@ -1136,7 +1153,7 @@ def _backtest_one_ticker(
 ) -> list[dict[str, Any]]:
     if frame is None:
         frame = _load_cache(ticker, source)
-    if frame is None or len(frame) < 300:
+    if not _has_backtest_history(frame):
         return []
     raw_path = _cache_path(ticker, source)
     enriched, _indicator_cache_hit = load_or_compute_indicators(
@@ -1473,7 +1490,7 @@ def _backtest_one_ticker_cached(
 ) -> tuple[list[dict[str, Any]], bool]:
     del benchmark_signature  # v5 validates benchmark data by market-state prefix instead.
     frame = _load_cache(ticker, source)
-    if frame is None or len(frame) < 300:
+    if not _has_backtest_history(frame):
         return (
             _backtest_one_ticker(
                 ticker,

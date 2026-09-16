@@ -167,7 +167,7 @@ def _backtest_one_ticker(
 ) -> list[dict[str, Any]]:
     if frame is None:
         frame = _core._load_cache(ticker, source)
-    if frame is None or len(frame) < 300:
+    if not _core._has_backtest_history(frame):
         return []
     raw_path = _core._cache_path(ticker, source)
     enriched, _indicator_cache_hit = _core.load_or_compute_indicators(
