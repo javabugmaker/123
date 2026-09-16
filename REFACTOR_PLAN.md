@@ -1286,3 +1286,46 @@ run_historical_backtest → 样本帧（score = final_score）
    或用默认权重把历史分重算一遍再分桶。切了更干净，但会作废现有 golden 基线。
 3. `calibrate_component_weights` 目前收的是**含 test 的** `verified_model_frame`，
    内部再筛 validation。要不要把筛选提到调用侧，让函数签名自己说清边界？
+
+### 10.9 S4 侦察（2026-09-16）：样本集 / 权重的真实装配
+
+S4 的本体是「把样本集 / 权重做成显式数据流」——那要动生产路径，**本轮没做**。
+做的是动工前必须先有的那一步：**判定现在到底是谁在改样本**。
+
+**按定义文件（`__code__.co_filename`）解析的赢家，4 个核心入口完全一致：**
+
+| 符号 | 实际定义在 |
+|---|---|
+| `analytics_core.run_historical_backtest` | `backtest_production_activation_v93.py` |
+| `analytics_core._backtest_one_ticker` | `backtest_alignment.py` |
+| `analytics_core._verified_point_in_time_frame` | `point_in_time_backtest.py`（静止态） |
+| `analytics_core._relabel_sample_splits` | `analytics_core.py` ← **唯一还活着的原生实现** |
+| `analytics_core._date_balanced_weights` | `backtest_math_integrity_v94.py` |
+| `analytics_core.calibration_details_for_frame` | `backtest_math_integrity_v94.py` |
+| `model_calibration._prepare_samples` | `backtest_math_integrity_v94.py` |
+| `backtest_sample_acceleration_v80._drawdown_percent` | `backtest_sample_guard_v80.py` |
+| `score_core._model_component_weights` | `score_weight_cache_v79.py` |
+
+**两个陷阱，都差点让我下错结论**
+
+1. **`__module__` 在这条链上会说谎。** `backtest_production_activation_v93:272-274` 把
+   `run_historical_backtest.__module__` 设成**被替换前那个函数**的模块，所以它自称来自
+   `point_in_time_backtest`，实际定义在 v93 里。只有 `__code__.co_filename` 说真话。
+   （`test_scoring_chain_winners` 用 `__module__` 没问题，因为评分那几个 overlay 懒得伪造。）
+2. **静止态探测看不见「作用域内补丁」。** v93 **不是**永久替换 `_verified_point_in_time_frame`，
+   而是**在一次 `run_historical_backtest` 调用期间**换成 `_production_point_in_time_frame`，
+   跑完还原（v93:253-265）；`conditional_fill_v96` 同样在这段里 install / uninstall（258-264）。
+   所以：装配清单看不到它们，任何 import 后的探测也看不到它们。
+   我第一次看到「v93 的补丁不在场」差点判它死代码——**错了，它是调用期的。**
+
+**结论**：S4 说的「6 层」实测是 **5 层 overlay + 1 个原生函数**，而且其中两层只在调用期存在。
+这本身就是「该做成显式数据流」的证据：一条链上有两种完全不同的生效方式（永久重绑定 vs 调用期
+作用域替换），没有任何一处把它们写在一起。
+
+**闸门**：`tests/test_backtest_sample_pipeline_winners.py`（11 项）。反向验证 4 条全咬且各自只红
+对应的一条：v80 不再接管 `_drawdown_percent` / v93 不再还原 PIT 过滤 / v93 不再卸载条件成交 /
+v79 不再接管 `_model_component_weights`。作用域内补丁那部分只能用 AST 锁（跑一次回测代价太大）。
+
+**S4 本体待你定的**：哪一层是权威？尤其是 `_verified_point_in_time_frame`，同一件事现在有两个实现
+（`point_in_time_backtest.pit_verified` 静止态 + v93 调用期版本），它们什么情况下会给出不同的
+样本集，我没验——那需要先定「哪个是权威」才能判断另一个是不是冗余。
