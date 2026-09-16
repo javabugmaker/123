@@ -143,6 +143,13 @@ BENCHMARKS = {
 }
 BACKTEST_VALIDATION_END: str | None = None
 BACKTEST_TEST_START: str | None = None
+#: An all-winning held-out sample has no loss to divide by.  Returning ``+inf``
+#: would serialise to ``null`` in JSON, so the sample saturates at the same cap
+#: the ranking path uses.  Previously applied by ``backtest_math_integrity_v94``;
+#: sunk here so the number is correct with or without the overlay.
+PROFIT_FACTOR_SCORE_CAP = 3.0
+#: Discloses how train/validation/test boundaries are purged.
+BACKTEST_SPLIT_POLICY = "purged_by_complete_60d_outcome_window_v1"
 _BACKTEST_ACTIONABLE_SIGNALS = frozenset(
     {"BUY_NOW", "BREAKOUT_CONFIRM", "WAIT_PULLBACK"}
 )
@@ -246,6 +253,7 @@ class BacktestSummary:
         for key, value in result.items():
             if isinstance(value, float):
                 result[key] = round(value, 4)
+        result["split_policy"] = BACKTEST_SPLIT_POLICY
         return result
 
 
@@ -330,7 +338,9 @@ def _weighted_profit_factor(values: pd.Series, weights: pd.Series) -> float:
     if loss > 0.0:
         return float(profit / loss)
     if profit > 0.0:
-        return float("inf")
+        # No loss to divide by.  ``+inf`` is not valid JSON, so a perfect
+        # held-out sample would serialise to ``null``; saturate instead.
+        return float(PROFIT_FACTOR_SCORE_CAP)
     return float("nan")
 
 

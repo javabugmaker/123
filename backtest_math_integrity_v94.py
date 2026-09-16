@@ -14,6 +14,12 @@ The module keeps several production concerns orthogonal:
 * split provenance: summaries explicitly disclose that train/validation/test
   boundaries are purged by the complete 60-day outcome window.
 
+Both of those now live in ``analytics_core`` itself (sunk there by §9.3 #2a):
+this module re-exports the constants and publishes them onto the analytics
+facade, but the numbers are correct with or without ``install()``.  What is
+still genuinely installed here is the *wiring*---calibration weights, the
+production calibration resolver, and the version constants.
+
 The signal-semantic filter remains scoped to the production analytics resolver.
 The generic ``model_calibration.calibration_details_for_frame`` research API
 keeps its normal asset/global fallback hierarchy. The compatibility bootstrap
@@ -35,15 +41,14 @@ PRODUCTION_BACKTEST_MATH_VERSION = (
     "2026-08-23-v100-production-backtest-edge-integrity-v1"
 )
 PROVISIONAL_EVIDENCE_WEIGHT = 0.25
-PROFIT_FACTOR_SCORE_CAP = 3.0
-BACKTEST_SPLIT_POLICY = "purged_by_complete_60d_outcome_window_v1"
+#: Re-exported from ``analytics_core`` so the value has exactly one definition.
+PROFIT_FACTOR_SCORE_CAP = _core.PROFIT_FACTOR_SCORE_CAP
+BACKTEST_SPLIT_POLICY = _core.BACKTEST_SPLIT_POLICY
 _SIGNAL_LEVEL_TOKEN = "signal"
 
 _INSTALLED = False
 _ORIGINAL_PREPARE_SAMPLES: Any = None
 _ORIGINAL_CALIBRATION_DETAILS: Any = None
-_ORIGINAL_WEIGHTED_PROFIT_FACTOR: Any = None
-_ORIGINAL_SUMMARY_TO_DICT: Any = None
 
 
 def _numeric(values: Any, index: pd.Index, default: float) -> pd.Series:
@@ -124,7 +129,6 @@ def install(analytics_module: Any, model_calibration_module: Any) -> None:
     """Install production calibration weights and finite edge-case semantics."""
     global _INSTALLED
     global _ORIGINAL_PREPARE_SAMPLES, _ORIGINAL_CALIBRATION_DETAILS
-    global _ORIGINAL_WEIGHTED_PROFIT_FACTOR, _ORIGINAL_SUMMARY_TO_DICT
 
     _analytics_compat.install()
     if _INSTALLED:
@@ -134,8 +138,6 @@ def install(analytics_module: Any, model_calibration_module: Any) -> None:
     _ORIGINAL_CALIBRATION_DETAILS = (
         model_calibration_module.calibration_details_for_frame
     )
-    _ORIGINAL_WEIGHTED_PROFIT_FACTOR = _core._weighted_profit_factor
-    _ORIGINAL_SUMMARY_TO_DICT = _core.BacktestSummary.to_dict
 
     def prepare_samples(frame: pd.DataFrame) -> pd.DataFrame:
         result = _ORIGINAL_PREPARE_SAMPLES(frame)
@@ -151,17 +153,6 @@ def install(analytics_module: Any, model_calibration_module: Any) -> None:
             signal_semantic_calibration_rows(rows),
         )
 
-    def weighted_profit_factor(values: pd.Series, weights: pd.Series) -> float:
-        value = float(_ORIGINAL_WEIGHTED_PROFIT_FACTOR(values, weights))
-        if np.isposinf(value):
-            return float(PROFIT_FACTOR_SCORE_CAP)
-        return value
-
-    def summary_to_dict(summary: Any) -> dict[str, Any]:
-        result = dict(_ORIGINAL_SUMMARY_TO_DICT(summary))
-        result["split_policy"] = BACKTEST_SPLIT_POLICY
-        return result
-
     model_calibration_module._prepare_samples = prepare_samples
     analytics_module._date_balanced_weights = date_balanced_evidence_weights
     analytics_module.calibration_details_for_frame = (
@@ -170,8 +161,6 @@ def install(analytics_module: Any, model_calibration_module: Any) -> None:
     analytics_module.production_calibration_details_for_frame = (
         production_calibration_details_for_frame
     )
-    _core._weighted_profit_factor = weighted_profit_factor
-    _core.BacktestSummary.to_dict = summary_to_dict
     analytics_module.PRODUCTION_BACKTEST_MATH_VERSION = PRODUCTION_BACKTEST_MATH_VERSION
     analytics_module.PROFIT_FACTOR_SCORE_CAP = PROFIT_FACTOR_SCORE_CAP
     analytics_module.BACKTEST_SPLIT_POLICY = BACKTEST_SPLIT_POLICY

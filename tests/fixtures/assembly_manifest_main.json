@@ -14,7 +14,6 @@
     "analytics_core.BACKTEST_EXECUTION_MODEL": "str:'asset_fees_liquidity_immediate_open_waitpullback_zone5_benchmark_open_v4'",
     "analytics_core.BACKTEST_PROFILE_ALIGNMENT_VERSION": "str:'2026-09-15-v97.1-504-window-hvn-recomputed-reentrant-profile-v3'",
     "analytics_core.BACKTEST_RESONANCE_RUNTIME_VERSION": "str:'2026-08-23-v91-parent-resonance-vectorized-v1'",
-    "analytics_core.BACKTEST_SPLIT_POLICY": "str:'purged_by_complete_60d_outcome_window_v1'",
     "analytics_core.BACKTEST_VECTORIZATION_VERSION": "str:'2026-08-23-v98-vectorized-execution-integrity-v1'",
     "analytics_core.CALIBRATION_GOVERNANCE_VERSION": "str:'2026-08-24-v106-pit-survivorship-loo-fail-closed-v1'",
     "analytics_core.CALIBRATION_MATH_VERSION": "str:'2026-08-23-v97-fixed-objective-single-reliability-idempotent-v3'",
@@ -27,7 +26,6 @@
     "analytics_core.POINT_IN_TIME_BACKTEST_VERSION": "str:'2026-08-29-v106.2-pit-benchmark-provenance-v2'",
     "analytics_core.PRODUCTION_BACKTEST_ACTIVATION_VERSION": "str:'2026-08-23-v97-provisional-pit-conditional-fill-capability-v6'",
     "analytics_core.PRODUCTION_BACKTEST_MATH_VERSION": "str:'2026-08-23-v100-production-backtest-edge-integrity-v1'",
-    "analytics_core.PROFIT_FACTOR_SCORE_CAP": "float:3.0",
     "analytics_core.RANKING_ARCHITECTURE_VERSION": "str:'2026-08-21-v83-layered-research-execution-v1'",
     "analytics_core.RELIABILITY_FOUNDATION_VERSION": "str:'2026-08-24-v106-pit-hierarchical-integrity-v1'",
     "analytics_core.SCORING_CONSISTENCY_VERSION": "str:'2026-08-23-v97-fast-exact-single-owner-consistency-v5'",
@@ -54,7 +52,6 @@
     "analytics_core._v83_layered_ranking_installed": "bool:True",
     "analytics_core._v83_layered_ranking_original": "signal_lifecycle.finalize_signal_ranking",
     "analytics_core._verified_point_in_time_frame": "institution_scanner.point_in_time_backtest.install.<locals>.pit_verified",
-    "analytics_core._weighted_profit_factor": "backtest_math_integrity_v94.install.<locals>.weighted_profit_factor",
     "analytics_core.calibration_details_for_frame": "backtest_math_integrity_v94.install.<locals>.production_calibration_details_for_frame",
     "analytics_core.calibration_stability_stats": "calibration_math_v96.single_shrink_stability_stats",
     "analytics_core.compute_volume_profile": "indicator_acceleration_v77.compute_volume_profile",
@@ -87,8 +84,6 @@
     "backtest_math_integrity_v94._INSTALLED": "bool:True",
     "backtest_math_integrity_v94._ORIGINAL_CALIBRATION_DETAILS": "model_calibration.calibration_details_for_frame",
     "backtest_math_integrity_v94._ORIGINAL_PREPARE_SAMPLES": "model_calibration._prepare_samples",
-    "backtest_math_integrity_v94._ORIGINAL_SUMMARY_TO_DICT": "institution_scanner.pit_maturity.install.<locals>.to_dict",
-    "backtest_math_integrity_v94._ORIGINAL_WEIGHTED_PROFIT_FACTOR": "analytics_core._weighted_profit_factor",
     "backtest_production_activation_v93._INSTALLED": "bool:True",
     "backtest_production_activation_v93._ORIGINAL_RUN_HISTORICAL_BACKTEST": "institution_scanner.point_in_time_backtest.install.<locals>.pit_run",
     "backtest_profile_alignment_v95._INSTALLED": "bool:True",
@@ -292,7 +287,7 @@
   "format": 1,
   "install_calls": 124,
   "module_level_calls": 25,
-  "rebound_symbols": 287,
+  "rebound_symbols": 282,
   "steps": [
     {
       "call_site": "downloader_v51.py:154",
@@ -1146,7 +1141,6 @@
       "module_level": true,
       "rebinds": {
         "analytics_core.ANALYTICS_COMPAT_VERSION": "str:'2026-08-25-v108.7-pit-maturity-deterministic-performance-bootstrap-v1'",
-        "analytics_core.BACKTEST_SPLIT_POLICY": "str:'purged_by_complete_60d_outcome_window_v1'",
         "analytics_core.CALIBRATION_GOVERNANCE_VERSION": "str:'2026-08-24-v106-pit-survivorship-loo-fail-closed-v1'",
         "analytics_core.CALIBRATION_MATH_VERSION": "str:'2026-08-23-v97-fixed-objective-single-reliability-idempotent-v3'",
         "analytics_core.CALIBRATION_NARRATIVE_VERSION": "str:'2026-08-24-v102.1-calibration-narrative-alignment-v1'",
@@ -1157,7 +1151,6 @@
         "analytics_core.PIT_MATURITY_VERSION": "str:'2026-08-25-v108.7-pit-readiness-state-v1'",
         "analytics_core.POINT_IN_TIME_BACKTEST_VERSION": "str:'2026-08-29-v106.2-pit-benchmark-provenance-v2'",
         "analytics_core.PRODUCTION_BACKTEST_MATH_VERSION": "str:'2026-08-23-v100-production-backtest-edge-integrity-v1'",
-        "analytics_core.PROFIT_FACTOR_SCORE_CAP": "float:3.0",
         "analytics_core.RELIABILITY_FOUNDATION_VERSION": "str:'2026-08-24-v106-pit-hierarchical-integrity-v1'",
         "analytics_core._CALIBRATION_GOVERNANCE_V102_INSTALLED": "bool:True",
         "analytics_core._CALIBRATION_NARRATIVE_V1021_INSTALLED": "bool:True",
@@ -1169,7 +1162,6 @@
         "analytics_core._date_balanced_weights": "backtest_math_integrity_v94.date_balanced_evidence_weights",
         "analytics_core._legacy_apply_backtest_ranking": "calibration_math_v96.install.<locals>.legacy_apply_backtest_ranking",
         "analytics_core._verified_point_in_time_frame": "institution_scanner.point_in_time_backtest.install.<locals>.pit_verified",
-        "analytics_core._weighted_profit_factor": "backtest_math_integrity_v94.install.<locals>.weighted_profit_factor",
         "analytics_core.calibration_details_for_frame": "backtest_math_integrity_v94.install.<locals>.production_calibration_details_for_frame",
         "analytics_core.calibration_stability_stats": "calibration_math_v96.single_shrink_stability_stats",
         "analytics_core.production_calibration_details_for_frame": "backtest_math_integrity_v94.install.<locals>.production_calibration_details_for_frame",
@@ -1177,8 +1169,6 @@
         "backtest_math_integrity_v94._INSTALLED": "bool:True",
         "backtest_math_integrity_v94._ORIGINAL_CALIBRATION_DETAILS": "model_calibration.calibration_details_for_frame",
         "backtest_math_integrity_v94._ORIGINAL_PREPARE_SAMPLES": "model_calibration._prepare_samples",
-        "backtest_math_integrity_v94._ORIGINAL_SUMMARY_TO_DICT": "institution_scanner.pit_maturity.install.<locals>.to_dict",
-        "backtest_math_integrity_v94._ORIGINAL_WEIGHTED_PROFIT_FACTOR": "analytics_core._weighted_profit_factor",
         "calibration_governance_v102.POSTPROCESS_FRAME_PERFORMANCE_VERSION": "str:'2026-08-25-v106.6-wide-frame-defragmentation-v1'",
         "calibration_governance_v102._INSTALLED": "bool:True",
         "calibration_governance_v102._ORIGINAL_APPLY": "analytics_core.apply_backtest_ranking",
@@ -1213,11 +1203,10 @@
     },
     {
       "call_site": "institution_scanner/analytics_runtime.py:97",
-      "func": "backtest_math_integrity_v94.py:123:install",
+      "func": "backtest_math_integrity_v94.py:128:install",
       "module_level": false,
       "rebinds": {
         "analytics_core.ANALYTICS_COMPAT_VERSION": "str:'2026-08-25-v108.7-pit-maturity-deterministic-performance-bootstrap-v1'",
-        "analytics_core.BACKTEST_SPLIT_POLICY": "str:'purged_by_complete_60d_outcome_window_v1'",
         "analytics_core.CALIBRATION_GOVERNANCE_VERSION": "str:'2026-08-24-v106-pit-survivorship-loo-fail-closed-v1'",
         "analytics_core.CALIBRATION_NARRATIVE_VERSION": "str:'2026-08-24-v102.1-calibration-narrative-alignment-v1'",
         "analytics_core.HIERARCHICAL_EVIDENCE_VERSION": "str:'2026-08-24-v106-loo-kish-breadth-cap-diagnostic-v1'",
@@ -1227,7 +1216,6 @@
         "analytics_core.PIT_MATURITY_VERSION": "str:'2026-08-25-v108.7-pit-readiness-state-v1'",
         "analytics_core.POINT_IN_TIME_BACKTEST_VERSION": "str:'2026-08-29-v106.2-pit-benchmark-provenance-v2'",
         "analytics_core.PRODUCTION_BACKTEST_MATH_VERSION": "str:'2026-08-23-v100-production-backtest-edge-integrity-v1'",
-        "analytics_core.PROFIT_FACTOR_SCORE_CAP": "float:3.0",
         "analytics_core.RELIABILITY_FOUNDATION_VERSION": "str:'2026-08-24-v106-pit-hierarchical-integrity-v1'",
         "analytics_core._CALIBRATION_GOVERNANCE_V102_INSTALLED": "bool:True",
         "analytics_core._CALIBRATION_NARRATIVE_V1021_INSTALLED": "bool:True",
@@ -1239,15 +1227,12 @@
         "analytics_core._date_balanced_weights": "backtest_math_integrity_v94.date_balanced_evidence_weights",
         "analytics_core._legacy_apply_backtest_ranking": "institution_scanner.reliability.install.<locals>.reliability_annotated_apply_backtest_ranking",
         "analytics_core._verified_point_in_time_frame": "institution_scanner.point_in_time_backtest.install.<locals>.pit_verified",
-        "analytics_core._weighted_profit_factor": "backtest_math_integrity_v94.install.<locals>.weighted_profit_factor",
         "analytics_core.calibration_details_for_frame": "backtest_math_integrity_v94.install.<locals>.production_calibration_details_for_frame",
         "analytics_core.production_calibration_details_for_frame": "backtest_math_integrity_v94.install.<locals>.production_calibration_details_for_frame",
         "analytics_core.run_historical_backtest": "institution_scanner.point_in_time_backtest.install.<locals>.pit_run",
         "backtest_math_integrity_v94._INSTALLED": "bool:True",
         "backtest_math_integrity_v94._ORIGINAL_CALIBRATION_DETAILS": "model_calibration.calibration_details_for_frame",
         "backtest_math_integrity_v94._ORIGINAL_PREPARE_SAMPLES": "model_calibration._prepare_samples",
-        "backtest_math_integrity_v94._ORIGINAL_SUMMARY_TO_DICT": "institution_scanner.pit_maturity.install.<locals>.to_dict",
-        "backtest_math_integrity_v94._ORIGINAL_WEIGHTED_PROFIT_FACTOR": "analytics_core._weighted_profit_factor",
         "calibration_governance_v102.POSTPROCESS_FRAME_PERFORMANCE_VERSION": "str:'2026-08-25-v106.6-wide-frame-defragmentation-v1'",
         "calibration_governance_v102._INSTALLED": "bool:True",
         "calibration_governance_v102._ORIGINAL_APPLY": "analytics_core.apply_backtest_ranking",
@@ -1278,7 +1263,7 @@
       "seq": 67
     },
     {
-      "call_site": "backtest_math_integrity_v94.py:129",
+      "call_site": "backtest_math_integrity_v94.py:133",
       "func": "analytics_compat_v97.py:28:install",
       "module_level": false,
       "rebinds": {
@@ -1620,7 +1605,7 @@
     },
     {
       "call_site": "backtest_command_v76.py:35",
-      "func": "backtest_math_integrity_v94.py:123:install",
+      "func": "backtest_math_integrity_v94.py:128:install",
       "module_level": true,
       "rebinds": {
         "analytics.PERFORMANCE_ENGINE_VERSION": "str:'2026-08-20-v80-vectorized-backtest-workstation-v1'",
@@ -1629,7 +1614,7 @@
       "seq": 93
     },
     {
-      "call_site": "backtest_math_integrity_v94.py:129",
+      "call_site": "backtest_math_integrity_v94.py:133",
       "func": "analytics_compat_v97.py:28:install",
       "module_level": false,
       "rebinds": {
@@ -1759,13 +1744,13 @@
     },
     {
       "call_site": "backtest_command_v76.py:163",
-      "func": "backtest_math_integrity_v94.py:123:install",
+      "func": "backtest_math_integrity_v94.py:128:install",
       "module_level": false,
       "rebinds": {},
       "seq": 111
     },
     {
-      "call_site": "backtest_math_integrity_v94.py:129",
+      "call_site": "backtest_math_integrity_v94.py:133",
       "func": "analytics_compat_v97.py:28:install",
       "module_level": false,
       "rebinds": {},

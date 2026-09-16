@@ -894,3 +894,68 @@ v94 —— 现在有闸门了，这一步才是安全的。
 > 链。**我们测的是 import 图，不是厂商客户端**，打桩不影响判定。CI 是 3.11，无此问题。
 
 本地 **270 项、0 真实失败**（26 项为沙箱 `WinError` 噪声），ruff 全过。
+
+### 9.7 #2a 已完成：把 v94 的两个数学补丁下沉回源码（2026-09-16）
+
+**结论先说**：下沉完成，`backtest_math_integrity_v94` 从「改数学 + 接线」退化为
+**纯接线**。回测数值的唯一真相回到 `analytics_core` 源码，不依赖任何 overlay 的装载顺序。
+
+#### 下沉了什么
+
+| 规则 | 原位置 | 新位置 |
+|---|---|---|
+| 全胜样本 profit factor 截断到 3.0 | `v94.install()` 里的闭包 `weighted_profit_factor` | `analytics_core._weighted_profit_factor` 的 `if profit > 0.0` 分支 |
+| `to_dict` 补 `split_policy` | `v94.install()` 里的闭包 `summary_to_dict` | `analytics_core.BacktestSummary.to_dict` |
+
+两个常量 `PROFIT_FACTOR_SCORE_CAP` / `BACKTEST_SPLIT_POLICY` 移到 `analytics_core`
+模块级（紧邻 `BACKTEST_TEST_START`），v94 改为**再导出** `v94.X = _core.X`，保证只有一份定义。
+
+#### 一个必须先查清的坑：`analytics.py` 会覆盖 `to_dict`
+
+`analytics.py:431` 把 `_core.BacktestSummary.to_dict` 换成 `_backtest_summary_to_dict`
+（加 `resonance_analysis`），而且**文件末尾有 `sys.modules[__name__] = _core`**——
+也就是说 `import analytics` 拿到的就是 `analytics_core` 本身。
+
+后果有两个，都影响闸门怎么设计：
+
+1. 下沉必须落在 `analytics_core` 源码里，让 `analytics` 的包装器把它带下去。实测链路成立：
+   裸 `import analytics_core` 就能拿到 `split_policy`。
+2. **进程内无法观测「未加装 overlay 的源码」**——`_LEGACY_SUMMARY_TO_DICT` 在
+   `sys.modules` 替换后不可达，live 属性永远解析到门面。所以「源码层是否含 split_policy」
+   这条断言只能走子进程，和 §9.6 的胜者锁同一个套路。
+
+#### 新增闸门（4 项，全部反向验证过）
+
+在 `tests/test_backtest_math_integrity_v94.py` 里加了两个维度：
+
+- **行为维度**：`_weighted_profit_factor.__module__ == "analytics_core"`（若有人把规则
+  重新做成 overlay 包装，解析到的模块名就变成 `backtest_math_integrity_v94`，立刻红）；
+  常量对账 `v94.X == analytics_core.X`，防止 v94 长出会漂移的第二份定义。
+- **源码维度**：子进程 `import analytics_core`（不装任何 overlay），直接读
+  `to_dict.__module__`、`split_policy`、`pf_module`、全胜样本的返回值。
+  探针不产出结果时**大声抛错**，避免变成空转闸门。
+
+反向验证三条全咬：
+
+| 破坏方式 | 结果 |
+|---|---|
+| 源码 cap 改回 `float("inf")` | 红（2 项） |
+| 删掉源码的 `split_policy` 行 | 红（2 项） |
+| 把 cap 重新叠回 v94 的 overlay 包装 | 红（`__module__` 那项） |
+| 还原 | 绿 |
+
+#### 顺带被闸门抓到的一次真实改动：装配清单
+
+`tests/test_assembly_manifest.py` 4 个入口全红，报 `install_post_facade 不再重绑定`
+`BACKTEST_SPLIT_POLICY` / `PROFIT_FACTOR_SCORE_CAP` / `_weighted_profit_factor`
+以及 v94 的两个 `_ORIGINAL_*`。**这是闸门在正常工作**，不是回归：两个常量现在源码已有
+同名定义，赋值不再构成「重绑定」；另三个确实被移除了。
+
+按文件头文档用 `python tests/assembly_manifest.py --write` 重捕获，然后逐条核对 diff：
+**4 个 JSON 只有删除与行号位移，没有任何非预期新增**，`assembly_module_level_sites.json`
+（30 个模块级 install 站点）完全未变。
+
+#### 预期行为差异
+
+**没有**。生产路径上 v94 一直是生效的（§9.5 判定 2/0），下沉前后数值一致。
+真正的差异在于：现在**不装 v94 也对**。
