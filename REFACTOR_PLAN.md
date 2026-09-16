@@ -1216,7 +1216,7 @@ patched canary。本次搬了 `_decision_quality_multiplier`（四大件之一
 | **S6** | 版本串与 `DecisionPolicySignature` 解耦 | ✅ | `1ef2f9e` |
 | S4 | 回测「样本集 / 权重」做成显式数据流 | 待做 | — |
 | S5 | 评分公式抽成单一声明式描述 | 待做 | — |
-| S7 | 明确校准的输入快照边界 | 待做 | — |
+| S7 | 明确校准的输入快照边界 | **边界已实测并锁定**（取向问题待你定，见 §10.8） | 本轮 |
 
 **S2 的做法（沿用项目既有的退役惯例，不删文件）**：`score_runtime_v97` 的先例是
 「停止装载 + 登记到 `institution_scanner.runtime_inventory.RETIRED_FROM_PRODUCTION_PATH`，
@@ -1234,3 +1234,55 @@ patched canary。本次搬了 `_decision_quality_multiplier`（四大件之一
 * 4 份清单的 `final` **0 处值变化**——只有 `score_acceleration_v77._INSTALLED`
   和 `score._score_dimensions_available` 两个键消失（后者因为再没有一步去改它，
   而 `score` 与 `score_core` 是同一个模块对象，值仍是 v79 的）。
+
+### 10.8 S7：校准的输入边界（2026-09-16 实测）
+
+**进入校准的入口一共四个，只有三个是「拟合」，一个只是「推理」：**
+
+| 入口 | 位置 | 允许拟合的数据 |
+|---|---|---|
+| `build_global_calibration` | `analytics_core:3199` | train + validation（point-in-time 已验证） |
+| `calibrate_component_weights` | `analytics_core:3206` | 内部只用 **validation**（`model_calibration:528-561`） |
+| `walk_forward_stats` | `analytics_core:3202` | 每折 train（`entry_date` 与 `exit60_date` 都在折边界之前，`model_calibration:622-625`） |
+| `calibration_details_for_frame` | `analytics_core:2504` | **不拟合**——把已拟合好的校准套到线上排名帧上 |
+
+**「环」在哪（两条，都不是猜测，是逐行追出来的）**
+
+```
+run_historical_backtest → 样本帧（score = final_score）
+   → calibrate_component_weights(validation) → ScoreCalibration.json（analytics_core:3208）
+   → score_core._model_component_weights()（score_core:143）
+   → final_score = setup*w1 + trigger*w2 + execution*w3（score_core:1143-1151）
+   → 回到下一轮
+```
+
+1. **选择回路**：上一轮的权重决定哪些 setup 能变成信号，也就决定了下一轮的**样本总体**；
+2. **分桶回路**：样本帧里的 `score` 就是 `final_score`（`analytics_core:1357` 取 `evaluation_map`，
+   而该值来自 `analytics_core:1078` 的 `final_score`），而校准用 `score` 切 `score_bucket`
+   （`model_calibration:163-169`），`score_bucket` 又是 `build_global_calibration` 的层级键之一
+   （`model_calibration:214-215`）。**上一轮的权重决定了这一轮的层级划分。**
+
+**边界的现状（as-built，已被本轮测试冻结）**
+
+* `build_global_calibration` **自己只丢 `purged`**（`model_calibration:207-208`），
+  `test` 完全靠调用方排除。它的 docstring 写「without using the held-out test set」，
+  读起来像函数自己的承诺，**实际是调用方契约**——生产在 `analytics_core:3196-3198` 守住了，
+  但任何研究侧调用都能把 test 喂进去且不会有任何报错。
+* `calibrate_component_weights` 干净：只用 validation 选权重，test 仅用于报告 `test_ic`
+  （`model_calibration:565-582`）。
+* `walk_forward_stats` 也干净：折内 train 要求 `exit60_date` 早于折起点，注释里明确写了
+  这是为了堵「entry-date-only 切片把 12 月底的结果漏进下一年」（`model_calibration:619-625`）。
+
+**闸门**：`tests/test_calibration_input_boundary.py`（5 项）。反向验证 4 条全咬，且各自只红
+对应的那一条：① 权重搜索改用 validation+test → 红 2 项；② 函数内部也开始丢 test → 红；
+③ 不再丢 purged → 红；④ 生产调用点把 test 放进拟合帧 → 红。
+
+**我不会替你定的三件事（都需要取向判断，不是缺陷）**
+
+1. `build_global_calibration` 的 test 过滤要不要**下沉进函数**？下沉能堵住研究侧误用，
+   但它同时是通用 research API，下沉等于改它的语义（和 §9 里 v94 的
+   `calibration_details_for_frame` 是同一类取舍）。
+2. **分桶回路要不要切断**？可选：用与权重无关的分量（如 `setup_score`）分桶，
+   或用默认权重把历史分重算一遍再分桶。切了更干净，但会作废现有 golden 基线。
+3. `calibrate_component_weights` 目前收的是**含 test 的** `verified_model_frame`，
+   内部再筛 validation。要不要把筛选提到调用侧，让函数签名自己说清边界？
