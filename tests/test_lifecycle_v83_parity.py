@@ -73,6 +73,24 @@ def test_probe_reached_every_scenario(probe: dict[str, Any]) -> None:
         assert name in probe, f"probe is missing {name}: {sorted(probe)}"
 
 
+def test_probe_reports_which_frame_it_sampled(probe: dict[str, Any]) -> None:
+    """Local runs use a real export, CI uses the synthetic fallback.
+
+    The probe originally only accepted ``output/runs/*/AllResults.csv``, which
+    is not in version control — so on a clean checkout it found nothing and all
+    seven gates failed with ``KeyError`` while staying green locally.  It now
+    falls back to a synthetic frame (a parity check only needs identical input
+    on both sides).
+
+    Recording the source keeps that difference visible: otherwise "green here"
+    and "green there" would look identical while exercising different inputs.
+    """
+    source = probe.get("frame_source", "")
+    assert source.startswith(("real:", "synthetic")), (
+        f"probe did not report a frame source: {source}"
+    )
+
+
 def test_v83_replaces_rather_than_wraps_the_stable_engine(probe: dict[str, Any]) -> None:
     """Ownership by ``co_filename``, never ``__module__``.
 

@@ -39,18 +39,55 @@ COMPARE_COLUMNS = (
 )
 
 
-def _sample_frame(limit: int = 120) -> pd.DataFrame:
+def _synthetic_frame(rows: int = 12) -> pd.DataFrame:
+    """Fallback for environments with no cached run -- notably CI.
+
+    ``output/runs/*/AllResults.csv`` is not in version control, so on a fresh
+    checkout the probe had nothing to sample and every parity gate failed with
+    ``KeyError``.  A parity check only needs *identical* input on both sides,
+    not a real frame, so a synthetic one is sufficient -- and it keeps the gate
+    runnable where no historical export exists.
+    """
+    return pd.DataFrame(
+        {
+            "Ticker": [f"{600000 + index}.SH" for index in range(rows)],
+            "DataAsOf": ["2026-09-15"] * rows,
+            "Score": [50.0 + index for index in range(rows)],
+            "OpportunityScore": [60.0 + index for index in range(rows)],
+            "InstitutionalScore": [55.0 + index for index in range(rows)],
+            "InstitutionalTier": ["B"] * rows,
+            "LifecycleStage": ["BASE"] * rows,
+            "SignalStatus": ["WATCH"] * rows,
+            "SignalDays": [3 + index for index in range(rows)],
+            "SignalStartDate": ["2026-09-01"] * rows,
+            "SignalRecencyDays": [1] * rows,
+            "SignalRecencyFactor": [1.0] * rows,
+            "BreakoutQualityFactor": [1.0] * rows,
+            "LongTermScore": [50.0] * rows,
+            "MediumTermScore": [50.0] * rows,
+            "ShortTermScore": [50.0] * rows,
+            "ScoreConfidencePct": [80.0] * rows,
+            "SignalStrengthHistory": ["[]"] * rows,
+            "SignalTrend": ["UP"] * rows,
+            "ActionSuggestion": ["WATCH"] * rows,
+            "RiskNote": [""] * rows,
+            "LifecycleAccelerationVersion": ["v83"] * rows,
+        }
+    )
+
+
+def _sample_frame(limit: int = 120) -> tuple[pd.DataFrame, str]:
     candidates = sorted(
         (ROOT / "output" / "runs").glob("*/AllResults.csv"),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
     if not candidates:
-        raise AssertionError("no output/runs/*/AllResults.csv to sample")
+        return _synthetic_frame(max(5, min(limit, 12))), "synthetic"
     frame = pd.read_csv(candidates[0], encoding="utf-8-sig", nrows=limit, low_memory=False)
     frame["Ticker"] = frame["Ticker"].astype(str).str.strip().str.upper()
     frame["DataAsOf"] = "2026-09-15"
-    return frame
+    return frame, f"real:{candidates[0].parent.name}"
 
 
 def _seed_history(path: pathlib.Path, trade_date: str, tickers: list[str]) -> None:
@@ -164,7 +201,8 @@ def main() -> int:
     }
     REPORT["history_columns_expected"] = list(core.HISTORY_COLUMNS)
 
-    frame = _sample_frame()
+    frame, frame_source = _sample_frame()
+    REPORT["frame_source"] = frame_source
 
     scenarios = (
         ("fresh_no_history", None),
