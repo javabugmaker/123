@@ -6,21 +6,25 @@ and never calls it, so ``signal_lifecycle_core.enrich_signal_lifecycle``
 (:1001-1268, 268 lines) is dead.  Nothing reads the stored reference.
 
 Its docstring claims "Ranking, persistence columns and signal semantics stay
-identical to the stable engine."  Two cases contradict that, both confirmed by
-running the two implementations side by side on the same frame:
+identical to the stable engine."  Two cases used to contradict that, both
+confirmed by running the two implementations side by side on the same frame:
 
-* **empty history** -- v83 raises ``KeyError`` on the two benchmark columns,
-  the stable engine completes.  Reachable: ``daily_pipeline_core`` seeds
-  ``SignalHistory.csv`` into staging only when it already exists.
-* **re-running a trade date already present in history** -- v83 overwrites
-  ``BenchmarkReturn20D`` / ``BenchmarkReturn60D`` with NaN, the stable engine
-  preserves them.  Those columns are written by ``analytics_core.py:787`` and
-  read by ``performance_curve.py:151/156``, so this is not an unread
-  diagnostic: it is data the performance curve consumes.
+* **empty history** -- v83 raised ``KeyError`` on the two benchmark columns.
+  Reachable: ``daily_pipeline_core`` seeds ``SignalHistory.csv`` into staging
+  only when it already exists, so a fresh checkout or a cache miss hit it.
+* **re-running a trade date already present in history** -- v83 overwrote
+  ``BenchmarkReturn20D`` / ``BenchmarkReturn60D`` with NaN.  Those columns are
+  written by ``analytics_core.py:787`` and read by ``performance_curve.py:151/156``,
+  so the loss was consumed by the performance curve, not merely diagnostic.
 
-Neither case is fixed here.  These gates pin current behaviour so the
-divergence cannot shift unnoticed, and so that fixing it later is a deliberate
-act that turns these tests red first.
+**Both were fixed on 2026-09-16** by adding the two columns to v83's snapshot
+and to its ``outcome_columns``, matching ``signal_lifecycle_core.py:1166/1179``
+and :1239/1242.  All three probe scenarios now agree.
+
+The gates below have therefore changed meaning: they no longer pin a known
+divergence, they **pin the repair**.  Reverting the patch re-crashes the empty
+history and re-wipes the benchmark columns, which turns these red again --
+that is exactly what ``tests/reverse_validate_lifecycle_v83.py`` case A checks.
 
 All observations come from ``lifecycle_v83_parity_probe.py`` in a subprocess:
 v83's ``install()`` mutates whatever module it is handed, and the stable
@@ -43,6 +47,8 @@ PROBE = pathlib.Path(__file__).resolve().with_name("lifecycle_v83_parity_probe.p
 CORE = ROOT / "signal_lifecycle_core.py"
 V83 = ROOT / "lifecycle_acceleration_v83.py"
 SKIP_DIRS = {"cache", "output", "tests", "__pycache__", ".git", ".workbuddy-ai"}
+SCENARIOS = ("fresh_no_history", "prior_date_history", "same_date_rerun")
+BENCHMARK_COLUMNS = ("BenchmarkReturn20D", "BenchmarkReturn60D")
 
 
 @pytest.fixture(scope="module")
@@ -63,7 +69,7 @@ def probe() -> dict[str, Any]:
 
 def test_probe_reached_every_scenario(probe: dict[str, Any]) -> None:
     assert "probe_error" not in probe, probe["probe_error"]
-    for name in ("fresh_no_history", "prior_date_history", "same_date_rerun"):
+    for name in SCENARIOS:
         assert name in probe, f"probe is missing {name}: {sorted(probe)}"
 
 
@@ -115,53 +121,54 @@ def test_the_stored_legacy_reference_is_write_only() -> None:
     )
 
 
-def test_empty_history_crashes_v83_but_not_the_stable_engine(
-    probe: dict[str, Any],
+@pytest.mark.parametrize("scenario_name", SCENARIOS)
+def test_implementations_agree_in_every_scenario(
+    probe: dict[str, Any], scenario_name: str
 ) -> None:
+    """The head-line gate: no scenario may diverge, and neither may raise."""
+    scenario = probe[scenario_name]
+    for impl in ("stable", "v83"):
+        error = scenario[impl].get("error")
+        assert error is None, f"{scenario_name}/{impl} raised: {error}"
+    assert scenario["differs_on"] == [], (
+        f"{scenario_name}: the two implementations diverge on "
+        f"{scenario['differs_on']}"
+    )
+
+
+def test_empty_history_no_longer_crashes_v83(probe: dict[str, Any]) -> None:
+    """Repaired 2026-09-16: v83 used to raise KeyError here.
+
+    Reachable whenever ``SignalHistory.csv`` is absent -- a fresh checkout, a
+    wiped ``output/``, or a ``daily-pages.yml`` cache miss.
+    """
     scenario = probe["fresh_no_history"]
-    assert scenario["stable"].get("error") is None, (
-        f"the stable engine also failed on an empty history: {scenario['stable']}"
+    assert scenario["stable"].get("error") is None
+    assert scenario["v83"].get("error") is None, (
+        "v83 regressed on an empty history -- the snapshot is probably missing "
+        f"columns again: {scenario['v83'].get('error')}"
     )
-    error = scenario["v83"].get("error", "")
-    assert "KeyError" in error, (
-        "v83 no longer raises on an empty history -- either it was fixed (update "
-        f"this gate deliberately) or the symptom changed: {error}"
-    )
-    for column in ("BenchmarkReturn20D", "BenchmarkReturn60D"):
-        assert column in error, (
-            f"the KeyError no longer names {column}; the missing-column set "
-            f"changed: {error}"
-        )
 
 
-def test_same_date_rerun_drops_benchmark_returns_in_v83_only(
-    probe: dict[str, Any],
-) -> None:
-    """The data-loss case, with ``Return20D`` as the built-in control.
+def test_same_date_rerun_preserves_benchmark_returns(probe: dict[str, Any]) -> None:
+    """Repaired 2026-09-16: v83 used to wipe both benchmark columns to NaN.
 
-    ``Return20D`` is handled identically by both implementations, which is what
-    makes this a bound to the two benchmark columns rather than a general
-    outcome-column disagreement.
+    ``Return20D`` is kept in the comparison as the built-in control: it was
+    always handled identically, which is what bounded the defect to the two
+    benchmark columns rather than to outcome columns in general.
     """
     scenario = probe["same_date_rerun"]
     stable = scenario["stable"]
     accelerated = scenario["v83"]
     assert stable.get("error") is None and accelerated.get("error") is None
 
-    assert stable["seeded_Return20D"] == accelerated["seeded_Return20D"], (
-        "Return20D now diverges too; the divergence is no longer specific to the "
-        "benchmark columns"
-    )
-    assert all(value is not None for value in stable["seeded_BenchmarkReturn20D"].values()), (
-        f"the stable engine lost the seeded benchmark returns: {stable['seeded_BenchmarkReturn20D']}"
-    )
-    assert all(value is None for value in accelerated["seeded_BenchmarkReturn20D"].values()), (
-        "v83 now preserves BenchmarkReturn20D across a same-date re-run -- it was "
-        f"fixed, so update this gate: {accelerated['seeded_BenchmarkReturn20D']}"
-    )
-    assert all(value is None for value in accelerated["seeded_BenchmarkReturn60D"].values()), (
-        f"{accelerated['seeded_BenchmarkReturn60D']}"
-    )
+    for column in ("Return20D", *BENCHMARK_COLUMNS):
+        assert stable[f"seeded_{column}"] == accelerated[f"seeded_{column}"], (
+            f"{column} diverges across a same-date re-run"
+        )
+        assert all(
+            value is not None for value in accelerated[f"seeded_{column}"].values()
+        ), f"v83 lost the seeded {column}: {accelerated[f'seeded_{column}']}"
 
 
 def test_prior_date_history_is_identical(probe: dict[str, Any]) -> None:
@@ -181,31 +188,26 @@ def test_prior_date_history_is_identical(probe: dict[str, Any]) -> None:
     assert all(value is not None for value in stable["seeded_BenchmarkReturn20D"].values())
 
 
-def test_v83_snapshot_omits_the_benchmark_columns() -> None:
+def test_v83_snapshot_declares_the_benchmark_columns() -> None:
     """The mechanism, pinned statically.
 
     The stable engine declares both benchmark columns in its snapshot
     (``signal_lifecycle_core.py:1166/1179``) and carries them through
-    ``outcome_columns`` (:1239/1242).  v83's snapshot and its
-    ``outcome_columns`` list (:368-373) name neither.  That is why both the
-    crash and the wipe happen.
+    ``outcome_columns`` (:1239/1242).  v83 now does the same.  If either pair
+    is dropped, the crash and the wipe both come back.
     """
-    stable_tree = ast.parse(CORE.read_text(encoding="utf-8"))
-    v83_tree = ast.parse(V83.read_text(encoding="utf-8"))
 
     def declared(tree: ast.AST, name: str) -> int:
         return sum(
-            1
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Constant)
-            and node.value == name
+            1 for node in ast.walk(tree) if isinstance(node, ast.Constant) and node.value == name
         )
 
-    for column in ("BenchmarkReturn20D", "BenchmarkReturn60D"):
+    stable_tree = ast.parse(CORE.read_text(encoding="utf-8"))
+    v83_tree = ast.parse(V83.read_text(encoding="utf-8"))
+    for column in BENCHMARK_COLUMNS:
         assert declared(stable_tree, column) > 0, (
             f"the stable engine stopped declaring {column}"
         )
-        assert declared(v83_tree, column) == 0, (
-            f"v83 now mentions {column} -- the snapshot gap was closed, so "
-            "update the parity gates deliberately"
+        assert declared(v83_tree, column) > 0, (
+            f"v83 no longer declares {column} -- the snapshot gap reopened"
         )

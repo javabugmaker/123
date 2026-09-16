@@ -1924,7 +1924,7 @@ case C 第一轮是**绿的**——它逼出了上面「不能用 `__globals__` 
 
 发现 2（`_rollback_transaction` 异常元组）要不要放宽。
 
-### 9.13 `lifecycle_acceleration_v83`：替换式 overlay + 两处实测分叉（2026-09-16）
+### 9.13 `lifecycle_acceleration_v83`：替换式 overlay + 两处实测分叉（2026-09-16，已修复）
 
 挑零测试模块时选中它：412 行、四个生产入口全部装载、**零专属测试**。它是 v83 家族，
 而上一轮 `SmoothTriggerApproximate` 的判据偏差正出在 `ranking_architecture_v83`，
@@ -1984,15 +1984,39 @@ DAILY 的隔离目录里是真实可发生的；同日重跑更是每天都在�
 场景完全一致。`Return20D` 在三个场景里两版都一致，说明偏差**只**落在那两个
 benchmark 列。
 
-#### 未改，三条理由
+#### 已于 2026-09-16 修复（两条分叉一起修）
 
-1. 修它会改变**已落盘的历史内容**（benchmark 收益率从「重跑即丢失」变成「保留」），
-   不属于「无可见差异的缺陷修复」。
-2. 但**崩溃那条**与 `load_checkpoint` 那次同类，倾向修。
-3. 两处一起修最省事：snapshot 补两列 + `outcome_columns` 补两项即可。
+落地补丁共 **16 行**，与 case A 一致：snapshot 补 `BenchmarkReturn20D` /
+`BenchmarkReturn60D` 两列（位置照 `signal_lifecycle_core.py:1166/1179`），
+`outcome_columns` 补两项（照 `:1239/1242`）。`lifecycle_acceleration_v83.py`
+不在字节预算表内，改动不受限。
 
-已验证该补丁有效（反向验证 case A 实测）：补上之后空历史不再抛异常，同日重跑
-`BenchmarkReturn20D` 恢复为 0.35，与稳定引擎一致。
+**修复前后，三个场景的实测对比：**
+
+| 场景 | 修复前 v83 | 修复后 v83 | 稳定引擎 |
+|---|---|---|---|
+| 空历史 | `KeyError` | 正常 | 正常 |
+| 同日重跑 | `BenchmarkReturn20D` → NaN | **0.35（保留）** | 0.35 |
+| 前一交易日（对照） | 一致 | 一致 | — |
+
+修复后探针的三个场景 `differs_on` **全部为空**。
+
+**连带的三件事（都做了）**
+
+1. **三条 parity 闸门改了语义**：从「记录偏差」改成「锁住修复」
+   （`test_empty_history_no_longer_crashes_v83`、
+   `test_same_date_rerun_preserves_benchmark_returns`、
+   `test_v83_snapshot_declares_the_benchmark_columns`），另新增一条按场景参数化的
+   `test_implementations_agree_in_every_scenario`。反向验证 case A 随之**反向**：
+   改为「撤掉修复」，实测恰好红 5 条，且控制组 `prior_date_history` 保持绿。
+2. **装配清单行号漂移**：`install()` 从 404 行移到 420 行，4 个入口的清单全部变红。
+   重捕获后逐条核对：`install_calls` 数量（123/125/90/85）、`module_level`、
+   `rebound_symbols` **全部不变**，`final` **0 处变化 / 0 消失 / 0 新增**，
+   唯一差异就是那个行号 —— 证明补丁没有改变任何装配行为。
+3. 全量 **513 passed**，ruff 全过。
+
+**行为变更（预期内，需知晓）**：修复后落盘的 `SignalHistory.csv` 会多出两列有效值，
+`PerformanceCurve.csv` 的输出随之改变。这是修复的正确结果，不是新问题。
 
 #### 闸门 7 项 + 反向验证
 
@@ -2011,7 +2035,90 @@ schema 过期影响。
 case A 的价值在于：它同时证明「修复方案可行」。将来真要修，这三条闸门会先红，
 迫使你显式更新断言而不是静默改变行为。
 
-#### 待你定
+#### ~~待你定：是否按 case A 修~~ —— 已执行（2026-09-16 22:59）
 
-是否按 case A 的补丁修 v83（两条分叉一起修，约 12 行；`lifecycle_acceleration_v83.py`
-不在字节预算表内，改动不受限）。
+已修，见上。此处保留问题原文以免历史断链。
+
+### 9.14 `model_audit` 存活图与行为闸门（2026-09-16）
+
+第四个覆盖真空侦察完成，也是当时**最后一个零测试文件引用的模块**：758 行 /
+26,973 字节 / 27 个顶层定义，被 `analytics.py:29`、`main.py:26`、
+`scan_service.py:21` 三个入口 import，全都只调 `run_audit`。
+
+#### 存活图：27 个定义全部可达，0 死代码
+
+从 `run_audit` / `main` / `_parser` 三个根做 BFS，27 个顶层定义**无一不可达**。
+与 `report_core`、`daily_pipeline_core` 同型，与 `scanner_core`（53% 死）相反。
+所以这里的补测试**不会打在死代码上**——这是先做存活图才敢下手的理由。
+
+#### 44 项闸门（零生产代码改动）
+
+* `tests/test_model_audit_behaviour.py`（37 项）：全宇宙守卫的 6 条失败路径、
+  11 个 scenario 的名字与顺序、重建公式的恒等性、小工具的退化输入
+  （`_spearman` 常数/单行/含 inf、`_safe_divide` 零因子、`_top_index` 超长 n）、
+  `scenario_report` 的 10×3 覆盖、`threshold_report` 的 17 行与 `NearRatio` 口径、
+  `run_audit` 的四个产物 / 股票与 ETF 计数 / JSON 不含 NaN。
+* `tests/test_model_audit_provenance.py`（7 项）：可达性、扫描非空的反证、
+  三个入口仍 import `run_audit`、**两条只读闸门**（静态：源码里无任何
+  `config.*` 赋值；动态：`run_audit` 前后 config 全量不变）。
+
+#### 核心契约：自洽帧必须重建回零误差
+
+夹具的 `RankingScore` 由**测试自己用字面常量**连乘得出
+（`base × entry × hard × chase × data × recency × readiness`），不是调模块算的。
+所以 `ReconstructionAbsError ≈ 0` 这条断言是真在验证
+「导出的各因子连乘 == 导出的分数」；模块哪天漏乘或加乘一条腿，它立刻红。
+反向验证 case A 就是这么证明它会咬的。
+
+#### 反向验证 5/5 全咬
+
+| case | 注入 | 红了什么 |
+|---|---|---|
+| A | 重建公式漏乘 `recency` | 重建误差 2 项 |
+| B | 全宇宙规模校验放宽 | size 不符那条 |
+| C | recency 下限 0.7 → 0.0 | clip 那条 + 重建 2 项（连带） |
+| D | `run_audit` 少写一个产物 | 四产物那条 |
+| E | 审计反过来改 config | 静态 + 动态**两条**只读闸门 |
+
+case E 第一轮是绿的，逼出了下面这条方法修正。
+
+#### 方法修正：动态只读闸门的快照必须在 collection 期取
+
+最初把「before 快照」写在测试函数体内。case E 只红了静态闸门，动态那条没红——
+因为 `run_audit` 的修改发生在**函数内部**，而 behaviour 文件按字母序先跑，
+已经把 config 污染了；等 provenance 文件取 before 时，前后两个快照都是污染值。
+
+**修法**：把快照提到模块级（`_CONFIG_BASELINE` 在 import 时求值，即 collection
+阶段，早于任何测试执行）。凡「比较某物是否被改」的闸门，都要问一句
+「基线在哪一刻取的」，否则会被测试顺序静默绕过。
+
+#### 两处撤回（都是我差点报出去的）
+
+**1. `EntrySignal = "UNKNOWN"` 兜底成 AVOID(0.5) —— 不是缺陷。**
+`_entry_factor` 的映射表只有 7 个键，而 `analytics_core.py:1823/1829/1869`
+用 `"UNKNOWN"` 作占位，看起来会落到 `mapping.get("AVOID", 0.50)`。
+实测真实 `output/AllResults.csv`（6835 行）的 `EntrySignal` 分布为
+`HOLD_WAIT 3504 / AVOID 2930 / WAIT_PULLBACK 363 / BREAKOUT_CONFIRM 21 /
+BUY_NOW 13 / PRICE_BREAKOUT 4`，**不在映射表里的取值为空集**。
+UNKNOWN 只是过程中的占位，导出前已被 merge 覆盖。
+
+**2. NEXT_STEPS 的 T6 记错了告警源头，而且修法也不可行。**
+文档说源头在 `tests/test_auction_structure_shadow.py`。实测根因是生产代码
+`institution_scanner/auction_structure.py:351` `_weekly_direction` 的
+`close.resample("W-FRI")`——测试只是报错点。
+
+更关键的是**原建议「显式指定 unit」不成立**：`DataFrame.resample()` 没有 `unit`
+参数，且最简 `resample('W')` 在空 DataFrame 上同样报，属 pandas 2.3.3 内部
+`resample.py:2359 _adjust_bin_edges` 的问题，调用侧改不了。实测四种写法：
+
+| 写法 | 告警 | 与 `W-FRI` 等价 |
+|---|---|---|
+| `resample('W-FRI')` | 有 | — |
+| `resample('7D')` | **无** | **否**，40/40 元素全不同（bin 起点不同） |
+| `groupby(Grouper(freq='W-FRI'))` | 有 | 是 |
+| `groupby(index.to_period('W-FRI'))` | **无** | **是**，12 组随机输入（含 NaN）全部逐元素一致 |
+
+所以存在一个零行为差异的规避写法
+（`groupby(to_period('W-FRI')).last()` + `to_timestamp(how='end').normalize()`），
+但它改的是生产代码，且收益只是消除一个依赖告警。**未改，归你定。**
+若不做，稳妥处置是等 pandas 修，或在 pytest 配置里按 message 精确过滤该条。

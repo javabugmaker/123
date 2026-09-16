@@ -304,11 +304,25 @@ def _build_enricher(core: Any):
                 "Return20D": core._number(
                     result.get("Return20D", pd.Series(index=result.index)), np.nan
                 ),
+                "BenchmarkReturn20D": core._number(
+                    result.get(
+                        "BenchmarkReturn20D",
+                        pd.Series(index=result.index),
+                    ),
+                    np.nan,
+                ),
                 "MaxDrawdown20D": core._number(
                     result.get("MaxDrawdown20D", pd.Series(index=result.index)), np.nan
                 ),
                 "Return60D": core._number(
                     result.get("Return60D", pd.Series(index=result.index)), np.nan
+                ),
+                "BenchmarkReturn60D": core._number(
+                    result.get(
+                        "BenchmarkReturn60D",
+                        pd.Series(index=result.index),
+                    ),
+                    np.nan,
                 ),
                 "MaxDrawdown60D": core._number(
                     result.get("MaxDrawdown60D", pd.Series(index=result.index)), np.nan
@@ -367,8 +381,10 @@ def _build_enricher(core: Any):
         if not history.empty:
             outcome_columns = [
                 "Return20D",
+                "BenchmarkReturn20D",
                 "MaxDrawdown20D",
                 "Return60D",
+                "BenchmarkReturn60D",
                 "MaxDrawdown60D",
             ]
             prior_outcomes = history[

@@ -732,7 +732,7 @@
     },
     {
       "call_site": "runtime_v83.py:47",
-      "func": "lifecycle_acceleration_v83.py:404:install",
+      "func": "lifecycle_acceleration_v83.py:420:install",
       "module_level": false,
       "rebinds": {
         "signal_lifecycle.LIFECYCLE_ACCELERATION_VERSION": "str:'2026-08-21-v83-vectorized-lifecycle-history-v1'",
