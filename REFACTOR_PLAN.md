@@ -1368,3 +1368,59 @@ S5（评分公式抽成单一声明式描述）本体没做——数周、且会
 低优先的死代码，但改动面涉及基线，交给你定。
 
 （对照：`smart_money_stage` 看着同类，其实活着——`scanner_core:694` 在调。）
+
+### 10.11 两个新闸门：walk-forward 折内口径 + PIT 原因溯源（2026-09-16）
+
+`test_calibration_input_boundary.py` 锁住了「哪层数据进得了拟合」，但它对
+`walk_forward_stats` 只写了「每折 train」。本节补上这一层，并顺带定位了
+`heldout_unverified_reason_counts` 恒空的原因。
+
+**(1) `tests/test_walk_forward_split_boundary.py`（4 项）**
+
+**折内 train 是按日期切的，不是按 `split` 标签切的**（`model_calibration:621-625`）：
+
+```python
+train = sample.loc[sample["entry_date"].lt(start) & sample["exit60_date"].lt(start)]
+```
+
+`exit60_date` 那半个条件是特意加的（注释写明：只按 entry 切会把 12 月底的结果漏进下一年）。
+但它有个没人写下来的后果：**一行 `split == "test"` 的样本，只要 entry 与 exit60 都落在折边界之前，
+就属于该折的训练集**。生产的 test split 从 2024-06-28 起，所以 2025 与 2026 折确实在用 test 标签的行拟合。
+
+闸门的做法：构造 130 行落在 2022 折训练窗内、而全帧只有 100 行带 `split == "train"` 的夹具——
+`train_samples == 130` 只有在标签被忽略时才成立。另配一条反向断言（把那 30 行改标成 train，
+结果必须完全不变）和一条非空断言（该折的 test 侧确实是 40 行）。
+
+**反向验证**：给 train 切片加上 `& split.eq("train")` → 红 3 项（130 掉到 100），
+第 4 项（AST 锁调用点）正确地保持绿；把生产调用点换成 `calibration_frame` → 只红第 4 项。
+
+**(2) `tests/test_pit_reason_provenance.py`（4 项）**
+
+**现象**：`heldout_unverified_test_samples = 51142`，而 `heldout_unverified_reason_counts = {}`。
+五万行被判未验证，却说不出原因——分不清是「按 0.25 权重降级保留」还是「整行丢弃」。
+
+**根因（不是计数器的错）**：原因计数靠一个**临时钩子**采集——`point_in_time_backtest` 包装
+`core._verified_point_in_time_frame`，在构建已验证帧时调 `_split_counts`
+（`point_in_time_backtest.py:396-399`）。而 v93 不是包装它，是**替换**它
+（`backtest_production_activation_v93:252-265`），且 `_production_point_in_time_frame`
+**从不回调**被替换掉的那个实现。谁后装谁拿名字，所以只要 v93 在场，PIT 钩子就跑不到，
+`_PIT_SPLIT_COUNTS` 恒空。
+
+于是 `pit_counts.normalize_runtime_counts` 只能从持久的 `rolling_oos` 补回**计数**
+（raw 51142 就是这么来的），**原因无从补起**——它不是填 `{}`，是干脆没有这个键。
+`pit_counts.py` 的模块 docstring 已经承认过这一点（"acceleration/wrapper composition can
+make that transient hook unavailable"），只是没有闸门把它钉住。
+
+闸门的四条断言：
+1. 列在的时候 `_split_counts` **确实**会归因（非空断言：证明问题在装配不在计数器）；
+2. 修复层能补计数、**补不了原因**（`unverified_reasons` 键缺失，且不允许伪造）；
+3. 生产的帧构建器**没有**通过任何被替换的名字回调（模块级与调用期两个名字都查）；
+4. 替换是调用期的、且在 `finally` 里还原（这就是静态探测包括装配清单都看不见它的原因）。
+
+**反向验证四条各自只红对应那一条**：计数器不再归因 → 红 1；修复层伪造原因 → 红 2；
+生产实现加一行对原钩子的调用 → 红 3；删掉 `finally` 里的还原 → 红 4。
+
+**为什么没有直接修**：修它要动 v93（生产 overlay），会新增一个此前恒空的字段的值。
+按本项目节奏「先锁 → 再改」，这一轮只落闸门。要不要把原因统计接进 v93 的
+`_record_run_state`（它其实已经算了 verified / provisional / known_excluded 三类计数，
+只是没按 split 拆、也没记 reason），需要你定。
