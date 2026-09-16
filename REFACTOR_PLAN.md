@@ -666,3 +666,44 @@ reports/` 同样有 09-11 / 09-14 / 09-15，说明是你本地 GUI 在发。推�
 「helper is reading a literal instead of the shared constant」；还原 → 绿。
 
 本地 **248 项全绿、0 失败、0 错误**，ruff 全过。
+
+### 8.7 本轮：conditional_fill_v96 语义锁（并基于证据调整了 #5 的优先级）
+
+原计划给 `score_acceleration_v79` 和 `conditional_fill_v96` 各装一把锁。查完现有
+覆盖后发现顺序该**反过来**：
+
+- **v79 其实已经被覆盖了。** `score_core_golden.json` 的 `function_provenance`
+  显示，v79 的 `_series` / `_latest` / `_rolling_mean` / `_safe_return` /
+  `_score_dimensions_available` / `classify_style` / `score_trend` **就是被测对象
+  本身**，改语义会直接红；`score_endpoint_acceleration_v79` 的 `breakout_score` /
+  `execution_quality_score` / `value_trap_risk` 同样在册。再装一把锁是重复劳动。
+  （另注：v79 的 `score_volume` / `score_accumulation` / `score_structure` /
+  `entry_point` 在该装载顺序下解析到 `score_scale_migration_v95` /
+  `score_cache_guard_v80`，被盖掉了。是否在其他入口生效尚未展开，记为待查。）
+- **`conditional_fill_v96` 是零覆盖。** 它把 `analytics_core._backtest_one_ticker`
+  整个换成条件成交版（WAIT 单只在有效期内回踩进区间才成交），而 analytics golden
+  冻结的 16 个函数全是回测**统计** helper，不含执行器 —— 改成交模型不会有任何
+  闸门报错。
+
+**新增 `tests/test_conditional_fill_v96.py`（6 项）**，锁的是**规则**而不是输出快照：
+
+| 测试 | 锁的规则 |
+|---|---|
+| `test_install_publishes_the_conditional_fill_contract` | install 真的接管了执行器（用 `is` 判身份，不是 `==`）+ 三个常量已发布 |
+| `test_validity_window_ends_after_the_configured_number_of_bars` | 窗口恰好 N 根：第 N 天回踩成交，第 N+1 天不成交 |
+| `test_a_bar_opening_below_the_zone_rejects_the_fill` | 跳空低开是**终局**拒绝，后面再回踩也不成交 |
+| `test_an_open_inside_the_zone_fills_at_the_open` | 区间内开盘 → 按开盘价成交 |
+| `test_an_open_above_the_zone_fills_at_the_zone_high` | 高开回落触及区间 → 按区间上沿成交 |
+| `test_no_touch_inside_the_window_means_no_fill` | 始终没回踩 → 不成交 |
+
+**五条反向验证全部会咬**（逐个改坏 `conditional_fill_v96.py` 的对应判据）：
+有效期 `+1`→`+2`、跳空 `return None`→`continue`、区间内成交价改错、高开回落改用
+最低价、install 不再接管执行器 —— 每条都是「改坏变红、还原转绿」。
+
+> **其中有一条第一次没咬**，值得单记：跳空那条原本的输入里，跳空之后没有别的
+> 触碰，`return None` 和 `continue` 结果完全相同 —— 根本测不出「拒绝是终局的」。
+> 补了一根后续有效回踩的 K 线才区分开。**反向验证不是走形式，它会真的告诉你
+> 测试弱在哪**；这也是本项目第 N 次证明「空转闸门」只能靠注入来发现，看代码看
+> 不出来。
+
+本地 **254 项 0 失败 0 错误**，ruff 全过。
