@@ -1559,3 +1559,91 @@ v93 判定「每行都是缺失快照」→ **全部保留**。同一个输入�
 
 P0 那 381 行要不要真的铺开测。代价是 1–2 天，且要新增一个能构造行情帧的夹具；
 收益是主扫描路径第一次有直接的行为覆盖。也可以先只做 P1/P2 的便宜部分（约半天）。
+
+#### 阶段 1 已完成（2026-09-16 晚，commit 610376a / 086b570 / ef8c480）
+
+P0–P3 全部落地，**全量 413 项通过**（354 基线 + 59 新增），ruff 全过。
+实际界定与上面的优先级表不完全一致，对应关系如下：
+
+| 上面写的级 | 落在哪个文件 | 项 |
+|---|---|---|
+| P0 `scan_single_from_df` | `test_scanner_core_behaviour.py` | 10 |
+| P1 `_analyse_one_ticker_from_df` | `test_scanner_core_active_chain.py`（另含 `_analyse_one_ticker`、`run_parallel_indicator_scan`、`_emit_progress`、`_raise_if_cancelled`） | 17 |
+| P2 `run_parallel_indicator_scan` | 同上（降序与异常隔离另见 behaviour） | — |
+| P3 `_emit_progress` | 同上 | — |
+
+另做了两件上面标为「不做」的，理由见后：
+`test_scanner_core_checkpoint.py`（20 项，`checkpoint` 家族的文件契约）与
+`test_scanner_core_result_contract.py`（12 项，`ScanResult` 字段一致性 + 两个运行时事实）。
+
+**修掉一个真缺陷**（`086b570`）：`load_checkpoint` 的 `except` 覆盖
+`(OSError, UnicodeDecodeError, JSONDecodeError, TypeError, ValueError)`，漏了
+`AttributeError`。checkpoint 是「合法 JSON 且顶层非对象」（`[1,2,3]`、`null`）时
+`data.get("active")` 抛出并冲出 `try`，把「读不懂就重扫一遍」变成「整个扫描中止」。
+修法是在取值前 `if not isinstance(data, dict): return set()`，而不是把
+`AttributeError` 塞进 `except`——后者会连真实属性访问失误一起吞掉。
+
+**发现但未改的口径分叉**：`_analyse_one_ticker` 的缓存缺失分支原样返回传入 ticker，
+命中路径经 `scan_single_from_df`（454-455）会归一化并回写。不是查盘 bug
+（`_load_cache → _cache_path → _safe_cache_stem` 内部已归一化，两分支找到同一文件），
+差异只在发布结果的字符串，且仅在调用方传入不规范 ticker 时可见。测试按现状锁死。
+
+**更正一处漏记**：活跃区不止 `_emit_progress`，`_raise_if_cancelled` 同样活跃——
+`scanner_resume_v59` 在 388 / 476 / 583 / 655 / 675 五处调它。
+
+**一个差点误判的探测**：`scanner` 入口的装配清单里 0 条 `scanner_core` 条目，
+一度以为推翻了「`run_scan` 不在生产路径」。起子进程探完才明白 `scanner.py` 只有 24 行，
+是别名门面（`sys.modules[__name__] = _core`），不是生产入口。
+教训：manifest 里某入口 0 条目，先确认它是不是入口，再怀疑结论。
+
+### 10.15 阶段 2 侦察：950 行死代码能不能删（2026-09-16）
+
+§10.14 留下的问题是：`run_scan` 的 828 行、`checkpoint` 家族、三个不可达 helper，
+合计约 950 行，是下沉还是删。侦察结论是**建议先不删，改为装闸门**，理由如下。
+
+#### 三条硬约束
+
+**1. 三个名字是公共 API，删名会直接炸。**
+`main_core:57` 是 `from scanner import clear_checkpoint, run_parallel_indicator_scan, run_scan`，
+`main_core:130` 把 `run_scan` 传给 `execute_scan`；`scan_service.py:100` 做的是
+`run_scan_fn is _core.run_scan`。删掉名字是 `ImportError` / `NameError`，不是静默降级。
+
+**2. `canonical_execution` 只比身份，不比归属——这是本轮最重要的发现。**
+
+`scan_service.py:100` 用一次身份比较决定是否执行「canonical」的全部附加动作：
+强制 `enrichment` 契约与 cache-first 市场契约（104-136）、把 checkpoint 清除推迟到
+发布之后（141-142）、成功后清 checkpoint + 记录全市场快照 + 刷新审计 + 发布报告
+（157-167）。为假时**这些全部静默跳过**：扫描照常返回结果，但不发报告、不记快照、
+无任何报错，输出上也看不出差别。
+
+而 `run_scan_fn` 的默认值是**导入时求值**的 Python 默认参数，比较的是两个不同时刻
+捕获的对象，是否相等取决于 import 顺序。真正的隐患是：**两边可以同时是 legacy 的
+828 行本体**——此时 `is` 仍然成立、`canonical_execution` 仍为真，但那些 canonical
+附加动作跑在一个没有续跑、没有 v59 checkpointing 的扫描之上。
+只断言身份抓不到这个，必须同时断言实现归属。
+
+实测（`test_scan_service_canonical_execution.py`，4 项，子进程探测）：
+`main_core.run_scan`、`scanner_core.run_scan`、`scan_service.execute_scan` 的默认
+`run_scan_fn` 三者同一对象，且实现归属均为 `scan_resume_boundary.py`——即当前装对了。
+闸门用的是 `__code__.co_filename` 而非 `__module__`，后者可被 overlay 伪造。
+
+**3. legacy 分支当前无触发者，但删掉本体会把「走 legacy」变成「静默无结果」。**
+`v59:421-422` 仅当 checkpoint 是 plain set（非 `CheckpointState`）时才调
+`_LEGACY_RUN_SCAN`，即只有 stub 了 `load_checkpoint` 的老集成会踩到。
+静态扫描 `tests/` 确认当前无任何注入（`test_no_test_injects_a_plain_set_into_the_legacy_branch`）。
+把 828 行换成 shim 后，这类调用方不会报错，而是拿到空结果——**比报错更难查**。
+
+#### 三个选项与代价
+
+| 选项 | 做法 | 代价 |
+|---|---|---|
+| **A（推荐）** | 保持现状，已有 4 项闸门守着身份与归属 | 950 行死代码留在文件里 |
+| B | 把 828 行下沉进 v59，`scanner_core` 留抛异常的 shim | 老集成从「走 legacy」变成「抛异常」，属行为变更；shim 仍需保留名字 |
+| C | 直接删 | 违反约束 1，`main_core` / `scan_service` 直接 ImportError |
+
+A 的收益已经被 §10.14 的四个测试文件拿到：活跃区有覆盖了，死区有 provenance 与
+canonical 闸门锁着分类。删代码只省行数，不减风险。
+
+#### 待你定
+
+是否接受 A；若选 B，需要你确认「老集成可以改为抛异常」这一行为变更。
