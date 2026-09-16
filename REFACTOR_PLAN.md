@@ -865,3 +865,32 @@ v94 —— 现在有闸门了，这一步才是安全的。
 
 > 实现注意：本机 3.14 解释器加载不了 `_overlapped`，in-process `import main` 会失败，
 > 所以这条锁要像 `test_assembly_manifest` 那样走**子进程 + 打桩**。CI 是 3.11，不受影响。
+
+### 9.6 #4 落地：胜者锁 `tests/test_backtest_overlay_winners.py`（8 项）
+
+把 §9.5 的结论固化成闸门：子进程导入 `main` + `daily_pipeline` +
+`historical_backtest`，断言 4 个争议符号解析到预期实现。
+
+| 争议符号 | 锁定胜者 | 记录中的输家 |
+|---|---|---|
+| `analytics_core._backtest_one_ticker` | `backtest_alignment` | `sample_acceleration_v80`、`vectorization_v98` |
+| `analytics_core._backtest_one_ticker_cached` | `institution_scanner.point_in_time_backtest` | `cache_acceleration_v80`、`incremental_v78` |
+| `analytics_core._signal_evaluations` | `backtest_fastscore_v80` | `fastpath_v78` |
+| `backtest_fastscore_v80._fast_score_matrix` | `scoring_consistency_v94` | `vectorization_v98` |
+
+设计要点：
+- **走子进程**：导入生产入口会全进程安装 overlay，会污染套件其余部分。
+- **只比 `__module__`**：胜者多是 `install()` 里的闭包（`<locals>.aligned_one`），
+  比对完整限定名太脆，比对模块名既稳又有意义。
+- **正反成对**：除了「胜者是谁」，还断言「记录在案的输家没赢」，并且探针取不到
+  结果时**大声抛错**——否则这就是个空转闸门。
+
+反向验证（两条，都咬）：
+1. 把 `_signal_evaluations` 的期望胜者改成 `fastpath_v78` → 红；
+2. 让子进程不输出探测结果 → 红（探针不可用必须炸，不能安静通过）。
+
+> 打桩说明：子进程给 `_overlapped` 与 `tickflow` 打了桩，因为部分 Windows 构建
+> （本机 3.14）加载不了 `_overlapped`，会在 `tickflow` / `curl_cffi.aio` 处中断导入
+> 链。**我们测的是 import 图，不是厂商客户端**，打桩不影响判定。CI 是 3.11，无此问题。
+
+本地 **270 项、0 真实失败**（26 项为沙箱 `WinError` 噪声），ruff 全过。
