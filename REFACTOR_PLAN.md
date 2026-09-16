@@ -1513,3 +1513,49 @@ v93 判定「每行都是缺失快照」→ **全部保留**。同一个输入�
 反向验证：接进 `score_ticker` → 红 2 项；删掉符号 → 红 1 项（声明失效）。
 
 **真要删时的代价已降到最低**：改这一处声明 + 重捕获 golden，一步到位。
+
+### 10.14 阶段 1 侦察：`scanner_core` 的存活图（2026-09-16）
+
+`scanner_core.py` 是 1,784 行 / 21 个顶层函数 / **零直接行为测试**，全仓库最大的覆盖真空。
+但动手补测试之前必须先做 `score_core` 那一课——**先分清哪些符号生产真的在跑**，
+否则一半的测试会打在死代码上。
+
+#### 存活图
+
+| 区 | 符号 | 行数 | 生产归属 |
+|---|---|---|---|
+| **汇合点** | `scan_single_from_df` | 381 | `scanner_core`。两条生产路径都到它 |
+| 活跃链 | `run_parallel_indicator_scan` / `_analyse_one_ticker` / `_analyse_one_ticker_from_df` | 78 | `scanner_core`；`main_core:188` 与 `v59:564` 都在调 |
+| 活跃（薄） | `_emit_progress` | 13 | v59 在用 |
+| 被接管 | `save_checkpoint` / `load_checkpoint` / `clear_checkpoint` / `_checkpoint_trade_date` | 45 | `scanner_resume_v59`（三个入口的装配清单一致） |
+| 被包装、本体不走 | `run_scan` | **828** | `scan_resume_boundary` 闭包 → v59。`scanner_core` 那份只作为 `_LEGACY_RUN_SCAN` 被调一次，且兜在「checkpoint 不是 `CheckpointState`」的兼容分支里（`v59:421-422`，注释写明是给老测试用的） |
+| 不可达 | `scan_single` / `_quality_hard_data_complete_from_row` / `_load_previous_tickers` | 66 | 调用点全部落在 `run_scan` 体内 |
+
+**合计：活跃约 470 行（26%），死亡约 950 行（53%）**，其余是数据类与小工具。
+不区分地"补 scanner_core 的行为测试"，会有一半打在死代码上——和 `score_core` 同一个坑。
+
+#### 行为测试优先级（只针对活跃区）
+
+| 级 | 目标 | 建议测什么 |
+|---|---|---|
+| **P0** | `scan_single_from_df`（381 行） | 同一帧两次调用结果一致（纯函数性）；`ScoreBreakdown` 分量落在 [0,100]、`total` 与分量的关系；`error` / 兜底分支；数据不足、全 NaN、ETF 与股票两条路 |
+| P1 | `_analyse_one_ticker_from_df` | 缓存缺失 → `error` 分支；enriched 直通分支 |
+| P2 | `run_parallel_indicator_scan` | 结果按 `score.total` 降序（1782）；单票异常不影响整批（1776-1785） |
+| P3 | `_emit_progress` | 回调健壮性（None 回调、抛异常的回调） |
+
+**不做**：`run_scan` 的 828 行、checkpoint 家族、三个不可达 helper——
+除非先决定它们是要下沉还是要删。那是另一件事（阶段 2 的候选）。
+
+#### 闸门
+
+`tests/test_scanner_core_provenance.py`（4 项），锁住上面这张存活图。
+反向验证三条各自只红对应那一条：
+
+* v59 不再委托 `_analyse_one_ticker_from_df` → 红「汇合点」那条；
+* 把 `scan_single` 接进活跃路径 → 红「不可达」那条；
+* 让装配清单声称 `save_checkpoint` 未被接管 → 红「被接管」那条。
+
+#### 待你定
+
+P0 那 381 行要不要真的铺开测。代价是 1–2 天，且要新增一个能构造行情帧的夹具；
+收益是主扫描路径第一次有直接的行为覆盖。也可以先只做 P1/P2 的便宜部分（约半天）。
