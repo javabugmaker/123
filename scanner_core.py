@@ -413,6 +413,12 @@ def load_checkpoint(data_source: str = "") -> set[str]:
         return set()
     try:
         data = json.loads(_CHECKPOINT_PATH.read_text(encoding="utf-8"))
+        # Structurally valid JSON that is not an object (a list, null)
+        # would raise AttributeError on .get below.  That is absent from
+        # the except clause, so it aborted the scan instead of costing one
+        # rescan; reject the shape explicitly rather than widening the catch.
+        if not isinstance(data, dict):
+            return set()
         if not data.get("active"):
             return set()
         if data.get("trade_date") != _checkpoint_trade_date():
