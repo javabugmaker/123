@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import logging
 import sys
@@ -79,6 +80,34 @@ SCALAR_TO_VECTORISED: dict[str, str] = {
     "breakout_score": "_breakout",
     "execution_quality_score": "_entry_execution",
     "score_ticker": "final_score_series",
+}
+
+#: ``score_core`` functions that ``score_ticker`` calls but which have **no**
+#: vectorised counterpart.  The two modules share no names, so the only way to
+#: know they are shared rather than duplicated is to say so here.
+#:
+#: Every other table in this module locks the vectorised side.  Without this
+#: one the map is one-way: adding a scalar call that the vectorised path never
+#: learns about would not move a single assertion.
+SCALAR_ONLY_CALLS: dict[str, str] = {
+    "classify_style": (
+        "returns the style *label*, a string, not a score. The vectorised path "
+        "scores the fast full-market corpus for ranking and never emits a "
+        "label, so there is nothing to align; a change here moves reporting, "
+        "not the numbers this file compares."
+    ),
+    "entry_point": (
+        "entry timing is *shared*, not duplicated: the FAST path calls "
+        "score_core.entry_point too (backtest_fastscore_v80:608, "
+        "backtest_fastpath_v78:356, conditional_fill_v96:75). There is no "
+        "second implementation, so there is no alignment to lock -- the danger "
+        "this entry guards against is someone writing a vectorised entry_point "
+        "and forgetting to say so."
+    ),
+    "tradable_price_decimals": (
+        "pure precision helper (3 decimals for ETFs, 2 for stocks). No state, "
+        "no history, nothing a second implementation could drift on."
+    ),
 }
 
 #: Private helpers in the vectorised module that are *not* score components.
@@ -255,6 +284,73 @@ def test_every_vectorised_function_is_declared() -> None:
         "is either a score component (declare its scalar counterpart) or a "
         f"helper (add it to VECTOR_HELPERS): {sorted(undeclared)}"
     )
+
+
+def _score_ticker_public_calls() -> set[str]:
+    """Public ``score_core`` functions that ``score_ticker`` actually calls.
+
+    Read from source rather than by tracing: the point is to see what the
+    specification *wires together*, which is exactly what a trace of a patched
+    module would hide.
+    """
+    source = (Path(__file__).resolve().parents[1] / "score_core.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    public = {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
+    }
+    score_ticker = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "score_ticker"
+    )
+    called = {
+        node.func.id
+        for node in ast.walk(score_ticker)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    return called & public
+
+
+def test_every_scalar_call_in_score_ticker_is_declared() -> None:
+    """The scalar half of the map, which was missing.
+
+    ``test_every_component_key_is_declared`` locks the vectorised side: a new
+    component key cannot appear unannounced.  This locks the other direction --
+    ``score_ticker`` may only call functions this file knows about, so wiring a
+    new component into the specification forces a decision here: it either has
+    a vectorised counterpart, or it is declared scalar-only with a reason.
+
+    Both directions are needed.  With only the vectorised one, adding a scalar
+    component that the FAST path never implements stays silent as long as it
+    does not happen to move ``final_score`` on these particular frames.
+    """
+    called = _score_ticker_public_calls()
+    components = set(SCALAR_TO_VECTORISED) - {"score_ticker"}
+    declared = components | set(SCALAR_ONLY_CALLS)
+
+    undeclared = sorted(called - declared)
+    assert not undeclared, (
+        "score_ticker calls score-core functions this file does not know about; "
+        "either give each a vectorised counterpart in SCALAR_TO_VECTORISED or "
+        f"declare it scalar-only with a reason: {undeclared}"
+    )
+
+    stale = sorted(components - called)
+    assert not stale, (
+        f"declared components that score_ticker no longer calls: {stale}. "
+        "Either the specification dropped them (update the map) or they were "
+        "rewired somewhere the map does not look."
+    )
+
+
+def test_every_scalar_only_call_states_a_reason() -> None:
+    """Same rule as the vectorised exemptions: no reason, no exemption."""
+    for name, reason in SCALAR_ONLY_CALLS.items():
+        assert len(reason) > 60, f"scalar-only call {name!r} has no real justification"
 
 
 def test_the_scalar_counterparts_all_exist() -> None:

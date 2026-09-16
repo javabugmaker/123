@@ -1329,3 +1329,42 @@ v79 不再接管 `_model_component_weights`。作用域内补丁那部分只能�
 **S4 本体待你定的**：哪一层是权威？尤其是 `_verified_point_in_time_frame`，同一件事现在有两个实现
 （`point_in_time_backtest.pit_verified` 静止态 + v93 调用期版本），它们什么情况下会给出不同的
 样本集，我没验——那需要先定「哪个是权威」才能判断另一个是不是冗余。
+
+### 10.10 S5 前置（2026-09-16）：补齐映射表的标量侧 + 两处死代码
+
+S5（评分公式抽成单一声明式描述）本体没做——数周、且会作废全部 golden 基线。
+这里只清掉了动工前该清的两件事。
+
+**(1) S3 建的映射表是单向的，已补上另一半。**
+
+`tests/test_backtest_score_vectorized_alignment.py` 原本只锁**向量化侧**：
+`test_every_component_key_is_declared` 保证 FAST 不会多出一个未声明的分量键，
+`test_every_vectorised_function_is_declared` 保证那个模块里不会冒出未声明的私有函数。
+两个都很硬，但都是**从 FAST 往回看**。
+
+反过来是空的：往 `score_core.score_ticker` 里接一个新分量，只要它没恰好改动测试帧上的
+`final_score`，就不会有任何一条断言变红。已补：
+
+* `SCALAR_ONLY_CALLS` —— `classify_style` / `entry_point` / `tradable_price_decimals`，
+  三个被 `score_ticker` 调用但没有向量化对应物的函数，**每个都要写理由**（照搬原有的
+  `VECTOR_ONLY_KEYS` 规矩：没理由就不许豁免）。其中 `entry_point` 的理由值得单说：
+  它是**共用**而非**重复**——FAST 路径也调 `score_core.entry_point`
+  （`backtest_fastscore_v80:608`、`backtest_fastpath_v78:356`、`conditional_fill_v96:75`），
+  所以没有第二个实现需要对齐；这条豁免真正防的是「哪天有人写了个向量化的 entry_point 却不说」。
+* `test_every_scalar_call_in_score_ticker_is_declared` —— 双向都查：未声明的调用要报，
+  声明了却不再被调用的也要报（映射表陈旧）。
+  反向验证两条都咬：接一个未声明的 `cyclical_turn_factor` → 红；把 `score_trend` 的调用
+  摘掉 → 红（连带的 2 条 parity 测试也红，正确）。
+
+**(2) 两处死代码（都不动，需你确认——它们被 golden 夹具钉住了）**
+
+| 符号 | 位置 | 情况 |
+|---|---|---|
+| `cyclical_turn_factor` | `score_core:415`（约 120 行） | **全仓库零调用点**。生产没有，`score_core` 内部也没有 |
+| `value_trap_risk_score` | `score_core:906` | 恒等包装器：`return value_trap_risk(df)`，生产零引用 |
+
+两者唯一的活着的引用是 `tests/golden_score_core.py`（把它们列进捕获用例）和
+`tests/reverse_validate_score_core.py`。**删它们要重捕获 golden**，所以不是我该独自决定的：
+低优先的死代码，但改动面涉及基线，交给你定。
+
+（对照：`smart_money_stage` 看着同类，其实活着——`scanner_core:694` 在调。）
