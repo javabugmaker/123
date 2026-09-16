@@ -194,7 +194,15 @@ def _normalize_policy_value(value: Any) -> Any:
     raise TypeError(f"unsupported policy value: {type(value).__name__}")
 
 
-def decision_policy_payload() -> dict[str, Any]:
+def decision_policy_payload(exclude_version_strings: bool = False) -> dict[str, Any]:
+    """Policy parameters that produced a result.
+
+    ``exclude_version_strings`` drops the ``*_VERSION`` names (nine of the 162
+    names at last count).  Those are *labels*, not parameters: each names the
+    patch that last moved it (``…-v80-tradeability-sample-array-v1``), so
+    rewording one -- even cosmetically -- moves the signature without touching a
+    single threshold.  See ``decision_policy_parameter_digest``.
+    """
     import config
 
     payload: dict[str, Any] = {}
@@ -202,6 +210,8 @@ def decision_policy_payload() -> dict[str, Any]:
         if name in _POLICY_EXCLUDED_NAMES:
             continue
         if name not in _POLICY_NAMES and not name.startswith(_POLICY_PREFIXES):
+            continue
+        if exclude_version_strings and name.endswith("_VERSION"):
             continue
         value = getattr(config, name)
         try:
@@ -211,14 +221,35 @@ def decision_policy_payload() -> dict[str, Any]:
     return payload
 
 
-def decision_policy_signature() -> str:
+def _policy_digest(payload: dict[str, Any]) -> str:
     raw = json.dumps(
-        decision_policy_payload(),
+        payload,
         ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def decision_policy_signature() -> str:
+    """Fail-safe fingerprint: changes on *any* policy change, including labels.
+
+    Deliberately inclusive.  A narrower digest would let a policy change that
+    forgets to touch a parameter slip through with an unchanged signature.
+    """
+    return _policy_digest(decision_policy_payload())
+
+
+def decision_policy_parameter_digest() -> str:
+    """Discriminating fingerprint: changes only when a *parameter* changes.
+
+    ``DecisionPolicySignature`` answers "did anything about the policy change?"
+    and always says yes -- including for a pure label edit.  This one answers
+    "did a number change?", which is what you want when a signature moves and
+    you need to know whether the strategy actually changed or someone just
+    reworded a version string.
+    """
+    return _policy_digest(decision_policy_payload(exclude_version_strings=True))
 
 
 def candidate_generation_stage(backtest_stage: pd.Series) -> pd.Series:

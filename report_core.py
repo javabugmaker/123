@@ -62,6 +62,7 @@ from institution_scanner.report_selection import (
 from performance_cache import BACKTEST_CACHE_VERSION, INDICATOR_CACHE_VERSION
 from result_contract import (
     FULL_UNIVERSE_SCOPE,
+    decision_policy_parameter_digest,
     decision_policy_signature,
     validate_ranking_input,
 )
@@ -478,6 +479,7 @@ def _results_to_dataframe(results: list[ScanResult]) -> pd.DataFrame:
                 "DecisionIntegrityVersion": DECISION_INTEGRITY_VERSION,
                 "FundamentalGateVersion": FUNDAMENTAL_GATE_VERSION,
                 "DecisionPolicySignature": decision_policy_signature(),
+                "DecisionPolicyParameterDigest": decision_policy_parameter_digest(),
                 "IndicatorCacheVersion": INDICATOR_CACHE_VERSION,
                 "BacktestCacheVersion": BACKTEST_CACHE_VERSION,
                 "RunId": run_id,
@@ -578,6 +580,7 @@ def validate_decision_integrity(frame: pd.DataFrame) -> None:
             "DecisionIntegrityVersion": DECISION_INTEGRITY_VERSION,
             "FundamentalGateVersion": FUNDAMENTAL_GATE_VERSION,
             "DecisionPolicySignature": decision_policy_signature(),
+            "DecisionPolicyParameterDigest": decision_policy_parameter_digest(),
         }
         for column, expected in expected_versions.items():
             if column not in frame.columns:
@@ -1549,6 +1552,7 @@ DECISION_RESULT_COLUMNS: tuple[str, ...] = (
     "DataAsOf", "DataTradingAgeDays", "PriceAdjustmentMode", "AdjustmentBaseDate",
     "ATRAsOf", "CorporateActionRebaseDetected", "RunId", "RankingRunId",
     "RankingScope", "RankingUniverseSize", "DecisionPolicySignature",
+    "DecisionPolicyParameterDigest",
     "ModelVersion", "PipelineVersion", "OutputContractVersion",
     "DecisionIntegrityVersion", "FundamentalGateVersion",
 )
@@ -1655,6 +1659,12 @@ def refresh_candidate_exports(
         "DecisionPolicySignature",
         pd.Series(decision_policy_signature(), index=ranked.index),
     ).replace("", decision_policy_signature()).fillna(decision_policy_signature())
+    ranked["DecisionPolicyParameterDigest"] = ranked.get(
+        "DecisionPolicyParameterDigest",
+        pd.Series(decision_policy_parameter_digest(), index=ranked.index),
+    ).replace("", decision_policy_parameter_digest()).fillna(
+        decision_policy_parameter_digest()
+    )
     if "BacktestStage" in ranked:
         ranked["CandidateGenerationStage"] = _candidate_generation_stage(
             ranked["BacktestStage"]

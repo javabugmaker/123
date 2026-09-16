@@ -72,6 +72,7 @@ PUBLIC_CANDIDATE_COLUMNS: Final[tuple[str, ...]] = (
     "RankingRunId",
     "ModelWeightSignature",
     "DecisionPolicySignature",
+    "DecisionPolicyParameterDigest",
     "ResearchDiversityPenalty",
 )
 VIEW_FLAGS: Final[tuple[tuple[str, str], ...]] = (
