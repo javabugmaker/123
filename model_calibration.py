@@ -114,13 +114,17 @@ def _spearman(
         or data["score"].nunique() < 2
         or data["target"].nunique() < 2
     ):
-        return 0.0
+        # Undefined, not zero: a constant run carries no evidence about
+        # rank agreement, and 0.0 would be read as "measured, no signal"
+        # and counted as an unstable fold by calibration_stability_stats,
+        # which already drops non-finite values via np.isfinite.
+        return float("nan")
     score_rank = data["score"].rank(method="average").to_numpy(dtype=float)
     target_rank = data["target"].rank(method="average").to_numpy(dtype=float)
     weight_array = data["weight"].to_numpy(dtype=float)
     total = float(weight_array.sum())
     if total <= 0.0:
-        return 0.0
+        return float("nan")
     score_mean = float(np.dot(score_rank, weight_array) / total)
     target_mean = float(np.dot(target_rank, weight_array) / total)
     score_centered = score_rank - score_mean
