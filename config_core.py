@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from log_retention import prune_logs_once_per_day
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -432,6 +434,7 @@ def setup_logging(
     if log_to_file:
         _log_dir = log_dir or LOG_DIR
         _log_dir.mkdir(parents=True, exist_ok=True)
+        prune_logs_once_per_day(_log_dir)
         safe_name = name.replace("institution_scanner", "scanner").replace(".", "_")
         log_path = _log_dir / f"{safe_name}_{time.strftime('%Y%m%d_%H%M%S')}.log"
         fh = logging.FileHandler(log_path, mode="a")
