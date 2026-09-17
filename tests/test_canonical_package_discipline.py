@@ -59,7 +59,19 @@ KNOWN_LONG_FUNCTIONS: Final[frozenset[tuple[str, str]]] = frozenset(
 # Frozen at the current on-disk size: only shrinking is allowed.
 MODULE_BYTE_BUDGETS: Final[dict[str, int]] = {
     "auction_structure.py": 72_227,
-    "backtest_score_vectorized.py": 35_233,
+    # 35_233 -> 35_680: the v95 nominal-scale migration reached this module.
+    # Two lazy accessors (``_volume_nominal`` / ``_accumulation_nominal``) import
+    # VOLUME_SCALE and ACCUMULATION_SCALE instead of restating 25/22 and 25/23,
+    # and ``return_components`` gained four component-level keys.
+    #
+    # This is a defect fix, not new capability: without it the vectorised path
+    # scored Volume and Accumulation on the pre-v95 scale while every other
+    # entry point used the migrated one (+13.6% / +8.7%), and no test could see
+    # it because only aggregate keys were compared. The four keys are what let
+    # the alignment test compare components numerically.
+    #
+    # Refrozen at the post-fix size, so this module is shrink-only again.
+    "backtest_score_vectorized.py": 35_680,
     # Extracted from analytics_core (T2').  It is below LARGE_MODULE_THRESHOLD,
     # so the "every large module has a budget" gate would not have caught it --
     # but these are 17.5 KB of statistics helpers that used to sit inside a

@@ -33,6 +33,28 @@ def _component_weights() -> tuple[float, float, float]:
     return _model_component_weights()
 
 
+def _volume_nominal() -> tuple[float, float]:
+    """(scale, nominal_max) for Volume; owned by ``score_scale_migration_v95``.
+
+    Volume's terms reach only 22 of its nominal 25 points. Imported, never
+    restated -- a second 25/22 literal is how this path drifted onto the
+    pre-v95 scale. Lazy like ``_component_weights`` (the owner is at the root).
+    """
+    from score_scale_migration_v95 import VOLUME_NOMINAL_MAX, VOLUME_SCALE
+
+    return float(VOLUME_SCALE), float(VOLUME_NOMINAL_MAX)
+
+
+def _accumulation_nominal() -> tuple[float, float]:
+    """(scale, nominal_max) for Accumulation -- see ``_volume_nominal``."""
+    from score_scale_migration_v95 import (
+        ACCUMULATION_NOMINAL_MAX,
+        ACCUMULATION_SCALE,
+    )
+
+    return float(ACCUMULATION_SCALE), float(ACCUMULATION_NOMINAL_MAX)
+
+
 def _col(df: pd.DataFrame, name: str) -> np.ndarray | None:
     if name not in df.columns:
         return None
@@ -282,7 +304,8 @@ def _volume(
         s += np.where(vc_z >= 10, pos_mean30 * 3.0, 0.0)
         s += np.where(vc_z >= 10, _clampc(z_ff / 2.0) * 2.0, 0.0)
 
-    return _clampc(s, 0.0, 25.0)
+    scale, nominal_max = _volume_nominal()
+    return _clampc(s * scale, 0.0, nominal_max)
 
 
 def _accumulation(
@@ -364,7 +387,8 @@ def _accumulation(
             np.where(fin & (mfi >= 30) & (mfi <= 80), 1.5, 0.0),
         )
 
-    return _clampc(s, 0.0, 25.0)
+    scale, nominal_max = _accumulation_nominal()
+    return _clampc(s * scale, 0.0, nominal_max)
 
 
 def _volatility(
@@ -963,5 +987,12 @@ def final_score_series(
             "exec_raw": exec_raw,
             "trap": trap,
             "coverage": coverage,
+            # Component-level, post style-adjustment, matching the same-named
+            # ``ScoreBreakdown`` fields. A divergence confined to one component
+            # moves ``final`` by a fraction of a point and is invisible above.
+            "volume": adjusted[1],
+            "accumulation": adjusted[2],
+            "structure": adjusted[4],
+            "trend": adjusted[0],
         }
     return final

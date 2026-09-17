@@ -38,6 +38,63 @@ def _load_unpatched_exact_scorer() -> ModuleType:
 
 EXACT_SCORE = _load_unpatched_exact_scorer()
 
+
+def _load_production_semantics_scorer() -> ModuleType:
+    """``score_core`` isolated *and* carrying the v95 nominal-scale migration.
+
+    ``_load_unpatched_exact_scorer`` bypasses process-global overlays, which is
+    necessary but not sufficient: production semantics *include* v95. Every
+    production entry point sees ``score_volume`` / ``score_accumulation``
+    rescaled onto their nominal 25-point ranges -- ``test_scoring_chain_winners``
+    locks ``score_scale_migration_v95`` as that owner -- and the vectorised
+    mirror now applies the same factors.
+
+    Comparing the vectorised path against the raw pre-v95 kernels would lock in
+    the very divergence this file exists to prevent: both sides would agree with
+    each other and still disagree with production. That is exactly how the
+    Volume/Accumulation split went unnoticed -- the reference here was the
+    un-migrated scalar, so "aligned" meant "aligned to a scale production does
+    not use".
+
+    A second isolated namespace is used so the raw reference stays available for
+    the assertion that the migration is not a no-op.
+    """
+    name = "_test_score_core_with_v95_scale"
+    cached = sys.modules.get(name)
+    if cached is not None:
+        return cached
+    path = Path(__file__).resolve().parents[1] / "score_core.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load scalar scorer: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+
+    import score_scale_migration_v95 as v95
+
+    native_volume = module.score_volume
+    native_accumulation = module.score_accumulation
+
+    def score_volume(df):  # type: ignore[no-untyped-def]
+        return v95._scale_dimension(
+            native_volume(df), v95.VOLUME_RAW_MAX, v95.VOLUME_NOMINAL_MAX
+        )
+
+    def score_accumulation(df):  # type: ignore[no-untyped-def]
+        return v95._scale_dimension(
+            native_accumulation(df),
+            v95.ACCUMULATION_RAW_MAX,
+            v95.ACCUMULATION_NOMINAL_MAX,
+        )
+
+    module.score_volume = score_volume
+    module.score_accumulation = score_accumulation
+    return module
+
+
+PRODUCTION_SCORE = _load_production_semantics_scorer()
+
 #: Vectorised component key -> the ``ScoreBreakdown`` attribute it must equal.
 #:
 #: ``score_core`` is the specification (§10.6 decision 3); the vectorised module
@@ -52,6 +109,14 @@ SCALAR_FIELDS: dict[str, str] = {
     "breakout": "breakout_score",
     "trap": "value_trap_risk",
     "coverage": "indicator_coverage",
+    # Component-level fields, and the reason they must be listed: a divergence
+    # confined to one component moves ``final`` by a fraction of a point, so
+    # aggregate-only comparison cannot see it. Volume and Accumulation drifted
+    # apart by 13.6% and 8.7% while every key above stayed bit-exact.
+    "volume": "volume",
+    "accumulation": "accumulation",
+    "structure": "structure",
+    "trend": "trend",
 }
 
 #: Component keys the vectorised path exposes that have **no** scalar
@@ -123,6 +188,11 @@ VECTOR_HELPERS = frozenset(
         "_roll",
         "_roll_shift",
         "_clampc",
+        # Not score components: they return the v95 nominal-scale factors owned
+        # by score_scale_migration_v95, so this module keeps a single source of
+        # truth instead of restating 25/22 and 25/23.
+        "_volume_nominal",
+        "_accumulation_nominal",
     }
 )
 
@@ -175,7 +245,7 @@ def _assert_scalar_parity(frame: pd.DataFrame, *, is_etf: bool) -> None:
         | {329, 330, 331, 339, 340, 341, 719, 720, 721}
     )
     for position in positions:
-        scalar = EXACT_SCORE.score_ticker(
+        scalar = PRODUCTION_SCORE.score_ticker(
             frame.iloc[: position + 1],
             is_etf=is_etf,
         )
@@ -363,3 +433,97 @@ def test_the_scalar_counterparts_all_exist() -> None:
         assert hasattr(module, vector_name), (
             f"the vectorised module no longer defines {vector_name}"
         )
+
+
+def test_vectorised_scale_factors_come_from_the_v95_owner() -> None:
+    """The vectorised path must import 25/22 and 25/23, never restate them.
+
+    Two hard-coded copies of a scale factor is exactly how this divergence went
+    unnoticed for so long: the vectorised module clamped Volume to 25 while its
+    positive terms could only reach 22, and nothing tied that 25 to the scalar
+    side. ``SCALAR_TO_VECTORISED`` declared ``score_volume -> _volume``, so the
+    meta-tests were satisfied, while the numbers quietly disagreed.
+
+    A value comparison cannot tell an imported constant from a retyped one, so
+    this asserts the vectorised accessors agree with the owner at runtime -- and
+    the module docstring requires the import, which a reviewer enforces.
+    """
+    import score_scale_migration_v95 as v95
+
+    module = importlib.import_module("institution_scanner.backtest_score_vectorized")
+    assert module._volume_nominal() == (
+        v95.VOLUME_SCALE,
+        v95.VOLUME_NOMINAL_MAX,
+    ), "vectorised Volume scale drifted from score_scale_migration_v95"
+    assert module._accumulation_nominal() == (
+        v95.ACCUMULATION_SCALE,
+        v95.ACCUMULATION_NOMINAL_MAX,
+    ), "vectorised Accumulation scale drifted from score_scale_migration_v95"
+
+
+def test_the_nominal_migration_is_not_a_no_op() -> None:
+    """Guard against the migration collapsing to scale = 1.0.
+
+    If ``VOLUME_SCALE`` / ``ACCUMULATION_SCALE`` ever became 1.0, both sides of
+    the parity assertion would fall back to the pre-v95 scale *together* and
+    stay bit-exact: every test in this file would pass while production drifted
+    back to the defect v95 was written to fix. The raw maxima sitting strictly
+    below the nominal maxima is the only thing that makes the migration mean
+    anything.
+    """
+    import score_scale_migration_v95 as v95
+
+    assert v95.VOLUME_RAW_MAX < v95.VOLUME_NOMINAL_MAX, (
+        f"Volume raw max {v95.VOLUME_RAW_MAX} reached the nominal max "
+        f"{v95.VOLUME_NOMINAL_MAX}; the scale factor is now 1.0 and the "
+        "migration is a no-op"
+    )
+    assert v95.ACCUMULATION_RAW_MAX < v95.ACCUMULATION_NOMINAL_MAX, (
+        f"Accumulation raw max {v95.ACCUMULATION_RAW_MAX} reached the nominal "
+        f"max {v95.ACCUMULATION_NOMINAL_MAX}; the migration is a no-op"
+    )
+    assert v95.VOLUME_SCALE > 1.0, "Volume scale factor is not an upscale"
+    assert v95.ACCUMULATION_SCALE > 1.0, "Accumulation scale factor is not an upscale"
+
+
+def test_the_parity_reference_really_carries_v95() -> None:
+    """Anti-self-comparison: ``PRODUCTION_SCORE`` must differ from ``EXACT_SCORE``.
+
+    ``PRODUCTION_SCORE`` is the raw scalar with the v95 factors applied. If that
+    application were dropped, ``_assert_scalar_parity`` would compare the
+    vectorised path against the un-migrated scalar and pass -- locking in the
+    divergence this file exists to prevent, under a green test suite.
+    """
+    import score_scale_migration_v95 as v95
+
+    frame = _enriched_frame(seed=1)
+    raw_volume = float(EXACT_SCORE.score_volume(frame))
+    raw_accumulation = float(EXACT_SCORE.score_accumulation(frame))
+    production_volume = float(PRODUCTION_SCORE.score_volume(frame))
+    production_accumulation = float(PRODUCTION_SCORE.score_accumulation(frame))
+
+    # A zero raw score would make every comparison below vacuous.
+    assert raw_volume > 0.0, "the corpus produces no Volume score to migrate"
+    assert raw_accumulation > 0.0, "the corpus produces no Accumulation score"
+
+    assert production_volume > raw_volume, (
+        "PRODUCTION_SCORE matches the raw scalar: the v95 volume migration is "
+        "not applied to the parity reference"
+    )
+    assert production_accumulation > raw_accumulation, (
+        "PRODUCTION_SCORE matches the raw scalar: the v95 accumulation "
+        "migration is not applied to the parity reference"
+    )
+    # Not merely different -- by exactly the migration factor.
+    np.testing.assert_allclose(
+        production_volume,
+        min(raw_volume * v95.VOLUME_SCALE, v95.VOLUME_NOMINAL_MAX),
+        rtol=0.0,
+        atol=1e-10,
+    )
+    np.testing.assert_allclose(
+        production_accumulation,
+        min(raw_accumulation * v95.ACCUMULATION_SCALE, v95.ACCUMULATION_NOMINAL_MAX),
+        rtol=0.0,
+        atol=1e-10,
+    )
