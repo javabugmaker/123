@@ -208,3 +208,53 @@ def test_size_budgets_are_not_vacuous() -> None:
         "so they cannot fire until the module has grown enormously; tighten "
         f"them or the gate is decorative: {vacuous}"
     )
+
+
+_DOC_BUDGET_RE = re.compile(r"^- `([A-Za-z0-9_]+\.py)` <= (\S+) B$", re.MULTILINE)
+_DOC_NUMBER_RE = re.compile(r"^[\d,]+$")
+
+
+def test_documented_budgets_match_code() -> None:
+    """Every ceiling quoted in ARCHITECTURE.md must equal ``_SIZE_BUDGETS``.
+
+    The summary table drifted four times between 2026-09-04 and 2026-09-17:
+    ``analytics_core`` still read 145,000 after the code had moved to 142,000,
+    and eleven budgeted modules (``daily_pipeline_core``, ``scanner_core``,
+    ``score_core`` and eight more) were never listed at all.  Someone sizing an
+    extraction from the document would have banked headroom the gate had
+    already taken away, and no test noticed.
+
+    This re-parses the document rather than keeping a third copy of the
+    numbers: the prose stays the place a human reads them, ``_SIZE_BUDGETS``
+    stays the place the code enforces them, and a disagreement is a build
+    failure instead of a stale paragraph.
+    """
+    doc = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8").replace("\r\n", "\n")
+    raw_entries = _DOC_BUDGET_RE.findall(doc)
+    assert raw_entries, (
+        "No budget lines matched in ARCHITECTURE.md; the table was removed or "
+        "reformatted, so this gate can no longer see it. Update the regex and "
+        "the summary together."
+    )
+    # A narrower regex would silently skip a line whose number was mangled
+    # (``<= X B``), leaving a four-module table passing as if it were six.
+    # Catch the unparseable shape explicitly instead of dropping it.
+    unparseable = [
+        f"{name}: {raw!r}"
+        for name, raw in raw_entries
+        if not _DOC_NUMBER_RE.match(raw)
+    ]
+    assert not unparseable, (
+        "ARCHITECTURE.md has budget lines whose ceiling is not a plain number; "
+        f"this gate would silently ignore them: {unparseable}"
+    )
+    documented = {name: int(raw.replace(",", "")) for name, raw in raw_entries}
+    mismatched = {
+        name: f"doc={value} code={_SIZE_BUDGETS.get(name)}"
+        for name, value in documented.items()
+        if _SIZE_BUDGETS.get(name) != value
+    }
+    assert not mismatched, (
+        "ARCHITECTURE.md quotes ceilings that no longer match _SIZE_BUDGETS: "
+        f"{mismatched}"
+    )

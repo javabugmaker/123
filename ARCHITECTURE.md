@@ -225,16 +225,20 @@ generated `gh-pages` worktree is no longer tracked on `main`.
 The remaining giant compatibility modules are shrink-only. CI guards their size
 ceiling so new logic cannot accumulate in them:
 
-- `analytics_core.py` <= 145,000 B
-- `report_core.py` <= 95,000 B
+- `analytics_core.py` <= 142,000 B
+- `report_core.py` <= 91,752 B
 - `gui_core.py` <= 105,000 B
-- `gui.py` <= 98,000 B
+- `gui.py` <= 94,018 B
 - `scanner.py` <= 2,048 B
-- `signal_lifecycle_core.py` <= 56,000 B
+- `signal_lifecycle_core.py` <= 53,345 B
 
 **These ceilings live in code, not here.** The authoritative table is
-`_SIZE_BUDGETS` in `tests/test_architecture_growth.py`; this list is a summary
-and must be updated whenever a ceiling moves. `scanner.py` is the cautionary
+`_SIZE_BUDGETS` in `tests/test_architecture_growth.py`; the six above are a
+summary of the largest and the dict is the whole set.
+`test_documented_budgets_match_code` re-parses this section and fails when any
+number listed here disagrees with `_SIZE_BUDGETS`, so this summary cannot drift
+the way it did between 2026-09-04 and 2026-09-17, when four ceilings were stale
+and eleven budgeted modules were missing entirely. `scanner.py` is the cautionary
 tale: it was hollowed out into a 941 B facade by the T1 layering while its
 ceiling stayed at 80 KB for months, leaving 79 KB of headroom that no change
 could ever consume. `test_size_budgets_are_not_vacuous` now fails when any
